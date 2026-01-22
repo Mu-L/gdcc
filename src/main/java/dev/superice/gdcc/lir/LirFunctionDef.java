@@ -258,6 +258,15 @@ public final class LirFunctionDef implements LirParameterEntity, Iterable<LirBas
         return tmpVar;
     }
 
+    public @Nullable LirVariable createAndAddVariable(@NotNull String id, @NotNull GdType type) {
+        if (this.variables.containsKey(id)) {
+            return null;
+        }
+        var var = new LirVariable(id, type, this);
+        this.variables.put(id, var);
+        return var;
+    }
+
     public boolean hasVariable(@NotNull String id) {
         return this.variables.containsKey(id);
     }
