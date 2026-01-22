@@ -365,6 +365,9 @@ A Low IR file (which is a .xml format file) consists of 4 parts:
            is_tool="false">
     <annotation key="<annotation_key>" value="<annotation_value>"/>
     <annotation key="<annotation_key>" value="<annotation_value>"/>
+    <signals>...</signals>
+    <properties>...</properties>
+    <functions>...</functions>
 </class_def>
 ```
 
@@ -374,8 +377,8 @@ A Low IR file (which is a .xml format file) consists of 4 parts:
 <signals>
     <signal name="<signal_name>">
         <!-- type is optional, defaults to Variant -->
-        <argument name="<arg_name>" type="<arg_type>"/>
-        <argument name="<arg_name>" type="<arg_type>"/>
+        <parameter name="<arg_name>" type="<arg_type>"/>
+        <parameter name="<arg_name>" type="<arg_type>"/>
     </signal>
 </signals>
 ```
@@ -481,269 +484,271 @@ Low IR:
 ```xml
 
 <ir>
-    <class_def name="RotatingCamera" super="Camera3D" is_abstract="false" is_tool="false"/>
-    <properties>
-        <property name="pitch_degree" type="float" is_static="false" init_func="_field_init_pitch_degree">
-            <annotation key="export" value=""/>
-        </property>
-        <property name="rotating_speed_degree" type="float" is_static="false" init_func="_field_init_rotating_speed_degree">
-            <annotation key="export" value=""/>
-        </property>
-        <property name="length" type="float" is_static="false" init_func="_field_init_length">
-            <annotation key="export" value=""/>
-        </property>
-        <property name="time" type="float" is_static="false" init_func="_field_init_time"/>
-    </properties>
-    <signals></signals>
-    <functions>
-        <function name="_init"
-                  is_static="false"
-                  is_abstract="false"
-                  is_lambda="false"
-                  is_vararg="false"
-                  is_hidden="false">
-            <parameters>
-                <parameter name="self" type="RotatingCamera"/>
-            </parameters>
-            <return_type type="void"/>
-            <variables>
-                <variable id="self" type="RotatingCamera"/>
-                <variable id="0" type="String"/>
-                <variable id="1" type="Variant"/>
-            </variables>
-            <basic_blocks entry="entry">
-                <basic_block id="entry">
-                    line_number 9;
-                    $0 = literal_string "Camera init";
-                    $1 = pack_variant $0;
-                    call_global "print" $1;
-                    destruct $1;
-                    destruct $0;
-                    return;
-                </basic_block>
-            </basic_blocks>
-        </function>
-        <function name="_ready"
-                  is_static="false"
-                  is_abstract="false"
-                  is_vararg="false"
-                  is_hidden="false">
-            <parameters>
-                <parameter name="self" type="RotatingCamera"/>
-            </parameters>
-            <return_type type="void"/>
-            <variables>
-                <variable id="self" type="RotatingCamera"/>
-                <variable id="0" type="String"/>
-                <variable id="1" type="Variant"/>
-            </variables>
-            <basic_blocks entry="entry">
-                <basic_block id="entry">
-                    line_number 12;
-                    $0 = literal_string "Camera ready";
-                    $1 = pack_variant $0;
-                    call_global "print" $1;
-                    destruct $1;
-                    destruct $0;
-                    return;
-                </basic_block>
-            </basic_blocks>
-        </function>
-        <function name="_process"
-                  is_static="false"
-                  is_abstract="false"
-                  is_vararg="false"
-                  is_hidden="false">
-            <parameters>
-                <parameter name="self" type="RotatingCamera"/>
-                <parameter name="delta" type="float"/>
-            </parameters>
-            <return_type type="void"/>
-            <variables>
-                <variable id="self" type="RotatingCamera"/>
-                <variable id="delta" type="float"/>
-                <variable id="0" type="float"/>
-                <variable id="1" type="float"/>
-                <variable id="2" type="float"/>
-                <variable id="3" type="float"/>
-                <variable id="4" type="Vector3"/>
-                <variable id="5" type="Vector3"/>
-                <variable id="6" type="float"/>
-                <variable id="7" type="float"/>
-                <variable id="8" type="Vector3"/>
-                <variable id="9" type="Vector3"/>
-                <variable id="10" type="float"/>
-                <variable id="11" type="float"/>
-                <variable id="12" type="float"/>
-                <variable id="13" type="float"/>
-                <variable id="14" type="Vector3"/>
-                <variable id="15" type="Vector3"/>
-                <variable id="16" type="String"/>
-                <variable id="17" type="Variant"/>
-                <variable id="18" type="bool"/>
-            </variables>
-            <basic_blocks entry="bb1">
-                <basic_block id="bb1">
-                    line_number 15;
-                    $0 = load_property "time" $self;
-                    $1 = binary_op "ADD" $0 $delta;
-                    store_property "time" $self $1;
-                    line_number 16;
-                    $2 = literal_float 0;
-                    $3 = load_property "length" $self;
-                    $18 = binary_op "LESS" $3 $2;
-                    go_if $18 bb2 bb3;
-                </basic_block>
-                <basic_block id="bb2">
-                    line_number 17;
-                    $16 = literal_string "Length should not be less than 0";
-                    $17 = pack_variant $16;
-                    call_global "printerr" $17;
-                    destruct $17;
-                    destruct $16;
-                    return;
-                </basic_block>
-                <basic_block id="bb3">
-                    line_number 19;
-                    $4 = construct_builtin $3 $2 $2;
-                    $5 = load_static "Vector3" "BACK";
-                    $6 = load_property "pitch_degree" $self;
-                    $7 = call_global "deg_to_rad" $6;
-                    $8 = call_method "rotated" $4 $5 $7;
-                    line_number 20;
-                    $9 = load_static "Vector3" "UP";
-                    $10 = load_property "rotating_speed_degree" $self;
-                    $11 = load_property "time" $self;
-                    $12 = binary_op "MULTIPLY" $10 $11;
-                    $13 = call_global "deg_to_rad" $12;
-                    $14 = call_method "rotated" $8 $9 $13;
-                    line_number 22;
-                    store_property "position" $self $14;
-                    line_number 23;
-                    $15 = load_static "Vector3" "ZERO";
-                    call_method "look_at_from_position" $self $14 $15;
-                    return;
-                </basic_block>
-            </basic_blocks>
-        </function>
-        <function name="get_pitch"
-                  is_static="false"
-                  is_abstract="false"
-                  is_vararg="false"
-                  is_hidden="false">
-            <parameters>
-                <parameter name="self" type="RotatingCamera"/>
-                <parameter name="to_radius" type="bool" default_value_func="_default_get_pitch$to_radius"/>
-            </parameters>
-            <return_type type="float"/>
-            <variables>
-                <variable id="self" type="RotatingCamera"/>
-                <variable id="to_radians" type="bool"/>
-                <variable id="0" type="float"/>
-                <variable id="1" type="float"/>
-            </variables>
-            <basic_blocks entry="entry">
-                <basic_block id="bb1">
-                    line_number 26;
-                    go_if $to_radians bb2 bb3;
-                </basic_block>
-                <basic_block id="bb2">
-                    line_number 27;
-                    $0 = load_property "pitch_degree" $self;
-                    $1 = call_global "deg_to_rad" $0;
-                    return $1;
-                </basic_block>
-                <basic_block id="bb3">
-                    line_number 29;
-                    $0 = load_property "pitch_degree" $self;
-                    return $0;
-                </basic_block>
-            </basic_blocks>
-        </function>
-        <function name="_default_get_pitch$to_radius"
-                  is_static="false"
-                  is_abstract="false"
-                  is_vararg="false"
-                  is_hidden="true">
-            <parameters>
-                <parameter name="self" type="RotatingCamera"/>
-            </parameters>
-            <return_type type="bool"/>
-            <variables>
-                <variable id="self" type="RotatingCamera"/>
-                <variable id="0" type="bool"/>
-            </variables>
-            <basic_blocks entry="entry">
-                <basic_block id="entry">
-                    line_number 26;
-                    $0 = literal_bool false;
-                    return $0;
-                </basic_block>
-            </basic_blocks>
-        </function>
-        <function name="_field_init_pitch_degree"
-                  is_static="false"
-                  is_abstract="false"
-                  is_vararg="false"
-                  is_hidden="true">
-            <parameters>
-                <parameter name="self" type="RotatingCamera"/>
-            </parameters>
-            <return_type type="float"/>
-            <variables>
-                <variable id="self" type="RotatingCamera"/>
-                <variable id="0" type="float"/>
-            </variables>
-            <basic_blocks entry="entry">
-                <basic_block id="entry">
-                    line_number 6;
-                    $0 = literal_float 45;
-                    return $0;
-                </basic_block>
-            </basic_blocks>
-        </function>
-        <function name="_field_init_rotating_speed_degree"
-                  is_static="false"
-                  is_abstract="false"
-                  is_vararg="false"
-                  is_hidden="true">
-            <parameters>
-                <parameter name="self" type="RotatingCamera"/>
-            </parameters>
-            <return_type type="float"/>
-            <variables>
-                <variable id="self" type="RotatingCamera"/>
-                <variable id="0" type="float"/>
-            </variables>
-            <basic_blocks entry="entry">
-                <basic_block id="entry">
-                    line_number 7;
-                    $0 = literal_float 60;
-                    return $0;
-                </basic_block>
-            </basic_blocks>
-        </function>
-        <function name="_field_init_length"
-                  is_static="false"
-                  is_abstract="false"
-                  is_vararg="false"
-                  is_hidden="true">
-            <parameters>
-                <parameter name="self" type="RotatingCamera"/>
-            </parameters>
-            <return_type type="float"/>
-            <variables>
-                <variable id="self" type="RotatingCamera"/>
-                <variable id="0" type="float"/>
-            </variables>
-            <basic_blocks entry="entry">
-                <basic_block id="entry">
-                    line_number 8;
-                    $0 = literal_float 5;
-                    return $0;
-                </basic_block>
-            </basic_blocks>
-        </function>
-    </functions>
+    <class_def name="RotatingCamera" super="Camera3D" is_abstract="false" is_tool="false">
+        <properties>
+            <property name="pitch_degree" type="float" is_static="false" init_func="_field_init_pitch_degree">
+                <annotation key="export" value=""/>
+            </property>
+            <property name="rotating_speed_degree" type="float" is_static="false"
+                      init_func="_field_init_rotating_speed_degree">
+                <annotation key="export" value=""/>
+            </property>
+            <property name="length" type="float" is_static="false" init_func="_field_init_length">
+                <annotation key="export" value=""/>
+            </property>
+            <property name="time" type="float" is_static="false" init_func="_field_init_time"/>
+        </properties>
+        <signals></signals>
+        <functions>
+            <function name="_init"
+                      is_static="false"
+                      is_abstract="false"
+                      is_lambda="false"
+                      is_vararg="false"
+                      is_hidden="false">
+                <parameters>
+                    <parameter name="self" type="RotatingCamera"/>
+                </parameters>
+                <return_type type="void"/>
+                <variables>
+                    <variable id="self" type="RotatingCamera"/>
+                    <variable id="0" type="String"/>
+                    <variable id="1" type="Variant"/>
+                </variables>
+                <basic_blocks entry="entry">
+                    <basic_block id="entry">
+                        line_number 9;
+                        $0 = literal_string "Camera init";
+                        $1 = pack_variant $0;
+                        call_global "print" $1;
+                        destruct $1;
+                        destruct $0;
+                        return;
+                    </basic_block>
+                </basic_blocks>
+            </function>
+            <function name="_ready"
+                      is_static="false"
+                      is_abstract="false"
+                      is_vararg="false"
+                      is_hidden="false">
+                <parameters>
+                    <parameter name="self" type="RotatingCamera"/>
+                </parameters>
+                <return_type type="void"/>
+                <variables>
+                    <variable id="self" type="RotatingCamera"/>
+                    <variable id="0" type="String"/>
+                    <variable id="1" type="Variant"/>
+                </variables>
+                <basic_blocks entry="entry">
+                    <basic_block id="entry">
+                        line_number 12;
+                        $0 = literal_string "Camera ready";
+                        $1 = pack_variant $0;
+                        call_global "print" $1;
+                        destruct $1;
+                        destruct $0;
+                        return;
+                    </basic_block>
+                </basic_blocks>
+            </function>
+            <function name="_process"
+                      is_static="false"
+                      is_abstract="false"
+                      is_vararg="false"
+                      is_hidden="false">
+                <parameters>
+                    <parameter name="self" type="RotatingCamera"/>
+                    <parameter name="delta" type="float"/>
+                </parameters>
+                <return_type type="void"/>
+                <variables>
+                    <variable id="self" type="RotatingCamera"/>
+                    <variable id="delta" type="float"/>
+                    <variable id="0" type="float"/>
+                    <variable id="1" type="float"/>
+                    <variable id="2" type="float"/>
+                    <variable id="3" type="float"/>
+                    <variable id="4" type="Vector3"/>
+                    <variable id="5" type="Vector3"/>
+                    <variable id="6" type="float"/>
+                    <variable id="7" type="float"/>
+                    <variable id="8" type="Vector3"/>
+                    <variable id="9" type="Vector3"/>
+                    <variable id="10" type="float"/>
+                    <variable id="11" type="float"/>
+                    <variable id="12" type="float"/>
+                    <variable id="13" type="float"/>
+                    <variable id="14" type="Vector3"/>
+                    <variable id="15" type="Vector3"/>
+                    <variable id="16" type="String"/>
+                    <variable id="17" type="Variant"/>
+                    <variable id="18" type="bool"/>
+                </variables>
+                <basic_blocks entry="bb1">
+                    <basic_block id="bb1">
+                        line_number 15;
+                        $0 = load_property "time" $self;
+                        $1 = binary_op "ADD" $0 $delta;
+                        store_property "time" $self $1;
+                        line_number 16;
+                        $2 = literal_float 0;
+                        $3 = load_property "length" $self;
+                        $18 = binary_op "LESS" $3 $2;
+                        go_if $18 bb2 bb3;
+                    </basic_block>
+                    <basic_block id="bb2">
+                        line_number 17;
+                        $16 = literal_string "Length should not be less than 0";
+                        $17 = pack_variant $16;
+                        call_global "printerr" $17;
+                        destruct $17;
+                        destruct $16;
+                        return;
+                    </basic_block>
+                    <basic_block id="bb3">
+                        line_number 19;
+                        $4 = construct_builtin $3 $2 $2;
+                        $5 = load_static "Vector3" "BACK";
+                        $6 = load_property "pitch_degree" $self;
+                        $7 = call_global "deg_to_rad" $6;
+                        $8 = call_method "rotated" $4 $5 $7;
+                        line_number 20;
+                        $9 = load_static "Vector3" "UP";
+                        $10 = load_property "rotating_speed_degree" $self;
+                        $11 = load_property "time" $self;
+                        $12 = binary_op "MULTIPLY" $10 $11;
+                        $13 = call_global "deg_to_rad" $12;
+                        $14 = call_method "rotated" $8 $9 $13;
+                        line_number 22;
+                        store_property "position" $self $14;
+                        line_number 23;
+                        $15 = load_static "Vector3" "ZERO";
+                        call_method "look_at_from_position" $self $14 $15;
+                        return;
+                    </basic_block>
+                </basic_blocks>
+            </function>
+            <function name="get_pitch"
+                      is_static="false"
+                      is_abstract="false"
+                      is_vararg="false"
+                      is_hidden="false">
+                <parameters>
+                    <parameter name="self" type="RotatingCamera"/>
+                    <parameter name="to_radius" type="bool" default_value_func="_default_get_pitch$to_radius"/>
+                </parameters>
+                <return_type type="float"/>
+                <variables>
+                    <variable id="self" type="RotatingCamera"/>
+                    <variable id="to_radians" type="bool"/>
+                    <variable id="0" type="float"/>
+                    <variable id="1" type="float"/>
+                </variables>
+                <basic_blocks entry="entry">
+                    <basic_block id="bb1">
+                        line_number 26;
+                        go_if $to_radians bb2 bb3;
+                    </basic_block>
+                    <basic_block id="bb2">
+                        line_number 27;
+                        $0 = load_property "pitch_degree" $self;
+                        $1 = call_global "deg_to_rad" $0;
+                        return $1;
+                    </basic_block>
+                    <basic_block id="bb3">
+                        line_number 29;
+                        $0 = load_property "pitch_degree" $self;
+                        return $0;
+                    </basic_block>
+                </basic_blocks>
+            </function>
+            <function name="_default_get_pitch$to_radius"
+                      is_static="false"
+                      is_abstract="false"
+                      is_vararg="false"
+                      is_hidden="true">
+                <parameters>
+                    <parameter name="self" type="RotatingCamera"/>
+                </parameters>
+                <return_type type="bool"/>
+                <variables>
+                    <variable id="self" type="RotatingCamera"/>
+                    <variable id="0" type="bool"/>
+                </variables>
+                <basic_blocks entry="entry">
+                    <basic_block id="entry">
+                        line_number 26;
+                        $0 = literal_bool false;
+                        return $0;
+                    </basic_block>
+                </basic_blocks>
+            </function>
+            <function name="_field_init_pitch_degree"
+                      is_static="false"
+                      is_abstract="false"
+                      is_vararg="false"
+                      is_hidden="true">
+                <parameters>
+                    <parameter name="self" type="RotatingCamera"/>
+                </parameters>
+                <return_type type="float"/>
+                <variables>
+                    <variable id="self" type="RotatingCamera"/>
+                    <variable id="0" type="float"/>
+                </variables>
+                <basic_blocks entry="entry">
+                    <basic_block id="entry">
+                        line_number 6;
+                        $0 = literal_float 45;
+                        return $0;
+                    </basic_block>
+                </basic_blocks>
+            </function>
+            <function name="_field_init_rotating_speed_degree"
+                      is_static="false"
+                      is_abstract="false"
+                      is_vararg="false"
+                      is_hidden="true">
+                <parameters>
+                    <parameter name="self" type="RotatingCamera"/>
+                </parameters>
+                <return_type type="float"/>
+                <variables>
+                    <variable id="self" type="RotatingCamera"/>
+                    <variable id="0" type="float"/>
+                </variables>
+                <basic_blocks entry="entry">
+                    <basic_block id="entry">
+                        line_number 7;
+                        $0 = literal_float 60;
+                        return $0;
+                    </basic_block>
+                </basic_blocks>
+            </function>
+            <function name="_field_init_length"
+                      is_static="false"
+                      is_abstract="false"
+                      is_vararg="false"
+                      is_hidden="true">
+                <parameters>
+                    <parameter name="self" type="RotatingCamera"/>
+                </parameters>
+                <return_type type="float"/>
+                <variables>
+                    <variable id="self" type="RotatingCamera"/>
+                    <variable id="0" type="float"/>
+                </variables>
+                <basic_blocks entry="entry">
+                    <basic_block id="entry">
+                        line_number 8;
+                        $0 = literal_float 5;
+                        return $0;
+                    </basic_block>
+                </basic_blocks>
+            </function>
+        </functions>
+    </class_def>
 </ir>
 ```
