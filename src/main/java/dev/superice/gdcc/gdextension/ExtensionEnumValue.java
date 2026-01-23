@@ -1,6 +1,6 @@
 package dev.superice.gdcc.gdextension;
 
-public record EnumValue(
+public record ExtensionEnumValue(
         String name,
         int value
 ) { }

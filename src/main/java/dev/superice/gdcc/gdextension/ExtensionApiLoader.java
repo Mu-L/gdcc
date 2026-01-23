@@ -4,7 +4,6 @@ import com.google.gson.FieldNamingPolicy;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.jetbrains.annotations.NotNull;
@@ -47,12 +46,12 @@ public final class ExtensionApiLoader {
             var headerObj = root.has("header") ? root.getAsJsonObject("header") : null;
             var header = parseHeader(headerObj);
 
-            List<GlobalEnum> globalEnums = root.has("global_enums") ? parseGlobalEnums(root.getAsJsonArray("global_enums")) : Collections.emptyList();
-            List<UtilityFunction> utilityFunctions = root.has("utility_functions") ? parseUtilityFunctions(root.getAsJsonArray("utility_functions")) : Collections.emptyList();
-            List<BuiltinClass> builtinClasses = root.has("builtin_classes") ? parseBuiltinClasses(root.getAsJsonArray("builtin_classes")) : Collections.emptyList();
-            List<GdClass> classes = root.has("classes") ? parseGdClasses(root.getAsJsonArray("classes")) : Collections.emptyList();
-            List<Singleton> singletons = root.has("singletons") ? parseSingletons(root.getAsJsonArray("singletons")) : Collections.emptyList();
-            List<NativeStructure> nativeStructures = root.has("native_structures") ? parseNativeStructures(root.getAsJsonArray("native_structures")) : Collections.emptyList();
+            List<ExtensionGlobalEnum> globalEnums = root.has("global_enums") ? parseGlobalEnums(root.getAsJsonArray("global_enums")) : Collections.emptyList();
+            List<ExtensionUtilityFunction> utilityFunctions = root.has("utility_functions") ? parseUtilityFunctions(root.getAsJsonArray("utility_functions")) : Collections.emptyList();
+            List<ExtensionBuiltinClass> builtinClasses = root.has("builtin_classes") ? parseBuiltinClasses(root.getAsJsonArray("builtin_classes")) : Collections.emptyList();
+            List<ExtensionGdClass> classes = root.has("classes") ? parseGdClasses(root.getAsJsonArray("classes")) : Collections.emptyList();
+            List<ExtensionSingleton> singletons = root.has("singletons") ? parseSingletons(root.getAsJsonArray("singletons")) : Collections.emptyList();
+            List<ExtensionNativeStructure> nativeStructures = root.has("native_structures") ? parseNativeStructures(root.getAsJsonArray("native_structures")) : Collections.emptyList();
 
             return new ExtensionAPI(header, Collections.emptyList(), Collections.emptyList(), globalEnums, utilityFunctions, builtinClasses, classes, singletons, nativeStructures);
         }
@@ -70,28 +69,28 @@ public final class ExtensionApiLoader {
         return new ExtensionHeader(versionMajor, versionMinor, versionPatch, versionStatus, versionBuild, versionFullName, precision);
     }
 
-    private static List<GlobalEnum> parseGlobalEnums(JsonArray arr) {
-        var out = new ArrayList<GlobalEnum>();
+    private static List<ExtensionGlobalEnum> parseGlobalEnums(JsonArray arr) {
+        var out = new ArrayList<ExtensionGlobalEnum>();
         for (var el : arr) {
             var o = el.getAsJsonObject();
             var name = o.has("name") ? o.get("name").getAsString() : null;
             var isBitfield = o.has("is_bitfield") && o.get("is_bitfield").getAsBoolean();
-            var values = new ArrayList<EnumValue>();
+            var values = new ArrayList<ExtensionEnumValue>();
             if (o.has("values")) {
                 for (var ve : o.getAsJsonArray("values")) {
                     var v = ve.getAsJsonObject();
                     var vn = v.has("name") ? v.get("name").getAsString() : null;
                     var vv = v.has("value") ? v.get("value").getAsInt() : 0;
-                    values.add(new EnumValue(vn, vv));
+                    values.add(new ExtensionEnumValue(vn, vv));
                 }
             }
-            out.add(new GlobalEnum(name, isBitfield, Collections.unmodifiableList(values)));
+            out.add(new ExtensionGlobalEnum(name, isBitfield, Collections.unmodifiableList(values)));
         }
         return Collections.unmodifiableList(out);
     }
 
-    private static List<UtilityFunction> parseUtilityFunctions(JsonArray arr) {
-        var out = new ArrayList<UtilityFunction>();
+    private static List<ExtensionUtilityFunction> parseUtilityFunctions(JsonArray arr) {
+        var out = new ArrayList<ExtensionUtilityFunction>();
         for (var el : arr) {
             var o = el.getAsJsonObject();
             var name = o.has("name") ? o.get("name").getAsString() : null;
@@ -99,32 +98,32 @@ public final class ExtensionApiLoader {
             var category = o.has("category") ? o.get("category").getAsString() : null;
             var isVararg = o.has("is_vararg") && o.get("is_vararg").getAsBoolean();
             var hash = o.has("hash") ? o.get("hash").getAsInt() : 0;
-            var args = new ArrayList<FunctionArgument>();
+            var args = new ArrayList<ExtensionFunctionArgument>();
             if (o.has("arguments")) {
                 for (var ae : o.getAsJsonArray("arguments")) {
                     var a = ae.getAsJsonObject();
                     var an = a.has("name") ? a.get("name").getAsString() : null;
                     var at = a.has("type") ? a.get("type").getAsString() : null;
-                    args.add(new FunctionArgument(an, at, a.has("default_value") ? a.get("default_value").getAsString() : null));
+                    args.add(new ExtensionFunctionArgument(an, at, a.has("default_value") ? a.get("default_value").getAsString() : null));
                 }
             }
-            out.add(new UtilityFunction(name, returnType, category, isVararg, hash, Collections.unmodifiableList(args)));
+            out.add(new ExtensionUtilityFunction(name, returnType, category, isVararg, hash, Collections.unmodifiableList(args)));
         }
         return Collections.unmodifiableList(out);
     }
 
-    private static List<BuiltinClass> parseBuiltinClasses(JsonArray arr) {
-        var out = new ArrayList<BuiltinClass>();
+    private static List<ExtensionBuiltinClass> parseBuiltinClasses(JsonArray arr) {
+        var out = new ArrayList<ExtensionBuiltinClass>();
         for (var el : arr) {
             var o = el.getAsJsonObject();
             var name = o.has("name") ? o.get("name").getAsString() : null;
             var isKeyed = o.has("is_keyed") && o.get("is_keyed").getAsBoolean();
 
-            var operators = new ArrayList<BuiltinClass.ClassOperator>();
+            var operators = new ArrayList<ExtensionBuiltinClass.ClassOperator>();
             if (o.has("operators")) {
                 for (var oe : o.getAsJsonArray("operators")) {
                     var op = oe.getAsJsonObject();
-                    operators.add(new BuiltinClass.ClassOperator(
+                    operators.add(new ExtensionBuiltinClass.ClassOperator(
                             op.has("name") ? op.get("name").getAsString() : null,
                             op.has("right_type") ? op.get("right_type").getAsString() : null,
                             op.has("return_type") ? op.get("return_type").getAsString() : null
@@ -132,7 +131,7 @@ public final class ExtensionApiLoader {
                 }
             }
 
-            var methods = new ArrayList<BuiltinClass.ClassMethod>();
+            var methods = new ArrayList<ExtensionBuiltinClass.ClassMethod>();
             if (o.has("methods")) {
                 for (var me : o.getAsJsonArray("methods")) {
                     var mo = me.getAsJsonObject();
@@ -143,66 +142,66 @@ public final class ExtensionApiLoader {
                     var isStatic = mo.has("is_static") && mo.get("is_static").getAsBoolean();
                     var isVirtual = mo.has("is_virtual") && mo.get("is_virtual").getAsBoolean();
                     var hash = mo.has("hash") ? mo.get("hash").getAsLong() : 0L;
-                    var args = new ArrayList<FunctionArgument>();
+                    var args = new ArrayList<ExtensionFunctionArgument>();
                     if (mo.has("arguments")) {
                         for (var ae : mo.getAsJsonArray("arguments")) {
                             var a = ae.getAsJsonObject();
-                            args.add(new FunctionArgument(
+                            args.add(new ExtensionFunctionArgument(
                                     a.has("name") ? a.get("name").getAsString() : null,
                                     a.has("type") ? a.get("type").getAsString() : null,
                                     a.has("default_value") ? a.get("default_value").getAsString() : null
                             ));
                         }
                     }
-                    BuiltinClass.ClassMethod.ReturnValue rv = null;
+                    ExtensionBuiltinClass.ClassMethod.ReturnValue rv = null;
                     if (mo.has("return_value")) {
                         var rvo = mo.getAsJsonObject("return_value");
-                        rv = new BuiltinClass.ClassMethod.ReturnValue(rvo.has("type") ? rvo.get("type").getAsString() : null);
+                        rv = new ExtensionBuiltinClass.ClassMethod.ReturnValue(rvo.has("type") ? rvo.get("type").getAsString() : null);
                     } else if (returnType != null) {
-                        rv = new BuiltinClass.ClassMethod.ReturnValue(returnType);
+                        rv = new ExtensionBuiltinClass.ClassMethod.ReturnValue(returnType);
                     }
-                    methods.add(new BuiltinClass.ClassMethod(methodName, returnType, isVararg, isConst, isStatic, isVirtual, hash, Collections.unmodifiableList(args), null, rv));
+                    methods.add(new ExtensionBuiltinClass.ClassMethod(methodName, returnType, isVararg, isConst, isStatic, isVirtual, hash, Collections.unmodifiableList(args), null, rv));
                 }
             }
 
-            var enums = new ArrayList<BuiltinClass.ClassEnum>();
+            var enums = new ArrayList<ExtensionBuiltinClass.ClassEnum>();
             if (o.has("enums")) {
                 for (var ee : o.getAsJsonArray("enums")) {
                     var eo = ee.getAsJsonObject();
                     var ename = eo.has("name") ? eo.get("name").getAsString() : null;
                     var isBit = eo.has("is_bitfield") && eo.get("is_bitfield").getAsBoolean();
-                    var vals = new ArrayList<EnumValue>();
+                    var vals = new ArrayList<ExtensionEnumValue>();
                     if (eo.has("values")) {
                         for (var ve : eo.getAsJsonArray("values")) {
                             var v = ve.getAsJsonObject();
-                            vals.add(new EnumValue(v.has("name") ? v.get("name").getAsString() : null, v.has("value") ? v.get("value").getAsInt() : 0));
+                            vals.add(new ExtensionEnumValue(v.has("name") ? v.get("name").getAsString() : null, v.has("value") ? v.get("value").getAsInt() : 0));
                         }
                     }
-                    enums.add(new BuiltinClass.ClassEnum(ename, isBit, Collections.unmodifiableList(vals)));
+                    enums.add(new ExtensionBuiltinClass.ClassEnum(ename, isBit, Collections.unmodifiableList(vals)));
                 }
             }
 
-            var constructors = new ArrayList<BuiltinClass.ConstructorInfo>();
+            var constructors = new ArrayList<ExtensionBuiltinClass.ConstructorInfo>();
             if (o.has("constructors")) {
                 for (var ce : o.getAsJsonArray("constructors")) {
                     var co = ce.getAsJsonObject();
                     var idx = co.has("index") ? co.get("index").getAsInt() : 0;
-                    var carg = new ArrayList<FunctionArgument>();
+                    var carg = new ArrayList<ExtensionFunctionArgument>();
                     if (co.has("arguments")) {
                         for (var ca : co.getAsJsonArray("arguments")) {
                             var a = ca.getAsJsonObject();
-                            carg.add(new FunctionArgument(a.has("name") ? a.get("name").getAsString() : null, a.has("type") ? a.get("type").getAsString() : null, a.has("default_value") ? a.get("default_value").getAsString() : null));
+                            carg.add(new ExtensionFunctionArgument(a.has("name") ? a.get("name").getAsString() : null, a.has("type") ? a.get("type").getAsString() : null, a.has("default_value") ? a.get("default_value").getAsString() : null));
                         }
                     }
-                    constructors.add(new BuiltinClass.ConstructorInfo(idx, Collections.unmodifiableList(carg)));
+                    constructors.add(new ExtensionBuiltinClass.ConstructorInfo(idx, Collections.unmodifiableList(carg)));
                 }
             }
 
-            var properties = new ArrayList<BuiltinClass.PropertyInfo>();
+            var properties = new ArrayList<ExtensionBuiltinClass.PropertyInfo>();
             if (o.has("properties")) {
                 for (var pe : o.getAsJsonArray("properties")) {
                     var po = pe.getAsJsonObject();
-                    properties.add(new BuiltinClass.PropertyInfo(
+                    properties.add(new ExtensionBuiltinClass.PropertyInfo(
                             po.has("name") ? po.get("name").getAsString() : null,
                             po.has("type") ? po.get("type").getAsString() : null,
                             po.has("is_readable") && po.get("is_readable").getAsBoolean(),
@@ -212,21 +211,21 @@ public final class ExtensionApiLoader {
                 }
             }
 
-            var constants = new ArrayList<BuiltinClass.ConstantInfo>();
+            var constants = new ArrayList<ExtensionBuiltinClass.ConstantInfo>();
             if (o.has("constants")) {
                 for (var ce : o.getAsJsonArray("constants")) {
                     var co = ce.getAsJsonObject();
-                    constants.add(new BuiltinClass.ConstantInfo(co.has("name") ? co.get("name").getAsString() : null, co.has("value") ? co.get("value").getAsString() : null));
+                    constants.add(new ExtensionBuiltinClass.ConstantInfo(co.has("name") ? co.get("name").getAsString() : null, co.has("value") ? co.get("value").getAsString() : null));
                 }
             }
 
-            out.add(new BuiltinClass(name, isKeyed, Collections.unmodifiableList(operators), Collections.unmodifiableList(methods), Collections.unmodifiableList(enums), Collections.unmodifiableList(constructors), Collections.unmodifiableList(properties), Collections.unmodifiableList(constants)));
+            out.add(new ExtensionBuiltinClass(name, isKeyed, Collections.unmodifiableList(operators), Collections.unmodifiableList(methods), Collections.unmodifiableList(enums), Collections.unmodifiableList(constructors), Collections.unmodifiableList(properties), Collections.unmodifiableList(constants)));
         }
         return Collections.unmodifiableList(out);
     }
 
-    private static List<GdClass> parseGdClasses(JsonArray arr) {
-        var out = new ArrayList<GdClass>();
+    private static List<ExtensionGdClass> parseGdClasses(JsonArray arr) {
+        var out = new ArrayList<ExtensionGdClass>();
         for (var el : arr) {
             var o = el.getAsJsonObject();
             var name = o.has("name") ? o.get("name").getAsString() : null;
@@ -235,24 +234,24 @@ public final class ExtensionApiLoader {
             var inherits = o.has("inherits") ? o.get("inherits").getAsString() : null;
             var apiType = o.has("api_type") ? o.get("api_type").getAsString() : null;
 
-            var enums = new ArrayList<GdClass.ClassEnum>();
+            var enums = new ArrayList<ExtensionGdClass.ClassEnum>();
             if (o.has("enums")) {
                 for (var ee : o.getAsJsonArray("enums")) {
                     var eo = ee.getAsJsonObject();
                     var ename = eo.has("name") ? eo.get("name").getAsString() : null;
                     var isBit = eo.has("is_bitfield") && eo.get("is_bitfield").getAsBoolean();
-                    var vals = new ArrayList<EnumValue>();
+                    var vals = new ArrayList<ExtensionEnumValue>();
                     if (eo.has("values")) {
                         for (var ve : eo.getAsJsonArray("values")) {
                             var v = ve.getAsJsonObject();
-                            vals.add(new EnumValue(v.has("name") ? v.get("name").getAsString() : null, v.has("value") ? v.get("value").getAsInt() : 0));
+                            vals.add(new ExtensionEnumValue(v.has("name") ? v.get("name").getAsString() : null, v.has("value") ? v.get("value").getAsInt() : 0));
                         }
                     }
-                    enums.add(new GdClass.ClassEnum(ename, isBit, Collections.unmodifiableList(vals)));
+                    enums.add(new ExtensionGdClass.ClassEnum(ename, isBit, Collections.unmodifiableList(vals)));
                 }
             }
 
-            var methods = new ArrayList<GdClass.ClassMethod>();
+            var methods = new ArrayList<ExtensionGdClass.ClassMethod>();
             if (o.has("methods")) {
                 for (var me : o.getAsJsonArray("methods")) {
                     var mo = me.getAsJsonObject();
@@ -266,27 +265,27 @@ public final class ExtensionApiLoader {
                     if (mo.has("hash_compatibility")) {
                         for (var he : mo.getAsJsonArray("hash_compatibility")) hc.add(he.getAsLong());
                     }
-                    var args = new ArrayList<FunctionArgument>();
+                    var args = new ArrayList<ExtensionFunctionArgument>();
                     if (mo.has("arguments")) {
                         for (var ae : mo.getAsJsonArray("arguments")) {
                             var a = ae.getAsJsonObject();
-                            args.add(new FunctionArgument(a.has("name") ? a.get("name").getAsString() : null, a.has("type") ? a.get("type").getAsString() : null, a.has("default_value") ? a.get("default_value").getAsString() : null));
+                            args.add(new ExtensionFunctionArgument(a.has("name") ? a.get("name").getAsString() : null, a.has("type") ? a.get("type").getAsString() : null, a.has("default_value") ? a.get("default_value").getAsString() : null));
                         }
                     }
-                    GdClass.ClassMethod.ClassMethodReturn rv = null;
+                    ExtensionGdClass.ClassMethod.ClassMethodReturn rv = null;
                     if (mo.has("return_value")) {
                         var rvo = mo.getAsJsonObject("return_value");
-                        rv = new GdClass.ClassMethod.ClassMethodReturn(rvo.has("type") ? rvo.get("type").getAsString() : null);
+                        rv = new ExtensionGdClass.ClassMethod.ClassMethodReturn(rvo.has("type") ? rvo.get("type").getAsString() : null);
                     }
-                    methods.add(new GdClass.ClassMethod(methodName, isConst, isVararg, isStatic, isVirtual, hash, Collections.unmodifiableList(hc), rv, Collections.unmodifiableList(args)));
+                    methods.add(new ExtensionGdClass.ClassMethod(methodName, isConst, isVararg, isStatic, isVirtual, hash, Collections.unmodifiableList(hc), rv, Collections.unmodifiableList(args)));
                 }
             }
 
-            var properties = new ArrayList<GdClass.PropertyInfo>();
+            var properties = new ArrayList<ExtensionGdClass.PropertyInfo>();
             if (o.has("properties")) {
                 for (var pe : o.getAsJsonArray("properties")) {
                     var po = pe.getAsJsonObject();
-                    properties.add(new GdClass.PropertyInfo(
+                    properties.add(new ExtensionGdClass.PropertyInfo(
                             po.has("name") ? po.get("name").getAsString() : null,
                             po.has("type") ? po.get("type").getAsString() : null,
                             po.has("is_readable") && po.get("is_readable").getAsBoolean(),
@@ -296,33 +295,33 @@ public final class ExtensionApiLoader {
                 }
             }
 
-            var constants = new ArrayList<GdClass.ConstantInfo>();
+            var constants = new ArrayList<ExtensionGdClass.ConstantInfo>();
             if (o.has("constants")) {
                 for (var ce : o.getAsJsonArray("constants")) {
                     var co = ce.getAsJsonObject();
-                    constants.add(new GdClass.ConstantInfo(co.has("name") ? co.get("name").getAsString() : null, co.has("value") ? co.get("value").getAsString() : null));
+                    constants.add(new ExtensionGdClass.ConstantInfo(co.has("name") ? co.get("name").getAsString() : null, co.has("value") ? co.get("value").getAsString() : null));
                 }
             }
 
-            out.add(new GdClass(name, isRefcounted, isInstantiable, inherits, apiType, Collections.unmodifiableList(enums), Collections.unmodifiableList(methods), Collections.unmodifiableList(properties), Collections.unmodifiableList(constants)));
+            out.add(new ExtensionGdClass(name, isRefcounted, isInstantiable, inherits, apiType, Collections.unmodifiableList(enums), Collections.unmodifiableList(methods), Collections.unmodifiableList(properties), Collections.unmodifiableList(constants)));
         }
         return Collections.unmodifiableList(out);
     }
 
-    private static List<Singleton> parseSingletons(JsonArray arr) {
-        var out = new ArrayList<Singleton>();
+    private static List<ExtensionSingleton> parseSingletons(JsonArray arr) {
+        var out = new ArrayList<ExtensionSingleton>();
         for (var el : arr) {
             var o = el.getAsJsonObject();
-            out.add(new Singleton(o.has("name") ? o.get("name").getAsString() : null, o.has("type") ? o.get("type").getAsString() : null));
+            out.add(new ExtensionSingleton(o.has("name") ? o.get("name").getAsString() : null, o.has("type") ? o.get("type").getAsString() : null));
         }
         return Collections.unmodifiableList(out);
     }
 
-    private static List<NativeStructure> parseNativeStructures(JsonArray arr) {
-        var out = new ArrayList<NativeStructure>();
+    private static List<ExtensionNativeStructure> parseNativeStructures(JsonArray arr) {
+        var out = new ArrayList<ExtensionNativeStructure>();
         for (var el : arr) {
             var o = el.getAsJsonObject();
-            out.add(new NativeStructure(o.has("name") ? o.get("name").getAsString() : null, o.has("format") ? o.get("format").getAsString() : null));
+            out.add(new ExtensionNativeStructure(o.has("name") ? o.get("name").getAsString() : null, o.has("format") ? o.get("format").getAsString() : null));
         }
         return Collections.unmodifiableList(out);
     }

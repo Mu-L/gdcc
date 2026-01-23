@@ -3,35 +3,32 @@ package dev.superice.gdcc.gdextension;
 import java.util.List;
 import com.google.gson.annotations.SerializedName;
 
-public record BuiltinClass(
+public record ExtensionGdClass(
         @SerializedName("name") String name,
-        @SerializedName("is_keyed") boolean isKeyed,
-        @SerializedName("operators") List<ClassOperator> operators,
-        @SerializedName("methods") List<ClassMethod> methods,
+        @SerializedName("is_refcounted") boolean isRefcounted,
+        @SerializedName("is_instantiable") boolean isInstantiable,
+        @SerializedName("inherits") String inherits,
+        @SerializedName("api_type") String apiType,
         @SerializedName("enums") List<ClassEnum> enums,
-        @SerializedName("constructors") List<ConstructorInfo> constructors,
+        @SerializedName("methods") List<ClassMethod> methods,
         @SerializedName("properties") List<PropertyInfo> properties,
         @SerializedName("constants") List<ConstantInfo> constants
 ) {
-    public record ClassOperator(String name, String rightType, String returnType) { }
+    public record ClassEnum(String name, boolean isBitfield, List<ExtensionEnumValue> values) { }
+
     public record ClassMethod(
             String name,
-            String returnType,
-            boolean isVararg,
             boolean isConst,
+            boolean isVararg,
             boolean isStatic,
             boolean isVirtual,
             long hash,
-            List<FunctionArgument> arguments,
             List<Long> hashCompatibility,
-            ReturnValue returnValue
+            ClassMethodReturn returnValue,
+            List<ExtensionFunctionArgument> arguments
     ) {
-        public record ReturnValue(String type) { }
+        public record ClassMethodReturn(String type) { }
     }
-
-    public record ClassEnum(String name, boolean isBitfield, List<EnumValue> values) { }
-
-    public record ConstructorInfo(int index, List<FunctionArgument> arguments) { }
 
     public record PropertyInfo(String name, String type, boolean isReadable, boolean isWritable, String defaultValue) { }
 

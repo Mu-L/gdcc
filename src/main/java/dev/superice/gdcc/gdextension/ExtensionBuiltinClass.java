@@ -3,34 +3,35 @@ package dev.superice.gdcc.gdextension;
 import java.util.List;
 import com.google.gson.annotations.SerializedName;
 
-public record GdClass(
+public record ExtensionBuiltinClass(
         @SerializedName("name") String name,
-        @SerializedName("is_refcounted") boolean isRefcounted,
-        @SerializedName("is_instantiable") boolean isInstantiable,
-        @SerializedName("inherits") String inherits,
-        @SerializedName("api_type") String apiType,
-        @SerializedName("enums") List<ClassEnum> enums,
+        @SerializedName("is_keyed") boolean isKeyed,
+        @SerializedName("operators") List<ClassOperator> operators,
         @SerializedName("methods") List<ClassMethod> methods,
+        @SerializedName("enums") List<ClassEnum> enums,
+        @SerializedName("constructors") List<ConstructorInfo> constructors,
         @SerializedName("properties") List<PropertyInfo> properties,
         @SerializedName("constants") List<ConstantInfo> constants
 ) {
-    public record ClassEnum(String name, boolean isBitfield, List<EnumValue> values) { }
-
+    public record ClassOperator(String name, String rightType, String returnType) { }
     public record ClassMethod(
             String name,
-            boolean isConst,
+            String returnType,
             boolean isVararg,
+            boolean isConst,
             boolean isStatic,
             boolean isVirtual,
             long hash,
+            List<ExtensionFunctionArgument> arguments,
             List<Long> hashCompatibility,
-            ClassMethodReturn returnValue,
-            List<FunctionArgument> arguments
+            ReturnValue returnValue
     ) {
-        public record ClassMethodReturn(String type) { }
+        public record ReturnValue(String type) { }
     }
 
-    public record ConstructorInfo(int index, List<FunctionArgument> arguments) { }
+    public record ClassEnum(String name, boolean isBitfield, List<ExtensionEnumValue> values) { }
+
+    public record ConstructorInfo(int index, List<ExtensionFunctionArgument> arguments) { }
 
     public record PropertyInfo(String name, String type, boolean isReadable, boolean isWritable, String defaultValue) { }
 

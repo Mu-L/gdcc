@@ -2,7 +2,7 @@ package dev.superice.gdcc.gdextension;
 
 import java.util.List;
 
-public record BuiltinClassMemberOffsets(
+public record ExtensionBuiltinClassMemberOffsets(
         String buildConfiguration,
         List<ClassMemberData> classes
 ) {

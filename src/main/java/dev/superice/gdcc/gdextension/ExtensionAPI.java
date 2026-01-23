@@ -5,13 +5,13 @@ import com.google.gson.annotations.SerializedName;
 
 public record ExtensionAPI(
         @SerializedName("header") ExtensionHeader header,
-        @SerializedName("builtin_class_sizes") List<BuiltinClassSizes> builtinClassSizes,
-        @SerializedName("builtin_class_member_offsets") List<BuiltinClassMemberOffsets> builtinClassMemberOffsets,
-        @SerializedName("global_enums") List<GlobalEnum> globalEnums,
-        @SerializedName("utility_functions") List<UtilityFunction> utilityFunctions,
-        @SerializedName("builtin_classes") List<BuiltinClass> builtinClasses,
-        @SerializedName("classes") List<GdClass> classes,
-        @SerializedName("singletons") List<Singleton> singletons,
-        @SerializedName("native_structures") List<NativeStructure> nativeStructures
+        @SerializedName("builtin_class_sizes") List<ExtensionBuiltinClassSizes> builtinClassSizes,
+        @SerializedName("builtin_class_member_offsets") List<ExtensionBuiltinClassMemberOffsets> builtinClassMemberOffsets,
+        @SerializedName("global_enums") List<ExtensionGlobalEnum> globalEnums,
+        @SerializedName("utility_functions") List<ExtensionUtilityFunction> utilityFunctions,
+        @SerializedName("builtin_classes") List<ExtensionBuiltinClass> builtinClasses,
+        @SerializedName("classes") List<ExtensionGdClass> classes,
+        @SerializedName("singletons") List<ExtensionSingleton> singletons,
+        @SerializedName("native_structures") List<ExtensionNativeStructure> nativeStructures
 ) {
 }

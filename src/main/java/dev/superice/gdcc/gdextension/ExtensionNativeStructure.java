@@ -1,6 +1,6 @@
 package dev.superice.gdcc.gdextension;
 
-public record Singleton(
+public record ExtensionNativeStructure(
         String name,
-        String type
+        String format
 ) { }

@@ -2,8 +2,8 @@ package dev.superice.gdcc.gdextension;
 
 import java.util.List;
 
-public record GlobalEnum(
+public record ExtensionGlobalEnum(
         String name,
         boolean isBitfield,
-        List<EnumValue> values
+        List<ExtensionEnumValue> values
 ) { }

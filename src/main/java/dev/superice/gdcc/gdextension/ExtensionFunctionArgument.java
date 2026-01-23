@@ -1,6 +1,6 @@
 package dev.superice.gdcc.gdextension;
 
-public record FunctionArgument(
+public record ExtensionFunctionArgument(
         String name,
         String type,
         String defaultValue
