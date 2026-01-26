@@ -18,6 +18,7 @@ public class SimpleLirBlockInsnParserTest {
         return parser.parse(new StringReader(input));
     }
 
+    @SuppressWarnings("SameParameterValue")
     private static void assertParseError(String line, int expectedLine, int expectedCol, String expectedReasonSubstring) {
         var parser = new SimpleLirBlockInsnParser();
         var ex = assertThrows(LirInsnParsingException.class, () -> parser.parse(new StringReader(line)));
@@ -86,6 +87,7 @@ public class SimpleLirBlockInsnParserTest {
         assertInstanceOf(BinaryOpInsn.class, insns.get(4));
     }
 
+    @SuppressWarnings("TrailingWhitespacesInTextBlock")
     @Test
     public void parse_whitespaceVariants() {
         // tabs, leading and trailing spaces, empty lines

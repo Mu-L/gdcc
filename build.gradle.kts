@@ -21,8 +21,18 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     compileOnly("org.jetbrains:annotations:24.0.1")
     implementation("com.google.code.gson:gson:2.13.2")
+    implementation("org.freemarker:freemarker:2.3.34")
 }
 
 tasks.test {
     useJUnitPlatform()
+}
+
+sourceSets {
+    main {
+        resources {
+            srcDir("src/main/c/include_451")
+            srcDir("src/main/c/template_451")
+        }
+    }
 }
