@@ -1,0 +1,73 @@
+package dev.superice.gdcc.util;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+public class ResourceExtractorTest {
+
+    @Test
+    public void testExtractIntoEmptyDir(@TempDir Path tempDir) throws IOException {
+        var loader = getClass().getClassLoader();
+        ResourceExtractor.extract("extractor_test", tempDir, loader);
+
+        // a.txt should be present
+        var a = tempDir.resolve("a.txt");
+        assertTrue(Files.exists(a));
+        var aContent = Files.readString(a, StandardCharsets.UTF_8).trim();
+        assertFalse(aContent.isEmpty());
+
+        // o.zip should be expanded into o/ with b/c.txt/d.txt and b/e.txt
+        var oDir = tempDir.resolve("o");
+        assertTrue(Files.exists(oDir) && Files.isDirectory(oDir));
+        assertTrue(Files.exists(oDir.resolve("c.txt")));
+        assertTrue(Files.exists(oDir.resolve("d.txt")));
+        assertTrue(Files.exists(oDir.resolve("b")));
+        assertTrue(Files.exists(oDir.resolve("b").resolve("e.txt")));
+    }
+
+    @Test
+    public void testExtractWithExistingDifferentFiles(@TempDir Path tempDir) throws IOException {
+        var loader = getClass().getClassLoader();
+        // create target that already contains a.txt with different content
+        var a = tempDir.resolve("a.txt");
+        Files.writeString(a, "old-content", StandardCharsets.UTF_8);
+
+        ResourceExtractor.extract("extractor_test", tempDir, loader);
+
+        // a.txt should be replaced with resource content
+        var aContent = Files.readString(a, StandardCharsets.UTF_8).trim();
+        assertNotEquals("old-content", aContent);
+        assertFalse(aContent.isEmpty());
+
+        // ensure no leftover temp files named .gdcc-* remain
+        try (var stream = Files.list(tempDir)) {
+            stream.forEach(p -> assertFalse(p.getFileName().toString().contains(".gdcc-")));
+        }
+    }
+
+    @Test
+    public void testExtractSpecificSuccessful(@TempDir Path tempDir) throws IOException {
+        var loader = getClass().getClassLoader();
+        ResourceExtractor.extractSpecific("extractor_test", List.of("a.txt", "o.zip"), tempDir, loader);
+
+        assertTrue(Files.exists(tempDir.resolve("a.txt")));
+        assertTrue(Files.exists(tempDir.resolve("o")));
+    }
+
+    @Test
+    public void testExtractSpecificMissingResource(@TempDir Path tempDir) {
+        var loader = getClass().getClassLoader();
+        var ex = assertThrows(IOException.class, () -> ResourceExtractor.extractSpecific("extractor_test", List.of("a.txt", "not-exist.txt"), tempDir, loader));
+        assertTrue(ex.getMessage().contains("Requested resource not found"));
+        // ensure nothing was extracted
+        assertFalse(Files.exists(tempDir.resolve("a.txt")));
+    }
+}
