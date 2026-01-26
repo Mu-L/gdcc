@@ -1,10 +1,7 @@
 package dev.superice.gdcc.backend.c.build;
 
-import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.ProjectBuilder;
 import dev.superice.gdcc.backend.c.gen.CCodegen;
-import dev.superice.gdcc.gdextension.ExtensionApiLoader;
-import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.util.ResourceExtractor;
 import org.jetbrains.annotations.NotNull;
 
@@ -73,7 +70,8 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
         );
 
         // output name: projectName
-        var outputName = projectInfo.projectName();
+        var outputName = projectInfo.projectName() + "_" + projectInfo.getOptimizationLevel().name().toLowerCase() +
+                "_" + projectInfo.getTargetPlatform().architecture.name().toLowerCase();
 
         // optimization level and platform from projectInfo
         var opt = projectInfo.getOptimizationLevel();

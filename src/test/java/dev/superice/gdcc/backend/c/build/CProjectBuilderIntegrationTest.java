@@ -8,7 +8,6 @@ import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.scope.ClassRegistry;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -32,7 +31,7 @@ public class CProjectBuilderIntegrationTest {
         var tempDir = Path.of("tmp/test/c_build");
         Files.createDirectories(tempDir);
 
-        var projectInfo = new CProjectInfo("intproj", GodotVersion.V451, tempDir, COptimizationLevel.DEBUG, TargetPlatform.WINDOWS_X64);
+        var projectInfo = new CProjectInfo("intproj", GodotVersion.V451, tempDir, COptimizationLevel.DEBUG, TargetPlatform.WINDOWS_X86_64);
         var builder = new CProjectBuilder();
 
         builder.initProject(projectInfo);

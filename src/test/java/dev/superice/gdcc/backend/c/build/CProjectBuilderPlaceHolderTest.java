@@ -22,7 +22,7 @@ public class CProjectBuilderPlaceHolderTest {
     @Test
     public void buildsUsingInjectedZigCompiler(@TempDir Path tempDir) throws IOException {
         // prepare project info
-        var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, tempDir, COptimizationLevel.DEBUG, TargetPlatform.WINDOWS_X64);
+        var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, tempDir, COptimizationLevel.DEBUG, TargetPlatform.WINDOWS_X86_64);
 
         // create builder with fake CCompiler that simulates successful compilation
         var fakeCompiler = new CCompiler() {

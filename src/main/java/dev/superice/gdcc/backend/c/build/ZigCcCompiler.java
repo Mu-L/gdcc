@@ -23,7 +23,7 @@ public class ZigCcCompiler implements CCompiler {
 
         // Build command: zig cc -shared -I<includeDir> -o <output> <cFiles...>
         var outName = outputBaseName;
-        if (targetPlatform == TargetPlatform.WINDOWS_X64) {
+        if (targetPlatform == TargetPlatform.WINDOWS_X86_64) {
             outName = outputBaseName + ".dll";
         } else {
             // default to unix-like
@@ -37,7 +37,7 @@ public class ZigCcCompiler implements CCompiler {
         cmd.add("cc");
         //noinspection SwitchStatementWithTooFewBranches
         switch (targetPlatform) {
-            case WINDOWS_X64 -> {
+            case WINDOWS_X86_64 -> {
                 cmd.add("-target");
                 cmd.add("x86_64-windows-msvc");
                 cmd.add("-D_MSC_VER=1900");
@@ -51,7 +51,6 @@ public class ZigCcCompiler implements CCompiler {
         switch (optimizationLevel) {
             case DEBUG -> cmd.add("-O0");
             case RELEASE -> cmd.add("-O2");
-            case RELEASE_WITH_DEBUG_INFO -> cmd.add("-O2");
         }
 
         // primary include dir (use -I<path> form)
@@ -74,7 +73,7 @@ public class ZigCcCompiler implements CCompiler {
             var artifacts = new ArrayList<Path>(3);
             if (success) {
                 artifacts.add(outputPath);
-                if (targetPlatform == TargetPlatform.WINDOWS_X64) {
+                if (targetPlatform == TargetPlatform.WINDOWS_X86_64) {
                     var pdbPath = projectDir.resolve(outputBaseName + ".pdb").toAbsolutePath();
                     if (Files.exists(pdbPath)) {
                         artifacts.add(pdbPath);
