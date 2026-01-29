@@ -203,7 +203,18 @@ public final class DomLirParser implements LirParser {
                     var bbsNodes = fEl.getElementsByTagName("basic_blocks");
                     if (bbsNodes.getLength() > 0) {
                         var bnode = (Element) bbsNodes.item(0);
+                        // Require explicit entry attribute when basic_blocks contains blocks
                         var bbList = bnode.getElementsByTagName("basic_block");
+                        if (bbList.getLength() > 0) {
+                            if (!bnode.hasAttribute("entry")) {
+                                throw new IllegalArgumentException("<basic_blocks> must have an 'entry' attribute when basic_block children are present for function: " + fname);
+                            }
+                            var entryId = bnode.getAttribute("entry");
+                            if (entryId == null || entryId.isEmpty()) {
+                                throw new IllegalArgumentException("Empty 'entry' attribute on <basic_blocks> for function: " + fname);
+                            }
+                            fn.setEntryBlockId(entryId);
+                        }
                         for (int bi = 0; bi < bbList.getLength(); bi++) {
                             var bbEl = (Element) bbList.item(bi);
                             var bbid = bbEl.getAttribute("id");

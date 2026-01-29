@@ -135,12 +135,13 @@ public final class DomLirSerializer implements LirSerializer {
                 fEl.appendChild(varsEl);
 
                 Element bbsEl = doc.createElement("basic_blocks");
-                // set entry to first basic block id if present
+                // Require explicit entry block id when basic blocks exist
+                var entryId = fn.getEntryBlockId();
                 if (fn.getBasicBlockCount() > 0) {
-                    var it = fn.iterator();
-                    if (it.hasNext()) {
-                        bbsEl.setAttribute("entry", it.next().id());
+                    if (entryId == null || entryId.isEmpty()) {
+                        throw new IllegalStateException("Function '" + fn.getName() + "' contains basic blocks but entry block id is not set");
                     }
+                    bbsEl.setAttribute("entry", entryId);
                 }
                 for (var bb : fn) {
                     Element bbEl = doc.createElement("basic_block");

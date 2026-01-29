@@ -28,7 +28,7 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
     private final Map<String, LirVariable> variables;
     private int tmpVarCounter = 0;
     private final SequencedMap<String, LirBasicBlock> basicBlocks;
-    private @NotNull String entryBlockId;
+    private @NotNull String entryBlockId = ""; // default to empty string (no entry set)
 
     public LirFunctionDef(
             String name,
@@ -56,6 +56,40 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
         this.returnType = Objects.requireNonNull(returnType);
         this.variables = new HashMap<>(Objects.requireNonNull(variables));
         this.basicBlocks = new LinkedHashMap<>(basicBlocks);
+        // Do NOT default entryBlockId to the first basic block; require explicit setting
+    }
+
+    /**
+     * Create a function with explicit entry block id and initial basic blocks.
+     */
+    public LirFunctionDef(
+            String name,
+            boolean isStatic,
+            boolean isAbstract,
+            boolean isLambda,
+            boolean isVararg,
+            boolean isHidden,
+            Map<String, String> annotations,
+            List<LirParameterDef> parameters,
+            Map<String, LirCaptureDef> captures,
+            GdType returnType,
+            Map<String, LirVariable> variables,
+            SequencedMap<String, LirBasicBlock> basicBlocks,
+            @NotNull String entryBlockId
+    ) {
+        this.name = Objects.requireNonNull(name);
+        this.isStatic = isStatic;
+        this.isAbstract = isAbstract;
+        this.isLambda = isLambda;
+        this.isVararg = isVararg;
+        this.isHidden = isHidden;
+        this.annotations = new HashMap<>(Objects.requireNonNull(annotations));
+        this.parameters = new ArrayList<>(Objects.requireNonNull(parameters));
+        this.captures = new HashMap<>(Objects.requireNonNull(captures));
+        this.returnType = Objects.requireNonNull(returnType);
+        this.variables = new HashMap<>(Objects.requireNonNull(variables));
+        this.basicBlocks = new LinkedHashMap<>(basicBlocks);
+        this.entryBlockId = Objects.requireNonNull(entryBlockId);
     }
 
     public LirFunctionDef(@NotNull String name) {
@@ -70,6 +104,15 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
         this.captures = new HashMap<>();
         this.variables = new HashMap<>();
         this.basicBlocks = new LinkedHashMap<>();
+        this.entryBlockId = "";
+    }
+
+    /**
+     * Create a function and set its explicit entry block id.
+     */
+    public LirFunctionDef(@NotNull String name, @NotNull String entryBlockId) {
+        this(name);
+        this.entryBlockId = Objects.requireNonNull(entryBlockId);
     }
 
     public @NotNull String getName() {
@@ -332,5 +375,19 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
 
     public boolean removeBasicBlock(@NotNull String id) {
         return this.basicBlocks.remove(id) != null;
+    }
+
+    /**
+     * Get the id of the entry basic block for this function. Empty string means not set.
+     */
+    public @NotNull String getEntryBlockId() {
+        return entryBlockId;
+    }
+
+    /**
+     * Set the id of the entry basic block for this function. Use empty string to unset.
+     */
+    public void setEntryBlockId(@NotNull String entryBlockId) {
+        this.entryBlockId = Objects.requireNonNull(entryBlockId);
     }
 }

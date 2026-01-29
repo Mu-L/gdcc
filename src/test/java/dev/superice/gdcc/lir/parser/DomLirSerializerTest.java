@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.*;
 public class DomLirSerializerTest {
     @Test
     public void serialize_module_includesBasicBlockInstructions() throws Exception {
-        var fn = new LirFunctionDef("_init");
+        var fn = new LirFunctionDef("_init", "entry");
         fn.addParameter(new LirParameterDef("self", new GdObjectType("RotatingCamera"), null, fn));
 
         // add variable entries by creating variables via createAndAddTmpVariable or createAndAddVariable
