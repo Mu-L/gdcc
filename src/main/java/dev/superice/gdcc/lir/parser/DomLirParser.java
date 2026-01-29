@@ -223,8 +223,6 @@ public final class DomLirParser implements LirParser {
 
                             fn.addBasicBlock(block);
                         }
-                        // Note: we don't parse instruction lists in this initial implementation.
-                        // The entry attribute is kept on XML but not stored on LirFunctionDef.
                     }
 
                     funcs.add(fn);

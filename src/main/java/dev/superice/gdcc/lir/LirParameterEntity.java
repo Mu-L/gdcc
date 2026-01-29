@@ -1,9 +1,10 @@
 package dev.superice.gdcc.lir;
 
+import dev.superice.gdcc.scope.ParameterEntityDef;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-public sealed interface LirParameterEntity permits LirFunctionDef, LirSignalDef {
+public sealed interface LirParameterEntity extends ParameterEntityDef permits LirFunctionDef, LirSignalDef {
     void addParameter(@NotNull LirParameterDef parameter);
 
     void addParameter(int index, @NotNull LirParameterDef parameter);

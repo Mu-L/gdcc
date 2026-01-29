@@ -28,4 +28,20 @@ public class TemplateLoaderTest {
         var normOut = out.replace("\r\n", "\n").strip();
         assertEquals(normExpected, normOut);
     }
+
+    @Test
+    public void trimNumericRemovesPrecedingSpaces() throws IOException, TemplateException {
+        var tpl = "line1\n    __trim<3>__value\n"; // line2 has 4 leading spaces; __trim<3>__ should remove 3 of them, leaving 1
+        var out = TemplateLoader.processTrimMarkers(tpl);
+        var expected = "line1\n value\n"; // note: one leading space left
+        assertEquals(expected, out);
+    }
+
+    @Test
+    public void trimPlainMatchesPreviousLineIndent() throws IOException, TemplateException {
+        var tpl = "prev\n    line\n__trim__aligned\n"; // previous line (line2) has 4 leading spaces; line3 should be adjusted to 4
+        var out = TemplateLoader.processTrimMarkers(tpl);
+        var expected = "prev\n    line\n    aligned\n";
+        assertEquals(expected, out);
+    }
 }

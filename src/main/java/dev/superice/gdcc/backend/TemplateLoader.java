@@ -19,6 +19,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 public final class TemplateLoader {
     /// Cache of compiled FreeMarker Template objects. Keys are location-prefixed
@@ -93,7 +94,7 @@ public final class TemplateLoader {
         }
     }
 
-    private static @NotNull Configuration getOrCreateClasspathConfiguration() throws IOException {
+    private static @NotNull Configuration getOrCreateClasspathConfiguration() {
         var cfg = CLASSPATH_CONFIGURATION_REF.get();
         if (cfg != null) return cfg;
 
@@ -101,7 +102,7 @@ public final class TemplateLoader {
             cfg = CLASSPATH_CONFIGURATION_REF.get();
             if (cfg != null) return cfg;
 
-            var created = new Configuration(Configuration.VERSION_2_3_31);
+            var created = new Configuration(Configuration.VERSION_2_3_34);
             // Use ClassTemplateLoader rooted at classpath root so relative includes/imports
             // inside templates (e.g. "<#include 'partial.ftl'>") resolve correctly.
             created.setTemplateLoader(new ClassTemplateLoader(TemplateLoader.class, "/"));
@@ -110,7 +111,7 @@ public final class TemplateLoader {
             created.setTemplateExceptionHandler(TemplateExceptionHandler.RETHROW_HANDLER);
             created.setLogTemplateExceptions(false);
             created.setWrapUncheckedExceptions(true);
-            created.setObjectWrapper(new DefaultObjectWrapperBuilder(Configuration.VERSION_2_3_31).build());
+            created.setObjectWrapper(new DefaultObjectWrapperBuilder(Configuration.VERSION_2_3_34).build());
 
             CLASSPATH_CONFIGURATION_REF = new WeakReference<>(created);
             return created;
@@ -128,14 +129,14 @@ public final class TemplateLoader {
             cfg = ref == null ? null : ref.get();
             if (cfg == null) {
                 var loader = new FileTemplateLoader(normalized.toFile());
-                var created = new Configuration(Configuration.VERSION_2_3_31);
+                var created = new Configuration(Configuration.VERSION_2_3_34);
                 created.setTemplateLoader(loader);
                 created.setDefaultEncoding(StandardCharsets.UTF_8.name());
                 created.setLocale(Locale.ROOT);
                 created.setTemplateExceptionHandler(TemplateExceptionHandler.RETHROW_HANDLER);
                 created.setLogTemplateExceptions(false);
                 created.setWrapUncheckedExceptions(true);
-                created.setObjectWrapper(new DefaultObjectWrapperBuilder(Configuration.VERSION_2_3_31).build());
+                created.setObjectWrapper(new DefaultObjectWrapperBuilder(Configuration.VERSION_2_3_34).build());
 
                 FILE_CONFIGURATION_CACHE.put(normalized, new WeakReference<>(created));
                 return created;
@@ -147,7 +148,111 @@ public final class TemplateLoader {
     private static @NotNull String processTemplate(@NotNull Template tpl, @NotNull Map<String, Object> context) throws IOException, TemplateException {
         var out = new StringWriter();
         tpl.process(context, out);
-        return out.toString();
+        var rendered = out.toString();
+
+        // Post-process trim markers like __trim<3>__ which indicate removing up to 3
+        // preceding spaces/tabs and the marker itself.
+        return processTrimMarkers(rendered);
+    }
+
+    static @NotNull String processTrimMarkers(@NotNull String text) {
+        // Pattern matches markers like __trim<3>__ or plain __trim__ (group 1 captures digits when present).
+        var pattern = Pattern.compile("__trim(?:<(\\d+)>)?__");
+        var sb = new StringBuilder(text);
+
+        for (;;) {
+            var matcher = pattern.matcher(sb);
+            if (!matcher.find()) break;
+
+            var numStr = matcher.group(1);
+            if (numStr != null) {
+                // numeric form: remove up to N preceding spaces/tabs and the marker itself.
+                int toRemove;
+                try {
+                    toRemove = Integer.parseInt(numStr);
+                } catch (NumberFormatException e) {
+                    // Shouldn't happen because regex restricts to digits; skip this marker.
+                    sb.delete(matcher.start(), matcher.end());
+                    continue;
+                }
+
+                var removalStart = matcher.start();
+                // Remove up to `toRemove` preceding spaces or tabs (do not remove newlines).
+                while (toRemove > 0 && removalStart > 0) {
+                    var ch = sb.charAt(removalStart - 1);
+                    if (ch == ' ' || ch == '\t') {
+                        removalStart--;
+                        toRemove--;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Delete from removalStart up to the end of the marker.
+                sb.delete(removalStart, matcher.end());
+            } else {
+                // plain __trim__ form: make this line's leading whitespace equal to previous line's leading whitespace.
+                var markerStart = matcher.start();
+
+                // Compute start of current line (index after previous '\n').
+                var lastNl = sb.lastIndexOf("\n", markerStart - 1);
+                var lineStart = lastNl == -1 ? 0 : lastNl + 1;
+
+                // Compute previous line's start and end positions.
+                //                var prevLineEnd = lineStart - 1;
+                //                String prevIndent = "";
+                //                if (prevLineEnd >= 0) {
+                //                    var prevPrevNl = sb.lastIndexOf("\n", prevLineEnd - 1);
+                //                    var prevLineStart = prevPrevNl == -1 ? 0 : prevPrevNl + 1;
+                //                    var pi = prevLineStart;
+                //                    while (pi <= prevLineEnd && pi < sb.length()) {
+                //                        var c = sb.charAt(pi);
+                //                        if (c == ' ' || c == '\t') pi++; else break;
+                //                    }
+                //                    prevIndent = sb.substring(prevLineStart, pi);
+                //                }
+                // Find the previous non-blank line by searching upward and skipping blank lines.
+                String prevIndent = "";
+                var searchEnd = lineStart - 1; // inclusive index of the line ending we're inspecting
+                while (searchEnd >= 0) {
+                    var prevPrevNl = sb.lastIndexOf("\n", searchEnd - 1);
+                    var prevLineStart = prevPrevNl == -1 ? 0 : prevPrevNl + 1;
+                    var prevLineEnd = searchEnd;
+
+                    // Extract the previous line's content and check if it's blank.
+                    var lineContent = sb.substring(prevLineStart, Math.min(prevLineEnd + 1, sb.length()));
+                    if (!lineContent.isBlank()) {
+                        // compute its leading whitespace
+                        var pi = prevLineStart;
+                        while (pi <= prevLineEnd && pi < sb.length()) {
+                            var c = sb.charAt(pi);
+                            if (c == ' ' || c == '\t') pi++; else break;
+                        }
+                        prevIndent = sb.substring(prevLineStart, pi);
+                        break;
+                    }
+
+                    // Otherwise skip this blank line and continue searching above it.
+                    searchEnd = prevLineStart - 1;
+                }
+
+                // Determine current line's leading whitespace region.
+                var ci = lineStart;
+                while (ci < sb.length()) {
+                    var c = sb.charAt(ci);
+                    if (c == ' ' || c == '\t') ci++; else break;
+                }
+                var currentIndentEnd = ci;
+
+                // Delete the marker first (it's after the current indent), then replace the current indent with prevIndent.
+                sb.delete(matcher.start(), matcher.end());
+
+                // Replace current indentation with prevIndent
+                sb.replace(lineStart, currentIndentEnd, prevIndent);
+            }
+        }
+
+        return sb.toString();
     }
 
     @FunctionalInterface

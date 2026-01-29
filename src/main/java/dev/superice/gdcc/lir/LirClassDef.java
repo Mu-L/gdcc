@@ -1,19 +1,21 @@
 package dev.superice.gdcc.lir;
 
+import dev.superice.gdcc.scope.ClassDef;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.util.*;
 
 /** XML entity: <class_def ...> ... </class_def>. */
-public final class LirClassDef {
+public final class LirClassDef implements ClassDef {
     private @NotNull String name;
     private @NotNull String superName;
     private boolean isAbstract;
     private boolean isTool;
-    private Map<String, String> annotations;
-    private List<LirSignalDef> signals;
-    private List<LirPropertyDef> properties;
-    private List<LirFunctionDef> functions;
+    private final Map<String, String> annotations;
+    private final List<LirSignalDef> signals;
+    private final List<LirPropertyDef> properties;
+    private final List<LirFunctionDef> functions;
 
     public LirClassDef(
             @NotNull String name,
@@ -33,6 +35,20 @@ public final class LirClassDef {
         this.signals = new ArrayList<>(signals);
         this.properties = new ArrayList<>(properties);
         this.functions = new ArrayList<>(functions);
+    }
+
+    public LirClassDef(
+            @NotNull String name,
+            @NotNull String superName
+    ) {
+        this.name = name;
+        this.superName = superName;
+        this.isAbstract = false;
+        this.isTool = false;
+        this.annotations = new HashMap<>();
+        this.signals = new ArrayList<>();
+        this.properties = new ArrayList<>();
+        this.functions = new ArrayList<>();
     }
 
     public @NotNull String getName() {
@@ -67,35 +83,68 @@ public final class LirClassDef {
         isTool = tool;
     }
 
-    public Map<String, String> getAnnotations() {
-        return annotations;
+    public @UnmodifiableView @NotNull Map<String, String> getAnnotations() {
+        return Collections.unmodifiableMap(annotations);
     }
 
-    public void setAnnotations(Map<String, String> annotations) {
-        this.annotations = annotations;
+    public boolean hasAnnotation(@NotNull String key) {
+        return annotations.containsKey(key);
     }
 
-    public List<LirSignalDef> getSignals() {
-        return signals;
+    public String getAnnotation(@NotNull String key) {
+        return annotations.get(key);
     }
 
-    public void setSignals(List<LirSignalDef> signals) {
-        this.signals = signals;
+    public String setAnnotation(String key, String value) {
+        return annotations.put(key, value);
     }
 
-    public List<LirPropertyDef> getProperties() {
-        return properties;
+    public void clearAnnotations() {
+        annotations.clear();
     }
 
-    public void setProperties(List<LirPropertyDef> properties) {
-        this.properties = properties;
+    public boolean removeAnnotation(String key) {
+        return annotations.remove(key) != null;
     }
 
-    public List<LirFunctionDef> getFunctions() {
-        return functions;
+    public @UnmodifiableView @NotNull List<LirSignalDef> getSignals() {
+        return Collections.unmodifiableList(signals);
     }
 
-    public void setFunctions(List<LirFunctionDef> functions) {
-        this.functions = functions;
+    public void addSignal(@NotNull LirSignalDef signal) {
+        signals.add(signal);
+    }
+
+    public boolean removeSignal(@NotNull LirSignalDef signal) {
+        return signals.remove(signal);
+    }
+
+    public @UnmodifiableView @NotNull List<LirPropertyDef> getProperties() {
+        return Collections.unmodifiableList(properties);
+    }
+
+    public void addProperty(@NotNull LirPropertyDef property) {
+        properties.add(property);
+    }
+
+    public boolean removeProperty(@NotNull LirPropertyDef property) {
+        return properties.remove(property);
+    }
+
+    public @UnmodifiableView @NotNull List<LirFunctionDef> getFunctions() {
+        return Collections.unmodifiableList(functions);
+    }
+
+    @Override
+    public boolean isGdccClass() {
+        return true;
+    }
+
+    public void addFunction(@NotNull LirFunctionDef function) {
+        functions.add(function);
+    }
+
+    public boolean removeFunction(@NotNull LirFunctionDef function) {
+        return functions.remove(function);
     }
 }

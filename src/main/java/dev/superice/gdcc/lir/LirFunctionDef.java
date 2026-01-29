@@ -1,5 +1,7 @@
 package dev.superice.gdcc.lir;
 
+import dev.superice.gdcc.scope.FunctionDef;
+import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
@@ -8,9 +10,11 @@ import org.jetbrains.annotations.UnmodifiableView;
 
 import java.util.*;
 
-/** XML entity: <function ...> ... </function>. */
+/**
+ * XML entity: <function ...> ... </function>.
+ */
 @SuppressWarnings("unused")
-public final class LirFunctionDef implements LirParameterEntity, Iterable<LirBasicBlock> {
+public final class LirFunctionDef implements LirParameterEntity, FunctionDef, Iterable<LirBasicBlock> {
     private @NotNull String name;
     private boolean isStatic;
     private boolean isAbstract;
@@ -24,6 +28,7 @@ public final class LirFunctionDef implements LirParameterEntity, Iterable<LirBas
     private final Map<String, LirVariable> variables;
     private int tmpVarCounter = 0;
     private final SequencedMap<String, LirBasicBlock> basicBlocks;
+    private @NotNull String entryBlockId;
 
     public LirFunctionDef(
             String name,
@@ -115,7 +120,7 @@ public final class LirFunctionDef implements LirParameterEntity, Iterable<LirBas
         isHidden = hidden;
     }
 
-    public Map<String, String> getAnnotations() {
+    public @NotNull Map<String, String> getAnnotations() {
         return annotations;
     }
 
@@ -194,6 +199,11 @@ public final class LirFunctionDef implements LirParameterEntity, Iterable<LirBas
         return parameters.size();
     }
 
+    @Override
+    public @NotNull @UnmodifiableView List<? extends ParameterDef> getParameters() {
+        return Collections.unmodifiableList(parameters);
+    }
+
     public void addCapture(@NotNull LirCaptureDef capture) {
         if (!isLambda) {
             throw new IllegalStateException("Only lambda functions can have captures.");
@@ -233,6 +243,10 @@ public final class LirFunctionDef implements LirParameterEntity, Iterable<LirBas
             return 0;
         }
         return captures.size();
+    }
+
+    public @UnmodifiableView Map<String, LirCaptureDef> getCaptures() {
+        return Collections.unmodifiableMap(captures);
     }
 
     public @NotNull GdType getReturnType() {
@@ -277,6 +291,7 @@ public final class LirFunctionDef implements LirParameterEntity, Iterable<LirBas
 
     /**
      * Remove variable by id. Parameter and capture variables cannot be removed.
+     *
      * @param id Variable id.
      * @return True if the variable was removed, false if it did not exist.
      */
@@ -286,6 +301,7 @@ public final class LirFunctionDef implements LirParameterEntity, Iterable<LirBas
 
     /**
      * Remove variable by id.
+     *
      * @param id Variable id.
      * @return True if the variable was removed, false if it did not exist.
      */

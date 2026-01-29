@@ -1,4 +1,6 @@
 <#-- @ftlvariable name="module" type="dev.superice.gdcc.lir.LirModule" -->
+<#-- @ftlvariable name="helper" type="dev.superice.gdcc.backend.c.gen.CGenHelper" -->
+<#include "trim.ftl">
 
 #ifndef GDEXTENSION_${module.moduleName?upper_case}_ENTRY_H
 #define GDEXTENSION_${module.moduleName?upper_case}_ENTRY_H
@@ -12,5 +14,188 @@ struct GDExtensionInitializationStatus {
 
 void initialize(void* userdata, GDExtensionInitializationLevel p_level);
 void deinitialize(void* userdata, GDExtensionInitializationLevel p_level);
+
+// Class declarations
+
+<#list module.classDefs as classDef>
+typedef struct ${classDef.name} ${classDef.name};
+</#list>
+
+<#list module.classDefs as classDef>
+// Class definition for ${classDef.name}
+
+struct ${classDef.name} {
+    GDExtensionObjectPtr _object;
+    <#list classDef.properties as property>
+        <#if !property.static>
+            <@t/>${helper.renderGdTypeInC(property.type)} ${property.name};
+        </#if>
+    </#list>
+};
+
+const GDExtensionInstanceBindingCallbacks ${classDef.name}_class_binding_callbacks = {
+    .create_callback = NULL,
+    .free_callback = NULL,
+    .reference_callback = NULL,
+};
+
+static void ${classDef.name}_class_bind_methods();
+
+GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userdata, GDExtensionBool p_notify_postinitialize);
+
+void ${classDef.name}_class_free_instance(void* p_class_userdata, GDExtensionClassInstancePtr p_instance);
+
+void ${classDef.name}_class_constructor(${classDef.name}* self);
+
+void ${classDef.name}_class_destructor(${classDef.name}* self);
+
+void* ${classDef.name}_class_get_virtual_with_data(void* p_class_userdata, GDExtensionConstStringNamePtr p_name, uint32_t p_hash);
+
+void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p_instance, GDExtensionConstStringNamePtr p_name, void* p_virtual_call_userdata, const GDExtensionConstTypePtr* p_args, GDExtensionTypePtr r_ret);
+// Properties for ${classDef.name}
+
+<#list classDef.properties as property>
+    <#-- Non Static -->
+    <#if property.initFunc!?trim != "" && !property.static>
+        <@t/>${helper.renderGdTypeInC(property.type)} ${classDef.name}_${property.initFunc}(${classDef.name}* self);
+
+        <@t/>${helper.renderGdTypeInC(property.type)} ${classDef.name}_${property.getterFunc}(${classDef.name}* self);
+
+        <@t/>void ${classDef.name}_${property.setterFunc}(${classDef.name}* self, ${helper.renderGdTypeInC(property.type)} value);
+    </#if>
+</#list>
+
+</#list>
+
+// Method binding helpers
+
+<#list helper.bindingDataList as bindingData>
+static void call${helper.renderFuncBindName(bindingData)}(
+    void* method_userdata,
+    GDExtensionClassInstancePtr p_instance, const GDExtensionConstVariantPtr* p_args, GDExtensionInt p_argument_count,
+    GDExtensionVariantPtr r_return, GDExtensionCallError* r_error) {
+    // Check argument count
+    if (p_argument_count < ${bindingData.paramTypes?size}) {
+        r_error->error = GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS;
+        r_error->expected = ${bindingData.paramTypes?size};
+        return;
+    }
+    if (p_argument_count > ${bindingData.paramTypes?size}) {
+        r_error->error = GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS;
+        r_error->expected = ${bindingData.paramTypes?size};
+        return;
+    }
+
+    // Check the argument type
+    <#list bindingData.paramTypes as paramType>
+    {
+        const GDExtensionVariantType type = godot_variant_get_type(p_args[${paramType_index}]);
+        if (type != GDEXTENSION_VARIANT_TYPE_${paramType.gdExtensionType.name()}) {
+            r_error->error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
+            r_error->expected = GDEXTENSION_VARIANT_TYPE_${paramType.gdExtensionType.name()};
+            r_error->argument = ${paramType_index};
+            return;
+        }
+    }
+    </#list>
+
+    // Extract the argument
+    <#list bindingData.paramTypes as paramType>
+        <@t/>const ${helper.renderGdTypeInC(paramType)} arg${paramType_index} = ${helper.renderUnpackFunctionName(paramType)}((GDExtensionVariantPtr)p_args[${paramType_index}]);
+    </#list>
+
+    // Call the function
+    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(void*<#list bindingData.paramTypes as paramType>, ${helper.renderGdTypeInC(paramType)}</#list>) = method_userdata;
+    <#if bindingData.returnType.typeName != "void">
+        <@t/>godot_Variant ret = ${helper.renderPackFunctionName(bindingData.returnType)}(function(p_instance<#list bindingData.paramTypes as paramType>, ${paramType_index}</#list>));
+        <@t/>godot_variant_new_copy(r_return, &ret);
+    <#else>
+        <@t/>${helper.renderPackFunctionName(bindingData.returnType)}(function(p_instance<#list bindingData.paramTypes as paramType>, ${paramType_index}</#list>));
+    </#if>
+}
+
+static void ptrcall${helper.renderFuncBindName(bindingData)}(
+    void* method_userdata, GDExtensionClassInstancePtr p_instance,
+    const GDExtensionConstTypePtr* p_args, GDExtensionTypePtr r_return) {
+    // Call the function.
+    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(void*<#list bindingData.paramTypes as paramType>, ${helper.renderGdTypeInC(paramType)}</#list>) = method_userdata;
+    *((${helper.renderPackFunctionName(bindingData.returnType)}*)r_return) = function(p_instance<#list bindingData.paramTypes as paramType>, *((${helper.renderGdTypeInC(paramType)}*)p_args[${paramType_index}])</#list>);
+}
+
+static void gdcc_bind_method${helper.renderFuncBindName(bindingData)}(
+    godot_StringName* class_name,
+    godot_StringName* method_name,
+    void* function<#if bindingData.paramTypes?size gt 0>,</#if>
+    <#list bindingData.paramTypes as paramType>
+        <@t/>const godot_StringName* arg${paramType_index}_name,
+        <@t/>const GDExtensionVariantType arg${paramType_index}_type<#if paramType_has_next>,</#if>
+    </#list><#if bindingData.defaultVariables?size gt 0>,</#if>
+    <#list bindingData.defaultVariables as defaultVarType>
+        <@t/>const ${helper.renderGdTypeInC(defaultVarType)}* default_${defaultVarType_index}_value<#if defaultVarType_has_next>,</#if>
+    </#list>) {
+
+    GDExtensionClassMethodCall call_func = call${helper.renderFuncBindName(bindingData)};
+    GDExtensionClassMethodPtrCall ptrcall_func = ptrcall${helper.renderFuncBindName(bindingData)};
+
+    <#if bindingData.paramTypes?size gt 0>
+        <@t width=4/>GDExtensionPropertyInfo args_info[] = {
+        <#list bindingData.paramTypes as paramType>
+            <@t width=4/>gdcc_make_property_full(arg${paramType_index}_type, arg${paramType_index}_name, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8""), GD_STATIC_SN(u8"${helper.renderGdTypeName(paramType)}"), godot_PROPERTY_USAGE_DEFAULT),
+        </#list>
+        <@t width=4/>};
+        <@t width=4/>GDExtensionClassMethodArgumentMetadata args_metadata[] = {
+        <#list bindingData.paramTypes as paramType>
+            <@t width=4/>GDEXTENSION_METHOD_ARGUMENT_METADATA_NONE,
+        </#list>
+        <@t width=4/>};
+    </#if>
+
+    <#if bindingData.defaultVariables?size gt 0>
+        <@t/>// Default argument variants
+        <#list bindingData.defaultVariables as defaultVarType>
+            <@t/>godot_Variant default_var_${defaultVarType_index} = ${helper.renderPackFunctionName(defaultVarType)}(default_${defaultVarType_index}_value);
+        </#list>
+        <@t/>GDExtensionVariantPtr default_args_ptrs[] = {
+        <@t/>// Default argument pointers
+        <#list bindingData.defaultVariables as defaultVarType>
+            <@t/>&default_var_${defaultVarType_index},
+        </#list>
+        };
+    </#if>
+    <#if bindingData.returnType.typeName != "void">
+        <@t/>GDExtensionPropertyInfo return_info = gdcc_make_property(GDEXTENSION_VARIANT_TYPE_${bindingData.returnType.gdExtensionType.name()}, GD_STATIC_SN(u8""));
+    </#if>
+    GDExtensionClassMethodInfo method_info = {
+        .name = method_name,
+        .method_userdata = function,
+        .call_func = call_func,
+        .ptrcall_func = ptrcall_func,
+        .method_flags = GDEXTENSION_METHOD_FLAGS_DEFAULT<#if bindingData.staticMethod> | GDEXTENSION_METHOD_FLAG_STATIC</#if>,
+        <#if bindingData.returnType.typeName != "void">
+            <@t/>.has_return_value = true,
+            <@t/>.return_value_info = &return_info,
+            <@t/>.return_value_metadata = GDEXTENSION_METHOD_ARGUMENT_METADATA_NONE,
+        <#else>
+            <@t/>.has_return_value = false,
+        </#if>
+        .argument_count = ${bindingData.paramTypes?size},
+        .arguments_info = args_info,
+        .arguments_metadata = args_metadata,
+        <#if bindingData.defaultVariables?size gt 0>
+            <@t/>.default_argument_count = ${bindingData.defaultVariables?size},
+            <@t/>.default_arguments = default_args_ptrs,
+        </#if>
+    };
+    godot_classdb_register_extension_class_method(class_library, class_name, &method_info);
+    // Clean up
+    <#list bindingData.paramTypes as paramType>
+        <@t/>gdcc_destruct_property(&args_info[${paramType_index}]);
+    </#list>
+    <#list bindingData.defaultVariables as defaultVarType>
+        <@t/>godot_Variant_destroy(&default_var_${defaultVarType_index});
+    </#list>
+    gdcc_destruct_property(&return_info);
+}
+</#list>
 
 #endif //GDEXTENSION_${module.moduleName?upper_case}_ENTRY_H

@@ -17,6 +17,8 @@ public final class ClassRegistry {
     private final Map<String, ExtensionUtilityFunction> utilityByName = new HashMap<>();
     private final Map<String, ExtensionGlobalEnum> globalEnumByName = new HashMap<>();
     private final Map<String, ExtensionSingleton> singletonByName = new HashMap<>();
+    // TODO: implement GDCC-specific classes related APIs
+    private final Map<String, ClassDef> gdccClassByName = new HashMap<>();
 
     public ClassRegistry(@NotNull ExtensionAPI api) {
         for (var bc : api.builtinClasses()) {

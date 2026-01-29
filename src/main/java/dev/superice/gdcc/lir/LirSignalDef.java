@@ -1,11 +1,14 @@
 package dev.superice.gdcc.lir;
 
+import dev.superice.gdcc.scope.ParameterDef;
+import dev.superice.gdcc.scope.SignalDef;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.util.*;
 
-public final class LirSignalDef implements LirParameterEntity {
+public final class LirSignalDef implements LirParameterEntity, SignalDef {
     private @NotNull String name;
     private final Map<String, String> annotations;
     private final List<LirParameterDef> parameters;
@@ -30,7 +33,7 @@ public final class LirSignalDef implements LirParameterEntity {
         this.name = name;
     }
 
-    public Map<String, String> getAnnotations() {
+    public @NotNull Map<String, String> getAnnotations() {
         return annotations;
     }
 
@@ -70,6 +73,11 @@ public final class LirSignalDef implements LirParameterEntity {
             }
         }
         return null;
+    }
+
+    @Override
+    public @NotNull @UnmodifiableView List<? extends ParameterDef> getParameters() {
+        return Collections.unmodifiableList(this.parameters);
     }
 
     @Override

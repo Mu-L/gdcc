@@ -46,4 +46,17 @@ GDCC_DEFINE_OBJECT_SETTER(godot_bool, bool)
 GDCC_DEFINE_OBJECT_SETTER(godot_int, int)
 GDCC_DEFINE_OBJECT_SETTER(godot_Vector3*, Vector3)
 
+#define godot_Nil godot_Variant
+#define godot_TypedDictionary(key, value)  godot_Dictionary
+
+static godot_Engine* _gd_engine;
+
+static void gdcc_init() {
+    _gd_engine = godot_Engine_singleton();
+}
+
+static bool gdcc_is_editor_hint() {
+    return godot_Engine_is_editor_hint(_gd_engine);
+}
+
 #endif //GDCC_HELPER_H

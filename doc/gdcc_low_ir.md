@@ -665,16 +665,13 @@ Low IR:
                 </basic_blocks>
             </function>
             <function name="_default_get_pitch$to_radius"
-                      is_static="false"
+                      is_static="true"
                       is_abstract="false"
                       is_vararg="false"
                       is_hidden="true">
-                <parameters>
-                    <parameter name="self" type="RotatingCamera"/>
-                </parameters>
+                <parameters/>
                 <return_type type="bool"/>
                 <variables>
-                    <variable id="self" type="RotatingCamera"/>
                     <variable id="0" type="bool"/>
                 </variables>
                 <basic_blocks entry="entry">
@@ -686,7 +683,7 @@ Low IR:
                 </basic_blocks>
             </function>
             <function name="_field_init_pitch_degree"
-                      is_static="false"
+                      is_static="true"
                       is_abstract="false"
                       is_vararg="false"
                       is_hidden="true">

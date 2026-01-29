@@ -1,5 +1,6 @@
 package dev.superice.gdcc.lir;
 
+import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -8,7 +9,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 
-public final class LirPropertyDef {
+public final class LirPropertyDef implements PropertyDef {
     private @NotNull String name;
     private @NotNull GdType type;
     private boolean isStatic;
@@ -96,7 +97,7 @@ public final class LirPropertyDef {
         this.setterFunc = setterFunc;
     }
 
-    public Map<String, String> getAnnotations() {
+    public @NotNull Map<String, String> getAnnotations() {
         return annotations;
     }
 

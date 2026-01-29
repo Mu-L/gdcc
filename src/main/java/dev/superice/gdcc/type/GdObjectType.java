@@ -6,20 +6,24 @@ public final class GdObjectType implements GdType {
     public final static GdObjectType OBJECT = new GdObjectType();
 
     public final String className;
-    public boolean isEngineType = false;
+    public boolean engineType = false;
 
     public GdObjectType(@NotNull String className) {
         this.className = className;
-        this.isEngineType = false;
+        this.engineType = false;
     }
 
-    public GdObjectType(@NotNull String className, boolean isEngineType) {
+    public GdObjectType(@NotNull String className, boolean engineType) {
         this.className = className;
-        this.isEngineType = isEngineType;
+        this.engineType = engineType;
     }
 
     public GdObjectType() {
         this.className = "Object";
+    }
+
+    public boolean isEngineType() {
+        return engineType;
     }
 
     @Override
