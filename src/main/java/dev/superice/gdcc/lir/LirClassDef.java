@@ -136,6 +136,16 @@ public final class LirClassDef implements ClassDef {
     }
 
     @Override
+    public boolean hasFunction(@NotNull String functionName) {
+        for (var function : functions) {
+            if (function.getName().equals(functionName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
     public boolean isGdccClass() {
         return true;
     }

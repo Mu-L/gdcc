@@ -3,6 +3,7 @@ package dev.superice.gdcc.gdextension;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.HashSet;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -39,5 +40,26 @@ public class ExtensionApiLoaderTest {
         // properties/constants fields exist (may be empty)
         assertNotNull(stringClass.properties());
         assertNotNull(stringClass.constants());
+    }
+
+    @Test
+    void checkDefaultValueParsing() throws IOException {
+        var defaultValues = new HashSet<String>();
+        var api = ExtensionApiLoader.loadDefault();
+        for (var cls : api.classes()) {
+            for (var method : cls.methods()) {
+                for (var arg : method.arguments()) {
+                    if (arg.defaultValue() != null && !arg.defaultValue().isEmpty()) {
+                        defaultValues.add(arg.defaultValue());
+                        if (arg.defaultValue().equals("null")) {
+                            IO.println("Found null default value in " + cls.name() + "." + method.name());
+                        }
+                    }
+                }
+            }
+        }
+//        for (var defVal : defaultValues) {
+//            IO.println(defVal);
+//        }
     }
 }

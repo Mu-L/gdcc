@@ -38,4 +38,9 @@ public record GdObjectType(@NotNull String className) implements GdType {
     public @NotNull GdExtensionTypeEnum getGdExtensionType() {
         return GdExtensionTypeEnum.OBJECT;
     }
+
+    @Override
+    public boolean isDestroyable() {
+        return true;
+    }
 }

@@ -1,8 +1,10 @@
 package dev.superice.gdcc.backend.c.gen;
 
 import dev.superice.gdcc.backend.CodegenContext;
+import dev.superice.gdcc.exception.NotImplementedException;
 import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.FunctionDef;
+import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
@@ -58,6 +60,30 @@ public final class CGenHelper {
                 var defaultVariables = new ArrayList<GdType>();
                 if (!functionDef.isStatic()) {
                     paramTypes.add(new GdObjectType(classDef.getName()));
+                }
+                for (var parameterDef : functionDef.getParameters()) {
+                    paramTypes.add(parameterDef.getType());
+                    if (parameterDef.getDefaultValueFunc() != null) {
+                        defaultVariables.add(parameterDef.getType());
+                    }
+                }
+                bindingDataSet.add(new BindingData(
+                        paramTypes,
+                        functionDef.getReturnType(),
+                        defaultVariables,
+                        functionDef.isStatic()
+                ));
+            }
+            // Virtual methods binding data
+            var virtualFunctions = context.classRegistry().getVirtualMethods(classDef.getName());
+            for (var functionDef : classDef.getFunctions()) {
+                if (!virtualFunctions.containsKey(functionDef.getName())) {
+                    continue;
+                }
+                var paramTypes = new ArrayList<GdType>();
+                var defaultVariables = new ArrayList<GdType>();
+                if (!functionDef.isStatic()) {
+                    throw new IllegalStateException("Virtual methods must be instance methods");
                 }
                 for (var parameterDef : functionDef.getParameters()) {
                     paramTypes.add(parameterDef.getType());
@@ -187,6 +213,35 @@ public final class CGenHelper {
         } else {
             return "godot_new_Variant_with_" + type.getTypeName();
         }
+    }
+
+    public @NotNull String renderDefaultValueFunctionName(@NotNull ParameterDef def) {
+        if (def.getDefaultValueFunc() == null) {
+            throw new IllegalArgumentException("ParameterDef does not have a default value function");
+        }
+        if (def.getDefaultValueFunc().startsWith("(")) {
+            throw new NotImplementedException("ParameterDef default value function for GdExtension literal is not supported");
+        }
+        return def.getDefaultValueFunc();
+    }
+
+    public @NotNull String renderDestroyFunctionName(@NotNull GdType type) {
+        if (!type.isDestroyable()) {
+            throw new IllegalArgumentException("Type " + type.getTypeName() + " is not destroyable");
+        }
+        if (type instanceof GdObjectType) {
+            return "godot_object_destroy";
+        } else {
+            return "godot_" + renderGdTypeName(type) + "_destroy";
+        }
+    }
+
+    public boolean checkVirtualMethod(@NotNull ClassDef classDef, @NotNull FunctionDef functionDef) {
+        return context.classRegistry().getVirtualMethods(classDef.getName()).containsKey(functionDef.getName());
+    }
+
+    public boolean checkVirtualMethod(@NotNull String className, @NotNull String methodName) {
+        return context.classRegistry().getVirtualMethods(className).containsKey(methodName);
     }
 
     public @NotNull CodegenContext context() {

@@ -1,11 +1,6 @@
 package dev.superice.gdcc.gdextension;
 
-import com.google.gson.FieldNamingPolicy;
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
+import com.google.gson.*;
 import dev.superice.gdcc.enums.GodotVersion;
 import org.jetbrains.annotations.NotNull;
 
@@ -21,6 +16,18 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ExtensionApiLoader {
     private static final Gson GSON = new GsonBuilder()
             .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES)
+            .serializeNulls()
+            .addSerializationExclusionStrategy(new ExclusionStrategy() {
+                @Override
+                public boolean shouldSkipField(FieldAttributes f) {
+                    return f.getDeclaredType().getTypeName().startsWith("dev.superice.gdcc.scope");
+                }
+
+                @Override
+                public boolean shouldSkipClass(Class<?> clazz) {
+                    return clazz.getName().startsWith("dev.superice.gdcc.scope");
+                }
+            })
             .create();
 
     private ExtensionApiLoader() { }
@@ -112,15 +119,16 @@ public final class ExtensionApiLoader {
             var isVararg = o.has("is_vararg") && o.get("is_vararg").getAsBoolean();
             var hash = o.has("hash") ? o.get("hash").getAsInt() : 0;
             var args = new ArrayList<ExtensionFunctionArgument>();
+            var func = new ExtensionUtilityFunction(name, returnType, category, isVararg, hash, Collections.unmodifiableList(args));
             if (o.has("arguments")) {
                 for (var ae : o.getAsJsonArray("arguments")) {
                     var a = ae.getAsJsonObject();
                     var an = a.has("name") ? a.get("name").getAsString() : null;
                     var at = a.has("type") ? a.get("type").getAsString() : null;
-                    args.add(new ExtensionFunctionArgument(an, at, a.has("default_value") ? a.get("default_value").getAsString() : null));
+                    args.add(new ExtensionFunctionArgument(an, at, a.has("default_value") ? a.get("default_value").getAsString() : null, func));
                 }
             }
-            out.add(new ExtensionUtilityFunction(name, returnType, category, isVararg, hash, Collections.unmodifiableList(args)));
+            out.add(func);
         }
         return Collections.unmodifiableList(out);
     }
@@ -155,17 +163,6 @@ public final class ExtensionApiLoader {
                     var isStatic = mo.has("is_static") && mo.get("is_static").getAsBoolean();
                     var isVirtual = mo.has("is_virtual") && mo.get("is_virtual").getAsBoolean();
                     var hash = mo.has("hash") ? mo.get("hash").getAsLong() : 0L;
-                    var args = new ArrayList<ExtensionFunctionArgument>();
-                    if (mo.has("arguments")) {
-                        for (var ae : mo.getAsJsonArray("arguments")) {
-                            var a = ae.getAsJsonObject();
-                            args.add(new ExtensionFunctionArgument(
-                                    a.has("name") ? a.get("name").getAsString() : null,
-                                    a.has("type") ? a.get("type").getAsString() : null,
-                                    a.has("default_value") ? a.get("default_value").getAsString() : null
-                            ));
-                        }
-                    }
                     ExtensionBuiltinClass.ClassMethod.ReturnValue rv = null;
                     if (mo.has("return_value")) {
                         var rvo = mo.getAsJsonObject("return_value");
@@ -173,7 +170,20 @@ public final class ExtensionApiLoader {
                     } else if (returnType != null) {
                         rv = new ExtensionBuiltinClass.ClassMethod.ReturnValue(returnType);
                     }
-                    methods.add(new ExtensionBuiltinClass.ClassMethod(methodName, returnType, isVararg, isConst, isStatic, isVirtual, hash, Collections.unmodifiableList(args), null, rv));
+                    var args = new ArrayList<ExtensionFunctionArgument>();
+                    var method = new ExtensionBuiltinClass.ClassMethod(methodName, returnType, isVararg, isConst, isStatic, isVirtual, hash, Collections.unmodifiableList(args), null, rv);
+                    if (mo.has("arguments")) {
+                        for (var ae : mo.getAsJsonArray("arguments")) {
+                            var a = ae.getAsJsonObject();
+                            args.add(new ExtensionFunctionArgument(
+                                    a.has("name") ? a.get("name").getAsString() : null,
+                                    a.has("type") ? a.get("type").getAsString() : null,
+                                    a.has("default_value") ? a.get("default_value").getAsString() : null,
+                                    method
+                            ));
+                        }
+                    }
+                    methods.add(method);
                 }
             }
 
@@ -200,13 +210,14 @@ public final class ExtensionApiLoader {
                     var co = ce.getAsJsonObject();
                     var idx = co.has("index") ? co.get("index").getAsInt() : 0;
                     var carg = new ArrayList<ExtensionFunctionArgument>();
+                    var cons = new ExtensionBuiltinClass.ConstructorInfo(name, idx, Collections.unmodifiableList(carg));
                     if (co.has("arguments")) {
                         for (var ca : co.getAsJsonArray("arguments")) {
                             var a = ca.getAsJsonObject();
-                            carg.add(new ExtensionFunctionArgument(a.has("name") ? a.get("name").getAsString() : null, a.has("type") ? a.get("type").getAsString() : null, a.has("default_value") ? a.get("default_value").getAsString() : null));
+                            carg.add(new ExtensionFunctionArgument(a.has("name") ? a.get("name").getAsString() : null, a.has("type") ? a.get("type").getAsString() : null, a.has("default_value") ? a.get("default_value").getAsString() : null, cons));
                         }
                     }
-                    constructors.add(new ExtensionBuiltinClass.ConstructorInfo(idx, Collections.unmodifiableList(carg)));
+                    constructors.add(cons);
                 }
             }
 
@@ -278,19 +289,20 @@ public final class ExtensionApiLoader {
                     if (mo.has("hash_compatibility")) {
                         for (var he : mo.getAsJsonArray("hash_compatibility")) hc.add(he.getAsLong());
                     }
-                    var args = new ArrayList<ExtensionFunctionArgument>();
-                    if (mo.has("arguments")) {
-                        for (var ae : mo.getAsJsonArray("arguments")) {
-                            var a = ae.getAsJsonObject();
-                            args.add(new ExtensionFunctionArgument(a.has("name") ? a.get("name").getAsString() : null, a.has("type") ? a.get("type").getAsString() : null, a.has("default_value") ? a.get("default_value").getAsString() : null));
-                        }
-                    }
                     ExtensionGdClass.ClassMethod.ClassMethodReturn rv = null;
                     if (mo.has("return_value")) {
                         var rvo = mo.getAsJsonObject("return_value");
                         rv = new ExtensionGdClass.ClassMethod.ClassMethodReturn(rvo.has("type") ? rvo.get("type").getAsString() : null);
                     }
-                    methods.add(new ExtensionGdClass.ClassMethod(methodName, isConst, isVararg, isStatic, isVirtual, hash, Collections.unmodifiableList(hc), rv, Collections.unmodifiableList(args)));
+                    var args = new ArrayList<ExtensionFunctionArgument>();
+                    var method = new ExtensionGdClass.ClassMethod(methodName, isConst, isVararg, isStatic, isVirtual, hash, Collections.unmodifiableList(hc), rv, Collections.unmodifiableList(args));
+                    if (mo.has("arguments")) {
+                        for (var ae : mo.getAsJsonArray("arguments")) {
+                            var a = ae.getAsJsonObject();
+                            args.add(new ExtensionFunctionArgument(a.has("name") ? a.get("name").getAsString() : null, a.has("type") ? a.get("type").getAsString() : null, a.has("default_value") ? a.get("default_value").getAsString() : null, method));
+                        }
+                    }
+                    methods.add(method);
                 }
             }
 

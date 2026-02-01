@@ -11,4 +11,9 @@ public sealed interface GdContainerType extends GdType
     @Override
     @NotNull
     GdExtensionTypeEnum getGdExtensionType();
+
+    @Override
+    default boolean isDestroyable() {
+        return true;
+    }
 }

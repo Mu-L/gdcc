@@ -19,4 +19,9 @@ public final class GdVariantType implements GdType {
     public @NotNull GdExtensionTypeEnum getGdExtensionType() {
         return GdExtensionTypeEnum.NIL;
     }
+
+    @Override
+    public boolean isDestroyable() {
+        return true;
+    }
 }

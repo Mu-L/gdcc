@@ -7,4 +7,9 @@ public sealed interface GdMetaType extends GdType
     @Override
     @NotNull
     GdExtensionTypeEnum getGdExtensionType();
+
+    @Override
+    default boolean isDestroyable() {
+        return true;
+    }
 }

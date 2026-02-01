@@ -59,4 +59,26 @@ static bool gdcc_is_editor_hint() {
     return godot_Engine_is_editor_hint(_gd_engine);
 }
 
+static void try_own_object(const GDExtensionObjectPtr obj) {
+    godot_StringName class_name;
+    if (!godot_object_get_class_name(obj, class_library, &class_name)) {
+        return;
+    }
+    if (godot_ClassDB_is_parent_class(godot_ClassDB_singleton(), &class_name, GD_STATIC_SN(u8"RefCounted"))) {
+        godot_RefCounted* rc = obj;
+        godot_RefCounted_reference(rc);
+    }
+}
+
+static void try_release_object(const GDExtensionObjectPtr obj) {
+    godot_StringName class_name;
+    if (!godot_object_get_class_name(obj, class_library, &class_name)) {
+        return;
+    }
+    if (godot_ClassDB_is_parent_class(godot_ClassDB_singleton(), &class_name, GD_STATIC_SN(u8"RefCounted"))) {
+        godot_RefCounted* rc = obj;
+        godot_RefCounted_unreference(rc);
+    }
+}
+
 #endif //GDCC_HELPER_H

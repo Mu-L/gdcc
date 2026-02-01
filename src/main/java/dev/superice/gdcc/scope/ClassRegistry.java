@@ -6,10 +6,7 @@ import dev.superice.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public final class ClassRegistry {
     /// Built-in type are language built-in types, they are not engine defined types.
@@ -23,6 +20,8 @@ public final class ClassRegistry {
     // TODO: implement GDCC-specific classes related APIs
     /// User defined classes in code that this compiler are compiling.
     private final Map<String, ClassDef> gdccClassByName = new HashMap<>();
+    /// Virtual method for each class
+    private final Map<String, Map<String, FunctionDef>> virtualMethodsByClassName = new HashMap<>();
 
     public ClassRegistry(@NotNull ExtensionAPI api) {
         for (var bc : api.builtinClasses()) {
@@ -60,6 +59,10 @@ public final class ClassRegistry {
     /// Check whether a name refers to a user-defined gdcc class.
     public boolean isGdccClass(@NotNull String name) { return gdccClassByName.containsKey(name); }
 
+    public boolean isContainerClass(@NotNull String name) {
+        return name.equals("Array") || name.equals("Dictionary") || name.startsWith("Array[") || name.startsWith("Dictionary[");
+    }
+
     /// Add or replace a user-defined class.
     public void addGdccClass(@NotNull ClassDef classDef) {
         gdccClassByName.put(classDef.getName(), classDef);
@@ -81,14 +84,17 @@ public final class ClassRegistry {
     /// - If textual parsing yields a concrete non-GdObjectType -> return it (these are builtins, primitives, containers).
     /// - If the name refers to a gd class (API `classes`) -> return engine GdObjectType(name, true).
     /// - If the name refers to builtin class from API (API.builtin_classes) -> treat as builtin type (non-engine);
+    /// - If the name is a container class -> treat as builtin container type and resolve its inner types accordingly.
     /// - If the name refers to a user defined class in `gdccClassByName` -> treat as user type (non-engine).
     ///   we prefer tryParseTextType result for precise mapping; if tryParseTextType didn't recognize it, return a plain non-engine GdObjectType.
     /// - Do NOT return a type for global enums/utility functions in this method (return null instead).
     /// - If none of the above matched, return a plain non-engine GdObjectType(name) (represents a user type reference).
     public @Nullable GdType findType(@NotNull String name) {
-        // textual parsing first
+        // textual parsing first, including built-in type and container built-in type
         var parsed = tryParseTextType(name);
-        if (parsed != null && !(parsed instanceof GdObjectType)) return parsed;
+        if (parsed != null && !(parsed instanceof GdObjectType)) {
+            return parsed;
+        }
 
         // If name corresponds to a gd class (engine type)
         if (isGdClass(name)) return new GdObjectType(name);
@@ -114,7 +120,7 @@ public final class ClassRegistry {
     }
 
     /// Textual mapping (exact, case-sensitive). Returns a concrete GdType or GdObjectType as fallback.
-    private @Nullable GdType tryParseTextType(@NotNull String typeName) {
+    public static @Nullable GdType tryParseTextType(@NotNull String typeName) {
         var t = typeName.trim();
         if (t.isEmpty()) return null;
         switch (t) {
@@ -214,6 +220,34 @@ public final class ClassRegistry {
         var t = s.type();
         if (t == null) return null;
         return new GdObjectType(t);
+    }
+
+    public @NotNull Map<String, FunctionDef> getVirtualMethods(@NotNull String className) {
+        if (!virtualMethodsByClassName.containsKey(className)) {
+            var vMethods = new HashMap<String, FunctionDef>();
+            virtualMethodsByClassName.put(className, vMethods);
+            ClassDef gdClass = gdClassByName.get(className);
+            if (gdClass == null) {
+                gdClass = gdccClassByName.get(className);
+            }
+            if (gdClass != null) {
+                for (var method : gdClass.getFunctions()) {
+                    if (method.isAbstract()) {
+                        vMethods.put(method.getName(), method);
+                    }
+                }
+                var superClassName = gdClass.getSuperName();
+                if (!superClassName.isEmpty()) {
+                    var superVMethods = getVirtualMethods(superClassName);
+                    for (var svm : superVMethods.values()) {
+                        if (!vMethods.containsKey(svm.getName())) {
+                            vMethods.put(svm.getName(), svm);
+                        }
+                    }
+                }
+            }
+        }
+        return virtualMethodsByClassName.get(className);
     }
 
     /// Return the raw lists for inspection / tests.

@@ -41,6 +41,14 @@ public final class TemplateLoader {
     /// @param context variables used during rendering.
     /// @return rendered template as UTF-8 string.
     public static @NotNull String renderFromClasspath(@NotNull String resourcePath, @NotNull Map<String, Object> context) throws IOException, TemplateException {
+        return  renderFromClasspath(resourcePath, context, true);
+    }
+
+        /// Renders a FreeMarker template located on the classpath.
+        /// @param resourcePath path within the classpath (no leading '/').
+        /// @param context variables used during rendering.
+        /// @return rendered template as UTF-8 string.
+    public static @NotNull String renderFromClasspath(@NotNull String resourcePath, @NotNull Map<String, Object> context, boolean trim) throws IOException, TemplateException {
         Objects.requireNonNull(resourcePath, "resourcePath");
         Objects.requireNonNull(context, "context");
 
@@ -50,7 +58,7 @@ public final class TemplateLoader {
             return cfg.getTemplate(resourcePath, StandardCharsets.UTF_8.name());
         });
 
-        return processTemplate(template, context);
+        return processTemplate(template, context, trim);
     }
 
     /// Renders a FreeMarker template located on the filesystem.
@@ -58,6 +66,14 @@ public final class TemplateLoader {
     /// @param context variables used during rendering.
     /// @return rendered template as UTF-8 string.
     public static @NotNull String renderFromFile(@NotNull Path templateFile, @NotNull Map<String, Object> context) throws IOException, TemplateException {
+        return renderFromFile(templateFile, context, true);
+    }
+
+    /// Renders a FreeMarker template located on the filesystem.
+    /// @param templateFile absolute or relative path to the .ftl file.
+    /// @param context variables used during rendering.
+    /// @return rendered template as UTF-8 string.
+    public static @NotNull String renderFromFile(@NotNull Path templateFile, @NotNull Map<String, Object> context, boolean trim) throws IOException, TemplateException {
         Objects.requireNonNull(templateFile, "templateFile");
         Objects.requireNonNull(context, "context");
 
@@ -75,7 +91,7 @@ public final class TemplateLoader {
             return cfg.getTemplate(name, StandardCharsets.UTF_8.name());
         });
 
-        return processTemplate(template, context);
+        return processTemplate(template, context, trim);
     }
 
     private static @NotNull Template getOrLoadTemplate(@NotNull String key, @NotNull Loader loader) throws IOException {
@@ -145,10 +161,14 @@ public final class TemplateLoader {
         }
     }
 
-    private static @NotNull String processTemplate(@NotNull Template tpl, @NotNull Map<String, Object> context) throws IOException, TemplateException {
+    private static @NotNull String processTemplate(@NotNull Template tpl, @NotNull Map<String, Object> context, boolean trim) throws IOException, TemplateException {
         var out = new StringWriter();
         tpl.process(context, out);
         var rendered = out.toString();
+
+        if (!trim) {
+            return rendered;
+        }
 
         // Post-process trim markers like __trim<3>__ which indicate removing up to 3
         // preceding spaces/tabs and the marker itself.

@@ -8,9 +8,8 @@ import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirParameterDef;
-import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
-import dev.superice.gdcc.lir.insn.ReturnInsn;
-import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.lir.insn.*;
+import dev.superice.gdcc.type.*;
 import freemarker.template.TemplateException;
 import org.jetbrains.annotations.NotNull;
 
@@ -23,7 +22,7 @@ public class CCodegen implements Codegen {
     public CodegenContext ctx;
     public LirModule module;
 
-    private void generateDefaultGetterSetter() {
+    private void generateDefaultGetterSetterInitialization() {
         if (ctx == null || module == null) {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generateDefaultGetterSetter().");
         }
@@ -44,13 +43,53 @@ public class CCodegen implements Codegen {
                     func.addBasicBlock(bb);
                     bb.instructions().add(new LoadPropertyInsn(tmpVar.id(), propertyDef.getName(), "self"));
                     bb.instructions().add(new ReturnInsn(tmpVar.id()));
-                    // func.setEntryBlockId("entry");
+                    func.setEntryBlockId("entry");
                     classDef.addFunction(func);
                 }
                 if (propertyDef.getSetterFunc() == null) {
                     var setterName = "_field_setter_" + propertyDef.getName();
                     propertyDef.setSetterFunc(setterName);
-                    // TODO: implement default setter
+                    var func = new LirFunctionDef(setterName);
+                    func.setReturnType(GdVoidType.VOID);
+                    func.addParameter(new LirParameterDef("self", selfType, null, func));
+                    func.addParameter(new LirParameterDef("value", propertyDef.getType(), null, func));
+
+                    var bb = new LirBasicBlock("entry");
+                    func.addBasicBlock(bb);
+                    if (propertyDef.getType() instanceof GdObjectType) {
+                        var oldValueVar = func.createAndAddTmpVariable(propertyDef.getType());
+                        bb.instructions().add(new LoadPropertyInsn(oldValueVar.id(), propertyDef.getName(), "self"));
+                        bb.instructions().add(new StorePropertyInsn(propertyDef.getName(), "self", "value"));
+                        bb.instructions().add(new TryOwnObjectInsn("self"));
+                        bb.instructions().add(new TryReleaseObjectInsn(oldValueVar.id()));
+                    } else {
+                        bb.instructions().add(new StorePropertyInsn(propertyDef.getName(), "self", "value"));
+                    }
+                    bb.instructions().add(new ReturnInsn(null));
+                    func.setEntryBlockId("entry");
+                    classDef.addFunction(func);
+                }
+                if (propertyDef.getInitFunc() == null) {
+                    var initName = "_field_init_" + propertyDef.getName();
+                    propertyDef.setInitFunc(initName);
+                    var func = new LirFunctionDef(initName);
+                    func.setReturnType(propertyDef.getType());
+                    func.addParameter(new LirParameterDef("self", selfType, null, func));
+                    var tmpVar = func.createAndAddTmpVariable(propertyDef.getType());
+                    var bb = new LirBasicBlock("entry");
+                    func.addBasicBlock(bb);
+                    switch (propertyDef.getType()) {
+                        case GdObjectType _ -> bb.instructions().add(new LiteralNullInsn(tmpVar.id()));
+                        case GdVariantType _ -> bb.instructions().add(new LiteralNilInsn(tmpVar.id()));
+                        case GdArrayType gdArrayType ->
+                                bb.instructions().add(new ConstructArrayInsn(tmpVar.id(), gdArrayType.getValueType().getTypeName()));
+                        case GdDictionaryType gdDictionaryType ->
+                                bb.instructions().add(new ConstructDictionaryInsn(tmpVar.id(), gdDictionaryType.getKeyType().getTypeName(), gdDictionaryType.getValueType().getTypeName()));
+                        default -> bb.instructions().add(new ConstructBuiltinInsn(tmpVar.id(), List.of()));
+                    }
+                    bb.instructions().add(new ReturnInsn(tmpVar.id()));
+                    func.setEntryBlockId("entry");
+                    classDef.addFunction(func);
                 }
             }
         }
@@ -61,6 +100,7 @@ public class CCodegen implements Codegen {
         if (ctx == null || module == null) {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generate().");
         }
+        this.generateDefaultGetterSetterInitialization();
         try {
             var tplCtx = Map.of(
                     "module", module,

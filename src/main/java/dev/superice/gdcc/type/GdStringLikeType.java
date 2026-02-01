@@ -14,5 +14,10 @@ public sealed interface GdStringLikeType extends GdType
     @Override
     @NotNull
     GdExtensionTypeEnum getGdExtensionType();
+
+    @Override
+    default boolean isDestroyable() {
+        return true;
+    }
 }
 

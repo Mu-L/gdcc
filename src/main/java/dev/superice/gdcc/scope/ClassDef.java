@@ -34,6 +34,9 @@ public interface ClassDef {
     @NotNull
     @UnmodifiableView
     List<? extends FunctionDef> getFunctions();
+
+    boolean hasFunction(@NotNull String functionName);
+
     /**
      * For LIR-described user classes this is always true.
      */

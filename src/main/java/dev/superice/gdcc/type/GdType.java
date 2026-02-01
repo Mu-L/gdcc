@@ -11,4 +11,8 @@ public sealed interface GdType
     boolean isNullable();
 
     @Nullable GdExtensionTypeEnum getGdExtensionType();
+
+    default boolean isDestroyable() {
+        return false;
+    }
 }

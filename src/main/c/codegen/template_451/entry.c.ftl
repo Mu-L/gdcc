@@ -43,10 +43,11 @@ void initialize(void*, const GDExtensionInitializationLevel p_level) {
         creation_info.free_instance_func = ${classDef.name}_class_free_instance;
         creation_info.get_virtual_call_data_func = ${classDef.name}_class_get_virtual_with_data;
         creation_info.call_virtual_with_data_func = ${classDef.name}_class_call_virtual_with_data;
+        creation_info.notification_func = ${classDef.name}_class_notification;
         godot_classdb_register_extension_class5(class_library,
                                                 GD_STATIC_SN(u8"${classDef.name}"), GD_STATIC_SN(u8"${classDef.superName}"),
                                                 &creation_info);
-        GDRotatingCamera3D_class_bind_methods();
+        ${classDef.name}_class_bind_methods();
     }
     </#list>
 }
@@ -71,9 +72,102 @@ void ${classDef.name}_class_bind_methods() {
     <#list classDef.properties as property>
     {
         <#if !property.static>
-            <@t width=4/>${helper.renderGetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.name}"));
+            <@t width=4/>gdcc_bind_method${helper.renderGetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.getterFunc}"), ${classDef.name}_${property.getterFunc});
+            <@t/>gdcc_bind_method${helper.renderSetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.setterFunc}"), ${classDef.name}_${property.setterFunc}, GD_STATIC_SN(u8"value"), GDEXTENSION_VARIANT_TYPE_${property.type.gdExtensionType.name()});
+            <@t/>gdcc_bind_property(class_name, GD_STATIC_SN(u8"${property.name}"), GD_STATIC_SN(u8"${property.getterFunc}"), GD_STATIC_SN(u8"${property.setterFunc}"));
         </#if>
     }
+    </#list>
+}
+</#list>
+
+// GdExtension Methods for each class
+<#list module.classDefs as classDef>
+GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userdata, GDExtensionBool p_notify_postinitialize) {
+    GDExtensionObjectPtr obj = godot_classdb_construct_object2(GD_STATIC_SN(u8"${classDef.superName}"));
+    ${classDef.name}* self = godot_mem_alloc(sizeof(${classDef.name}));
+    self->_object = obj;
+    godot_object_set_instance(obj, GD_STATIC_SN(u8"${classDef.name}"), self);
+    godot_object_set_instance_binding(obj, class_library, self, &${classDef.name}_class_binding_callbacks);
+    if (p_notify_postinitialize) {
+        godot_Object_notification(obj, godot_Object_NOTIFICATION_POSTINITIALIZE(), false);
+    }
+    return obj;
+}
+
+void ${classDef.name}_class_free_instance(void* p_class_userdata, GDExtensionClassInstancePtr p_instance) {
+    if (p_instance == NULL) {
+        return;
+    }
+    ${classDef.name}* self = p_instance;
+    godot_mem_free(self);
+}
+
+void ${classDef.name}_class_constructor(${classDef.name}* self) {
+    if (self == NULL) {
+        return;
+    }
+    <#list classDef.properties as property>
+        <@t/>self->${property.name} = ${classDef.name}_${property.initFunc}(self);
+        <#if property.type.gdExtensionType.name() == "OBJECT">
+            <@t/>try_own_object(self->${property.name});
+        </#if>
+    </#list>
+    <#if classDef.hasFunction("_init")>
+        <@t/>${classDef.name}__init(self);
+    </#if>
+}
+
+void ${classDef.name}_class_destructor(${classDef.name}* self) {
+    if (self == NULL) {
+        return;
+    }
+    <#list classDef.properties as property>
+        <#if property.type.destroyable>
+            <#if property.type.gdExtensionType.name() == "OBJECT">
+                <@t/>try_release_object(self->${property.name});
+            <#else>
+                <@t/>${helper.renderDestroyFunctionName(property.type)}(&(self->${property.name}));
+            </#if>
+        </#if>
+    </#list>
+}
+
+void ${classDef.name}_class_notification(GDExtensionClassInstancePtr p_instance, int32_t p_what, GDExtensionBool p_reversed) {
+    ${classDef.name}* self = p_instance;
+    if (p_what == godot_Object_NOTIFICATION_POSTINITIALIZE()) {
+        ${classDef.name}_class_constructor(self);
+    } else if (p_what == godot_Object_NOTIFICATION_PREDELETE()) {
+        ${classDef.name}_class_destructor(self);
+    }
+}
+
+void* ${classDef.name}_class_get_virtual_with_data(void* p_class_userdata, GDExtensionConstStringNamePtr p_name,
+                                                     uint32_t p_hash) {
+    // Bind virtual methods
+    <#list classDef.functions as function>
+        <#if helper.checkVirtualMethod(classDef, function)>
+            <@t/>if (godot_StringName_op_equal_StringName(p_name, GD_STATIC_SN(u8"${function.name}"))) {
+            <@t/>    return (void*)${classDef.name}_${function.name};
+            <@t/>}
+        </#if>
+    </#list>
+    return NULL;
+}
+
+void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p_instance,
+                                                     GDExtensionConstStringNamePtr p_name,
+                                                     void* p_virtual_call_userdata,
+                                                     const GDExtensionConstTypePtr* p_args,
+                                                     GDExtensionTypePtr r_ret) {
+    // Call virtual methods
+    <#list classDef.functions as function>
+        <#if helper.checkVirtualMethod(classDef, function)>
+            <@t/>if (p_virtual_call_userdata == &${classDef.name}_${function.name}) {
+            <@t/>    ptrcall${helper.renderFuncBindName(function)}(p_virtual_call_userdata, p_instance, p_args, r_ret);
+            <@t/>    return;
+            <@t/>}
+        </#if>
     </#list>
 }
 </#list>

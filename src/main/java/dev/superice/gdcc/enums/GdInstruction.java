@@ -15,6 +15,7 @@ public enum GdInstruction {
     LITERAL_STRING("literal_string", ReturnKind.REQUIRED, List.of(OperandKind.STRING), 1, 1),
     LITERAL_STRING_NAME("literal_string_name", ReturnKind.REQUIRED, List.of(OperandKind.STRING), 1, 1),
     LITERAL_NULL("literal_null", ReturnKind.REQUIRED, List.of()),
+    LITERAL_NIL("literal_nil", ReturnKind.REQUIRED, List.of()),
 
     // Construction & Destruction
     CONSTRUCT_BUILTIN("construct_builtin", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE, OperandKind.VARARGS), 0, Integer.MAX_VALUE),
@@ -24,6 +25,8 @@ public enum GdInstruction {
     CONSTRUCT_CALLABLE("construct_callable", ReturnKind.REQUIRED, List.of(OperandKind.STRING), 1, 1),
     CONSTRUCT_LAMBDA("construct_lambda", ReturnKind.REQUIRED, List.of(OperandKind.STRING, OperandKind.VARARGS), 1, Integer.MAX_VALUE),
     DESTRUCT("destruct", ReturnKind.NONE, List.of(OperandKind.VARIABLE), 1, 1),
+    TRY_OWN_OBJECT("try_own_object", ReturnKind.NONE, List.of(OperandKind.VARIABLE), 1, 1),
+    TRY_RELEASE_OBJECT("try_release_object", ReturnKind.NONE, List.of(OperandKind.VARIABLE), 1, 1),
     UNARY_OP("unary_op", ReturnKind.REQUIRED, List.of(OperandKind.OPERATOR, OperandKind.VARIABLE), 2, 2),
     BINARY_OP("binary_op", ReturnKind.REQUIRED, List.of(OperandKind.OPERATOR, OperandKind.VARIABLE, OperandKind.VARIABLE), 3, 3),
 

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -112,6 +113,22 @@ public class ClassRegistryTest {
             var uf = api.utilityFunctions().getFirst();
             assertNotNull(uf.name());
             assertNull(registry.findType(uf.name()), () -> "findType should not return type for utility function name: " + uf.name());
+        }
+    }
+
+    @Test
+    void findVirtualMethods() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var registry = new ClassRegistry(api);
+        var vMethodMap = registry.getVirtualMethods("Node3D");
+        var expectSet = Set.of(
+                "_get_focused_accessibility_element", "_enter_tree", "_unhandled_key_input",
+                "_ready", "_shortcut_input", "_physics_process", "_process", "_input",
+                "_get_accessibility_configuration_warnings", "_unhandled_input", "_exit_tree",
+                "_get_configuration_warnings"
+        );
+        for (var expectName : expectSet) {
+            assertTrue(vMethodMap.containsKey(expectName), () -> "Expected virtual method not found: " + expectName);
         }
     }
 }

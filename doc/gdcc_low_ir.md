@@ -63,8 +63,14 @@ Creates a new StringName constant.
 $<result_id> = literal_string_name "<string_value_utf8>"
 ```
 
-#### literal_null
+#### literal_nil
 Creates a new Variant Nil constant. 
+```
+$<result_id> = literal_nil
+```
+
+#### literal_null
+Create a new Object null constant.
 ```
 $<result_id> = literal_null
 ```
@@ -118,7 +124,11 @@ $<result_id> = construct_lambda "<lambda_function_name>" $<capture1_id> $<captur
 
 #### destruct
 Destructs a variable, releasing any resources it holds.
-All Variants must be destructed after use to avoid memory leaks.
+All Variants must be destructed after use to avoid memory leaks.  
+
+Warning: destruct object that is not ref-counted is not always needed since users may want to do it manually.
+However, destructing ref-counted objects is required to decrease the reference count.
+
 Types can be destruct:
 - String
 - StringName
@@ -135,6 +145,20 @@ However, destructing them is a no-op and allowed.
 
 ```
 destruct $<variant_id>
+```
+
+#### try_own_object
+Attempts to take ownership of an Object. If successful, the reference count is increased.
+If the Object is not ref-counted, this is a no-op.
+```
+try_own_object $<object_id>
+```
+
+#### try_release_object
+Attempts to release ownership of an Object. If successful, the reference count is decreased.
+If the Object is not ref-counted, this is a no-op.
+```
+try_release_object $<object_id>
 ```
 
 #### unary_op
