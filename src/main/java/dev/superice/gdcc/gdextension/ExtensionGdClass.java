@@ -1,5 +1,6 @@
 package dev.superice.gdcc.gdextension;
 
+import com.google.gson.annotations.Expose;
 import com.google.gson.annotations.SerializedName;
 import dev.superice.gdcc.scope.*;
 import dev.superice.gdcc.type.GdType;
@@ -20,6 +21,7 @@ public record ExtensionGdClass(
         @SerializedName("api_type") String apiType,
         @SerializedName("enums") List<ClassEnum> enums,
         @SerializedName("methods") List<ClassMethod> methods,
+        @SerializedName("signals") List<SignalInfo> signals,
         @SerializedName("properties") List<PropertyInfo> properties,
         @SerializedName("constants") List<ConstantInfo> constants
 ) implements ClassDef {
@@ -60,7 +62,7 @@ public record ExtensionGdClass(
 
     @Override
     public @NotNull @UnmodifiableView List<? extends SignalDef> getSignals() {
-        return List.of(); // TODO: Signals are not yet parsed
+        return Collections.unmodifiableList(signals);
     }
 
     @Override
@@ -179,7 +181,70 @@ public record ExtensionGdClass(
         }
     }
 
-    public record PropertyInfo(String name, String type, boolean isReadable, boolean isWritable, String defaultValue) implements PropertyDef {
+    /// Signal model for extension API classes.
+    public record SignalInfo(String name, List<SignalArgument> arguments) implements SignalDef {
+        @Override
+        public @NotNull String getName() {
+            return name;
+        }
+
+        @Override
+        public @NotNull @UnmodifiableView Map<String, String> getAnnotations() {
+            return Map.of();
+        }
+
+        @Override
+        public int getParameterCount() {
+            return arguments.size();
+        }
+
+        @Override
+        public @Nullable ParameterDef getParameter(int index) {
+            if (index < 0 || index >= arguments.size()) return null;
+            return arguments.get(index);
+        }
+
+        @Override
+        public @Nullable ParameterDef getParameter(@NotNull String name) {
+            for (var a : arguments) {
+                if (a.name().equals(name)) return a;
+            }
+            return null;
+        }
+
+        @Override
+        public @NotNull @UnmodifiableView List<? extends ParameterDef> getParameters() {
+            return Collections.unmodifiableList(arguments);
+        }
+
+        /// Parameter record for signals.
+        public record SignalArgument(String name, String type,
+                                     @Expose(serialize = false, deserialize = false)
+                                     @NotNull SignalInfo definedIn) implements ParameterDef {
+            @Override
+            public @NotNull String getName() {
+                return name;
+            }
+
+            @Override
+            public @NotNull GdType getType() {
+                return Objects.requireNonNull(ClassRegistry.tryParseTextType(type));
+            }
+
+            @Override
+            public @Nullable String getDefaultValueFunc() {
+                return null;
+            }
+
+            @Override
+            public @NotNull ParameterEntityDef getDefinedIn() {
+                return definedIn;
+            }
+        }
+    }
+
+    public record PropertyInfo(String name, String type, boolean isReadable, boolean isWritable,
+                               String defaultValue) implements PropertyDef {
         @Override
         public @NotNull String getName() {
             return name;

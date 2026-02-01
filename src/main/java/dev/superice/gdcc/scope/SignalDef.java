@@ -10,8 +10,6 @@ import java.util.Map;
 public non-sealed interface SignalDef extends ParameterEntityDef {
     @NotNull String getName();
 
-    void setName(@NotNull String name);
-
     @NotNull
     @UnmodifiableView
     Map<String, String> getAnnotations();

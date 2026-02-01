@@ -20,6 +20,8 @@ public final class ExtensionApiLoader {
             .addSerializationExclusionStrategy(new ExclusionStrategy() {
                 @Override
                 public boolean shouldSkipField(FieldAttributes f) {
+                    // Skip any fields from the scope package and skip the internal back-reference 'definedIn'
+                    if ("definedIn".equals(f.getName())) return true;
                     return f.getDeclaredType().getTypeName().startsWith("dev.superice.gdcc.scope");
                 }
 
@@ -306,6 +308,24 @@ public final class ExtensionApiLoader {
                 }
             }
 
+            // parse signals
+            var signals = new ArrayList<ExtensionGdClass.SignalInfo>();
+            if (o.has("signals")) {
+                for (var se : o.getAsJsonArray("signals")) {
+                    var so = se.getAsJsonObject();
+                    var sname = so.has("name") ? so.get("name").getAsString() : null;
+                    var sargs = new ArrayList<ExtensionGdClass.SignalInfo.SignalArgument>();
+                    var sinfo = new ExtensionGdClass.SignalInfo(sname, Collections.unmodifiableList(sargs));
+                    if (so.has("arguments")) {
+                        for (var ae : so.getAsJsonArray("arguments")) {
+                            var a = ae.getAsJsonObject();
+                            sargs.add(new ExtensionGdClass.SignalInfo.SignalArgument(a.has("name") ? a.get("name").getAsString() : null, a.has("type") ? a.get("type").getAsString() : null, sinfo));
+                        }
+                    }
+                    signals.add(sinfo);
+                }
+            }
+
             var properties = new ArrayList<ExtensionGdClass.PropertyInfo>();
             if (o.has("properties")) {
                 for (var pe : o.getAsJsonArray("properties")) {
@@ -328,7 +348,7 @@ public final class ExtensionApiLoader {
                 }
             }
 
-            out.add(new ExtensionGdClass(name, isRefcounted, isInstantiable, inherits, apiType, Collections.unmodifiableList(enums), Collections.unmodifiableList(methods), Collections.unmodifiableList(properties), Collections.unmodifiableList(constants)));
+            out.add(new ExtensionGdClass(name, isRefcounted, isInstantiable, inherits, apiType, Collections.unmodifiableList(enums), Collections.unmodifiableList(methods), Collections.unmodifiableList(signals), Collections.unmodifiableList(properties), Collections.unmodifiableList(constants)));
         }
         return Collections.unmodifiableList(out);
     }
