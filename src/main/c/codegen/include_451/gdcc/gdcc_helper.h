@@ -2,10 +2,10 @@
 #define GDCC_HELPER_H
 
 #include <gdextension-lite.h>
-#include "gdcc_string_name.h"
-#include "gdcc_string.h"
-#include "gdcc_call.h"
-#include "gdcc_bind.h"
+#include <gdcc_string_name.h>
+#include <gdcc_string.h>
+#include <gdcc_call.h>
+#include <gdcc_bind.h>
 
 #if !defined(GDE_EXPORT)
 #if defined(_WIN32)

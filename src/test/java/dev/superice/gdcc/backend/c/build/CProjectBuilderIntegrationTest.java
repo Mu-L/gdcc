@@ -4,8 +4,11 @@ import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.c.gen.CCodegen;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirModule;
+import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdFloatType;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
@@ -13,6 +16,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -40,9 +44,19 @@ public class CProjectBuilderIntegrationTest {
         var codegen = new CCodegen();
         var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
         var ctx = new CodegenContext(projectInfo, new ClassRegistry(api));
-        var module = new LirModule(projectInfo.projectName(), List.of());
+        var rotatingCameraClass = new LirClassDef("GDRotatingCamera3D", "Camera3D");
+        rotatingCameraClass.addProperty(new LirPropertyDef("pitch_degree",
+                GdFloatType.FLOAT,
+                false,
+                "_field_init_pitch_degree",
+                "_field_getter_pitch_degree",
+                "_field_setter_pitch_degree",
+                Map.of())
+        );
+        var module = new LirModule("my_module", List.of(rotatingCameraClass));
         codegen.prepare(ctx, module);
         var result = builder.buildProject(projectInfo, codegen);
+        IO.println(result.buildLog());
 
         assertTrue(result.success(), "Compilation should succeed when zig is available. Build log:\n" + result.buildLog());
         assertFalse(result.artifacts().isEmpty());

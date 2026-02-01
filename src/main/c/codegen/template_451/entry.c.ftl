@@ -3,7 +3,6 @@
 <#include "trim.ftl">
 
 #include "entry.h"
-#include <gdcc_helper.h>
 #include <implementation-macros.h>
 
 GDE_EXPORT GDExtensionBool gdextension_entry(
@@ -74,7 +73,7 @@ void ${classDef.name}_class_bind_methods() {
         <#if !property.static>
             <@t width=4/>gdcc_bind_method${helper.renderGetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.getterFunc}"), ${classDef.name}_${property.getterFunc});
             <@t/>gdcc_bind_method${helper.renderSetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.setterFunc}"), ${classDef.name}_${property.setterFunc}, GD_STATIC_SN(u8"value"), GDEXTENSION_VARIANT_TYPE_${property.type.gdExtensionType.name()});
-            <@t/>gdcc_bind_property(class_name, GD_STATIC_SN(u8"${property.name}"), GD_STATIC_SN(u8"${property.getterFunc}"), GD_STATIC_SN(u8"${property.setterFunc}"));
+            <@t/>gdcc_bind_property(class_name, GD_STATIC_SN(u8"${property.name}"), GDEXTENSION_VARIANT_TYPE_${property.type.gdExtensionType.name()}, GD_STATIC_SN(u8"${property.getterFunc}"), GD_STATIC_SN(u8"${property.setterFunc}"));
         </#if>
     }
     </#list>
