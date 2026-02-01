@@ -123,14 +123,55 @@ public final class CGenHelper {
             case GdObjectType gdObjectType -> {
                 if (gdObjectType.checkEngineType(context.classRegistry())) {
                     yield "godot_" + gdObjectType.getTypeName() + "*";
-                } else if (context.classRegistry().isGdClass(gdObjectType.getTypeName())) {
-                    yield "godot_" + gdObjectType.getTypeName() + "*";
+                } else if (gdObjectType.checkGdccType(context.classRegistry())) {
+                    yield gdObjectType.getTypeName() + "*";
                 } else {
                     yield "GDExtensionObjectPtr";
                 }
             }
             case GdVoidType _ -> "void";
             default -> "godot_" + gdType.getTypeName();
+        };
+    }
+
+    public @NotNull String renderGdTypeRefInC(@NotNull GdType gdType) {
+        return switch (gdType) {
+            case GdContainerType gdContainerType -> switch (gdContainerType) {
+                case GdArrayType gdArrayType -> {
+                    if (gdArrayType.getValueType() instanceof GdVariantType) {
+                        yield "godot_Array*";
+                    } else {
+                        yield "godot_TypedArray(" + renderGdTypeInC(gdArrayType.getValueType()) + ")*";
+                    }
+                }
+                case GdDictionaryType gdDictionaryType -> {
+                    if (gdContainerType.getKeyType() instanceof GdVariantType && gdContainerType.getValueType() instanceof GdVariantType) {
+                        yield "godot_Dictionary*";
+                    } else {
+                        yield "godot_TypedDictionary(" + renderGdTypeInC(gdDictionaryType.getKeyType()) + ", " + renderGdTypeInC(gdDictionaryType.getValueType()) + ")*";
+                    }
+                }
+                case GdPackedArrayType gdPackedArrayType -> "godot_" + gdPackedArrayType.getTypeName() + "*";
+            };
+            case GdObjectType gdObjectType -> {
+                if (gdObjectType.checkEngineType(context.classRegistry())) {
+                    yield "godot_" + gdObjectType.getTypeName() + "*";
+                } else if (gdObjectType.checkGdccType(context.classRegistry())) {
+                    yield gdObjectType.getTypeName() + "*";
+                } else {
+                    yield "GDExtensionObjectPtr";
+                }
+            }
+            case GdVoidType _ -> "void*";
+            case GdPrimitiveType _ -> "godot_" + gdType.getTypeName();
+            default -> "godot_" + gdType.getTypeName() + "*";
+        };
+    }
+
+    public @NotNull String renderVarRef(@NotNull GdType gdType, @NotNull String v) {
+        return switch (gdType) {
+            case GdObjectType _, GdPrimitiveType _ -> v;
+            default -> "&" + v;
         };
     }
 
