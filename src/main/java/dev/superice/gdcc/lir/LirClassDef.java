@@ -2,6 +2,7 @@ package dev.superice.gdcc.lir;
 
 import dev.superice.gdcc.scope.ClassDef;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
 
 import java.util.*;
@@ -16,6 +17,7 @@ public final class LirClassDef implements ClassDef {
     private final List<LirSignalDef> signals;
     private final List<LirPropertyDef> properties;
     private final List<LirFunctionDef> functions;
+    private @Nullable String sourceFile;
 
     public LirClassDef(
             @NotNull String name,
@@ -156,5 +158,13 @@ public final class LirClassDef implements ClassDef {
 
     public boolean removeFunction(@NotNull LirFunctionDef function) {
         return functions.remove(function);
+    }
+
+    public @Nullable String getSourceFile() {
+        return sourceFile;
+    }
+
+    public void setSourceFile(@Nullable String sourceFile) {
+        this.sourceFile = sourceFile;
     }
 }

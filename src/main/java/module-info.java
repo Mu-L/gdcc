@@ -3,4 +3,5 @@ open module gdcc {
     requires freemarker;
     requires java.xml;
     requires org.jetbrains.annotations;
+    requires jAstyle;
 }

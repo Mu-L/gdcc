@@ -38,7 +38,7 @@ public final class TemplateLoader {
     /// @param context      variables used during rendering.
     /// @return rendered template as UTF-8 string.
     public static @NotNull String renderFromClasspath(@NotNull String resourcePath, @NotNull Map<String, Object> context) throws IOException, TemplateException {
-        return renderFromClasspath(resourcePath, context, true);
+        return renderFromClasspath(resourcePath, context, false);
     }
 
     /// Renders a FreeMarker template located on the classpath.
@@ -65,7 +65,7 @@ public final class TemplateLoader {
     /// @param context      variables used during rendering.
     /// @return rendered template as UTF-8 string.
     public static @NotNull String renderFromFile(@NotNull Path templateFile, @NotNull Map<String, Object> context) throws IOException, TemplateException {
-        return renderFromFile(templateFile, context, true);
+        return renderFromFile(templateFile, context, false);
     }
 
     /// Renders a FreeMarker template located on the filesystem.

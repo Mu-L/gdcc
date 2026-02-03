@@ -73,9 +73,9 @@ void ${classDef.name}_class_bind_methods() {
     <#list classDef.properties as property>
     {
         <#if !property.static>
-            <@t width=4/>gdcc_bind_method${helper.renderGetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.getterFunc}"), ${classDef.name}_${property.getterFunc});
-            <@t/>gdcc_bind_method${helper.renderSetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.setterFunc}"), ${classDef.name}_${property.setterFunc}, GD_STATIC_SN(u8"value"), GDEXTENSION_VARIANT_TYPE_${property.type.gdExtensionType.name()});
-            <@t/>gdcc_bind_property(class_name, GD_STATIC_SN(u8"${property.name}"), GDEXTENSION_VARIANT_TYPE_${property.type.gdExtensionType.name()}, GD_STATIC_SN(u8"${property.getterFunc}"), GD_STATIC_SN(u8"${property.setterFunc}"));
+            gdcc_bind_method${helper.renderGetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.getterFunc}"), ${classDef.name}_${property.getterFunc});
+            gdcc_bind_method${helper.renderSetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.setterFunc}"), ${classDef.name}_${property.setterFunc}, GD_STATIC_SN(u8"value"), GDEXTENSION_VARIANT_TYPE_${property.type.gdExtensionType.name()});
+            gdcc_bind_property(class_name, GD_STATIC_SN(u8"${property.name}"), GDEXTENSION_VARIANT_TYPE_${property.type.gdExtensionType.name()}, GD_STATIC_SN(u8"${property.getterFunc}"), GD_STATIC_SN(u8"${property.setterFunc}"));
         </#if>
     }
     </#list>
@@ -109,13 +109,13 @@ void ${classDef.name}_class_constructor(${classDef.name}* self) {
         return;
     }
     <#list classDef.properties as property>
-        <@t/>self->${property.name} = ${classDef.name}_${property.initFunc}(self);
+        self->${property.name} = ${classDef.name}_${property.initFunc}(self);
         <#if property.type.gdExtensionType.name() == "OBJECT">
-            <@t/>try_own_object(self->${property.name});
+            try_own_object(self->${property.name});
         </#if>
     </#list>
     <#if classDef.hasFunction("_init")>
-        <@t/>${classDef.name}__init(self);
+        ${classDef.name}__init(self);
     </#if>
 }
 
@@ -126,9 +126,9 @@ void ${classDef.name}_class_destructor(${classDef.name}* self) {
     <#list classDef.properties as property>
         <#if property.type.destroyable>
             <#if property.type.gdExtensionType.name() == "OBJECT">
-                <@t/>try_release_object(self->${property.name});
+                try_release_object(self->${property.name});
             <#else>
-                <@t/>${helper.renderDestroyFunctionName(property.type)}(&(self->${property.name}));
+                ${helper.renderDestroyFunctionName(property.type)}(&(self->${property.name}));
             </#if>
         </#if>
     </#list>
@@ -148,9 +148,9 @@ void* ${classDef.name}_class_get_virtual_with_data(void* p_class_userdata, GDExt
     // Bind virtual methods
     <#list classDef.functions as function>
         <#if helper.checkVirtualMethod(classDef, function)>
-            <@t/>if (godot_StringName_op_equal_StringName(p_name, GD_STATIC_SN(u8"${function.name}"))) {
-            <@t/>    return (void*)${classDef.name}_${function.name};
-            <@t/>}
+            if (godot_StringName_op_equal_StringName(p_name, GD_STATIC_SN(u8"${function.name}"))) {
+                return (void*)${classDef.name}_${function.name};
+            }
         </#if>
     </#list>
     return NULL;
@@ -164,10 +164,10 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
     // Call virtual methods
     <#list classDef.functions as function>
         <#if helper.checkVirtualMethod(classDef, function)>
-            <@t/>if (p_virtual_call_userdata == &${classDef.name}_${function.name}) {
-            <@t/>    ptrcall${helper.renderFuncBindName(function)}(p_virtual_call_userdata, p_instance, p_args, r_ret);
-            <@t/>    return;
-            <@t/>}
+            if (p_virtual_call_userdata == &${classDef.name}_${function.name}) {
+                ptrcall${helper.renderFuncBindName(function)}(p_virtual_call_userdata, p_instance, p_args, r_ret);
+                return;
+            }
         </#if>
     </#list>
 }
@@ -176,10 +176,9 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
 
 <#list classDef.functions as func>
 <@funcHeader helper classDef func/> {
-    // variable declarations
     <#list func.variables?values as var>
         <#if !func.checkVariableParameter(var.id)>
-            <@t/>${helper.renderGdTypeInC(var.type)} $${var.id};
+            ${helper.renderGdTypeInC(var.type)} $${var.id};
         </#if>
     </#list>
     ${gen.generateFuncBody(classDef, func)}

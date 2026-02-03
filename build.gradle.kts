@@ -1,5 +1,6 @@
 plugins {
     id("java")
+    id("org.gradlex.extra-java-module-info") version "1.9"
 }
 
 group = "dev.superice"
@@ -23,6 +24,7 @@ dependencies {
     testCompileOnly("org.jetbrains:annotations:24.0.1")
     implementation("com.google.code.gson:gson:2.13.2")
     implementation("org.freemarker:freemarker:2.3.34")
+    implementation("com.github.abrarsyed.jastyle:jAstyle:1.3")
 }
 
 tasks.test {
@@ -35,4 +37,8 @@ sourceSets {
             srcDir("src/main/c/codegen")
         }
     }
+}
+
+extraJavaModuleInfo {
+    automaticModule("jAstyle-1.3.jar", "jAstyle")
 }

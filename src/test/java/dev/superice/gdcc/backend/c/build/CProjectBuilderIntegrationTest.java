@@ -45,6 +45,7 @@ public class CProjectBuilderIntegrationTest {
         var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
         var ctx = new CodegenContext(projectInfo, new ClassRegistry(api));
         var rotatingCameraClass = new LirClassDef("GDRotatingCamera3D", "Camera3D");
+        rotatingCameraClass.setSourceFile("rotating_camera.gd");
         rotatingCameraClass.addProperty(new LirPropertyDef("pitch_degree",
                 GdFloatType.FLOAT,
                 false,

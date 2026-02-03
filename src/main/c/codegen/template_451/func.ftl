@@ -11,5 +11,4 @@ ${helper.renderGdTypeInC(func.returnType)} ${classDef.name}_${func.name}(
     <#list func.captureList as capture>
         <@lambdaCaptureName classDef func/>* _capture
     </#list>
-)
-</#macro>
+)</#macro>

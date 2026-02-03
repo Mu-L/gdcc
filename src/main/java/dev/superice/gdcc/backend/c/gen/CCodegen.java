@@ -10,6 +10,7 @@ import dev.superice.gdcc.lir.*;
 import dev.superice.gdcc.lir.insn.*;
 import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.type.*;
+import dev.superice.gdcc.util.CCodeFormatter;
 import freemarker.template.TemplateException;
 import org.jetbrains.annotations.NotNull;
 
@@ -169,7 +170,7 @@ public class CCodegen implements Codegen {
         // generate blocks
         sb.append("goto ").append(func.getEntryBlockId()).append(";\n");
         for (var bb : func) {
-            sb.append(bb.id()).append(":\n    // ").append(bb.id()).append(" \n");
+            sb.append(bb.id()).append(": // ").append(bb.id()).append(" \n");
             for (int i = 0; i < bb.instructions().size(); i++) {
                 var insn = bb.instructions().get(i);
                 CInsnGen<LirInstruction> insnGen = (CInsnGen<LirInstruction>) INSN_GENS.get(insn.opcode());
@@ -198,6 +199,8 @@ public class CCodegen implements Codegen {
             );
             var cSrc = TemplateLoader.renderFromClasspath("template_451/entry.c.ftl", tplCtx);
             var hSrc = TemplateLoader.renderFromClasspath("template_451/entry.h.ftl", tplCtx);
+            cSrc = CCodeFormatter.format(cSrc);
+            hSrc = CCodeFormatter.format(hSrc);
 
             var cBytes = cSrc.getBytes(StandardCharsets.UTF_8);
             var hBytes = hSrc.getBytes(StandardCharsets.UTF_8);
