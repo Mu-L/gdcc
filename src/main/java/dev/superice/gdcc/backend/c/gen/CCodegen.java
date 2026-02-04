@@ -32,6 +32,7 @@ public class CCodegen implements Codegen {
         registerInsnGen(new LoadPropertyInsnGen());
         registerInsnGen(new StorePropertyInsnGen());
         registerInsnGen(new OwnReleaseObjectInsnGen());
+        registerInsnGen(new DestructInsnGen());
     }
 
     public CodegenContext ctx;

@@ -51,11 +51,14 @@ public final class OwnReleaseObjectInsnGen extends TemplateInsnGen<ConstructionI
         var objectVar = tryGetObjectVar(func, block, insnIndex, instruction);
         if (objectVar.type() instanceof GdObjectType gdObjectType) {
             var registry = helper.context().classRegistry();
+            var gdcc = gdObjectType.checkGdccType(registry);
             if (registry.checkAssignable(gdObjectType, new GdObjectType("RefCounted"))) {
-                return Map.of("assertRefCounted", true);
+                return Map.of("assertRefCounted", true, "gdcc", gdcc);
             }
+            return Map.of("assertRefCounted", false, "gdcc", gdcc);
         }
-        return Map.of("assertRefCounted", false);
+        throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
+                "Object variable ID is not of Object type");
     }
 
     private @NotNull LirVariable tryGetObjectVar(@NotNull LirFunctionDef func,

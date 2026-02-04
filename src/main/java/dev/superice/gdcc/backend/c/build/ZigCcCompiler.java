@@ -31,6 +31,7 @@ public class ZigCcCompiler implements CCompiler {
         }
 
         var outputPath = projectDir.resolve(outName).toAbsolutePath();
+        var cachePath = projectDir.resolve("compiler-cache").toAbsolutePath();
 
         var cmd = new ArrayList<String>();
         cmd.add(zig.toString());
@@ -66,6 +67,8 @@ public class ZigCcCompiler implements CCompiler {
             var pb = new ProcessBuilder(cmd);
             pb.directory(projectDir.toFile());
             pb.redirectErrorStream(true);
+            pb.environment().put("ZIG_CACHE_DIR", cachePath.resolve("local").toString());
+            pb.environment().put("ZIG_GLOBAL_CACHE_DIR", cachePath.resolve("global").toString());
             var p = pb.start();
             var out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             var exit = p.waitFor();

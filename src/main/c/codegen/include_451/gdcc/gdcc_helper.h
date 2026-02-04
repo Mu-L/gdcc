@@ -103,6 +103,22 @@ static void try_release_object(const GDExtensionObjectPtr obj) {
     }
 }
 
+static void try_destroy_object(const GDExtensionObjectPtr obj) {
+    if (obj == NULL) {
+        return;
+    }
+    godot_StringName class_name;
+    if (!godot_object_get_class_name(obj, class_library, &class_name)) {
+        return;
+    }
+    if (godot_ClassDB_is_parent_class(godot_ClassDB_singleton(), &class_name, GD_STATIC_SN(u8"RefCounted"))) {
+        godot_RefCounted* rc = obj;
+        godot_RefCounted_unreference(rc);
+    } else {
+        godot_object_destroy(obj);
+    }
+}
+
 static GDExtensionObjectPtr gdcc_object_from_godot_object_ptr(GDExtensionObjectPtr ptr) {
     const GDExtensionInstanceBindingCallbacks callbacks = {
         .create_callback = NULL,
