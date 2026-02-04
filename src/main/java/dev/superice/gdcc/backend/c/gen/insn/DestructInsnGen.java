@@ -50,7 +50,7 @@ public final class DestructInsnGen extends TemplateInsnGen<DestructInsn> {
                     yield "engine_object";
                 } else if (gdcc) {
                     yield "gdcc_object";
-                } else  {
+                } else {
                     yield "general_object";
                 }
             }
@@ -74,9 +74,11 @@ public final class DestructInsnGen extends TemplateInsnGen<DestructInsn> {
                     "Variable ID '" + instruction.variableId() + "' not found in function");
         }
         switch (variable.type()) {
-            case GdVoidType _ -> throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.toString(),
-                    "Cannot destruct variable of type " + variable.type().getTypeName());
-            default -> {}
+            case GdVoidType _ ->
+                    throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.toString(),
+                            "Cannot destruct variable of type " + variable.type().getTypeName());
+            default -> {
+            }
         }
     }
 }

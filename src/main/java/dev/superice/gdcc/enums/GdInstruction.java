@@ -47,7 +47,7 @@ public enum GdInstruction {
     IS_INSTANCE_OF("is_instance_of", ReturnKind.REQUIRED, List.of(OperandKind.STRING, OperandKind.VARIABLE), 2, 2),
     PACK_VARIANT("pack_variant", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE), 1, 1),
     UNPACK_VARIANT("unpack_variant", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE), 1, 1),
-    VARIANT_IS_NULL("variant_is_null", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE), 1, 1),
+    VARIANT_IS_NIL("variant_is_nil", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE), 1, 1),
     OBJECT_IS_NULL("object_is_null", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE), 1, 1),
 
     // Control Flow

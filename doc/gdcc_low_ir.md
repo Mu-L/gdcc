@@ -115,7 +115,7 @@ $<result_id> = construct_callable "<function_name>"
 #### construct_lambda
 Constructs a new Callable from a lambda function in this compiling unit.
 For implementation, `godot_callable_custom_create2` is used.
-All captures are copied into an annonymous struct and passed to the lambda via `callable_userdata`.
+All captures are copied into an tmp struct and passed to the lambda via `callable_userdata`.
 If there are no captures, NULL is passed as `callable_userdata`.
 `free_func` in `GDExtensionCallableCustomInfo2` must be set to destruct the captures.
 ```
@@ -266,10 +266,10 @@ Unpacks a value from a Variant.
 $<result_id> = unpack_variant $<variant_id>
 ```
 
-#### variant_is_null
-Checks if a Variant is null.
+#### variant_is_nil
+Checks if a Variant is nil.
 ```
-$<result_id:bool> = variant_is_null $<variant_id:Variant>
+$<result_id:bool> = variant_is_nil $<variant_id:Variant>
 ```
 
 #### object_is_null

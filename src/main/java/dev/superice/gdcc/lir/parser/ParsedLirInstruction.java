@@ -114,7 +114,7 @@ public record ParsedLirInstruction(
                 case IS_INSTANCE_OF -> new IsInstanceOfInsn(resultId, ((StringOperand) operands.getFirst()).value(), ((VariableOperand) operands.get(1)).id());
                 case PACK_VARIANT -> new PackVariantInsn(resultId, ((VariableOperand) operands.getFirst()).id());
                 case UNPACK_VARIANT -> new UnpackVariantInsn(resultId, ((VariableOperand) operands.getFirst()).id());
-                case VARIANT_IS_NULL -> new VariantIsNullInsn(resultId, ((VariableOperand) operands.getFirst()).id());
+                case VARIANT_IS_NIL -> new VariantIsNilInsn(resultId, ((VariableOperand) operands.getFirst()).id());
                 case OBJECT_IS_NULL -> new ObjectIsNullInsn(resultId, ((VariableOperand) operands.getFirst()).id());
 
                 case GOTO -> new GotoInsn(((BasicBlockOperand) operands.getFirst()).bbId());
