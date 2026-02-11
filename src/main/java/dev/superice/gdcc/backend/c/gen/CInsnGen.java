@@ -12,10 +12,28 @@ import java.util.EnumSet;
 public interface CInsnGen<Insn extends LirInstruction> {
     @NotNull EnumSet<GdInstruction> getInsnOpcodes();
 
-    @NotNull String generateCCode(@NotNull CGenHelper helper,
+    default @NotNull String generateCCode(@NotNull CGenHelper helper,
                                   @NotNull LirClassDef clazz,
                                   @NotNull LirFunctionDef func,
                                   @NotNull LirBasicBlock block,
                                   int insnIndex,
-                                  @NotNull Insn instruction);
+                                  @NotNull Insn instruction) {
+        return "";
+    }
+
+    default @NotNull String generateCCode(@NotNull CBodyBuilder bodyBuilder) {
+        var insn = bodyBuilder.getCurrentInsn(this);
+        var block = bodyBuilder.currentBlock();
+        if (block == null) {
+            throw new IllegalStateException("Current basic block is not set");
+        }
+        return generateCCode(
+                bodyBuilder.helper(),
+                bodyBuilder.clazz(),
+                bodyBuilder.func(),
+                block,
+                bodyBuilder.currentInsnIndex(),
+                insn
+        );
+    }
 }

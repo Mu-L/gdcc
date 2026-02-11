@@ -1,0 +1,263 @@
+# CBodyBuilder 后端重构实施说明
+
+## 1. 项目背景
+
+GDCC 当前 C 后端函数体代码生成主要基于 FreeMarker 模板与 `CGenHelper`，存在以下问题：
+
+- 指令级生命周期语义分散在模板中，不易统一维护
+- `Variant` 与 `Object` 生命周期历史实现存在不一致
+- GDCC 类型与 Godot 对象指针转换细节容易遗漏
+- 缺少统一的类型校验与错误定位抽象
+
+本次重构目标是引入 `CBodyBuilder`，作为函数级、单线程使用的链式 C 代码构建器，逐步替换模板路径，并严格遵循 `doc/gdcc_c_backend.md` 的语义。
+
+## 2. 约束与边界
+
+### 2.1 必须遵循
+
+- 语义以 `doc/gdcc_c_backend.md` 为准
+- `setCurrentPosition` 和 `getCurrentInsn` 用于精确错误定位与类型安全
+- 所有相关 API 支持两种输入
+  - 函数内变量
+  - 自定义 C 表达式加显式 `GdType`
+- 赋值目标若为 `ref=true` 变量必须拒绝
+- 赋值语义必须隐式处理旧值销毁和对象所有权交接
+
+### 2.2 明确不做
+
+- `CBodyBuilder` 第一版不支持字段赋值 API
+  - 字段赋值由各指令生成器负责
+- 不一次性删除 `CGenHelper`
+  - 采用渐进迁移
+- 不改动构建脚本
+
+## 3. 核心语义基线
+
+### 3.1 类型与传参
+
+- primitive 与 object 指针按值传递
+- 值语义包装类型传参时按 C ABI 需求传引用
+- 是否加 `&` 必须按静态类型与变量 ref 属性统一判定
+
+### 3.2 赋值语义
+
+赋值不是简单覆盖，必须执行完整流程：
+
+1. 校验目标存在、可赋值
+2. 校验目标不是 ref 变量
+3. 准备 RHS 存储值
+   - 必要时复制或类型转换
+4. 处理旧值
+   - 非对象销毁
+   - 对象 release
+5. 写入新值
+6. 对对象新值 own
+
+### 3.3 GDCC 对象与 Godot 对象
+
+- GDCC 对象不能直接作为 GDExtension API 的对象指针
+  - 需使用 `gdccObj->_object`
+- `gdcc_object_from_godot_object_ptr` 只做转换，不获取所有权
+  - 后续若存储需 own 或 try_own
+
+### 3.4 RefCounted 策略
+
+根据 `ClassRegistry` 查询 `RefCountedStatus`：
+
+- 确定为 RefCounted
+  - 使用 `own_object` 与 `release_object`
+- 确定非 RefCounted
+  - 不做 own/release
+- 不确定
+  - 使用 `try_own_object` 与 `try_release_object`
+
+始终先做对象类型判定；对 GDCC 对象执行 own/release 时传 `_object`。
+
+## 4. 重点注意事项
+
+- `getCurrentInsn` 做 opcode 兼容校验后再进行泛型强转
+  - 可抑制 unchecked 警告
+  - 不依赖 `Class.cast`
+- 临时变量生命周期只对当前指令负责
+  - 指令内创建、使用、销毁
+  - 不接管 IR 显式变量生命周期
+- 唯一例外是赋值语义
+  - 覆盖变量包含隐式销毁和所有权切换
+- 模板与 builder 并存阶段需优先迁移高风险指令
+  - Variant 与 Object 相关优先
+
+## 5. 易踩坑清单
+
+1. 将 GDCC 对象指针直接传入 `try_own_object` 或 `release_object`
+   - 错误，必须传 Godot 对象指针
+2. 认为 `gdcc_object_from_godot_object_ptr` 会自动持有对象
+   - 错误，转换后仍需 own
+3. 对 `ref=true` 变量执行赋值
+   - 必须直接报错
+4. 对非对象类型遗漏 copy 与 destroy
+   - 会导致悬挂引用或资源泄漏
+5. 对对象覆盖赋值漏掉旧值 release
+   - 会导致泄漏
+6. 条件跳转仅支持变量，遗漏表达式
+   - 本次要求两类输入都支持
+7. 错误定位信息缺失 block 与 insnIndex
+   - 影响排查效率
+
+## 6. CBodyBuilder 目标 API
+
+以下 API 均返回 builder，实现链式调用：
+
+- `beginBasicBlock`
+- `assignVar`
+- `callVoid`
+- `callAssign`
+- `jump`
+- `jumpIf`
+- `returnVoid`
+- `returnValue`
+- `assignExpr`
+- `assignGlobalConst`
+
+统一值输入模型：
+
+- `valueOfVar`
+- `valueOfExpr`
+
+说明：`jumpIf`、`call`、`returnValue` 必须同时支持变量与表达式输入。
+
+## 7. 分阶段实施方案
+
+### 阶段 A：值模型与定位能力固化
+
+- 在 `CBodyBuilder` 增加内部值抽象
+  - `ValueRef`
+  - `TargetRef`
+- 完善 `setCurrentPosition` 与 `getCurrentInsn`
+  - 未设置上下文时抛错
+  - opcode 不匹配抛 `InvalidInsnException`
+
+交付结果：
+
+- builder 可安全获取当前指令上下文
+- 后续 API 均基于统一值抽象开发
+
+### 阶段 B：链式 API 主干落地
+
+实现以下主干方法并接入统一值输入：
+
+- `assignVar`
+- `callVoid`
+- `callAssign`
+- `jump`
+- `jumpIf`
+- `returnVoid`
+- `returnValue`
+
+交付结果：
+
+- 指令生成器可直接调用 builder API 生成函数体语句
+
+### 阶段 C：语义内核实现
+
+新增内部能力：
+
+- 参数渲染与 `&` 决策
+- 可赋值校验
+- RHS 复制与转换
+- 非对象销毁
+- 对象 own/release
+
+交付结果：
+
+- 赋值、传参、返回具备一致语义
+
+### 阶段 D：GDCC Object 转换与 RefCounted 决策
+
+新增内部方法：
+
+- toGodotObjectPtr
+- fromGodotObjectPtr
+- ownOrTryOwn
+- releaseOrTryRelease
+
+交付结果：
+
+- GDCC 与 Godot 对象转换行为一致
+- 所有权策略由 `RefCountedStatus` 驱动
+
+### 阶段 E：接入 CCodegen 渐进迁移
+
+- 在函数级实例化 builder
+- 每条指令先调用 `setCurrentPosition`
+- 优先迁移 Variant 和 Object 敏感指令
+- 其余暂时保留模板路径
+
+交付结果：
+
+- 新旧架构并存可运行
+- 高风险路径先修复
+
+### 阶段 F：测试闭环与回归
+
+新增或改造测试覆盖：
+
+- `getCurrentInsn` 校验
+- ref 变量禁赋值
+- 可赋值校验失败路径
+- GDCC 与 Godot 对象转换
+- own/release 决策矩阵
+- `jumpIf` 变量与表达式双路径
+- 临时变量唯一性与即时销毁
+
+交付结果：
+
+- 可验证语义正确性
+- 迁移过程可回归
+
+## 8. 迁移优先级
+
+- P0: Variant 与 Object 生命周期相关指令
+- P1: 控制流和返回
+- P2: 普通调用与构造
+- P3: 其余模板指令
+
+## 9. 风险与缓解
+
+### 风险 1
+
+新旧生成路径并存导致行为差异
+
+缓解：
+
+- 先迁移高风险指令
+- 对比关键样例输出并加回归测试
+
+### 风险 2
+
+`RefCountedStatus` 信息不完整
+
+缓解：
+
+- 默认走 try 路径保证正确性
+- 后续逐步完善类型信息提升性能
+
+### 风险 3
+
+表达式输入被误用造成类型漂移
+
+缓解：
+
+- 表达式入口必须显式传 `GdType`
+- 所有关键 API 强制做 assignable 校验
+
+## 10. 执行顺序建议
+
+1. 完成 builder 值模型与主干 API
+2. 完成语义内核与对象转换
+3. 接入 `CCodegen` 并迁移 P0 指令
+4. 补齐测试后迁移 P1 P2 P3
+5. 准备后续将 `CGenHelper` 静态能力迁出到 util
+
+---
+
+本文件作为评审基线，后续代码实施应严格以本说明和 `doc/gdcc_c_backend.md` 为语义依据。

@@ -282,16 +282,38 @@ public final class ClassRegistry {
         return false;
     }
 
-    /// Return the raw lists for inspection / tests.
-    public @NotNull List<ExtensionBuiltinClass> builtinClasses() { return List.copyOf(builtinByName.values()); }
-
-    public @NotNull List<ExtensionGdClass> gdClasses() { return List.copyOf(gdClassByName.values()); }
-
-    public @NotNull List<ExtensionUtilityFunction> utilityFunctions() { return List.copyOf(utilityByName.values()); }
-
-    public @NotNull List<ExtensionGlobalEnum> globalEnums() { return List.copyOf(globalEnumByName.values()); }
-
-    public @NotNull List<ExtensionSingleton> singletons() { return List.copyOf(singletonByName.values()); }
-
-    public @NotNull List<ClassDef> gdccClasses() { return List.copyOf(gdccClassByName.values()); }
+    /// Determine whether an object type is reference-counted.
+    /// Returns YES if the type definitely inherits from RefCounted.
+    /// Returns NO if the type definitely does NOT inherit from RefCounted (e.g., Resource).
+    /// Returns UNKNOWN if we cannot determine (e.g., unknown engine type or missing class info).
+    public @NotNull RefCountedStatus getRefCountedStatus(@NotNull GdObjectType objectType) {
+        var className = objectType.getTypeName();
+        // Check engine classes first
+        var engineClass = gdClassByName.get(className);
+        if (engineClass != null) {
+            // Engine classes have isRefcounted flag from extension API
+            return engineClass.isRefcounted() ? RefCountedStatus.YES : RefCountedStatus.NO;
+        }
+        // Check GDCC user classes
+        var gdccClass = gdccClassByName.get(className);
+        if (gdccClass != null) {
+            // Traverse inheritance chain to check for RefCounted
+            var current = gdccClass;
+            while (current != null && !current.getSuperName().isEmpty()) {
+                if (current.getSuperName().equals("RefCounted") || current.getSuperName().equals("Resource")) {
+                    return RefCountedStatus.YES;
+                }
+                var superName = current.getSuperName();
+                current = gdccClassByName.get(superName);
+                if (superName.equals("Object") || superName.equals("Node")) {
+                    // Reached Object without finding RefCounted, it's NO
+                    return RefCountedStatus.NO;
+                }
+            }
+            // If we reached Object without finding RefCounted, it's NO
+            return RefCountedStatus.NO;
+        }
+        // Unknown type
+        return RefCountedStatus.UNKNOWN;
+    }
 }

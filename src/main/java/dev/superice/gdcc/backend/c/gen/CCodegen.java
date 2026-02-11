@@ -169,23 +169,25 @@ public class CCodegen implements Codegen {
         if (!func.hasBasicBlock(func.getEntryBlockId())) {
             throw new IllegalArgumentException("Function " + func.getName() + " has invalid entry block ID: " + func.getEntryBlockId());
         }
-        var sb = new StringBuilder();
+        var bodyBuilder = new CBodyBuilder(helper, clazz, func);
         // generate blocks
-        sb.append("goto ").append(func.getEntryBlockId()).append(";\n");
+        bodyBuilder.appendRaw("goto " + func.getEntryBlockId() + ";\n");
         for (var bb : func) {
-            sb.append(bb.id()).append(": // ").append(bb.id()).append(" \n");
+            bodyBuilder.beginBasicBlock(bb.id());
             for (int i = 0; i < bb.instructions().size(); i++) {
                 var insn = bb.instructions().get(i);
                 CInsnGen<LirInstruction> insnGen = (CInsnGen<LirInstruction>) INSN_GENS.get(insn.opcode());
                 if (insnGen == null) {
                     throw new UnsupportedOperationException("Unsupported instruction opcode: " + insn.opcode().opcode());
                 }
-                var result = insnGen.generateCCode(helper, clazz, func, bb, i, insn);
-                sb.append("    ").append(result).append("\n");
+                bodyBuilder.setCurrentPosition(bb, i, insn);
+                var result = insnGen.generateCCode(bodyBuilder);
+                bodyBuilder.appendLine(result);
             }
         }
-        return sb.toString();
+        return bodyBuilder.build();
     }
+
 
     @Override
     public List<GeneratedFile> generate() {
