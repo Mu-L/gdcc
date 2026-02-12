@@ -85,6 +85,20 @@ GDCC 当前 C 后端函数体代码生成主要基于 FreeMarker 模板与 `CGen
   - 覆盖变量包含隐式销毁和所有权切换
 - 模板与 builder 并存阶段需优先迁移高风险指令
   - Variant 与 Object 相关优先
+- `render*` 辅助方法必须为纯渲染
+  - 不允许直接写入 `out`
+  - 仅返回渲染结果或登记临时变量需求
+- 所有生成的临时变量必须可追踪并在指令末尾销毁
+  - 生成时登记类型与初始化表达式
+  - 指令级 API 负责在语句前输出声明、语句后输出 destroy
+- `_prepare` 与 `_finally` 基本块的语义必须严格遵循
+  - `_prepare` 中 IR 显式声明的非 ref 变量视为未初始化，赋值不应销毁旧内容
+  - 非 `_finally` 基本块中 `return/returnValue` 不生成真正的 return
+    - 对于非 void 返回值，将结果赋给隐式变量 `_return_val`
+    - 然后跳转到 `_finally`
+  - 仅在 `_finally` 基本块中生成真实的 return
+  - 对于非 void 函数，在 `_prepare` 基本块顶部声明 `_return_val`
+    - `_return_val` 无需自动销毁
 
 ## 5. 易踩坑清单
 

@@ -7,12 +7,18 @@ import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdPrimitiveType;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdVoidType;
+import dev.superice.gdcc.type.GdBoolType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.ArrayList;
 
 /// Builder for generating C function body code.
 ///
@@ -70,6 +76,12 @@ public final class CBodyBuilder {
 
     public @NotNull CBodyBuilder beginBasicBlock(@NotNull String blockId) {
         out.append(blockId).append(": // ").append(blockId).append("\n");
+        if ("_prepare".equals(blockId)) {
+            var returnType = func.getReturnType();
+            if (!(returnType instanceof GdVoidType)) {
+                out.append(helper.renderGdTypeInC(returnType)).append(" _return_val;\n");
+            }
+        }
         return this;
     }
 
@@ -149,24 +161,110 @@ public final class CBodyBuilder {
     }
 
     public @NotNull CBodyBuilder assignVar(@NotNull TargetRef target, @NotNull ValueRef value) {
-        // TODO: Phase C - Implement full assignment semantics (destroy old, copy new, own/release)
-        // For Phase B, we just generate simple assignment
-        out.append(target.generateCode()).append(" = ").append(value.generateCode()).append(";\n");
+        checkTargetAssignable(target);
+        checkAssignable(value.type(), target.type());
+
+        var targetCode = target.generateCode();
+        var targetType = target.type();
+
+        // Prepare RHS first to avoid destroying sources for self/alias assignments.
+        var rhsResult = prepareRhsValue(value, targetType);
+        emitTempDecls(rhsResult.temps());
+
+        // Phase C: Full assignment semantics
+        // 1. Destroy old value if needed (non-object destroyable types)
+        // 2. Release old object ownership if object type
+        if (!isPrepareBlock() && targetType.isDestroyable()) {
+            if (targetType instanceof GdObjectType objType) {
+                // Object type: release old ownership
+                emitReleaseObject(targetCode, objType);
+            } else {
+                // Non-object destroyable: call destroy
+                emitDestroy(targetCode, targetType);
+            }
+        }
+
+        // 4. Write new value
+        out.append(targetCode).append(" = ").append(rhsResult.code()).append(";\n");
+
+        // 5. Own new object if object type
+        if (targetType instanceof GdObjectType objType) {
+            emitOwnObject(targetCode, objType);
+        }
+
+        emitTempDestroys(rhsResult.temps());
         return this;
     }
 
+    /// Assigns a raw expression into a target variable.
+    public @NotNull CBodyBuilder assignExpr(@NotNull TargetRef target, @NotNull String expr, @NotNull GdType type) {
+        return assignVar(target, valueOfExpr(expr, type));
+    }
+
+    /// Assigns a global enum constant to a target variable.
+    public @NotNull CBodyBuilder assignGlobalConst(@NotNull TargetRef target,
+                                                   @NotNull String enumName,
+                                                   @NotNull String valueName) {
+        var globalEnum = classRegistry().findGlobalEnum(enumName);
+        if (globalEnum == null) {
+            throw invalidInsn("Global enum '" + enumName + "' not found");
+        }
+        var matchedValue = globalEnum.values().stream()
+                .filter(value -> value.name().equals(valueName))
+                .findFirst()
+                .orElse(null);
+        if (matchedValue == null) {
+            throw invalidInsn("Global enum value '" + valueName + "' not found in enum '" + enumName + "'");
+        }
+        return assignVar(target, valueOfExpr(Integer.toString(matchedValue.value()), GdIntType.INT));
+    }
+
     public @NotNull CBodyBuilder callVoid(@NotNull String funcName, @NotNull List<ValueRef> args) {
-        out.append(funcName).append("(");
-        generateArgs(args);
-        out.append(");\n");
+        var argsResult = renderArgs(args);
+        emitTempDecls(argsResult.temps());
+        out.append(funcName).append("(").append(argsResult.code()).append(");\n");
+        emitTempDestroys(argsResult.temps());
         return this;
     }
 
     public @NotNull CBodyBuilder callAssign(@NotNull TargetRef target, @NotNull String funcName, @NotNull List<ValueRef> args) {
-        // TODO: Phase C - Implement full assignment semantics
-        out.append(target.generateCode()).append(" = ").append(funcName).append("(");
-        generateArgs(args);
-        out.append(");\n");
+        return callAssign(target, funcName, null, args);
+    }
+
+    public @NotNull CBodyBuilder callAssign(@NotNull TargetRef target,
+                                            @NotNull String funcName,
+                                            @Nullable GdType returnType,
+                                            @NotNull List<ValueRef> args) {
+        checkTargetAssignable(target);
+
+        var resolvedReturnType = resolveReturnType(funcName, returnType);
+        validateCallArgs(funcName, args);
+        validateReturnType(funcName, resolvedReturnType, target.type());
+
+        var targetCode = target.generateCode();
+        var targetType = target.type();
+
+        var argsResult = renderArgs(args);
+        emitTempDecls(argsResult.temps());
+
+        // Phase C: Handle old value destruction before assignment
+        if (!isPrepareBlock() && targetType.isDestroyable()) {
+            if (targetType instanceof GdObjectType objType) {
+                emitReleaseObject(targetCode, objType);
+            } else {
+                emitDestroy(targetCode, targetType);
+            }
+        }
+
+        // Generate call and assignment
+        out.append(targetCode).append(" = ").append(funcName).append("(").append(argsResult.code()).append(");\n");
+
+        // Own new object if returned type is object
+        if (targetType instanceof GdObjectType objType) {
+            emitOwnObject(targetCode, objType);
+        }
+
+        emitTempDestroys(argsResult.temps());
         return this;
     }
 
@@ -176,30 +274,301 @@ public final class CBodyBuilder {
     }
 
     public @NotNull CBodyBuilder jumpIf(@NotNull ValueRef condition, @NotNull String trueBlockId, @NotNull String falseBlockId) {
-        out.append("if (").append(condition.generateCode()).append(") goto ").append(trueBlockId).append(";\n");
+        var conditionResult = renderCondition(condition);
+        emitTempDecls(conditionResult.temps());
+        out.append("if (").append(conditionResult.code()).append(") goto ").append(trueBlockId).append(";\n");
         out.append("else goto ").append(falseBlockId).append(";\n");
+        emitTempDestroys(conditionResult.temps());
         return this;
     }
 
     public @NotNull CBodyBuilder returnVoid() {
+        if (!isFinallyBlock()) {
+            out.append("goto _finally;\n");
+            return this;
+        }
         out.append("return;\n");
         return this;
     }
 
     public @NotNull CBodyBuilder returnValue(@NotNull ValueRef value) {
-        // TODO: Phase C - Implement copy/return semantics
-        out.append("return ").append(value.generateCode()).append(";\n");
+        var returnType = func.getReturnType();
+        if (!(returnType instanceof GdVoidType) && !isFinallyBlock()) {
+            var returnResult = prepareReturnValue(value);
+            emitTempDecls(returnResult.temps());
+            out.append("_return_val = ").append(returnResult.code()).append(";\n");
+            emitTempDestroys(returnResult.temps());
+            out.append("goto _finally;\n");
+            return this;
+        }
+
+        // Phase C: Copy semantics for return
+        var returnResult = prepareReturnValue(value);
+        emitTempDecls(returnResult.temps());
+
+        if (returnResult.temps().isEmpty()) {
+            out.append("return ").append(returnResult.code()).append(";\n");
+            return this;
+        }
+
+        var retTemp = newTempName("ret");
+        out.append(helper.renderGdTypeInC(value.type())).append(" ").append(retTemp).append(" = ")
+           .append(returnResult.code()).append(";\n");
+        emitTempDestroys(returnResult.temps());
+        out.append("return ").append(retTemp).append(";\n");
         return this;
     }
 
-    private void generateArgs(@NotNull List<ValueRef> args) {
-        for (int i = 0; i < args.size(); i++) {
+    private @NotNull RenderResult renderArgs(@NotNull List<ValueRef> args) {
+        var rendered = new StringBuilder();
+        var temps = new ArrayList<TempVar>();
+        for (var i = 0; i < args.size(); i++) {
             if (i > 0) {
-                out.append(", ");
+                rendered.append(", ");
             }
-            // TODO: Phase C - Use helper.renderValueRef or similar logic for complex types
-            out.append(args.get(i).generateCode());
+            var argResult = renderArgument(args.get(i));
+            rendered.append(argResult.code());
+            temps.addAll(argResult.temps());
         }
+        return new RenderResult(rendered.toString(), temps);
+    }
+
+    /// Checks if a value of sourceType can be assigned to a variable of targetType.
+    /// Throws InvalidInsnException if not assignable.
+    private void checkAssignable(@NotNull GdType sourceType, @NotNull GdType targetType) {
+        if (!classRegistry().checkAssignable(sourceType, targetType)) {
+            throw invalidInsn("Cannot assign value of type '" + sourceType.getTypeName() +
+                    "' to variable of type '" + targetType.getTypeName() + "'");
+        }
+    }
+
+    private void checkTargetAssignable(@NotNull TargetRef target) {
+        if (target.variable().ref()) {
+            throw invalidInsn("Cannot assign to reference variable '" + target.variable().id() + "'");
+        }
+    }
+
+    private @Nullable GdType resolveReturnType(@NotNull String funcName, @Nullable GdType explicitType) {
+        if (explicitType != null) {
+            return explicitType;
+        }
+        var signature = classRegistry().findUtilityFunctionSignature(funcName);
+        if (signature == null) {
+            return null;
+        }
+        return signature.returnType();
+    }
+
+    private void validateCallArgs(@NotNull String funcName, @NotNull List<ValueRef> args) {
+        var signature = classRegistry().findUtilityFunctionSignature(funcName);
+        if (signature == null) {
+            return;
+        }
+        var paramCount = signature.parameterCount();
+        var isVararg = signature.isVararg();
+        if (!isVararg && args.size() > paramCount) {
+            throw invalidInsn("Too many arguments for function '" + funcName + "': expected " + paramCount + ", got " + args.size());
+        }
+        if (args.size() < paramCount) {
+            for (var i = args.size(); i < paramCount; i++) {
+                var param = signature.parameters().get(i);
+                if (param.defaultValue() == null) {
+                    throw invalidInsn("Too few arguments for function '" + funcName + "': expected " + paramCount + ", got " + args.size());
+                }
+            }
+        }
+        var checkCount = Math.min(args.size(), paramCount);
+        for (var i = 0; i < checkCount; i++) {
+            var param = signature.parameters().get(i);
+            var paramType = param.type();
+            if (paramType == null) {
+                continue;
+            }
+            checkAssignable(args.get(i).type(), paramType);
+        }
+    }
+
+    private void validateReturnType(@NotNull String funcName, @Nullable GdType resolvedReturnType, @NotNull GdType targetType) {
+        if (resolvedReturnType == null) {
+            throw invalidInsn("Return type is required for non-utility function: " + funcName);
+        }
+        if (resolvedReturnType instanceof GdVoidType) {
+            throw invalidInsn("CallAssign expects a non-void function: " + funcName);
+        }
+        checkAssignable(resolvedReturnType, targetType);
+    }
+
+    /// Renders a ValueRef for a conditional expression without emitting code.
+    private @NotNull RenderResult renderCondition(@NotNull ValueRef condition) {
+        if (!(condition.type() instanceof GdBoolType)) {
+            throw invalidInsn("jumpIf condition must be bool, got '" + condition.type().getTypeName() + "'");
+        }
+        return new RenderResult(condition.generateCode(), List.of());
+    }
+
+    /// Renders a ValueRef as a C argument, adding '&' if needed for pass-by-reference types.
+    /// - Primitive types and object pointers: pass by value (no &)
+    /// - Value-semantic types (String, StringName, Variant, etc.): pass by pointer (&)
+    private @NotNull RenderResult renderArgument(@NotNull ValueRef value) {
+        var type = value.type();
+
+        // Special handling for variable references that are already refs
+        if (value instanceof VarValue(var variable) && variable.ref()) {
+            // ref variables are already pointers, use as-is
+            return new RenderResult(value.generateCode(), List.of());
+        }
+
+        // Determine if we need to add &
+        if (needsAddressOf(type)) {
+            return renderValueAddress(value);
+        }
+        return new RenderResult(value.generateCode(), List.of());
+    }
+
+    /// Determines if a type needs '&' when passed as argument.
+    /// - Primitives (bool, int, float): NO
+    /// - Object pointers: NO
+    /// - Value-semantic types (String, Variant, Array, etc.): YES
+    private boolean needsAddressOf(@NotNull GdType type) {
+        // Primitives are passed by value
+        // Object pointers are already pointers
+        // All other types (String, StringName, Variant, Array, Dictionary, etc.)
+        // are value-semantic structs that need to be passed by pointer
+        return !(type instanceof GdPrimitiveType) && !(type instanceof GdObjectType);
+    }
+
+    /// Prepares the RHS value for assignment, copying if needed for value-semantic types.
+    /// Returns the C code expression for the prepared value.
+    @SuppressWarnings("unused") // targetType reserved for future type conversion logic
+    private @NotNull RenderResult prepareRhsValue(@NotNull ValueRef value, @NotNull GdType targetType) {
+        var type = value.type();
+        var code = value.generateCode();
+
+        // Primitives and object pointers: direct assignment
+        if (type instanceof GdPrimitiveType || type instanceof GdObjectType) {
+            return new RenderResult(code, List.of());
+        }
+
+        // Value-semantic types: need to copy
+        // For String, StringName, Variant, Array, Dictionary, etc.
+        var copyFunc = helper.renderCopyAssignFunctionName(type);
+        if (!copyFunc.isEmpty()) {
+            // Need to copy: godot_new_<Type>_with_<Type>(source_ptr)
+            var tempName = newTempName(type.getTypeName().toLowerCase());
+            var sourcePtr = renderValueAddress(value);
+            var temps = new ArrayList<TempVar>(sourcePtr.temps());
+            temps.add(new TempVar(tempName, type, copyFunc + "(" + sourcePtr.code() + ")"));
+            return new RenderResult(tempName, temps);
+        }
+
+        return new RenderResult(code, List.of());
+    }
+
+    /// Prepares a value for return, copying if needed.
+    private @NotNull RenderResult prepareReturnValue(@NotNull ValueRef value) {
+        var type = value.type();
+        var code = value.generateCode();
+
+        // Primitives and object pointers: direct return
+        if (type instanceof GdPrimitiveType || type instanceof GdObjectType) {
+            return new RenderResult(code, List.of());
+        }
+
+        // Value-semantic types: need to copy for return
+        var copyFunc = helper.renderCopyAssignFunctionName(type);
+        if (!copyFunc.isEmpty()) {
+            // Generate copy: godot_new_<Type>_with_<Type>(source_ptr)
+            var sourcePtr = renderValueAddress(value);
+            return new RenderResult(copyFunc + "(" + sourcePtr.code() + ")", sourcePtr.temps());
+        }
+
+        return new RenderResult(code, List.of());
+    }
+
+    private void emitTempDecls(@NotNull List<TempVar> temps) {
+        for (var temp : temps) {
+            out.append(helper.renderGdTypeInC(temp.type())).append(" ").append(temp.name()).append(" = ")
+               .append(temp.initCode()).append(";\n");
+        }
+    }
+
+    private void emitTempDestroys(@NotNull List<TempVar> temps) {
+        for (var i = temps.size() - 1; i >= 0; i--) {
+            var temp = temps.get(i);
+            emitDestroy(temp.name(), temp.type());
+        }
+    }
+
+    /// Renders a pointer to a value, materializing expressions when needed.
+    /// - ref variables already point to the value
+    /// - non-ref variables use &var
+    /// - expressions are materialized to a temp, then &temp
+    private @NotNull RenderResult renderValueAddress(@NotNull ValueRef value) {
+        if (value instanceof VarValue(var variable)) {
+            var code = value.generateCode();
+            if (variable.ref()) {
+                return new RenderResult(code, List.of());
+            }
+            return new RenderResult("&" + code, List.of());
+        }
+        if (value instanceof ExprValue exprValue) {
+            var tempName = newTempName(exprValue.type().getTypeName().toLowerCase());
+            var temp = new TempVar(tempName, exprValue.type(), exprValue.generateCode());
+            return new RenderResult("&" + tempName, List.of(temp));
+        }
+        return new RenderResult("&" + value.generateCode(), List.of());
+    }
+
+    private void emitDestroy(@NotNull String varCode, @NotNull GdType type) {
+        if (!type.isDestroyable() || type instanceof GdObjectType) {
+            return;
+        }
+        var destroyFunc = helper.renderDestroyFunctionName(type);
+        out.append(destroyFunc).append("(&").append(varCode).append(");\n");
+    }
+
+    /// Emits code to release ownership of an object.
+    /// Uses try_release_object for unknown RefCounted status, release_object for definite RefCounted.
+    private void emitReleaseObject(@NotNull String varCode, @NotNull GdObjectType objType) {
+        var status = classRegistry().getRefCountedStatus(objType);
+        var godotPtrCode = toGodotObjectPtr(varCode, objType);
+
+        switch (status) {
+            case YES -> out.append("release_object(").append(godotPtrCode).append(");\n");
+            case NO -> {} // No release needed for non-RefCounted objects
+            case UNKNOWN -> out.append("try_release_object(").append(godotPtrCode).append(");\n");
+        }
+    }
+
+    /// Emits code to own an object.
+    /// Uses try_own_object for unknown RefCounted status, own_object for definite RefCounted.
+    private void emitOwnObject(@NotNull String varCode, @NotNull GdObjectType objType) {
+        var status = classRegistry().getRefCountedStatus(objType);
+        var godotPtrCode = toGodotObjectPtr(varCode, objType);
+
+        switch (status) {
+            case YES -> out.append("own_object(").append(godotPtrCode).append(");\n");
+            case NO -> {} // No own needed for non-RefCounted objects
+            case UNKNOWN -> out.append("try_own_object(").append(godotPtrCode).append(");\n");
+        }
+    }
+
+    /// Converts a GDCC object pointer to Godot object pointer.
+    /// For GDCC types: use ->_object
+    /// For engine types: use as-is
+    private @NotNull String toGodotObjectPtr(@NotNull String varCode, @NotNull GdObjectType objType) {
+        if (objType.checkGdccType(classRegistry())) {
+            return varCode + "->_object";
+        }
+        return varCode;
+    }
+
+    private boolean isPrepareBlock() {
+        return currentBlock != null && "_prepare".equals(currentBlock.id());
+    }
+
+    private boolean isFinallyBlock() {
+        return currentBlock != null && "_finally".equals(currentBlock.id());
     }
 
     public sealed interface ValueRef permits VarValue, ExprValue {
@@ -252,6 +621,16 @@ public final class CBodyBuilder {
 
         public @NotNull String generateCode() {
             return "$" + variable.id();
+        }
+    }
+
+    private record TempVar(@NotNull String name, @NotNull GdType type, @NotNull String initCode) {
+    }
+
+    private record RenderResult(@NotNull String code, @NotNull List<TempVar> temps) {
+        private RenderResult {
+            Objects.requireNonNull(code);
+            Objects.requireNonNull(temps);
         }
     }
 }

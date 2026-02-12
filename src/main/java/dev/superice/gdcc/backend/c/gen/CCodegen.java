@@ -127,7 +127,7 @@ public class CCodegen implements Codegen {
     private void generateFunctionPrepareBlock() {
         for (var classDef : module.getClassDefs()) {
             for (var func : classDef.getFunctions()) {
-                var prepareBB = new LirBasicBlock("prepare");
+                var prepareBB = new LirBasicBlock("_prepare");
                 var funcEntry = func.getEntryBlockId();
                 func.addBasicBlock(prepareBB);
                 // initialize variables
@@ -154,7 +154,7 @@ public class CCodegen implements Codegen {
                     }
                 }
                 prepareBB.instructions().add(new GotoInsn(funcEntry));
-                func.setEntryBlockId("prepare");
+                func.setEntryBlockId("_prepare");
             }
         }
     }
