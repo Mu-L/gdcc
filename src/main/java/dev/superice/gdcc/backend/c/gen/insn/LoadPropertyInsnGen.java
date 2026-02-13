@@ -76,28 +76,28 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
             }
             case "engine" -> {
                 var objectType = (GdObjectType) objectVar.type();
-                var expr = "godot_" + objectType.getTypeName() + "_get_" + insn.propertyName() + "($" + objectVar.id() + ")";
-                bodyBuilder.assignExpr(target, expr, propertyType);
+                var getterName = "godot_" + objectType.getTypeName() + "_get_" + insn.propertyName();
+                var objectValue = bodyBuilder.valueOfVar(objectVar);
+                bodyBuilder.callAssign(target, getterName, propertyType, List.of(objectValue));
             }
             case "general" -> {
-                var objectType = (GdObjectType) objectVar.type();
-                var objectRef = helper.checkGdccType(objectType) ? "$" + objectVar.id() + "->_object" : "$" + objectVar.id();
-                var tempVar = bodyBuilder.newTempVariable(
-                        "variant",
-                        GdVariantType.VARIANT,
-                        "godot_Object_get(" + objectRef + ", GD_STATIC_SN(u8\"" + insn.propertyName() + "\"))"
-                );
+                // Pass objectVar directly; renderArgument will auto-convert GDCC ptrs
+                // to Godot raw ptrs via ->_object since godot_Object_get requires Godot ptrs.
+                var objectValue = bodyBuilder.valueOfVar(objectVar);
+                var propertyName = bodyBuilder.valueOfStringNamePtrLiteral(insn.propertyName());
+                var tempVar = bodyBuilder.newTempVariable("variant", GdVariantType.VARIANT, "godot_new_Variant_nil()");
                 bodyBuilder.declareTempVar(tempVar);
+                bodyBuilder.callAssign(tempVar, "godot_Object_get", GdVariantType.VARIANT, List.of(objectValue, propertyName));
                 var resultType = resultVar.type();
-                var unpackExpr = helper.renderUnpackFunctionName(resultType) + "(&" + tempVar.name() + ")";
-                bodyBuilder.assignExpr(target, unpackExpr, resultType);
+                var unpackFunc = helper.renderUnpackFunctionName(resultType);
+                bodyBuilder.callAssign(target, unpackFunc, resultType, List.of(tempVar));
                 bodyBuilder.destroyTempVar(tempVar);
             }
             case "builtin" -> {
-                var objectRef = objectVar.ref() ? "$" + objectVar.id() : "&$" + objectVar.id();
                 var objectType = objectVar.type();
-                var expr = "godot_" + objectType.getTypeName() + "_get_" + insn.propertyName() + "(" + objectRef + ")";
-                bodyBuilder.assignExpr(target, expr, propertyType);
+                var getterName = "godot_" + objectType.getTypeName() + "_get_" + insn.propertyName();
+                var objectValue = bodyBuilder.valueOfVar(objectVar);
+                bodyBuilder.callAssign(target, getterName, propertyType, List.of(objectValue));
             }
             default -> throw bodyBuilder.invalidInsn("Unsupported LOAD_PROPERTY generation mode: " + genMode);
         }

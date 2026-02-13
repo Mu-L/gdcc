@@ -272,6 +272,83 @@ GDCC 当前 C 后端函数体代码生成主要基于 FreeMarker 模板与 `CGen
 4. 补齐测试后迁移 P1 P2 P3
 5. 准备后续将 `CGenHelper` 静态能力迁出到 util
 
+## 11. PtrKind 与自动指针转换机制
+
+### 11.1 背景与动机
+
+GDExtension API 不接受 GDCC 对象指针，调用时需要 `gdcc_object->_object` 转换；从 GDExtension API 返回的 `godot_Object*` 若目标为 GDCC 变量则需要 `gdcc_object_from_godot_object_ptr` 转换。在 Phase D 阶段，`toGodotObjectPtr` 和 `fromGodotObjectPtr` 方法已实现，但 `callVoid`/`callAssign`/`renderArgument` 路径未集成这些转换，导致 ABI 不匹配。
+
+### 11.2 PtrKind 枚举
+
+在 `ValueRef` 上引入指针来源语义，避免仅靠 `GdType` 推断而产生歧义：
+
+```java
+public enum PtrKind {
+    GDCC_PTR,    // GDCC 对象指针（带 _object 字段的 wrapper）
+    GODOT_PTR,   // Godot/引擎原始对象指针
+    NON_OBJECT   // 非对象指针（基元、值语义类型等）
+}
+```
+
+**解析规则**（`resolvePtrKind`）：
+- `GdObjectType` + `checkGdccType` → `GDCC_PTR`
+- `GdObjectType` + 非 GDCC → `GODOT_PTR`（含引擎类型和未知类型）
+- 其他类型 → `NON_OBJECT`
+
+**工厂方法**：
+- `valueOfVar(variable)` — 从变量类型自动推断
+- `valueOfExpr(code, type)` — 从类型自动推断
+- `valueOfExpr(code, type, ptrKind)` — 显式指定（用于已知来源语义的表达式）
+
+### 11.3 自动转换规则
+
+#### 参数转换（renderArgument）
+
+调用 `callVoid`/`callAssign` 时，通过 `checkGlobalFuncRequireGodotRawPtr(funcName)` 判断目标函数是否需要 Godot 原始指针：
+
+- 函数名以 `godot_` 开头 → 需要转换
+- 函数名以 `own_object`/`release_object` 结尾 → 需要转换
+- `try_destroy_object`、`gdcc_object_from_godot_object_ptr` → 需要转换
+
+当需要转换且参数 `ptrKind == GDCC_PTR` 时，自动调用 `toGodotObjectPtr`（生成 `$arg->_object`）。
+
+#### 返回值转换（callAssign）
+
+调用 `callAssign` 时，通过 `checkGlobalFuncReturnGodotRawPtr(funcName)` 判断返回值是否为 Godot 原始指针：
+
+- 函数名以 `godot_` 开头 → 返回 Godot 指针
+
+当返回为 Godot 指针且目标变量类型为 GDCC 对象（`checkGdccType`）时，自动调用 `fromGodotObjectPtr` 包裹整个调用表达式。
+
+### 11.4 指令生成器编写指南
+
+**新规则**：指令生成器不应手动拼接 `->_object` 或 `gdcc_object_from_godot_object_ptr`。只需：
+
+1. 使用 `bodyBuilder.valueOfVar(objectVar)` 传递对象参数
+2. 使用正确的函数名调用 `callVoid`/`callAssign`
+3. 转换由 CBodyBuilder 自动完成
+
+**示例** — `LoadPropertyInsnGen` "general" 模式（旧 vs 新）：
+
+```java
+// 旧：手动拼接 ->_object
+var objectRef = helper.checkGdccType(objectType) ? "$" + objectVar.id() + "->_object" : "$" + objectVar.id();
+var objectValue = bodyBuilder.valueOfExpr(objectRef, new GdObjectType("Object"));
+
+// 新：直接传变量，自动转换
+var objectValue = bodyBuilder.valueOfVar(objectVar);
+```
+
+**注意**：`callAssign` 的返回值转换仅在 `funcName` 满足 `checkGlobalFuncReturnGodotRawPtr` 时生效。对于已在函数名中包含显式类型转换的调用（如 `renderUnpackFunctionName` 返回的 `(MyClass*)godot_new_gdcc_Object_with_Variant`），由于函数名不以 `godot_` 开头，不会触发二次转换。
+
+### 11.5 后续迁移指引
+
+对于尚未迁移到 CBodyBuilder 的指令生成器（使用 FreeMarker 模板），迁移时应：
+
+1. 移除模板中手动的 `->_object` 和 `gdcc_object_from_godot_object_ptr` 逻辑
+2. 改用 `callVoid`/`callAssign` + `valueOfVar`，依赖自动转换
+3. 仅在自动转换规则无法覆盖的特殊场景（如非标准函数名）使用 `valueOfExpr` 的显式 `PtrKind` 重载
+
 ---
 
 本文件作为评审基线，后续代码实施应严格以本说明和 `doc/gdcc_c_backend.md` 为语义依据。

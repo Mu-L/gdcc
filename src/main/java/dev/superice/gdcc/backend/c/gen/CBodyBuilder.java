@@ -1,24 +1,17 @@
 package dev.superice.gdcc.backend.c.gen;
 
 import dev.superice.gdcc.exception.InvalidInsnException;
-import dev.superice.gdcc.lir.LirBasicBlock;
-import dev.superice.gdcc.lir.LirClassDef;
-import dev.superice.gdcc.lir.LirFunctionDef;
-import dev.superice.gdcc.lir.LirInstruction;
-import dev.superice.gdcc.lir.LirVariable;
+import dev.superice.gdcc.lir.*;
 import dev.superice.gdcc.scope.ClassRegistry;
-import dev.superice.gdcc.type.GdObjectType;
-import dev.superice.gdcc.type.GdPrimitiveType;
-import dev.superice.gdcc.type.GdType;
-import dev.superice.gdcc.type.GdIntType;
-import dev.superice.gdcc.type.GdVoidType;
-import dev.superice.gdcc.type.GdBoolType;
+import dev.superice.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.ArrayList;
+
+import static dev.superice.gdcc.util.StringUtil.escapeStringLiteral;
 
 /// Builder for generating C function body code.
 ///
@@ -102,12 +95,12 @@ public final class CBodyBuilder {
     public @NotNull TempVar newTempVariable(@NotNull String prefix,
                                             @NotNull GdType type,
                                             @NotNull String initCode) {
-        return new TempVar(newTempName(prefix), type, initCode);
+        return new TempVar(newTempName(prefix), type, initCode, resolvePtrKind(type));
     }
 
     public @NotNull CBodyBuilder declareTempVar(@NotNull TempVar temp) {
         out.append(helper.renderGdTypeInC(temp.type())).append(" ").append(temp.name()).append(" = ")
-           .append(temp.initCode()).append(";\n");
+                .append(temp.initCode()).append(";\n");
         return this;
     }
 
@@ -157,14 +150,51 @@ public final class CBodyBuilder {
         return out.toString();
     }
 
+    /// Resolves the PtrKind for a given GdType based on the class registry.
+    private @NotNull PtrKind resolvePtrKind(@NotNull GdType type) {
+        if (type instanceof GdObjectType objType) {
+            if (objType.checkGdccType(classRegistry())) {
+                return PtrKind.GDCC_PTR;
+            }
+            return PtrKind.GODOT_PTR;
+        }
+        return PtrKind.NON_OBJECT;
+    }
+
     /// Creates a value reference from a variable.
     public @NotNull ValueRef valueOfVar(@NotNull LirVariable variable) {
-        return new VarValue(variable);
+        return new VarValue(variable, resolvePtrKind(variable.type()));
+    }
+
+    public @NotNull ValueRef valueOfVar(@NotNull String variableName) {
+        var variable = func.getVariableById(variableName);
+        if (variable == null) {
+            throw new InvalidInsnException(func.getName(), currentBlock() != null ? currentBlock().id() : "unknown",
+                    currentInsnIndex(), currentInsn != null ? currentInsn.toString() : "unknown",
+                    "Variable '" + variableName + "' not found in function");
+        }
+        return valueOfVar(variable);
     }
 
     /// Creates a value reference from a raw C expression and type.
+    /// PtrKind is auto-resolved from the type.
     public @NotNull ValueRef valueOfExpr(@NotNull String code, @NotNull GdType type) {
-        return new ExprValue(code, type);
+        return new ExprValue(code, type, resolvePtrKind(type));
+    }
+
+    /// Creates a value reference from a raw C expression, type, and explicit pointer kind.
+    public @NotNull ValueRef valueOfExpr(@NotNull String code, @NotNull GdType type, @NotNull PtrKind ptrKind) {
+        return new ExprValue(code, type, ptrKind);
+    }
+
+    /// Creates a value reference for a static StringName pointer literal.
+    public @NotNull ValueRef valueOfStringNamePtrLiteral(@NotNull String value) {
+        return new StringNamePtrLiteralValue(value);
+    }
+
+    /// Creates a value reference for a static String pointer literal.
+    public @NotNull ValueRef valueOfStringPtrLiteral(@NotNull String value) {
+        return new StringPtrLiteralValue(value);
     }
 
     /// Creates a target reference from a variable.
@@ -174,7 +204,7 @@ public final class CBodyBuilder {
         if (variable.ref()) {
             throw invalidInsn("Cannot assign to reference variable '" + variable.id() + "'");
         }
-        return new TargetRef(variable);
+        return new VarTargetRef(variable);
     }
 
     public @NotNull CBodyBuilder assignVar(@NotNull TargetRef target, @NotNull ValueRef value) {
@@ -237,7 +267,7 @@ public final class CBodyBuilder {
     }
 
     public @NotNull CBodyBuilder callVoid(@NotNull String funcName, @NotNull List<ValueRef> args) {
-        var argsResult = renderArgs(args);
+        var argsResult = renderArgs(funcName, args);
         emitTempDecls(argsResult.temps());
         out.append(funcName).append("(").append(argsResult.code()).append(");\n");
         emitTempDestroys(argsResult.temps());
@@ -261,7 +291,7 @@ public final class CBodyBuilder {
         var targetCode = target.generateCode();
         var targetType = target.type();
 
-        var argsResult = renderArgs(args);
+        var argsResult = renderArgs(funcName, args);
         emitTempDecls(argsResult.temps());
 
         // Phase C: Handle old value destruction before assignment
@@ -273,8 +303,17 @@ public final class CBodyBuilder {
             }
         }
 
-        // Generate call and assignment
-        out.append(targetCode).append(" = ").append(funcName).append("(").append(argsResult.code()).append(");\n");
+        // Generate call expression
+        var callExpr = funcName + "(" + argsResult.code() + ")";
+
+        // Convert Godot raw ptr return to GDCC ptr if target is a GDCC object
+        if (checkGlobalFuncReturnGodotRawPtr(funcName)
+                && targetType instanceof GdObjectType objType
+                && objType.checkGdccType(classRegistry())) {
+            callExpr = fromGodotObjectPtr(callExpr, objType);
+        }
+
+        out.append(targetCode).append(" = ").append(callExpr).append(";\n");
 
         // Own new object if returned type is object
         if (targetType instanceof GdObjectType objType) {
@@ -333,20 +372,21 @@ public final class CBodyBuilder {
 
         var retTemp = newTempVariable("ret", value.type(), returnResult.code());
         out.append(helper.renderGdTypeInC(retTemp.type())).append(" ").append(retTemp.name()).append(" = ")
-           .append(retTemp.initCode()).append(";\n");
+                .append(retTemp.initCode()).append(";\n");
         emitTempDestroys(returnResult.temps());
         out.append("return ").append(retTemp.name()).append(";\n");
         return this;
     }
 
-    private @NotNull RenderResult renderArgs(@NotNull List<ValueRef> args) {
+    private @NotNull RenderResult renderArgs(@NotNull String funcName, @NotNull List<ValueRef> args) {
+        var requireGodotRawPtr = checkGlobalFuncRequireGodotRawPtr(funcName);
         var rendered = new StringBuilder();
         var temps = new ArrayList<TempVar>();
         for (var i = 0; i < args.size(); i++) {
             if (i > 0) {
                 rendered.append(", ");
             }
-            var argResult = renderArgument(args.get(i));
+            var argResult = renderArgument(args.get(i), requireGodotRawPtr);
             rendered.append(argResult.code());
             temps.addAll(argResult.temps());
         }
@@ -363,8 +403,8 @@ public final class CBodyBuilder {
     }
 
     private void checkTargetAssignable(@NotNull TargetRef target) {
-        if (target.variable().ref()) {
-            throw invalidInsn("Cannot assign to reference variable '" + target.variable().id() + "'");
+        if (target.isRef()) {
+            throw invalidInsn("Cannot assign to reference variable");
         }
     }
 
@@ -381,6 +421,10 @@ public final class CBodyBuilder {
 
     private void validateCallArgs(@NotNull String funcName, @NotNull List<ValueRef> args) {
         var signature = classRegistry().findUtilityFunctionSignature(funcName);
+        if (signature == null) {
+            funcName = "godot_" + funcName;
+            signature = classRegistry().findUtilityFunctionSignature(funcName);
+        }
         if (signature == null) {
             return;
         }
@@ -429,11 +473,18 @@ public final class CBodyBuilder {
     /// Renders a ValueRef as a C argument, adding '&' if needed for pass-by-reference types.
     /// - Primitive types and object pointers: pass by value (no &)
     /// - Value-semantic types (String, StringName, Variant, etc.): pass by pointer (&)
-    private @NotNull RenderResult renderArgument(@NotNull ValueRef value) {
+    /// When requireGodotRawPtr is true, GDCC object pointers are auto-converted to Godot
+    /// object pointers via `->_object`.
+    private @NotNull RenderResult renderArgument(@NotNull ValueRef value, boolean requireGodotRawPtr) {
         var type = value.type();
 
+        // Convert GDCC object ptr to Godot raw ptr when calling GDExtension functions
+        if (requireGodotRawPtr && value.ptrKind() == PtrKind.GDCC_PTR && type instanceof GdObjectType objType) {
+            return new RenderResult(toGodotObjectPtr(value.generateCode(), objType), List.of());
+        }
+
         // Special handling for variable references that are already refs
-        if (value instanceof VarValue(var variable) && variable.ref()) {
+        if (value instanceof VarValue varValue && varValue.variable().ref()) {
             // ref variables are already pointers, use as-is
             return new RenderResult(value.generateCode(), List.of());
         }
@@ -522,10 +573,14 @@ public final class CBodyBuilder {
     /// - ref variables already point to the value
     /// - non-ref variables use &var
     /// - expressions are materialized to a temp, then &temp
+    /// - string literals use GD_STATIC_S or GD_STATIC_SN macros, which are already pointers
     private @NotNull RenderResult renderValueAddress(@NotNull ValueRef value) {
-        if (value instanceof VarValue(var variable)) {
+        if (value instanceof StringNamePtrLiteralValue || value instanceof StringPtrLiteralValue) {
+            return new RenderResult(value.generateCode(), List.of());
+        }
+        if (value instanceof VarValue varValue) {
             var code = value.generateCode();
-            if (variable.ref()) {
+            if (varValue.variable().ref()) {
                 return new RenderResult(code, List.of());
             }
             return new RenderResult("&" + code, List.of());
@@ -585,7 +640,8 @@ public final class CBodyBuilder {
         var status = classRegistry().getRefCountedStatus(objType);
         switch (status) {
             case YES -> out.append("own_object(").append(godotPtrCode).append(");\n");
-            case NO -> { }
+            case NO -> {
+            }
             case UNKNOWN -> out.append("try_own_object(").append(godotPtrCode).append(");\n");
         }
     }
@@ -595,7 +651,8 @@ public final class CBodyBuilder {
         var status = classRegistry().getRefCountedStatus(objType);
         switch (status) {
             case YES -> out.append("release_object(").append(godotPtrCode).append(");\n");
-            case NO -> { }
+            case NO -> {
+            }
             case UNKNOWN -> out.append("try_release_object(").append(godotPtrCode).append(");\n");
         }
     }
@@ -608,15 +665,44 @@ public final class CBodyBuilder {
         return currentBlock != null && "_finally".equals(currentBlock.id());
     }
 
-    public sealed interface ValueRef permits VarValue, ExprValue {
+    private boolean checkGlobalFuncRequireGodotRawPtr(@NotNull String funcName) {
+        if (funcName.startsWith("godot_")) {
+            return true;
+        }
+        return funcName.endsWith("own_object") || funcName.endsWith("release_object") ||
+                funcName.equals("try_destroy_object") || funcName.equals("gdcc_object_from_godot_object_ptr");
+    }
+
+    private boolean checkGlobalFuncReturnGodotRawPtr(@NotNull String funcName) {
+        if (funcName.startsWith("godot_")) {
+            return true;
+        }
+        return funcName.equals("gdcc_object_from_godot_object_ptr") || funcName.equals("godot_new_gdcc_Object_with_Variant");
+    }
+
+    /// Indicates the pointer kind of an object value reference.
+    /// Used to determine whether conversion is needed when passing to/from GDExtension APIs.
+    public enum PtrKind {
+        /// GDCC object pointer (holds wrapper with `_object` field, e.g. `MyClass*`)
+        GDCC_PTR,
+        /// Godot/engine raw object pointer (e.g. `godot_Node*`, `GDExtensionObjectPtr`)
+        GODOT_PTR,
+        /// Not an object pointer (primitives, value-semantic types, etc.)
+        NON_OBJECT
+    }
+
+    public sealed interface ValueRef permits VarValue, ExprValue, StringNamePtrLiteralValue, StringPtrLiteralValue, TempVar {
         @NotNull GdType type();
 
         @NotNull String generateCode();
+
+        @NotNull PtrKind ptrKind();
     }
 
-    public record VarValue(@NotNull LirVariable variable) implements ValueRef {
+    public record VarValue(@NotNull LirVariable variable, @NotNull PtrKind ptrKind) implements ValueRef {
         public VarValue {
             Objects.requireNonNull(variable);
+            Objects.requireNonNull(ptrKind);
         }
 
         @Override
@@ -630,10 +716,11 @@ public final class CBodyBuilder {
         }
     }
 
-    public record ExprValue(@NotNull String code, @NotNull GdType type) implements ValueRef {
+    public record ExprValue(@NotNull String code, @NotNull GdType type, @NotNull PtrKind ptrKind) implements ValueRef {
         public ExprValue {
             Objects.requireNonNull(code);
             Objects.requireNonNull(type);
+            Objects.requireNonNull(ptrKind);
         }
 
         @Override
@@ -647,25 +734,94 @@ public final class CBodyBuilder {
         }
     }
 
-    public record TargetRef(@NotNull LirVariable variable) {
-        public TargetRef {
+    public record StringNamePtrLiteralValue(@NotNull String value) implements ValueRef {
+        public StringNamePtrLiteralValue {
+            Objects.requireNonNull(value);
+        }
+
+        @Override
+        public @NotNull GdType type() {
+            return GdStringNameType.STRING_NAME;
+        }
+
+        @Override
+        public @NotNull String generateCode() {
+            return "GD_STATIC_SN(u8\"" + escapeStringLiteral(value) + "\")";
+        }
+
+        @Override
+        public @NotNull PtrKind ptrKind() {
+            return PtrKind.NON_OBJECT;
+        }
+    }
+
+    public record StringPtrLiteralValue(@NotNull String value) implements ValueRef {
+        public StringPtrLiteralValue {
+            Objects.requireNonNull(value);
+        }
+
+        @Override
+        public @NotNull GdType type() {
+            return GdStringType.STRING;
+        }
+
+        @Override
+        public @NotNull String generateCode() {
+            return "GD_STATIC_S(u8\"" + escapeStringLiteral(value) + "\")";
+        }
+
+        @Override
+        public @NotNull PtrKind ptrKind() {
+            return PtrKind.NON_OBJECT;
+        }
+    }
+
+    public sealed interface TargetRef permits VarTargetRef, TempVar {
+        @NotNull GdType type();
+
+        @NotNull String generateCode();
+
+        boolean isRef();
+    }
+
+    public record VarTargetRef(@NotNull LirVariable variable) implements TargetRef {
+        public VarTargetRef {
             Objects.requireNonNull(variable);
         }
 
+        @Override
         public @NotNull GdType type() {
             return variable.type();
         }
 
+        @Override
         public @NotNull String generateCode() {
             return "$" + variable.id();
         }
+
+        @Override
+        public boolean isRef() {
+            return variable.ref();
+        }
     }
 
-    public record TempVar(@NotNull String name, @NotNull GdType type, @NotNull String initCode) {
+    public record TempVar(@NotNull String name, @NotNull GdType type,
+                          @NotNull String initCode, @NotNull PtrKind ptrKind) implements ValueRef, TargetRef {
         public TempVar {
             Objects.requireNonNull(name);
             Objects.requireNonNull(type);
             Objects.requireNonNull(initCode);
+            Objects.requireNonNull(ptrKind);
+        }
+
+        @Override
+        public @NotNull String generateCode() {
+            return name;
+        }
+
+        @Override
+        public boolean isRef() {
+            return false;
         }
     }
 

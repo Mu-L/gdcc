@@ -12,6 +12,7 @@ import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.lir.insn.DestructInsn;
+import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.*;
 import org.junit.jupiter.api.BeforeEach;
@@ -328,9 +329,16 @@ public class CBodyBuilderPhaseCTest {
     @DisplayName("Return Value Semantics Tests")
     class ReturnValueSemanticsTests {
 
+        /// Helper to set up _finally block context for return tests.
+        private void setFinallyBlockContext() {
+            var finallyBlock = new LirBasicBlock("_finally");
+            builder.setCurrentPosition(finallyBlock, 0, new ReturnInsn(null));
+        }
+
         @Test
         @DisplayName("Returning primitive should be direct")
         void testReturnPrimitive() {
+            setFinallyBlockContext();
             var intVar = new LirVariable("i", GdIntType.INT, lirFunctionDef);
             var value = builder.valueOfVar(intVar);
 
@@ -342,6 +350,7 @@ public class CBodyBuilderPhaseCTest {
         @Test
         @DisplayName("Returning String should copy")
         void testReturnString() {
+            setFinallyBlockContext();
             var strVar = new LirVariable("s", GdStringType.STRING, lirFunctionDef);
             var value = builder.valueOfVar(strVar);
 
@@ -354,6 +363,7 @@ public class CBodyBuilderPhaseCTest {
         @Test
         @DisplayName("Returning object should be direct (pointer)")
         void testReturnObject() {
+            setFinallyBlockContext();
             var objVar = new LirVariable("obj", new GdObjectType("Node"), lirFunctionDef);
             var value = builder.valueOfVar(objVar);
 
@@ -365,6 +375,7 @@ public class CBodyBuilderPhaseCTest {
         @Test
         @DisplayName("Returning String expression should destroy temp after copy")
         void testReturnStringExprTempOrder() {
+            setFinallyBlockContext();
             var value = builder.valueOfExpr("some_string_expr", GdStringType.STRING);
 
             builder.returnValue(value);
@@ -518,6 +529,195 @@ public class CBodyBuilderPhaseCTest {
             var result = builder.build();
             assertTrue(result.contains("try_release_object($obj)"), "Should try_release unknown object");
             assertTrue(result.contains("try_own_object($obj)"), "Should try_own unknown object");
+        }
+    }
+
+    @Nested
+    @DisplayName("PtrKind Resolution Tests")
+    class PtrKindResolutionTests {
+
+        @Test
+        @DisplayName("GDCC object variable should have GDCC_PTR kind")
+        void testGdccObjectVarPtrKind() {
+            var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var value = builder.valueOfVar(gdccVar);
+            assertEquals(CBodyBuilder.PtrKind.GDCC_PTR, value.ptrKind());
+        }
+
+        @Test
+        @DisplayName("Engine object variable should have GODOT_PTR kind")
+        void testEngineObjectVarPtrKind() {
+            var nodeVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
+            var value = builder.valueOfVar(nodeVar);
+            assertEquals(CBodyBuilder.PtrKind.GODOT_PTR, value.ptrKind());
+        }
+
+        @Test
+        @DisplayName("Primitive variable should have NON_OBJECT kind")
+        void testPrimitiveVarPtrKind() {
+            var intVar = new LirVariable("i", GdIntType.INT, lirFunctionDef);
+            var value = builder.valueOfVar(intVar);
+            assertEquals(CBodyBuilder.PtrKind.NON_OBJECT, value.ptrKind());
+        }
+
+        @Test
+        @DisplayName("Expression with explicit PtrKind should use provided kind")
+        void testExprExplicitPtrKind() {
+            var value = builder.valueOfExpr("some_ptr", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.GODOT_PTR);
+            assertEquals(CBodyBuilder.PtrKind.GODOT_PTR, value.ptrKind());
+        }
+
+        @Test
+        @DisplayName("Expression PtrKind should be auto-resolved from type by default")
+        void testExprAutoResolvedPtrKind() {
+            var value = builder.valueOfExpr("some_ptr", new GdObjectType("MyGdccClass"));
+            assertEquals(CBodyBuilder.PtrKind.GDCC_PTR, value.ptrKind());
+        }
+    }
+
+    @Nested
+    @DisplayName("GDCC Object Argument Conversion Tests")
+    class GdccObjectArgConversionTests {
+
+        @Test
+        @DisplayName("GDCC object arg should be converted to ->_object when calling godot_ function")
+        void testGdccObjectArgConvertedForGodotFunc() {
+            var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var value = builder.valueOfVar(gdccVar);
+
+            builder.callVoid("godot_some_func", List.of(value));
+
+            assertEquals("godot_some_func($myObj->_object);\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("Engine object arg should NOT be converted when calling godot_ function")
+        void testEngineObjectArgNotConvertedForGodotFunc() {
+            var nodeVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
+            var value = builder.valueOfVar(nodeVar);
+
+            builder.callVoid("godot_Node_do_thing", List.of(value));
+
+            assertEquals("godot_Node_do_thing($node);\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("GDCC object arg should NOT be converted when calling non-godot function")
+        void testGdccObjectArgNotConvertedForNonGodotFunc() {
+            var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var value = builder.valueOfVar(gdccVar);
+
+            builder.callVoid("my_custom_func", List.of(value));
+
+            assertEquals("my_custom_func($myObj);\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("GDCC object arg should be converted for own_object function")
+        void testGdccObjectArgConvertedForOwnObject() {
+            var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var value = builder.valueOfVar(gdccVar);
+
+            builder.callVoid("try_own_object", List.of(value));
+
+            assertEquals("try_own_object($myObj->_object);\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("Mixed args: GDCC object and String in godot_ call")
+        void testMixedArgsGdccAndString() {
+            var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var strVar = new LirVariable("name", GdStringType.STRING, lirFunctionDef);
+
+            builder.callVoid("godot_Object_set", List.of(
+                    builder.valueOfVar(gdccVar),
+                    builder.valueOfVar(strVar)
+            ));
+
+            assertEquals("godot_Object_set($myObj->_object, &$name);\n", builder.build());
+        }
+    }
+
+    @Nested
+    @DisplayName("GDCC Object Return Conversion Tests")
+    class GdccObjectReturnConversionTests {
+
+        @Test
+        @DisplayName("callAssign should wrap godot_ return with fromGodotObjectPtr for GDCC target")
+        void testCallAssignGdccTargetFromGodotFunc() {
+            var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+
+            builder.callAssign(targetRef, "godot_get_something", new GdObjectType("MyGdccClass"), List.of());
+
+            var result = builder.build();
+            assertTrue(result.contains("(MyGdccClass*)gdcc_object_from_godot_object_ptr(godot_get_something())"),
+                    "Should wrap godot_ return with fromGodotObjectPtr for GDCC target. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("callAssign should NOT wrap for engine target from godot_ function")
+        void testCallAssignEngineTargetFromGodotFuncNoWrap() {
+            var target = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+
+            builder.callAssign(targetRef, "godot_get_node", new GdObjectType("Node"), List.of());
+
+            var result = builder.build();
+            assertFalse(result.contains("gdcc_object_from_godot_object_ptr"),
+                    "Should NOT wrap for engine target. Actual:\n" + result);
+            assertTrue(result.contains("$node = godot_get_node()"),
+                    "Should assign directly. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("callAssign should NOT wrap for non-godot function returning GDCC object")
+        void testCallAssignNonGodotFuncNoWrap() {
+            var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+
+            builder.callAssign(targetRef, "my_create_func", new GdObjectType("MyGdccClass"), List.of());
+
+            var result = builder.build();
+            assertFalse(result.contains("gdcc_object_from_godot_object_ptr"),
+                    "Should NOT wrap for non-godot function. Actual:\n" + result);
+            assertTrue(result.contains("$myObj = my_create_func()"),
+                    "Should assign directly. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("callAssign with GDCC target from godot_ func should still do own/release")
+        void testCallAssignGdccTargetOwnRelease() {
+            var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+
+            builder.callAssign(targetRef, "godot_get_something", new GdObjectType("MyGdccClass"), List.of());
+
+            var result = builder.build();
+            // MyGdccClass extends RefCounted, should use release_object and own_object
+            assertTrue(result.contains("release_object($myObj->_object)"),
+                    "Should release old GDCC object. Actual:\n" + result);
+            assertTrue(result.contains("own_object($myObj->_object)"),
+                    "Should own new GDCC object. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("callAssign with GDCC args and GDCC return from godot_ function")
+        void testCallAssignFullGdccConversion() {
+            var target = new LirVariable("result", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+            var arg = new LirVariable("input", new GdObjectType("MyGdccClass"), lirFunctionDef);
+
+            builder.callAssign(targetRef, "godot_transform", new GdObjectType("MyGdccClass"),
+                    List.of(builder.valueOfVar(arg)));
+
+            var result = builder.build();
+            // Arg should be converted
+            assertTrue(result.contains("$input->_object"),
+                    "Should convert GDCC arg to godot ptr. Actual:\n" + result);
+            // Return should be wrapped
+            assertTrue(result.contains("gdcc_object_from_godot_object_ptr"),
+                    "Should wrap return with fromGodotObjectPtr. Actual:\n" + result);
         }
     }
 }
