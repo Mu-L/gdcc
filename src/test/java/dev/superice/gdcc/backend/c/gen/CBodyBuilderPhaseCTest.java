@@ -5,8 +5,10 @@ import dev.superice.gdcc.backend.ProjectInfo;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionEnumValue;
+import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
 import dev.superice.gdcc.gdextension.ExtensionGlobalEnum;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
+import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
@@ -65,7 +67,30 @@ public class CBodyBuilderPhaseCTest {
                         false,
                         List.of(new ExtensionEnumValue("VALUE_A", 42))
                 )),
-                Collections.emptyList(),
+                List.of(
+                        new ExtensionUtilityFunction(
+                                "utility_sum",
+                                "int",
+                                "core",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument("a", "int", null, null),
+                                        new ExtensionFunctionArgument("b", "int", null, null)
+                                )
+                        ),
+                        new ExtensionUtilityFunction(
+                                "utility_with_default",
+                                "void",
+                                "core",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument("required", "int", null, null),
+                                        new ExtensionFunctionArgument("optional", "int", "7", null)
+                                )
+                        )
+                ),
                 Collections.emptyList(),
                 List.of(refCountedClass, nodeClass),
                 Collections.emptyList(),
@@ -173,6 +198,114 @@ public class CBodyBuilderPhaseCTest {
                     func(&__gdcc_tmp_string_0);
                     godot_String_destroy(&__gdcc_tmp_string_0);
                     """, builder.build());
+        }
+    }
+
+    @Nested
+    @DisplayName("CallVoid Signature Validation Tests")
+    class CallVoidSignatureValidationTests {
+
+        @Test
+        @DisplayName("callVoid should validate too few args")
+        void testCallVoidTooFewArgs() {
+            assertThrows(RuntimeException.class, () ->
+                    builder.callVoid("utility_sum", List.of(builder.valueOfExpr("1", GdIntType.INT)))
+            );
+        }
+
+        @Test
+        @DisplayName("callVoid should validate too many args")
+        void testCallVoidTooManyArgs() {
+            assertThrows(RuntimeException.class, () ->
+                    builder.callVoid("utility_with_default", List.of(
+                            builder.valueOfExpr("1", GdIntType.INT),
+                            builder.valueOfExpr("2", GdIntType.INT),
+                            builder.valueOfExpr("3", GdIntType.INT)
+                    ))
+            );
+        }
+
+        @Test
+        @DisplayName("callVoid should validate argument types")
+        void testCallVoidInvalidArgType() {
+            assertThrows(RuntimeException.class, () ->
+                    builder.callVoid("utility_sum", List.of(
+                            builder.valueOfExpr("1", GdIntType.INT),
+                            builder.valueOfExpr("some_string_expr", GdStringType.STRING)
+                    ))
+            );
+        }
+
+        @Test
+        @DisplayName("callVoid should allow omitted optional args")
+        void testCallVoidWithDefaultArg() {
+            builder.callVoid("utility_with_default", List.of(builder.valueOfExpr("1", GdIntType.INT)));
+            assertEquals("utility_with_default(1);\n", builder.build());
+        }
+    }
+
+    @Nested
+    @DisplayName("jumpIf Tests")
+    class JumpIfTests {
+
+        @Test
+        @DisplayName("jumpIf should accept bool expression")
+        void testJumpIfBoolExpr() {
+            builder.jumpIf(builder.valueOfExpr("flag_expr", GdBoolType.BOOL), "bb_true", "bb_false");
+            assertEquals("if (flag_expr) goto bb_true;\nelse goto bb_false;\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("jumpIf should reject non-bool expression")
+        void testJumpIfNonBoolExpr() {
+            assertThrows(RuntimeException.class, () ->
+                    builder.jumpIf(builder.valueOfExpr("123", GdIntType.INT), "bb_true", "bb_false")
+            );
+        }
+    }
+
+    @Nested
+    @DisplayName("assignGlobalConst Failure Tests")
+    class AssignGlobalConstFailureTests {
+
+        @Test
+        @DisplayName("assignGlobalConst should fail for missing enum")
+        void testAssignGlobalConstMissingEnum() {
+            var target = new LirVariable("x", GdIntType.INT, lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+            assertThrows(RuntimeException.class, () ->
+                    builder.assignGlobalConst(targetRef, "MissingEnum", "VALUE_A")
+            );
+        }
+
+        @Test
+        @DisplayName("assignGlobalConst should fail for missing enum value")
+        void testAssignGlobalConstMissingEnumValue() {
+            var target = new LirVariable("x", GdIntType.INT, lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+            assertThrows(RuntimeException.class, () ->
+                    builder.assignGlobalConst(targetRef, "TestEnum", "MISSING")
+            );
+        }
+    }
+
+    @Nested
+    @DisplayName("valueOfVar by Name Tests")
+    class ValueOfVarByNameTests {
+
+        @Test
+        @DisplayName("valueOfVar(name) should resolve existing variable")
+        void testValueOfVarByNameSuccess() {
+            lirFunctionDef.createAndAddVariable("namedVar", GdIntType.INT);
+            var value = builder.valueOfVar("namedVar");
+            assertInstanceOf(CBodyBuilder.VarValue.class, value);
+            assertEquals("$namedVar", value.generateCode());
+        }
+
+        @Test
+        @DisplayName("valueOfVar(name) should fail for missing variable")
+        void testValueOfVarByNameMissingVariable() {
+            assertThrows(RuntimeException.class, () -> builder.valueOfVar("missingVar"));
         }
     }
 
@@ -330,57 +463,68 @@ public class CBodyBuilderPhaseCTest {
     class ReturnValueSemanticsTests {
 
         /// Helper to set up _finally block context for return tests.
-        private void setFinallyBlockContext() {
+        private void setFinallyBlockContext(CBodyBuilder bodyBuilder) {
             var finallyBlock = new LirBasicBlock("_finally");
-            builder.setCurrentPosition(finallyBlock, 0, new ReturnInsn(null));
+            bodyBuilder.setCurrentPosition(finallyBlock, 0, new ReturnInsn(null));
+        }
+
+        private CBodyBuilder createBuilderWithReturnType(GdType returnType) {
+            var funcDef = new LirFunctionDef("returnTestFunc", false, false, false, false, false,
+                    Collections.emptyMap(), Collections.emptyList(), Collections.emptyMap(),
+                    returnType, Collections.emptyMap(), new LinkedHashMap<>());
+            return new CBodyBuilder(builder.helper(), builder.clazz(), funcDef);
         }
 
         @Test
         @DisplayName("Returning primitive should be direct")
         void testReturnPrimitive() {
-            setFinallyBlockContext();
-            var intVar = new LirVariable("i", GdIntType.INT, lirFunctionDef);
-            var value = builder.valueOfVar(intVar);
+            var intBuilder = createBuilderWithReturnType(GdIntType.INT);
+            setFinallyBlockContext(intBuilder);
+            var intVar = new LirVariable("i", GdIntType.INT, intBuilder.func());
+            var value = intBuilder.valueOfVar(intVar);
 
-            builder.returnValue(value);
+            intBuilder.returnValue(value);
 
-            assertEquals("return $i;\n", builder.build());
+            assertEquals("return $i;\n", intBuilder.build());
         }
 
         @Test
         @DisplayName("Returning String should copy")
         void testReturnString() {
-            setFinallyBlockContext();
-            var strVar = new LirVariable("s", GdStringType.STRING, lirFunctionDef);
-            var value = builder.valueOfVar(strVar);
+            var stringBuilder = createBuilderWithReturnType(GdStringType.STRING);
+            setFinallyBlockContext(stringBuilder);
+            var strVar = new LirVariable("s", GdStringType.STRING, stringBuilder.func());
+            var value = stringBuilder.valueOfVar(strVar);
 
-            builder.returnValue(value);
+            stringBuilder.returnValue(value);
 
-            var result = builder.build();
+            var result = stringBuilder.build();
             assertTrue(result.contains("godot_new_String_with_String(&$s)"), "Should copy String on return");
         }
 
         @Test
         @DisplayName("Returning object should be direct (pointer)")
         void testReturnObject() {
-            setFinallyBlockContext();
-            var objVar = new LirVariable("obj", new GdObjectType("Node"), lirFunctionDef);
-            var value = builder.valueOfVar(objVar);
+            var objectBuilder = createBuilderWithReturnType(new GdObjectType("Node"));
+            setFinallyBlockContext(objectBuilder);
+            var objVar = new LirVariable("obj", new GdObjectType("Node"), objectBuilder.func());
+            var value = objectBuilder.valueOfVar(objVar);
 
-            builder.returnValue(value);
+            objectBuilder.returnValue(value);
 
-            assertEquals("return $obj;\n", builder.build());
+            assertEquals("return $obj;\n", objectBuilder.build());
         }
 
         @Test
         @DisplayName("Returning String expression should destroy temp after copy")
         void testReturnStringExprTempOrder() {
-            setFinallyBlockContext();
-            var value = builder.valueOfExpr("some_string_expr", GdStringType.STRING);
+            var stringBuilder = createBuilderWithReturnType(GdStringType.STRING);
+            setFinallyBlockContext(stringBuilder);
+            var value = stringBuilder.valueOfExpr("some_string_expr", GdStringType.STRING);
 
-            builder.returnValue(value);
+            stringBuilder.returnValue(value);
 
-            var result = builder.build();
+            var result = stringBuilder.build();
             var tempDecl = "godot_String __gdcc_tmp_string_0 = some_string_expr;";
             var retTempDecl = "godot_String __gdcc_tmp_ret_1 = godot_new_String_with_String(&__gdcc_tmp_string_0);";
             var destroyTemp = "godot_String_destroy(&__gdcc_tmp_string_0);";
@@ -398,6 +542,13 @@ public class CBodyBuilderPhaseCTest {
             assertTrue(tempIndex < retTempIndex, "Should create expression temp before copy");
             assertTrue(retTempIndex < destroyTempIndex, "Should destroy expression temp after copy");
             assertTrue(destroyTempIndex < retIndex, "Should destroy expression temp before return");
+        }
+
+        @Test
+        @DisplayName("Returning value from void function should fail")
+        void testReturnValueFromVoidFunctionFails() {
+            var value = builder.valueOfExpr("1", GdIntType.INT);
+            assertThrows(RuntimeException.class, () -> builder.returnValue(value));
         }
     }
 

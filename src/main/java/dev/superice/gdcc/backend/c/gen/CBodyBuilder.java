@@ -276,6 +276,7 @@ public final class CBodyBuilder {
     }
 
     public @NotNull CBodyBuilder callVoid(@NotNull String funcName, @NotNull List<ValueRef> args) {
+        validateCallArgs(funcName, args);
         var argsResult = renderArgs(funcName, args);
         emitTempDecls(argsResult.temps());
         out.append(funcName).append("(").append(argsResult.code()).append(");\n");
@@ -348,8 +349,16 @@ public final class CBodyBuilder {
     }
 
     public @NotNull CBodyBuilder returnVoid() {
+        var returnType = func.getReturnType();
         if (!checkInFinallyBlock()) {
+            if (!(returnType instanceof GdVoidType)) {
+                throw invalidInsn("Cannot return void from non-void function");
+            }
             out.append("goto _finally;\n");
+            return this;
+        }
+        if (!(returnType instanceof GdVoidType)) {
+            out.append("return _return_val;\n");
             return this;
         }
         out.append("return;\n");
@@ -358,28 +367,31 @@ public final class CBodyBuilder {
 
     public @NotNull CBodyBuilder returnValue(@NotNull ValueRef value) {
         var returnType = func.getReturnType();
+        if (returnType instanceof GdVoidType) {
+            throw invalidInsn("Cannot return a value from void function");
+        }
+        checkAssignable(value.type(), returnType);
+
+        var returnResult = prepareReturnValue(value);
+        emitTempDecls(returnResult.temps());
+        var returnCode = returnResult.code();
+        if (returnType instanceof GdObjectType objType) {
+            returnCode = convertPtrIfNeeded(returnCode, value.ptrKind(), objType);
+        }
+
         if (!checkInFinallyBlock()) {
-            if (returnType instanceof GdVoidType) {
-                var returnResult = prepareReturnValue(value);
-                if (!returnResult.temps.isEmpty()) {
-                    throw new IllegalStateException("Cannot return a value with prepareReturnValue");
-                }
-                out.append("_return_val = ").append(returnResult.code()).append(";\n");
-            }
+            out.append("_return_val = ").append(returnCode).append(";\n");
+            emitTempDestroys(returnResult.temps());
             out.append("goto _finally;\n");
             return this;
         }
 
-        // Phase C: Copy semantics for return
-        var returnResult = prepareReturnValue(value);
-        emitTempDecls(returnResult.temps());
-
         if (returnResult.temps().isEmpty()) {
-            out.append("return ").append(returnResult.code()).append(";\n");
+            out.append("return ").append(returnCode).append(";\n");
             return this;
         }
 
-        var retTemp = newTempVariable("ret", value.type(), returnResult.code());
+        var retTemp = newTempVariable("ret", returnType, returnCode);
         out.append(helper.renderGdTypeInC(retTemp.type())).append(" ").append(retTemp.name()).append(" = ")
                 .append(retTemp.initCode()).append(";\n");
         emitTempDestroys(returnResult.temps());
@@ -685,10 +697,12 @@ public final class CBodyBuilder {
         }
     }
 
+    @SuppressWarnings("BooleanMethodIsAlwaysInverted")
     private boolean checkInPrepareBlock() {
         return currentBlock != null && "_prepare".equals(currentBlock.id());
     }
 
+    @SuppressWarnings("BooleanMethodIsAlwaysInverted")
     private boolean checkInFinallyBlock() {
         return currentBlock != null && "_finally".equals(currentBlock.id());
     }
@@ -702,10 +716,7 @@ public final class CBodyBuilder {
     }
 
     private boolean checkGlobalFuncReturnGodotRawPtr(@NotNull String funcName) {
-        if (funcName.startsWith("godot_")) {
-            return true;
-        }
-        return funcName.equals("gdcc_object_from_godot_object_ptr") || funcName.equals("godot_new_gdcc_Object_with_Variant");
+        return funcName.startsWith("godot_");
     }
 
     /// Indicates the pointer kind of an object value reference.

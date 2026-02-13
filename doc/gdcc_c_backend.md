@@ -60,7 +60,7 @@
 ### `_prepare` / `_finally` Control Flow
 
 - The backend inserts two special basic blocks: `_prepare` and `_finally`.
-- In `_prepare`, all IR-declared non-ref variables are treated as uninitialized.
+- In `_prepare`, all IR-declared non-ref variables are treated as uninitialized at first, and we have to init them in this block.
   - Assignments in `_prepare` must not destroy old values.
 - In non-`_finally` blocks, `return` and `returnValue` do not emit a real `return`.
   - For non-void functions, the return value is assigned to an implicit `_return_val` variable.

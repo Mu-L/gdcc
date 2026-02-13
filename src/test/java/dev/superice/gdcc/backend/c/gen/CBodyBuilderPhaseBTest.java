@@ -27,6 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class CBodyBuilderPhaseBTest {
     private CBodyBuilder builder;
+    private CGenHelper helper;
+    private LirClassDef lirClassDef;
     private LirVariable mockVar;
     private LirVariable mockRefVar;
     private LirVariable mockBoolVar;
@@ -40,10 +42,10 @@ public class CBodyBuilderPhaseBTest {
         var extensionAPI = ExtensionApiLoader.loadDefault();
         var classRegistry = new ClassRegistry(extensionAPI);
         var ctx = new CodegenContext(projectInfo, classRegistry);
-        var lirClassDef = new LirClassDef("TestClass", "RefCounted", false, false, Collections.emptyMap(), Collections.emptyList(), Collections.emptyList(), Collections.emptyList());
+        lirClassDef = new LirClassDef("TestClass", "RefCounted", false, false, Collections.emptyMap(), Collections.emptyList(), Collections.emptyList(), Collections.emptyList());
         var lirFunctionDef = new LirFunctionDef("testFunc", false, false, false, false, false, Collections.emptyMap(), Collections.emptyList(), Collections.emptyMap(), GdVoidType.VOID, Collections.emptyMap(), new LinkedHashMap<>());
 
-        var helper = new CGenHelper(ctx, List.of(lirClassDef));
+        helper = new CGenHelper(ctx, List.of(lirClassDef));
 
         builder = new CBodyBuilder(helper, lirClassDef, lirFunctionDef);
 
@@ -107,10 +109,27 @@ public class CBodyBuilderPhaseBTest {
 
     @Test
     void testReturnValue() {
-        var val = builder.valueOfVar(mockVar);
-        builder.returnValue(val);
+        var nonVoidBuilder = new CBodyBuilder(helper, lirClassDef, createFunctionDef("testFuncReturnInt", GdIntType.INT));
+        var val = nonVoidBuilder.valueOfVar(new LirVariable("v1", GdIntType.INT, nonVoidBuilder.func()));
+        nonVoidBuilder.returnValue(val);
 
-        assertEquals("_return_val = $v1;\ngoto _finally;\n", builder.build());
+        assertEquals("_return_val = $v1;\ngoto _finally;\n", nonVoidBuilder.build());
+    }
+
+    @Test
+    void testReturnValueForVoidFunctionShouldThrow() {
+        var val = builder.valueOfVar(mockVar);
+        assertThrows(RuntimeException.class, () -> builder.returnValue(val));
+    }
+
+    @Test
+    void testReturnVoidInFinallyForNonVoidFunction() {
+        var nonVoidBuilder = new CBodyBuilder(helper, lirClassDef, createFunctionDef("testFuncReturnInt", GdIntType.INT));
+        nonVoidBuilder.setCurrentPosition(new dev.superice.gdcc.lir.LirBasicBlock("_finally"), 0, new dev.superice.gdcc.lir.insn.ReturnInsn(null));
+
+        nonVoidBuilder.returnVoid();
+
+        assertEquals("return _return_val;\n", nonVoidBuilder.build());
     }
 
     @Test
@@ -129,5 +148,10 @@ public class CBodyBuilderPhaseBTest {
     @Test
     void testTargetRefCheck() {
         assertThrows(RuntimeException.class, () -> builder.targetOfVar(mockRefVar));
+    }
+
+    private LirFunctionDef createFunctionDef(String name, dev.superice.gdcc.type.GdType returnType) {
+        return new LirFunctionDef(name, false, false, false, false, false, Collections.emptyMap(), Collections.emptyList(),
+                Collections.emptyMap(), returnType, Collections.emptyMap(), new LinkedHashMap<>());
     }
 }
