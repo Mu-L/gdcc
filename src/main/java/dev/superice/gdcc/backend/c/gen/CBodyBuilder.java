@@ -231,8 +231,12 @@ public final class CBodyBuilder {
             }
         }
 
-        // 4. Write new value
-        out.append(targetCode).append(" = ").append(rhsResult.code()).append(";\n");
+        // 4. Write new value, converting pointer representation if needed
+        var assignCode = rhsResult.code();
+        if (targetType instanceof GdObjectType targetObjType) {
+            assignCode = convertPtrIfNeeded(assignCode, value.ptrKind(), targetObjType);
+        }
+        out.append(targetCode).append(" = ").append(assignCode).append(";\n");
 
         // 5. Own new object if object type
         if (targetType instanceof GdObjectType objType) {
@@ -246,6 +250,11 @@ public final class CBodyBuilder {
     /// Assigns a raw expression into a target variable.
     public @NotNull CBodyBuilder assignExpr(@NotNull TargetRef target, @NotNull String expr, @NotNull GdType type) {
         return assignVar(target, valueOfExpr(expr, type));
+    }
+
+    /// Assigns a raw expression into a target variable with an explicit pointer kind.
+    public @NotNull CBodyBuilder assignExpr(@NotNull TargetRef target, @NotNull String expr, @NotNull GdType type, @NotNull PtrKind ptrKind) {
+        return assignVar(target, valueOfExpr(expr, type, ptrKind));
     }
 
     /// Assigns a global enum constant to a target variable.
@@ -622,6 +631,25 @@ public final class CBodyBuilder {
             return varCode + "->_object";
         }
         return varCode;
+    }
+
+    /// Converts an object pointer expression between GDCC and Godot representations if needed.
+    ///
+    /// - GODOT_PTR value → GDCC_PTR target: wraps with `fromGodotObjectPtr`
+    /// - GDCC_PTR value → GODOT_PTR target: appends `->_object`
+    /// - Same kind or NON_OBJECT: no conversion
+    private @NotNull String convertPtrIfNeeded(@NotNull String code,
+                                               @NotNull PtrKind valuePtrKind,
+                                               @NotNull GdObjectType targetObjType) {
+        var targetPtrKind = resolvePtrKind(targetObjType);
+        if (valuePtrKind == PtrKind.GODOT_PTR && targetPtrKind == PtrKind.GDCC_PTR) {
+            return fromGodotObjectPtr(code, targetObjType);
+        }
+        if (valuePtrKind == PtrKind.GDCC_PTR && targetPtrKind == PtrKind.GODOT_PTR) {
+            // GDCC object pointers have _object field containing the Godot object pointer
+            return code + "->_object";
+        }
+        return code;
     }
 
     /// Converts a Godot object pointer to a GDCC object pointer when needed.

@@ -720,4 +720,165 @@ public class CBodyBuilderPhaseCTest {
                     "Should wrap return with fromGodotObjectPtr. Actual:\n" + result);
         }
     }
+
+    @Nested
+    @DisplayName("AssignVar Pointer Conversion Tests")
+    class AssignVarPtrConversionTests {
+
+        @Test
+        @DisplayName("GODOT_PTR value assigned to GDCC target should wrap with fromGodotObjectPtr")
+        void testGodotPtrValueToGdccTarget() {
+            var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+            // Expression with explicit GODOT_PTR: simulates a GDExtension API return value
+            var value = builder.valueOfExpr("some_godot_api_result", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.GODOT_PTR);
+
+            builder.assignVar(targetRef, value);
+
+            var result = builder.build();
+            assertTrue(result.contains("(MyGdccClass*)gdcc_object_from_godot_object_ptr(some_godot_api_result)"),
+                    "Should convert GODOT_PTR to GDCC_PTR via fromGodotObjectPtr. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("GDCC_PTR value assigned to engine (GODOT_PTR) target should use ->_object")
+        void testGdccPtrValueToEngineTarget() {
+            // Target is Object (engine base type), so its PtrKind is GODOT_PTR
+            // MyGdccClass extends RefCounted extends Object, so assignment is valid
+            var target = new LirVariable("obj", GdObjectType.OBJECT, lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+            // Source is a GDCC variable, PtrKind is GDCC_PTR
+            var source = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var value = builder.valueOfVar(source);
+
+            builder.assignVar(targetRef, value);
+
+            var result = builder.build();
+            assertTrue(result.contains("$obj = $myObj->_object"),
+                    "Should convert GDCC_PTR to GODOT_PTR via ->_object. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("Same PtrKind (GDCC to GDCC) should NOT convert")
+        void testSamePtrKindGdccNoConversion() {
+            var target = new LirVariable("target", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var source = new LirVariable("source", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+            var value = builder.valueOfVar(source);
+
+            builder.assignVar(targetRef, value);
+
+            var result = builder.build();
+            assertTrue(result.contains("$target = $source;"),
+                    "Should assign directly without conversion. Actual:\n" + result);
+            assertFalse(result.contains("gdcc_object_from_godot_object_ptr"),
+                    "Should NOT wrap with fromGodotObjectPtr. Actual:\n" + result);
+            assertFalse(result.contains("$source->_object;"),
+                    "Should NOT use ->_object on RHS. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("Same PtrKind (engine to engine) should NOT convert")
+        void testSamePtrKindEngineNoConversion() {
+            var target = new LirVariable("target", new GdObjectType("Node"), lirFunctionDef);
+            var source = new LirVariable("source", new GdObjectType("Node"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+            var value = builder.valueOfVar(source);
+
+            builder.assignVar(targetRef, value);
+
+            var result = builder.build();
+            assertTrue(result.contains("$target = $source;"),
+                    "Should assign directly without conversion. Actual:\n" + result);
+            assertFalse(result.contains("->_object"),
+                    "Should NOT use ->_object. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("GODOT_PTR to GDCC target should still do own/release with ->_object")
+        void testGodotPtrToGdccTargetOwnRelease() {
+            var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+            var value = builder.valueOfExpr("some_godot_result", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.GODOT_PTR);
+
+            builder.assignVar(targetRef, value);
+
+            var result = builder.build();
+            // MyGdccClass extends RefCounted, should have own/release with ->_object
+            assertTrue(result.contains("release_object($myObj->_object)"),
+                    "Should release old GDCC object via ->_object. Actual:\n" + result);
+            assertTrue(result.contains("own_object($myObj->_object)"),
+                    "Should own new GDCC object via ->_object. Actual:\n" + result);
+            // Should also convert the assignment value
+            assertTrue(result.contains("gdcc_object_from_godot_object_ptr(some_godot_result)"),
+                    "Should convert GODOT_PTR to GDCC_PTR. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("assignExpr with explicit PtrKind should convert GODOT_PTR to GDCC")
+        void testAssignExprWithPtrKindConversion() {
+            var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+
+            builder.assignExpr(targetRef, "godot_api_call()", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.GODOT_PTR);
+
+            var result = builder.build();
+            assertTrue(result.contains("(MyGdccClass*)gdcc_object_from_godot_object_ptr(godot_api_call())"),
+                    "assignExpr with GODOT_PTR should convert to GDCC_PTR. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("assignExpr without PtrKind should auto-resolve and NOT convert (GDCC type → GDCC_PTR)")
+        void testAssignExprAutoResolvedNoPtrConversion() {
+            var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+
+            // Without explicit PtrKind, auto-resolved from GdObjectType("MyGdccClass") → GDCC_PTR
+            builder.assignExpr(targetRef, "some_gdcc_ptr", new GdObjectType("MyGdccClass"));
+
+            var result = builder.build();
+            assertTrue(result.contains("$myObj = some_gdcc_ptr;"),
+                    "Should assign directly when PtrKinds match. Actual:\n" + result);
+            assertFalse(result.contains("gdcc_object_from_godot_object_ptr"),
+                    "Should NOT convert when PtrKinds match. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("GDCC_PTR to RefCounted (engine base class) target should use ->_object")
+        void testGdccPtrToRefCountedTarget() {
+            // RefCounted is an engine type (GODOT_PTR)
+            var target = new LirVariable("rc", new GdObjectType("RefCounted"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+            // MyGdccClass extends RefCounted, so assignment is valid
+            var source = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var value = builder.valueOfVar(source);
+
+            builder.assignVar(targetRef, value);
+
+            var result = builder.build();
+            assertTrue(result.contains("$rc = $myObj->_object"),
+                    "Should convert GDCC_PTR to GODOT_PTR via ->_object. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("GODOT_PTR to GDCC target full ordering: release → assign with conversion → own")
+        void testGodotPtrToGdccTargetFullOrdering() {
+            var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+            var value = builder.valueOfExpr("godot_result", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.GODOT_PTR);
+
+            builder.assignVar(targetRef, value);
+
+            var result = builder.build();
+            var releaseIndex = result.indexOf("release_object($myObj->_object)");
+            var assignIndex = result.indexOf("$myObj = (MyGdccClass*)gdcc_object_from_godot_object_ptr(godot_result);");
+            var ownIndex = result.indexOf("own_object($myObj->_object)");
+
+            assertTrue(releaseIndex >= 0, "Should have release. Actual:\n" + result);
+            assertTrue(assignIndex >= 0, "Should have converted assignment. Actual:\n" + result);
+            assertTrue(ownIndex >= 0, "Should have own. Actual:\n" + result);
+            assertTrue(releaseIndex < assignIndex, "Release should come before assignment");
+            assertTrue(assignIndex < ownIndex, "Assignment should come before own");
+        }
+    }
 }

@@ -294,6 +294,7 @@ public enum PtrKind {
 - `GdObjectType` + `checkGdccType` → `GDCC_PTR`
 - `GdObjectType` + 非 GDCC → `GODOT_PTR`（含引擎类型和未知类型）
 - 其他类型 → `NON_OBJECT`
+- **注意：该规则并非100%准确，GDCC对象的指针可能由于某些操作变为GODOT_PTR，但其类型仍然为GDCC自定义对象类型，反之亦然！**
 
 **工厂方法**：
 - `valueOfVar(variable)` — 从变量类型自动推断
