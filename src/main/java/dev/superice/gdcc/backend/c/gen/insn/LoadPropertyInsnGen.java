@@ -85,7 +85,7 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
                 // to Godot raw ptrs via ->_object since godot_Object_get requires Godot ptrs.
                 var objectValue = bodyBuilder.valueOfVar(objectVar);
                 var propertyName = bodyBuilder.valueOfStringNamePtrLiteral(insn.propertyName());
-                var tempVar = bodyBuilder.newTempVariable("variant", GdVariantType.VARIANT, "godot_new_Variant_nil()");
+                var tempVar = bodyBuilder.newTempVariable("variant", GdVariantType.VARIANT);
                 bodyBuilder.declareTempVar(tempVar);
                 bodyBuilder.callAssign(tempVar, "godot_Object_get", GdVariantType.VARIANT, List.of(objectValue, propertyName));
                 var resultType = resultVar.type();
@@ -111,7 +111,8 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
         if (objectType instanceof GdObjectType gdObjectType) {
             var classDef = registry.getClassDef(gdObjectType);
             if (classDef == null) {
-                throw bodyBuilder.invalidInsn("Object variable has unknown class type " + gdObjectType.getTypeName());
+                // Unknown object types are read through godot_Object_get and unpacked into the expected result type.
+                return resultType;
             }
             var propertyFound = findPropertyDef(classDef, propertyName);
             if (propertyFound == null) {

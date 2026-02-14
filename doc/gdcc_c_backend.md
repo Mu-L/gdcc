@@ -57,6 +57,20 @@
 - `try_own_object`, `try_release_object`, `own_object` and `release_object` receives only Godot object ptr but not GDCC object ptr, so remember to pass `gdcc_object->_object` instead of `gdcc_object`.
 - `try_destroy_object` is used to destroy an object that we own, if an object is ref-counted it is the same as `try_release_object`, if it is not ref-counted, it will be actually destroyed, so always remember to check the type and use it properly.
 
+### Temporary Variables (CBodyBuilder)
+
+- `TempVar` carries its own mutable initialization state.
+- There are two declaration forms:
+  - Declaration only (`T tmp;`) for out-parameter style initialization.
+  - Declaration with initializer (`T tmp = ...;`) for expression materialization/copy staging.
+- `assignVar` / `callAssign` must treat **uninitialized TempVar target** as first-write:
+  - Skip old-value destroy/release.
+  - Perform normal assignment conversion and new-value ownership handling.
+  - Mark the temp as initialized after write.
+- `destroyTempVar` only destroys initialized temps, then marks them uninitialized.
+- The backend does **not** enforce a global read-before-init check for temps:
+  - Some APIs intentionally require passing pointers to uninitialized storage for initialization.
+
 ### `_prepare` / `_finally` Control Flow
 
 - The backend inserts two special basic blocks: `_prepare` and `_finally`.

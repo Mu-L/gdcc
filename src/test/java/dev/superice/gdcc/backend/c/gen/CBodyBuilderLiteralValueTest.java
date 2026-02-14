@@ -20,6 +20,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 
+import static dev.superice.gdcc.type.GdStringType.STRING;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /// Tests for StringName/String static pointer literal ValueRefs.
@@ -110,19 +111,27 @@ public class CBodyBuilderLiteralValueTest {
     @Test
     @DisplayName("TempVar should act as both target and value reference")
     void testTempVarAsTargetAndValue() {
-        var temp = builder.newTempVariable("string", dev.superice.gdcc.type.GdStringType.STRING,
-                "godot_new_String_with_utf8_chars(u8\"init\")");
+        var temp = builder.newTempVariable("string", STRING);
 
         builder.declareTempVar(temp);
-        builder.callAssign(temp, "make_string", dev.superice.gdcc.type.GdStringType.STRING, List.of());
+        builder.callAssign(
+                temp,
+                "godot_new_String_with_String",
+                STRING,
+                List.of(builder.valueOfStringPtrLiteral("init"))
+        );
+        builder.callAssign(temp, "make_string", STRING, List.of());
         builder.callVoid("use_string", List.of(temp));
         builder.destroyTempVar(temp);
 
-        var expected = "godot_String __gdcc_tmp_string_0 = godot_new_String_with_utf8_chars(u8\"init\");\n"
-                + "godot_String_destroy(&__gdcc_tmp_string_0);\n"
-                + "__gdcc_tmp_string_0 = make_string();\n"
-                + "use_string(&__gdcc_tmp_string_0);\n"
-                + "godot_String_destroy(&__gdcc_tmp_string_0);\n";
+        var expected = """
+                godot_String __gdcc_tmp_string_0;
+                __gdcc_tmp_string_0 = godot_new_String_with_String(GD_STATIC_S(u8"init"));
+                godot_String_destroy(&__gdcc_tmp_string_0);
+                __gdcc_tmp_string_0 = make_string();
+                use_string(&__gdcc_tmp_string_0);
+                godot_String_destroy(&__gdcc_tmp_string_0);
+                """;
         assertEquals(expected, builder.build());
     }
 }

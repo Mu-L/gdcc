@@ -3,7 +3,6 @@ package dev.superice.gdcc.backend.c.gen;
 import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.ProjectInfo;
 import dev.superice.gdcc.enums.GodotVersion;
-import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
@@ -134,14 +133,25 @@ public class CBodyBuilderPhaseBTest {
 
     @Test
     void testTempVarLifecycle() {
-        var temp = builder.newTempVariable("variant", GdVariantType.VARIANT, "godot_new_Variant()");
+        var temp = builder.newTempVariable("variant", GdVariantType.VARIANT);
 
         builder.declareTempVar(temp);
         builder.destroyTempVar(temp);
 
-        var helper = builder.helper();
-        var expected = helper.renderGdTypeInC(temp.type()) + " " + temp.name() + " = " + temp.initCode() + ";\n" +
-                helper.renderDestroyFunctionName(temp.type()) + "(&" + temp.name() + ");\n";
+        assertEquals("godot_Variant " + temp.name() + ";\n", builder.build());
+    }
+
+    @Test
+    void testTempVarFirstCallAssignShouldSkipOldDestroy() {
+        var temp = builder.newTempVariable("variant", GdVariantType.VARIANT);
+
+        builder.declareTempVar(temp);
+        builder.callAssign(temp, "some_func", GdVariantType.VARIANT, List.of());
+        builder.destroyTempVar(temp);
+
+        var expected = "godot_Variant " + temp.name() + ";\n" +
+                temp.name() + " = some_func();\n" +
+                "godot_Variant_destroy(&" + temp.name() + ");\n";
         assertEquals(expected, builder.build());
     }
 

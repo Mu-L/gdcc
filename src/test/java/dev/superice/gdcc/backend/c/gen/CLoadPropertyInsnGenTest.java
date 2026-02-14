@@ -20,6 +20,7 @@ import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdFloatVectorType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
+import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -126,6 +127,99 @@ public class CLoadPropertyInsnGenTest {
 
         var body = codegen.generateFuncBody(gdccClass, func);
         assertTrue(body.contains("godot_Node_get_name($node)"));
+    }
+
+    @Test
+    @DisplayName("Unknown object type should fallback to godot_Object_get")
+    void unknownObjectTypeShouldFallbackToGodotObjectGet() {
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("get_unknown_prop");
+        func.setReturnType(GdStringType.STRING);
+        func.addParameter(new LirParameterDef("obj", new GdObjectType("UnknownType"), null, func));
+        func.createAndAddVariable("tmp", GdStringType.STRING);
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new LoadPropertyInsn("tmp", "name", "obj"));
+        entry.instructions().add(new ReturnInsn("tmp"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(gdccClass, func);
+        assertTrue(body.contains("__gdcc_tmp_variant_0 = godot_Object_get($obj, GD_STATIC_SN(u8\"name\"));"));
+        assertTrue(body.contains("$tmp = godot_new_String_with_Variant(&__gdcc_tmp_variant_0);"));
+        assertFalse(body.contains("godot_UnknownType_get_name("));
+    }
+
+    @Test
+    @DisplayName("Unknown object type should unpack engine object from variant")
+    void unknownObjectTypeShouldUnpackEngineObjectFromVariant() {
+        var nodeClass = new ExtensionGdClass(
+                "Node", false, true, "Object", "core",
+                List.of(), List.of(), List.of(), List.of(), List.of()
+        );
+        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(nodeClass), List.of(), List.of());
+
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("get_unknown_node_prop");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("obj", new GdObjectType("UnknownType"), null, func));
+        func.createAndAddVariable("tmp", new GdObjectType("Node"));
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new LoadPropertyInsn("tmp", "child", "obj"));
+        entry.instructions().add(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(api, List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(gdccClass, func);
+        assertTrue(body.contains("__gdcc_tmp_variant_0 = godot_Object_get($obj, GD_STATIC_SN(u8\"child\"));"));
+        assertTrue(body.contains("$tmp = (godot_Node*)godot_new_Object_with_Variant(&__gdcc_tmp_variant_0);"));
+        assertFalse(body.contains("godot_UnknownType_get_child("));
+    }
+
+    @Test
+    @DisplayName("Unknown object type should unpack GDCC object from variant")
+    void unknownObjectTypeShouldUnpackGdccObjectFromVariant() {
+        var targetClass = new LirClassDef("TargetClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("get_unknown_gdcc_prop");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("obj", new GdObjectType("UnknownType"), null, func));
+        func.createAndAddVariable("tmp", new GdObjectType("TargetClass"));
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new LoadPropertyInsn("tmp", "target", "obj"));
+        entry.instructions().add(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass, targetClass));
+        var ctx = newContext(new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(gdccClass, targetClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(gdccClass, func);
+        assertTrue(body.contains("__gdcc_tmp_variant_0 = godot_Object_get($obj, GD_STATIC_SN(u8\"target\"));"));
+        assertTrue(body.contains("$tmp = (TargetClass*)godot_new_gdcc_Object_with_Variant(&__gdcc_tmp_variant_0);"));
+        assertFalse(body.contains("godot_UnknownType_get_target("));
     }
 
     @Test

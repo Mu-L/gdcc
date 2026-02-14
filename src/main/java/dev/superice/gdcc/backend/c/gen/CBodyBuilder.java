@@ -93,19 +93,47 @@ public final class CBodyBuilder {
     }
 
     public @NotNull TempVar newTempVariable(@NotNull String prefix,
+                                            @NotNull GdType type) {
+        return new TempVar(newTempName(prefix), type, null, resolvePtrKind(type), false);
+    }
+
+    public @NotNull TempVar newTempVariable(@NotNull String prefix,
                                             @NotNull GdType type,
                                             @NotNull String initCode) {
-        return new TempVar(newTempName(prefix), type, initCode, resolvePtrKind(type));
+        return new TempVar(newTempName(prefix), type, initCode, resolvePtrKind(type), true);
     }
 
     public @NotNull CBodyBuilder declareTempVar(@NotNull TempVar temp) {
-        out.append(helper.renderGdTypeInC(temp.type())).append(" ").append(temp.name()).append(" = ")
-                .append(temp.initCode()).append(";\n");
+        out.append(helper.renderGdTypeInC(temp.type())).append(" ").append(temp.name());
+        if (temp.hasInitializer()) {
+            out.append(" = ").append(Objects.requireNonNull(temp.initCode()));
+            temp.setInitialized(true);
+        } else {
+            temp.setInitialized(false);
+        }
+        out.append(";\n");
         return this;
     }
 
     public @NotNull CBodyBuilder destroyTempVar(@NotNull TempVar temp) {
+        if (!temp.initialized()) {
+            return this;
+        }
         emitDestroy(temp.name(), temp.type());
+        temp.setInitialized(false);
+        return this;
+    }
+
+    /// Initializes an uninitialized temp variable without old-value destroy/own-release semantics.
+    /// This is used for first-write initialization where assign/callAssign lifecycle hooks are not desired.
+    public @NotNull CBodyBuilder initTempVar(@NotNull TempVar temp, @NotNull ValueRef value) {
+        checkAssignable(value.type(), temp.type());
+        var initCode = value.generateCode();
+        if (temp.type() instanceof GdObjectType targetObjType) {
+            initCode = convertPtrIfNeeded(initCode, value.ptrKind(), targetObjType);
+        }
+        out.append(temp.name()).append(" = ").append(initCode).append(";\n");
+        temp.setInitialized(true);
         return this;
     }
 
@@ -213,6 +241,7 @@ public final class CBodyBuilder {
 
         var targetCode = target.generateCode();
         var targetType = target.type();
+        var canDestroyOldValue = canDestroyOldValue(target);
 
         // Prepare RHS first to avoid destroying sources for self/alias assignments.
         var rhsResult = prepareRhsValue(value, targetType);
@@ -221,7 +250,7 @@ public final class CBodyBuilder {
         // Phase C: Full assignment semantics
         // 1. Destroy old value if needed (non-object destroyable types)
         // 2. Release old object ownership if object type
-        if (!checkInPrepareBlock() && targetType.isDestroyable()) {
+        if (canDestroyOldValue && !checkInPrepareBlock() && targetType.isDestroyable()) {
             if (targetType instanceof GdObjectType objType) {
                 // Object type: release old ownership
                 emitReleaseObject(targetCode, objType);
@@ -243,6 +272,7 @@ public final class CBodyBuilder {
             emitOwnObject(targetCode, objType);
         }
 
+        markTargetInitialized(target);
         emitTempDestroys(rhsResult.temps());
         return this;
     }
@@ -300,12 +330,13 @@ public final class CBodyBuilder {
 
         var targetCode = target.generateCode();
         var targetType = target.type();
+        var canDestroyOldValue = canDestroyOldValue(target);
 
         var argsResult = renderArgs(funcName, args);
         emitTempDecls(argsResult.temps());
 
         // Phase C: Handle old value destruction before assignment
-        if (!checkInPrepareBlock() && targetType.isDestroyable()) {
+        if (canDestroyOldValue && !checkInPrepareBlock() && targetType.isDestroyable()) {
             if (targetType instanceof GdObjectType objType) {
                 emitReleaseObject(targetCode, objType);
             } else {
@@ -330,6 +361,7 @@ public final class CBodyBuilder {
             emitOwnObject(targetCode, objType);
         }
 
+        markTargetInitialized(target);
         emitTempDestroys(argsResult.temps());
         return this;
     }
@@ -391,9 +423,9 @@ public final class CBodyBuilder {
             return this;
         }
 
-        var retTemp = newTempVariable("ret", returnType, returnCode);
-        out.append(helper.renderGdTypeInC(retTemp.type())).append(" ").append(retTemp.name()).append(" = ")
-                .append(retTemp.initCode()).append(";\n");
+        var retTemp = newTempVariable("ret", returnType);
+        declareTempVar(retTemp);
+        initTempVar(retTemp, valueOfExpr(returnCode, returnType, resolvePtrKind(returnType)));
         emitTempDestroys(returnResult.temps());
         out.append("return ").append(retTemp.name()).append(";\n");
         return this;
@@ -587,6 +619,21 @@ public final class CBodyBuilder {
         for (var i = temps.size() - 1; i >= 0; i--) {
             var temp = temps.get(i);
             destroyTempVar(temp);
+        }
+    }
+
+    /// Determines if we can skip old value destruction for a target based on whether it's initialized.
+    /// Mainly used to optimize first-write initialization of temp variables where there is no old value to destroy.
+    private boolean canDestroyOldValue(@NotNull TargetRef target) {
+        if (target instanceof TempVar tempVar) {
+            return tempVar.initialized();
+        }
+        return true;
+    }
+
+    private void markTargetInitialized(@NotNull TargetRef target) {
+        if (target instanceof TempVar tempVar) {
+            tempVar.setInitialized(true);
         }
     }
 
@@ -844,13 +891,55 @@ public final class CBodyBuilder {
         }
     }
 
-    public record TempVar(@NotNull String name, @NotNull GdType type,
-                          @NotNull String initCode, @NotNull PtrKind ptrKind) implements ValueRef, TargetRef {
-        public TempVar {
-            Objects.requireNonNull(name);
-            Objects.requireNonNull(type);
-            Objects.requireNonNull(initCode);
-            Objects.requireNonNull(ptrKind);
+    public static final class TempVar implements ValueRef, TargetRef {
+        private final @NotNull String name;
+        private final @NotNull GdType type;
+        private final @Nullable String initCode;
+        private final @NotNull PtrKind ptrKind;
+        private final boolean initializedAtDeclaration;
+        private boolean initialized;
+
+        public TempVar(@NotNull String name,
+                       @NotNull GdType type,
+                       @Nullable String initCode,
+                       @NotNull PtrKind ptrKind,
+                       boolean initializedAtDeclaration) {
+            this.name = Objects.requireNonNull(name);
+            this.type = Objects.requireNonNull(type);
+            this.initCode = initCode;
+            this.ptrKind = Objects.requireNonNull(ptrKind);
+            this.initializedAtDeclaration = initializedAtDeclaration;
+            this.initialized = false;
+        }
+
+        public @NotNull String name() {
+            return name;
+        }
+
+        @Override
+        public @NotNull GdType type() {
+            return type;
+        }
+
+        public @Nullable String initCode() {
+            return initCode;
+        }
+
+        @Override
+        public @NotNull PtrKind ptrKind() {
+            return ptrKind;
+        }
+
+        public boolean hasInitializer() {
+            return initializedAtDeclaration && initCode != null;
+        }
+
+        public boolean initialized() {
+            return initialized;
+        }
+
+        public void setInitialized(boolean initialized) {
+            this.initialized = initialized;
         }
 
         @Override

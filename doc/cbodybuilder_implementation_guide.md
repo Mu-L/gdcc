@@ -350,6 +350,32 @@ var objectValue = bodyBuilder.valueOfVar(objectVar);
 2. 改用 `callVoid`/`callAssign` + `valueOfVar`，依赖自动转换
 3. 仅在自动转换规则无法覆盖的特殊场景（如非标准函数名）使用 `valueOfExpr` 的显式 `PtrKind` 重载
 
+### 11.6 临时变量使用规范（分类）
+
+为避免跨 API 手工维护状态，`TempVar` 自身维护“是否已初始化”的可变状态。按用途分三类：
+
+1. **声明即初始化（Expression staging）**
+   - 典型场景：表达式物化、copy staging。
+   - 形式：`newTempVariable(prefix, type, initCode)` + `declareTempVar(temp)`。
+   - 语义：声明后立即视为已初始化，可被销毁。
+
+2. **仅声明后首写（Out-init / deferred init）**
+   - 典型场景：某些函数需要接收未初始化存储的指针并在调用中完成初始化。
+   - 形式：`newTempVariable(prefix, type)` + `declareTempVar(temp)`，后续使用 `assignVar/callAssign/initTempVar` 写入。
+   - 语义：在首写前视为未初始化，`assignVar/callAssign` 不得执行旧值 destroy/release。
+
+3. **指令内临时生命周期（Per-insn temp）**
+   - 原则：创建、使用、销毁均在同一条指令逻辑中闭合。
+   - `destroyTempVar` 仅对“已初始化临时变量”生效，销毁后状态重置为未初始化。
+
+**统一规则：**
+
+- 赋值 API（`assignVar`、`callAssign`）必须统一判定 TargetRef：
+  - 若目标是“未初始化 TempVar”，跳过旧值销毁流程，仅执行写入/转换/own。
+  - 其他目标维持既有完整赋值语义。
+- 不强制做“临时变量读前初始化”全局检查，避免阻断合法的 out-init 场景。
+- 指令生成器优先使用 `callAssign`/`assignVar` 完成 temp 首写，减少手写字符串初始化路径。
+
 ---
 
 本文件作为评审基线，后续代码实施应严格以本说明和 `doc/gdcc_c_backend.md` 为语义依据。

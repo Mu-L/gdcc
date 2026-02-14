@@ -13,7 +13,6 @@ import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirVariable;
-import dev.superice.gdcc.lir.insn.DestructInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.*;
@@ -526,21 +525,25 @@ public class CBodyBuilderPhaseCTest {
 
             var result = stringBuilder.build();
             var tempDecl = "godot_String __gdcc_tmp_string_0 = some_string_expr;";
-            var retTempDecl = "godot_String __gdcc_tmp_ret_1 = godot_new_String_with_String(&__gdcc_tmp_string_0);";
+            var retTempDecl = "godot_String __gdcc_tmp_ret_1;";
+            var retTempAssign = "__gdcc_tmp_ret_1 = godot_new_String_with_String(&__gdcc_tmp_string_0);";
             var destroyTemp = "godot_String_destroy(&__gdcc_tmp_string_0);";
             var retLine = "return __gdcc_tmp_ret_1;";
 
             var tempIndex = result.indexOf(tempDecl);
             var retTempIndex = result.indexOf(retTempDecl);
+            var retTempAssignIndex = result.indexOf(retTempAssign);
             var destroyTempIndex = result.indexOf(destroyTemp);
             var retIndex = result.indexOf(retLine);
 
             assertTrue(tempIndex >= 0, "Should materialize expression temp");
-            assertTrue(retTempIndex >= 0, "Should copy into return temp");
+            assertTrue(retTempIndex >= 0, "Should declare return temp");
+            assertTrue(retTempAssignIndex >= 0, "Should copy into return temp");
             assertTrue(destroyTempIndex >= 0, "Should destroy expression temp");
             assertTrue(retIndex >= 0, "Should return temp");
             assertTrue(tempIndex < retTempIndex, "Should create expression temp before copy");
-            assertTrue(retTempIndex < destroyTempIndex, "Should destroy expression temp after copy");
+            assertTrue(retTempIndex < retTempAssignIndex, "Should assign return temp after declaration");
+            assertTrue(retTempAssignIndex < destroyTempIndex, "Should destroy expression temp after copy");
             assertTrue(destroyTempIndex < retIndex, "Should destroy expression temp before return");
         }
 
