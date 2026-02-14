@@ -1,85 +1,61 @@
 package dev.superice.gdcc.backend.c.gen.insn;
 
-import dev.superice.gdcc.backend.c.gen.CGenHelper;
+import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
+import dev.superice.gdcc.backend.c.gen.CInsnGen;
 import dev.superice.gdcc.enums.GdInstruction;
-import dev.superice.gdcc.exception.InvalidInsnException;
-import dev.superice.gdcc.lir.LirBasicBlock;
-import dev.superice.gdcc.lir.LirClassDef;
-import dev.superice.gdcc.lir.LirFunctionDef;
+import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.lir.insn.DestructInsn;
-import dev.superice.gdcc.type.*;
+import dev.superice.gdcc.scope.RefCountedStatus;
+import dev.superice.gdcc.type.GdContainerType;
+import dev.superice.gdcc.type.GdMetaType;
+import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdStringLikeType;
+import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.EnumSet;
-import java.util.Map;
+import java.util.List;
 
-public final class DestructInsnGen extends TemplateInsnGen<DestructInsn> {
-    @Override
-    protected @NotNull String getTemplatePath() {
-        return "insn/destruct.ftl";
-    }
-
+public final class DestructInsnGen implements CInsnGen<DestructInsn> {
     @Override
     public @NotNull EnumSet<GdInstruction> getInsnOpcodes() {
         return EnumSet.of(GdInstruction.DESTRUCT);
     }
 
     @Override
-    protected @NotNull Map<String, Object> getGenerationExtraData(@NotNull CGenHelper helper,
-                                                                  @NotNull LirClassDef clazz,
-                                                                  @NotNull LirFunctionDef func,
-                                                                  @NotNull LirBasicBlock block,
-                                                                  int insnIndex,
-                                                                  @NotNull DestructInsn instruction) {
-        var variable = func.getVariableById(instruction.variableId());
-        if (variable == null) {
-            throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.toString(),
-                    "Variable ID '" + instruction.variableId() + "' not found in function");
-        }
-        var genMode = switch (variable.type()) {
-            case GdObjectType objectType -> {
-                var registry = helper.context().classRegistry();
-                var gdcc = objectType.checkGdccType(registry);
-                if (registry.checkAssignable(objectType, new GdObjectType("RefCounted"))) {
-                    if (gdcc) {
-                        yield "ref_counted_gdcc";
-                    } else {
-                        yield "ref_counted";
-                    }
-                } else if (objectType.checkEngineType(registry)) {
-                    yield "engine_object";
-                } else if (gdcc) {
-                    yield "gdcc_object";
-                } else {
-                    yield "general_object";
-                }
-            }
-            case GdVariantType _ -> "variant";
-            case GdStringLikeType _, GdMetaType _, GdContainerType _ -> "str_meta_container";
-            default -> "primitive";
-        };
-        return Map.of("genMode", genMode, "typeName", variable.type().getTypeName());
-    }
-
-    @Override
-    protected Map<String, Object> validateInstruction(@NotNull CGenHelper helper,
-                                                      @NotNull LirClassDef clazz,
-                                                      @NotNull LirFunctionDef func,
-                                                      @NotNull LirBasicBlock block,
-                                                      int insnIndex,
-                                                      @NotNull DestructInsn instruction) {
-        var variable = func.getVariableById(instruction.variableId());
-        if (variable == null) {
-            throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.toString(),
-                    "Variable ID '" + instruction.variableId() + "' not found in function");
-        }
+    public void generateCCode(@NotNull CBodyBuilder bodyBuilder) {
+        var insn = bodyBuilder.getCurrentInsn(this);
+        var variable = resolveVariable(bodyBuilder, insn.variableId());
         switch (variable.type()) {
             case GdVoidType _ ->
-                    throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.toString(),
-                            "Cannot destruct variable of type " + variable.type().getTypeName());
+                    throw bodyBuilder.invalidInsn("Cannot destruct variable of type " + variable.type().getTypeName());
+            case GdObjectType objectType -> generateObjectDestruct(bodyBuilder, objectType, variable);
+            case GdVariantType _, GdStringLikeType _, GdMetaType _, GdContainerType _ -> {
+                var destroyFunc = bodyBuilder.helper().renderDestroyFunctionName(variable.type());
+                bodyBuilder.callVoid(destroyFunc, List.of(bodyBuilder.valueOfVar(variable)));
+            }
             default -> {
             }
         }
-        return Map.of();
+    }
+
+    private @NotNull LirVariable resolveVariable(@NotNull CBodyBuilder bodyBuilder, @NotNull String variableId) {
+        var variable = bodyBuilder.func().getVariableById(variableId);
+        if (variable == null) {
+            throw bodyBuilder.invalidInsn("Variable ID '" + variableId + "' not found in function");
+        }
+        return variable;
+    }
+
+    private void generateObjectDestruct(@NotNull CBodyBuilder bodyBuilder,
+                                        @NotNull GdObjectType objectType,
+                                        @NotNull LirVariable variable) {
+        var releaseFunc = switch (bodyBuilder.classRegistry().getRefCountedStatus(objectType)) {
+            case RefCountedStatus.YES -> "release_object";
+            case RefCountedStatus.UNKNOWN -> "try_release_object";
+            case RefCountedStatus.NO -> "try_destroy_object";
+        };
+        bodyBuilder.callVoid(releaseFunc, List.of(bodyBuilder.valueOfVar(variable)));
     }
 }

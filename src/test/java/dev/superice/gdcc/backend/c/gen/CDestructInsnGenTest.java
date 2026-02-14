@@ -1,0 +1,143 @@
+package dev.superice.gdcc.backend.c.gen;
+
+import dev.superice.gdcc.backend.CodegenContext;
+import dev.superice.gdcc.backend.ProjectInfo;
+import dev.superice.gdcc.enums.GodotVersion;
+import dev.superice.gdcc.exception.InvalidInsnException;
+import dev.superice.gdcc.gdextension.ExtensionAPI;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
+import dev.superice.gdcc.lir.LirBasicBlock;
+import dev.superice.gdcc.lir.LirClassDef;
+import dev.superice.gdcc.lir.LirFunctionDef;
+import dev.superice.gdcc.lir.LirModule;
+import dev.superice.gdcc.lir.insn.DestructInsn;
+import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdStringType;
+import dev.superice.gdcc.type.GdVoidType;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+public class CDestructInsnGenTest {
+    @Test
+    @DisplayName("destruct string should call godot_String_destroy")
+    void destructStringShouldCallDestroyFunction() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("destruct_string");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("s", GdStringType.STRING);
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new DestructInsn("s"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, List.of(workerClass), emptyApi());
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("godot_String_destroy(&$s);"));
+    }
+
+    @Test
+    @DisplayName("destruct refcounted GDCC object should use release_object")
+    void destructRefCountedGdccObjectShouldUseReleaseObject() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var gdccObjectClass = new LirClassDef("MyObject", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+
+        var func = new LirFunctionDef("destruct_obj");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("obj", new GdObjectType("MyObject"));
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new DestructInsn("obj"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass, gdccObjectClass));
+        var codegen = newCodegen(module, List.of(workerClass, gdccObjectClass), emptyApi());
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("release_object($obj->_object);"));
+    }
+
+    @Test
+    @DisplayName("destruct non-refcounted engine object should use try_destroy_object")
+    void destructNonRefCountedEngineObjectShouldUseTryDestroy() {
+        var api = new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGdClass("Node", false, false, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of())),
+                List.of(),
+                List.of()
+        );
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+
+        var func = new LirFunctionDef("destruct_node");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new DestructInsn("node"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, List.of(workerClass), api);
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("try_destroy_object($node);"));
+    }
+
+    @Test
+    @DisplayName("destruct unknown variable should throw InvalidInsnException")
+    void destructUnknownVariableShouldThrow() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("destruct_missing");
+        func.setReturnType(GdVoidType.VOID);
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new DestructInsn("missing"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, List.of(workerClass), emptyApi());
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+    }
+
+    private CCodegen newCodegen(LirModule module, List<LirClassDef> gdccClasses, ExtensionAPI api) {
+        var classRegistry = new ClassRegistry(api);
+        for (var gdccClass : gdccClasses) {
+            classRegistry.addGdccClass(gdccClass);
+        }
+        ProjectInfo projectInfo = new ProjectInfo("TestProject", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        return codegen;
+    }
+
+    private ExtensionAPI emptyApi() {
+        return new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+    }
+}
