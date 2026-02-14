@@ -24,6 +24,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Objects;
 
 import static dev.superice.gdcc.util.StringUtil.escapeStringLiteral;
 
@@ -121,7 +122,7 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
         if (instruction.resultId() == null) {
             throw bodyBuilder.invalidInsn("New data instruction missing result variable ID");
         }
-        var resultVariable = bodyBuilder.func().getVariableById(instruction.resultId());
+        var resultVariable = bodyBuilder.func().getVariableById(Objects.requireNonNull(instruction.resultId()));
         if (resultVariable == null) {
             throw bodyBuilder.invalidInsn("Result variable ID " + instruction.resultId() + " does not exist");
         }
