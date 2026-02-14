@@ -126,7 +126,7 @@ public class CBodyBuilderPhaseBTest {
         var nonVoidBuilder = new CBodyBuilder(helper, lirClassDef, createFunctionDef("testFuncReturnInt", GdIntType.INT));
         nonVoidBuilder.setCurrentPosition(new dev.superice.gdcc.lir.LirBasicBlock("__finally__"), 0, new dev.superice.gdcc.lir.insn.ReturnInsn(null));
 
-        nonVoidBuilder.returnVoid();
+        nonVoidBuilder.returnTerminal();
 
         assertEquals("return _return_val;\n", nonVoidBuilder.build());
     }
