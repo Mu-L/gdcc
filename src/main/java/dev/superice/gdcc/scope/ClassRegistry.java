@@ -5,6 +5,7 @@ import dev.superice.gdcc.gdextension.*;
 import dev.superice.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.util.*;
 
@@ -315,5 +316,9 @@ public final class ClassRegistry {
         }
         // Unknown type
         return RefCountedStatus.UNKNOWN;
+    }
+
+    public @NotNull @UnmodifiableView List<ExtensionGdClass> getExtensionGdClassList() {
+        return gdClassByName.values().stream().toList();
     }
 }

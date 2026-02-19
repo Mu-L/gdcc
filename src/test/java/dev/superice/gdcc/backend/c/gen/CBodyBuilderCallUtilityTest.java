@@ -54,6 +54,14 @@ class CBodyBuilderCallUtilityTest {
                                 List.of(new ExtensionFunctionArgument("arg1", "Variant", null, null))
                         ),
                         new ExtensionUtilityFunction(
+                                "printerr",
+                                null,
+                                "general",
+                                true,
+                                0,
+                                List.of(new ExtensionFunctionArgument("arg1", "Variant", null, null))
+                        ),
+                        new ExtensionUtilityFunction(
                                 "deg_to_rad",
                                 "float",
                                 "math",
@@ -101,6 +109,23 @@ class CBodyBuilderCallUtilityTest {
         builder.callUtilityVoid("godot_print", List.of(builder.valueOfVar(arg1)));
 
         assertEquals("godot_print(&$v1, NULL, (godot_int)0);\n", builder.build());
+    }
+
+    @Test
+    @DisplayName("callUtilityVoid should support other vararg utility")
+    void testCallUtilityVoidOtherVarargUtility() {
+        var arg1 = addVar("v1", GdVariantType.VARIANT);
+        var arg2 = addVar("v2", GdVariantType.VARIANT);
+
+        builder.callUtilityVoid("printerr", List.of(builder.valueOfVar(arg1), builder.valueOfVar(arg2)));
+
+        assertEquals(
+                """
+                const godot_Variant* __gdcc_tmp_argv_0[] = { &$v2 };
+                godot_printerr(&$v1, __gdcc_tmp_argv_0, (godot_int)1);
+                """,
+                builder.build()
+        );
     }
 
     @Test
@@ -154,6 +179,26 @@ class CBodyBuilderCallUtilityTest {
     }
 
     @Test
+    @DisplayName("vararg ref extra arg should be passed as-is")
+    void testCallUtilityVoidVarargRefExtraArg() {
+        var arg1 = addVar("v1", GdVariantType.VARIANT);
+        var refExtra = Objects.requireNonNull(functionDef.createAndAddRefVariable("v2", GdVariantType.VARIANT));
+
+        builder.callUtilityVoid("print", List.of(
+                builder.valueOfVar(arg1),
+                builder.valueOfVar(refExtra)
+        ));
+
+        assertEquals(
+                """
+                const godot_Variant* __gdcc_tmp_argv_0[] = { $v2 };
+                godot_print(&$v1, __gdcc_tmp_argv_0, (godot_int)1);
+                """,
+                builder.build()
+        );
+    }
+
+    @Test
     @DisplayName("callUtilityAssign should resolve and call utility return")
     void testCallUtilityAssignSuccess() {
         var deg = addVar("deg", GdFloatType.FLOAT);
@@ -173,6 +218,16 @@ class CBodyBuilderCallUtilityTest {
         builder.callUtilityAssign(builder.targetOfVar(result), "godot_deg_to_rad", List.of(builder.valueOfVar(deg)));
 
         assertEquals("$ret = godot_deg_to_rad($deg);\n", builder.build());
+    }
+
+    @Test
+    @DisplayName("callUtilityAssign should support discarding return value")
+    void testCallUtilityAssignDiscardReturn() {
+        var deg = addVar("deg", GdFloatType.FLOAT);
+
+        builder.callUtilityAssign(builder.discardRef(), "deg_to_rad", List.of(builder.valueOfVar(deg)));
+
+        assertEquals("godot_deg_to_rad($deg);\n", builder.build());
     }
 
     @Test

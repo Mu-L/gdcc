@@ -6,6 +6,7 @@ import dev.superice.gdcc.exception.NotImplementedException;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.FunctionDef;
+import dev.superice.gdcc.scope.FunctionSignature;
 import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.type.*;
@@ -15,6 +16,8 @@ import org.jetbrains.annotations.Nullable;
 import java.util.*;
 
 public final class CGenHelper {
+    private static final String GODOT_UTILITY_PREFIX = "godot_";
+
     private final @NotNull CodegenContext context;
     private final @NotNull Set<BindingData> bindingDataSet = new HashSet<>();
 
@@ -376,6 +379,47 @@ public final class CGenHelper {
 
     public @NotNull CodegenContext context() {
         return context;
+    }
+
+    /// Normalize a utility function name into the class-registry lookup key.
+    /// The registry is keyed by the unprefixed utility name.
+    public @NotNull String normalizeUtilityLookupName(@NotNull String functionName) {
+        if (!functionName.startsWith(GODOT_UTILITY_PREFIX)) {
+            return functionName;
+        }
+        if (functionName.length() == GODOT_UTILITY_PREFIX.length()) {
+            return functionName;
+        }
+        return functionName.substring(GODOT_UTILITY_PREFIX.length());
+    }
+
+    /// Render the canonical C symbol name for a utility function.
+    /// Accepts both prefixed and unprefixed inputs.
+    public @NotNull String toUtilityCFunctionName(@NotNull String functionName) {
+        if (functionName.startsWith(GODOT_UTILITY_PREFIX)) {
+            return functionName;
+        }
+        return GODOT_UTILITY_PREFIX + functionName;
+    }
+
+    /// Resolve utility call metadata from either `foo` or `godot_foo`.
+    public @Nullable UtilityCallResolution resolveUtilityCall(@NotNull String functionName) {
+        var lookupName = normalizeUtilityLookupName(functionName);
+        var signature = context.classRegistry().findUtilityFunctionSignature(lookupName);
+        if (signature == null) {
+            return null;
+        }
+        return new UtilityCallResolution(lookupName, toUtilityCFunctionName(lookupName), signature);
+    }
+
+    public record UtilityCallResolution(@NotNull String lookupName,
+                                        @NotNull String cFunctionName,
+                                        @NotNull FunctionSignature signature) {
+        public UtilityCallResolution {
+            Objects.requireNonNull(lookupName);
+            Objects.requireNonNull(cFunctionName);
+            Objects.requireNonNull(signature);
+        }
     }
 
     @Override

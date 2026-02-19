@@ -664,6 +664,21 @@ public class CBodyBuilderPhaseCTest {
 
             assertThrows(RuntimeException.class, () -> builder.callAssign(targetRef, "some_func", List.of()));
         }
+
+        @Test
+        @DisplayName("callAssign should support discarding non-void return")
+        void testCallAssignDiscardReturn() {
+            builder.callAssign(builder.discardRef(), "some_func", GdIntType.INT, List.of());
+            assertEquals("some_func();\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("callAssign discard should reject void return type")
+        void testCallAssignDiscardVoidReturnType() {
+            assertThrows(RuntimeException.class, () ->
+                    builder.callAssign(builder.discardRef(), "some_func", GdVoidType.VOID, List.of())
+            );
+        }
     }
 
     @Nested

@@ -126,3 +126,14 @@ Utility-path errors should use the phrase **"utility function"** in messages to 
 - Only `__finally__` emits the actual `return` statement.
 - For non-void functions, `_return_val` is declared at the top of the `__prepare__` block.
   - `_return_val` does not require automatic destruction.
+
+### Default Argument Values
+
+All possible default values in Godot 4.5.1:
+```
+Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "0000000000000000000000000000000000000000000000000000000000000000", Color(0, 0, 0, 0), PackedVector2Array(), 0.08, "20340101000000", "Alert!", PackedVector3Array(), 20.0, 90, ",", "20140101000000", 50, 32767, -1, 15, 16, "application/octet-stream", PackedColorArray(), 65536, PackedFloat32Array(), 2000, 65535, 4294967295, 163, 120, 0, 1, 2, 3, 1.0, Vector2i(0, 0), null, 4, 400, 5, PackedInt64Array(), 1024, 6, 5.0, true, Callable(), "", Vector2(1, 1), Array[StringName]([]), "UDP", &"Master", Array[Plane]([]), Array[RID]([]), 8192, 1000, 0.001, 0.75, Vector2(0, -1), PackedByteArray(), Vector2(0, 0), "CN=myserver,O=myorganisation,C=IT", PackedStringArray(), "*", 30, Array[Array]([]), Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0), 32, PackedInt32Array(), Color(0, 0, 0, 1), Vector3(0, 1, 0), [], {}, Rect2i(0, 0, 0, 0), Vector2i(-1, -1), Vector2i(1, 1), &"", "•", "endregion", false, "region", 0.01, Array[RDPipelineSpecializationConstant]([]), "None", 264, 100, 0.0, Color(1, 1, 1, 1), 0.1, -1.0, Vector3(0, 0, 0), "InternetGatewayDevice", 0.2, 2.0, 500, Rect2(0, 0, 0, 0), 4.0, 0.8, NodePath("")
+```
+- For float and int, generate C literals directly.
+- For `"..."` and `&"..."`, generate `GD_STATIC_S(u8"...")` and `GD_STATIC_SN(u8"...)` respectively.
+- For `null`, generate `NULL`.
+- For non-object type constructor, generate a c constructor function call, see more details in `gdextension-lite.md`.

@@ -5,6 +5,7 @@ import dev.superice.gdcc.type.GdObjectType;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -130,5 +131,23 @@ public class ClassRegistryTest {
         for (var expectName : expectSet) {
             assertTrue(vMethodMap.containsKey(expectName), () -> "Expected virtual method not found: " + expectName);
         }
+    }
+
+    @Test
+    void findDefaultValues() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var registry = new ClassRegistry(api);
+        var defaultValueSet = new HashSet<String>();
+        for (var gdClass : registry.getExtensionGdClassList()) {
+            for (var method : gdClass.methods()) {
+                for (var arg : method.arguments()) {
+                    if (arg.defaultValue() != null) {
+                        defaultValueSet.add(arg.defaultValue());
+                    }
+                }
+            }
+        }
+        IO.println("Found " + defaultValueSet.size() + " unique default values across all API methods");
+        IO.println(defaultValueSet);
     }
 }

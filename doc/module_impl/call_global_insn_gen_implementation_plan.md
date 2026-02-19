@@ -20,11 +20,11 @@
 
 ## 2. 调研结论（已确认）
 
-### 2.1 当前代码状态
+### 2.1 当前代码状态（已更新）
 
-- `CallGlobalInsnGen` 当前仍是 `TemplateInsnGen` 形态，且逻辑未完成（存在 `// TODO`）。
-- `src/main/c/codegen/insn/call_global.ftl` 不存在。
-- `CCodegen` 尚未注册 `CallGlobalInsnGen`，因此 `CALL_GLOBAL` 目前不会被处理。
+- `CallGlobalInsnGen` 已从 `TemplateInsnGen` 迁移到 `CInsnGen`，通过 `CBodyBuilder` 发射代码。
+- `src/main/c/codegen/insn/call_global.ftl` 仍不存在，且已不再依赖该模板。
+- `CCodegen` 已注册 `CallGlobalInsnGen`，`CALL_GLOBAL` 已接入后端指令分发。
 
 ### 2.2 命名约定来源
 
@@ -133,8 +133,8 @@ void godot_print(const godot_Variant *arg1, const godot_Variant **argv, godot_in
 ## 6.1 非 vararg utility
 
 - 构造参数列表：`List<ValueRef>`，每个参数使用 `bodyBuilder.valueOfVar(argVar)`。
-- void：`bodyBuilder.callVoid(cFunctionName, args)`。
-- non-void：`bodyBuilder.callAssign(target, cFunctionName, retType, args)`。
+- void：`bodyBuilder.callUtilityVoid(cFunctionName, args)`。
+- non-void：`bodyBuilder.callUtilityAssign(target, cFunctionName, args)`。
 
 ## 6.2 vararg utility
 
@@ -166,10 +166,10 @@ utility 函数 C 形参为：
 
 将最终参数拼成：`fixedArgs + argv + argc`。
 
-- void：`callVoid(cFunctionName, finalArgs)`。
-- non-void：`callAssign(target, cFunctionName, retType, finalArgs)`。
+- void：`callUtilityVoid(cFunctionName, finalArgs)`。
+- non-void：`callUtilityAssign(target, cFunctionName, finalArgs)`。
 
-> 说明：这里仍建议走 `CBodyBuilder.callAssign`，避免绕过统一赋值语义（旧值释放/析构、对象 own/release 等）。
+> 说明：这里仍建议走 `CBodyBuilder.callUtilityVoid/callUtilityAssign`，避免绕过统一赋值语义（旧值释放/析构、对象 own/release 等）。
 
 ## 6.3 CBodyBuilder 需要配合的增强（提升健壮性）
 
@@ -262,8 +262,16 @@ utility 函数 C 形参为：
    - 增加 vararg 组包能力（argv 临时数组 + `godot_int` argc）。
    - 增加 raw 参数通道，避免 `argv/argc` 被普通参数渲染逻辑误处理。
 
-4. （可选优化，不是本期必须）
-   - 若后续多个组件都需要复用 utility 名称归一化逻辑，可在 `CGenHelper` 抽取公共解析辅助方法。
+4. `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
+   - 已新增 utility 名称归一化与解析公共能力：
+     - `normalizeUtilityLookupName(String functionName)`
+     - `toUtilityCFunctionName(String functionName)`
+     - `resolveUtilityCall(String functionName)`
+   - 已新增 `UtilityCallResolution` record，统一承载：
+     - `lookupName`
+     - `cFunctionName`
+     - `signature`
+   - `CBodyBuilder` 与 `CallGlobalInsnGen` 已改为复用该公共解析能力，避免重复实现。
 
 ---
 
@@ -317,8 +325,8 @@ utility 函数 C 形参为：
 ## 10. 分阶段落地步骤
 
 ### Phase A：生成器改造与注册
-- [ ] `CallGlobalInsnGen` 改为 `CBodyBuilder` 路径。
-- [ ] 在 `CCodegen` 完成注册。
+- [x] `CallGlobalInsnGen` 改为 `CBodyBuilder` 路径。
+- [x] 在 `CCodegen` 完成注册。
 
 ### Phase B：CBodyBuilder 能力补齐
 - [x] utility 名称归一化解析入口落地。
@@ -326,19 +334,19 @@ utility 函数 C 形参为：
 - [x] vararg argv/argc 组包和 raw 参数通道落地。
 
 ### Phase C：完整校验落地
-- [ ] utility 名称解析与签名查找。
-- [ ] 参数数量/类型校验。
-- [ ] 返回值数量/类型校验。
+- [x] utility 名称解析与签名查找。
+- [x] 参数数量/类型校验。
+- [x] 返回值数量/类型校验。
 
 ### Phase D：vararg 代码生成
-- [ ] `argv/argc` 组装。
-- [ ] `extraCount=0` 的 `NULL,0` 分支。
-- [ ] `extraCount>0` 的局部数组分支。
+- [x] `argv/argc` 组装。
+- [x] `extraCount=0` 的 `NULL,0` 分支。
+- [x] `extraCount>0` 的局部数组分支。
 
 ### Phase E：测试与回归
-- [ ] 新增 `CallGlobalInsnGenTest`。
+- [x] 新增 `CallGlobalInsnGenTest`。
 - [x] 新增/补充 CBodyBuilder utility 调用专项测试。
-- [ ] 跑针对性测试并修复。
+- [x] 跑针对性测试并修复。
 
 ---
 
@@ -351,7 +359,7 @@ utility 函数 C 形参为：
 - 应对：本期严格要求 `Variant`，明确报错提示“先 pack_variant”。
 
 3. **风险：绕过 builder 导致生命周期语义丢失**
-- 应对：调用发射尽量走 `callVoid/callAssign`。
+- 应对：调用发射尽量走 `callUtilityVoid/callUtilityAssign`。
 
 4. **风险：未来 utility 元数据引入 default 参数**
 - 应对：数量校验逻辑预留 default 分支，不阻塞后续扩展。
@@ -431,4 +439,341 @@ utility 函数 C 形参为：
 ./gradlew classes --no-daemon --info --console=plain
 ```
 
+### 已完成（CallGlobalInsnGen 落地，2026-02-19）
 
+本阶段将方案从“仅设计”推进为“可运行实现”，并补齐了 CALL_GLOBAL 接入和专项测试。
+
+**核心实现状态**：
+
+1. **生成器迁移完成**
+   - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/CallGlobalInsnGen.java`
+   - 已改为 `CInsnGen<CallGlobalInsn>`，移除模板依赖与 `TemplateInsnGen` 路径。
+
+2. **CALL_GLOBAL 接入完成**
+   - `src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`
+   - 已在静态注册块加入 `registerInsnGen(new CallGlobalInsnGen())`。
+
+3. **utility 解析与校验落地**
+   - 生成器内已实现 utility 解析 record（`lookupName/cFunctionName/signature`）。
+   - 支持 `print` 与 `godot_print` 双形态输入解析。
+   - 对参数 operand 形态做了约束：`CallGlobalInsn.args` 必须是变量 operand（`VariableOperand`）。
+   - 参数变量存在性校验在生成器中完成。
+   - 参数数量/类型、vararg extra 的 `Variant` 约束委托给 `CBodyBuilder.callUtility*` 路径统一校验。
+   - 返回值规则（void/non-void 与 `resultId`）、result 变量存在性、`ref` 可写性、返回类型兼容性均已落地。
+
+4. **调用发射策略统一**
+   - void utility 统一走 `callUtilityVoid(...)`。
+   - non-void utility 统一走 `callUtilityAssign(...)`。
+   - vararg `argv/argc` 组包仍由 `CBodyBuilder` 内部负责，避免在生成器重复实现。
+
+5. **新增专项测试**
+   - 新增：`src/test/java/dev/superice/gdcc/backend/c/gen/CallGlobalInsnGenTest.java`
+   - 已覆盖：
+     - 成功路径：`deg_to_rad` 返回值赋值、`print` vararg 的 `NULL/(godot_int)0`、`argv` 数组分支、前缀名输入。
+     - 失败路径：utility 不存在、resultId 与返回值规则冲突、result 为 ref、result 类型不兼容、参数变量不存在、参数 operand 非变量。
+
+### 本次实现执行过的验证命令（2026-02-19）
+
+```bash
+./gradlew test --tests CallGlobalInsnGenTest --no-daemon --info --console=plain
+./gradlew test --tests CBodyBuilderCallUtilityTest --no-daemon --info --console=plain
+./gradlew classes --no-daemon --info --console=plain
+```
+
+### 已完成（utility 名称归一化抽取 + 生成器双重校验，2026-02-19）
+
+本阶段聚焦“消除 utility 名称解析重复逻辑”并增强 `CallGlobalInsnGen` 的防御性校验。
+
+**本次新增/变更**：
+
+1. **utility 解析能力抽取到 `CGenHelper`**
+   - 新增 `resolveUtilityCall` 统一解析入口（兼容 `print` / `godot_print`）。
+   - 新增 `UtilityCallResolution` 作为跨组件共享数据模型。
+
+2. **`CBodyBuilder` 改为复用 helper 解析**
+   - 移除 builder 内部重复的 utility 名称归一化方法与私有解析 record。
+   - `callUtility*`、`validateCallArgs`、`resolveReturnType` 等路径均通过 helper 解析结果协同工作。
+
+3. **`CallGlobalInsnGen` 增强“前置校验”，并保留与 builder 双重校验**
+   - 生成器端新增参数数量/类型校验（含 vararg extra 必须为 `Variant`）。
+   - 生成器端继续校验 resultId 规则、result 变量存在性、可写性、返回类型兼容性。
+   - builder 侧仍会再次校验（双重校验已按项目要求保留）。
+
+4. **单测补强**
+   - 新增：`src/test/java/dev/superice/gdcc/backend/c/gen/CGenHelperUtilityResolutionTest.java`
+     - 覆盖 utility 名称归一化、C 符号名转换、prefixed/unprefixed 解析、missing 场景。
+   - 扩展：`src/test/java/dev/superice/gdcc/backend/c/gen/CallGlobalInsnGenTest.java`
+     - 新增 prefixed non-void 成功路径；
+     - 新增更多失败路径：参数过多、vararg fixed 参数不足、fixed 类型不匹配、vararg extra 非 Variant、result 变量不存在。
+
+### 本阶段执行过的验证命令（2026-02-19，补充）
+
+```bash
+./gradlew test --tests CallGlobalInsnGenTest --no-daemon --info --console=plain
+./gradlew test --tests CGenHelperUtilityResolutionTest --no-daemon --info --console=plain
+./gradlew test --tests CBodyBuilderCallUtilityTest --no-daemon --info --console=plain
+./gradlew classes --no-daemon --info --console=plain
+```
+
+---
+
+## 15. 对后续工程有价值的沉淀（建议）
+
+1. **增加接入级回归测试**
+   - 建议在 `CCodegen` 侧新增用例，显式断言 `CALL_GLOBAL` 不再触发 `Unsupported instruction opcode`。
+
+2. **为未来“非 utility 全局调用”预留扩展位**
+   - 目前 `CALL_GLOBAL` 仅支持 utility（符合本期范围）。
+   - 若后续支持非 utility 全局符号，建议在生成器中引入清晰分流（utility path / symbol path）并保持错误信息可区分。
+
+3. **持续保持错误信息可定位**
+   - 当前路径已通过 `bodyBuilder.invalidInsn(...)` 保留函数/块/指令位置信息。
+   - 后续新增分支时建议复用同一错误出口，避免回退到仅字符串异常。
+
+
+
+---
+
+## 16. CallGlobalInsnGen 当前实现审阅报告（2026-02-19）
+
+### 16.1 审阅范围
+
+- 主实现文件：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/CallGlobalInsnGen.java`
+- 协同实现文件：
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`（utility 调用路径）
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`（utility 名称解析）
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`（指令注册与分发）
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/CInsnGen.java`（生成器接口）
+- 测试文件：
+  - `src/test/java/dev/superice/gdcc/backend/c/gen/CallGlobalInsnGenTest.java`
+  - `src/test/java/dev/superice/gdcc/backend/c/gen/CBodyBuilderCallUtilityTest.java`
+  - `src/test/java/dev/superice/gdcc/backend/c/gen/CGenHelperUtilityResolutionTest.java`
+- 语义基线文档：
+  - `doc/gdcc_c_backend.md`
+  - `doc/gdcc_low_ir.md`
+  - `doc/gdextension-lite.md`
+  - `doc/module_impl/cbodybuilder_implementation_guide.md`
+
+### 16.2 当前状态概述
+
+所有现有测试均通过（`CallGlobalInsnGenTest`、`CBodyBuilderCallUtilityTest`、`CGenHelperUtilityResolutionTest`），编译无错误无警告。`CallGlobalInsnGen` 已注册到 `CCodegen`，可处理 `CALL_GLOBAL` 指令的 utility function 调用。
+
+---
+
+### 16.3 发现的问题（按严重度分级）
+
+#### P0-1：`CallGlobalInsnGen.validateCallArgs` 与 `CBodyBuilder.validateCallArgs` 双重校验存在语义差异
+
+**现状**：
+
+`CallGlobalInsnGen.validateCallArgs`（第 100–141 行）操作 `List<LirVariable>`，而 `CBodyBuilder.validateCallArgs`（第 550–593 行）操作 `List<ValueRef>`。两者的校验逻辑高度相似但存在以下差异：
+
+1. **CBodyBuilder 侧额外校验了 vararg extra 参数必须是 `VarValue`**（第 588 行 `if (!(arg instanceof VarValue))`），而 **CallGlobalInsnGen 侧没有此校验**。这是因为 InsnGen 层面操作的是 `LirVariable`（都是变量），到 builder 层面才包装成 `ValueRef`，所以 InsnGen 层面此校验天然满足。但这意味着如果未来 InsnGen 的参数构造逻辑改变（例如允许非变量 ValueRef），此处会悄然失去守护。
+
+2. **错误消息不一致**：CallGlobalInsnGen 使用 `"utility '"` 而 CBodyBuilder 使用 `"utility function '"`，不符合 `doc/gdcc_c_backend.md` §"Error Messages for Utility Validation"中统一使用 **"utility function"** 的约定。
+
+   - `CallGlobalInsnGen` 第 108 行：`"Too many arguments for utility '"`
+   - `CBodyBuilder` 第 557 行：`"Too many arguments for utility function '"`
+   - `CallGlobalInsnGen` 第 114 行：`"Too few arguments for utility '"`
+   - `CBodyBuilder` 第 564 行：`"Too few arguments for utility function '"`
+   - `CallGlobalInsnGen` 第 128 行：`"Argument #" + ... + " of utility '"`
+   - 同理其余消息。
+
+**影响**：
+- 虽然双重校验本身不产生逻辑错误（InsnGen 先校验，builder 后校验，都会拦截非法输入），但错误消息不一致会导致同一类问题在不同触发路径下报出不同措辞，增加用户排查困难。
+- 双重校验增加了维护负担——如果校验规则变更需要同步两处。
+
+#### P0-2：非 void utility 的返回值赋值未参与 `CBodyBuilder` 的完整赋值语义
+
+**现状**：
+
+`CallGlobalInsnGen.generateCCode` 第 62 行：
+```java
+bodyBuilder.callUtilityAssign(bodyBuilder.targetOfVar(resultVar), utility.cFunctionName(), args);
+```
+
+生成器在调用 `callUtilityAssign` 前对 `resultVar` 做了自己的校验（ref 检查、类型兼容性检查），然后将 `utility.cFunctionName()`（已经是 `godot_` 前缀的名字）传给 `callUtilityAssign`。
+
+但 `callUtilityAssign` 内部（第 360 行）又会用这个已经带前缀的名字再次调用 `requireUtilityCall(funcName)`。而 `requireUtilityCall` 内部调用 `resolveUtilityCall(funcName)` → `helper.resolveUtilityCall(funcName)` → `normalizeUtilityLookupName(funcName)`，此函数会再次去除 `godot_` 前缀来查找。
+
+虽然这个流程最终是正确的，但存在 **不必要的二次解析开销**：生成器已经持有 `UtilityCallResolution` 对象（包含 `signature`），却仍将 `cFunctionName` 传给 builder 让它再解析一遍。这是设计上的冗余。
+
+**影响**：
+- 性能影响微小但增加了路径复杂度。
+- 更重要的是，如果 `normalizeUtilityLookupName` 的行为在边界条件下出现偏差（例如函数名恰好是 `"godot_"` 这 6 个字符），二次解析可能与第一次结果不一致。
+
+#### P1-2：`CallGlobalInsnGen` 的 `requireUtilityCall` 错误消息使用原始 `functionName` 而非 `lookupName`
+
+**现状**：
+
+`CallGlobalInsnGen.requireUtilityCall`（第 69–74 行）：
+```java
+private @NotNull CGenHelper.UtilityCallResolution requireUtilityCall(..., @NotNull String functionName) {
+    var utility = bodyBuilder.helper().resolveUtilityCall(functionName);
+    if (utility == null) {
+        throw bodyBuilder.invalidInsn("Global utility function '" + functionName + "' not found in registry");
+    }
+    return utility;
+}
+```
+
+若用户 IR 中写的是 `godot_print`，此处会报 `"Global utility function 'godot_print' not found in registry"`。但实际 registry 是以 `"print"` 为 key 的。用户可能疑惑为什么 `godot_print` 查不到。
+
+更好的做法是在错误消息中同时指出原始名称和归一化后的 lookup 名称，便于排查。
+
+**影响**：中低。在正常场景下不触发（因为 `print` 能查到），但如果用户拼写错误（如 `godot_pritn`），错误消息可能误导用户以为 registry 使用 `godot_` 前缀 key。
+
+#### P1-3：`CallGlobalInsnGen.validateCallArgs` 对 non-vararg utility 允许参数少于 fixed 只要有 default，但实际未生成 default 值调用代码
+
+**现状**：
+
+`CallGlobalInsnGen.validateCallArgs` 第 109–117 行：
+```java
+if (provided < fixed) {
+    for (var i = provided; i < fixed; i++) {
+        var param = signature.parameters().get(i);
+        if (param.defaultValue() == null) {
+            throw bodyBuilder.invalidInsn("Too few arguments for utility '...'");
+        }
+    }
+}
+```
+
+如果参数个数小于 fixed 但缺失的参数都有 `defaultValue`，校验通过。但之后构建 `args` 列表时（第 33–36 行）只从 `argVars` 构建，`argVars` 的大小就是 `provided`。最终传给 `callUtilityVoid`/`callUtilityAssign` 的参数列表少于 fixed 个。
+
+然而 `CBodyBuilder.renderUtilityArgs`（第 639 行 `var fixedLimit = Math.min(fixedCount, args.size())`）不会补充缺失参数，导致最终生成的 C 代码参数数量不足，产生 **编译错误或运行时崩溃**。
+
+**注意**：当前 Godot 4.5.1 的 utility functions API 数据中，所有 utility function 的参数 `defaultValue` 均为 `null`，所以此路径实际上**当前不会被触发**。但这是一个潜在的正确性 bug——校验逻辑允许了一种它不支持的场景。
+
+**影响**：中。当前不触发但一旦 API 数据引入 default 参数将产生错误 C 代码。
+
+#### P1-4：`CBodyBuilder.validateCallArgs` 同样存在 default 参数校验通过但无补充逻辑的问题
+
+**现状**：与 P1-3 完全同构——`CBodyBuilder.validateCallArgs`（第 561–567 行）也允许 `provided < fixed` 只要缺失参数有 default，但 `renderUtilityArgs` 不会生成 default 值填充。
+
+**影响**：同 P1-3，两处校验逻辑和生成逻辑存在语义不匹配。
+
+#### P1-5：生成器不校验 `instruction.args()` 中的 Operand 是否可能包含非 `VariableOperand` 类型以外的 IR 合法 operand
+
+**现状**：
+
+根据 `doc/gdcc_low_ir.md`，`call_global` 指令的 operand 格式为：
+```
+$<result_id>? = call_global "<function_name>" $<arg1_id> $<arg2_id> ...
+```
+
+参数应当只有 `VariableOperand`。但 `CallGlobalInsn.args()` 的类型声明是 `List<Operand>`（而非 `List<VariableOperand>`），所以在 IR 构造层面理论上可以放入任意 Operand 类型。
+
+`CallGlobalInsnGen.resolveArgumentVariables` 第 84 行的 pattern matching 能正确拦截非 `VariableOperand`：
+```java
+if (!(operand instanceof LirInstruction.VariableOperand(var argId))) {
+    throw bodyBuilder.invalidInsn("...must be a variable operand");
+}
+```
+
+这是正确的防御，**此项不是 bug，而是确认防御到位**。但值得注意的是，`CallGlobalInsn` record 的 `args` 字段应考虑在类型层面约束为 `List<VariableOperand>` 以在编译期而非运行时捕获此类错误。
+
+**影响**：低。当前防御有效，但类型系统层面可以更严格。
+
+#### P2-1：测试覆盖缺口 — 未测试返回 Object 类型（含 GDCC 类型）的 utility
+
+**现状**：
+
+`CallGlobalInsnGenTest` 仅测试了 `float` 返回值（`deg_to_rad`）和 `void` 返回值（`print`）。未覆盖以下场景：
+- 返回 `String`/`StringName` 等值语义类型的 utility — 需验证赋值时的 copy 语义和旧值 destroy。
+- 返回 `Object` 引擎类型的 utility — 需验证 `emitCallResultAssignment` 中的 own 语义。
+- 返回 GDCC Object 类型的 utility — 需验证 `fromGodotObjectPtr` 转换（`checkGlobalFuncReturnGodotRawPtr` 路径）。
+
+**影响**：中低。当前 utility functions 很少返回 Object 类型，但补齐这些场景可以防止未来回归。
+
+#### P2-2：测试覆盖缺口 — 未测试 `ref` 类型参数变量作为 vararg extra 参数
+
+**现状**：
+
+vararg extra 参数的 C 代码生成在 `CBodyBuilder.renderVarargVariantPointer` 中（第 669–681 行）：
+```java
+var code = varValue.generateCode(); // "$varId"
+if (varValue.variable().ref()) {
+    return code; // ref 变量已经是指针，直接用
+}
+return "&" + code; // 非 ref 加 &
+```
+
+测试中所有 vararg 参数都是非 ref 变量。未覆盖 ref 变量参数场景（应生成 `$varId` 而非 `&$varId`）。
+
+**影响**：低。逻辑正确但缺少测试守护。
+
+#### P2-3：测试覆盖缺口 — 未测试 `printerr` 等其他 vararg utility
+
+**现状**：测试仅使用 `print` 和 `deg_to_rad` 两个 utility。虽然逻辑路径相同，但使用更多 utility 可以增强对 `FunctionSignature` 解析一致性的信心。
+
+**影响**：很低。
+
+#### P2-4：`CallGlobalInsnGen` 没有文档注释（Javadoc/markdown doc comment）
+
+**现状**：类级别缺少 `///` 文档注释说明该生成器的职责、适用范围（仅 utility）、以及未来扩展方向（非 utility 全局符号）。`generateCCode` 方法也没有注释说明整体流程。
+
+**影响**：可维护性降低。
+
+#### P2-5：`CallGlobalInsnGen` 未处理 `callUtilityVoid` 对 non-void utility 的静默丢弃
+
+**现状**：
+
+根据 `doc/gdcc_c_backend.md` §"Calling Utility Functions"，`callUtilityVoid` 用于"no return value"的 utility。但代码中的分支（第 39–44 行）在 `returnType == null || returnType instanceof GdVoidType` 时调用 `callUtilityVoid`。
+
+如果未来某个 utility 有返回值但 IR 合法地省略了 `resultId`（有意忽略返回值），当前逻辑会在第 46 行抛 `"resultId is missing"` 错误。
+
+这意味着当前实现**不允许**有意忽略 non-void utility 的返回值，这与某些语言允许忽略函数返回值的惯例不同。方案文档 §14 审阅记录中提到"`callUtilityVoid` 不校验 non-void utility 返回值被丢弃（方案允许有意忽略）"，说明这是**有意遗留的限制**，但 `CallGlobalInsnGen` 的实现比方案更严格——它强制要求 non-void utility 必须提供 `resultId`。
+
+**影响**：低。当前行为安全但可能限制了未来 IR 的灵活性。如果决定允许丢弃返回值，需同步修改此处分支。
+
+---
+
+## 17. 审阅问题修复状态同步（2026-02-19，第二轮）
+
+本轮按“第 16 节最新审阅报告”执行修复，**参数默认值相关问题（P1-3/P1-4）按约定暂不处理**，其余项已落地如下：
+
+### 已修复
+
+1. **P0-1：InsnGen / Builder 参数校验重复与消息漂移**
+   - `CallGlobalInsnGen` 已移除本地 `validateCallArgs`，参数数量/类型校验统一收敛到 `CBodyBuilder.callUtility*`。
+   - 错误消息源统一到 builder utility 路径，避免同类错误多套文案。
+
+2. **P0-2：`CallGlobalInsnGen` 到 `CBodyBuilder` 的 utility 二次解析冗余**
+   - `CBodyBuilder` 新增基于 `UtilityCallResolution` 的重载：
+     - `callUtilityVoid(UtilityCallResolution, List<ValueRef>)`
+     - `callUtilityAssign(TargetRef, UtilityCallResolution, List<ValueRef>)`
+   - `CallGlobalInsnGen` 直接传入已解析的 `utility`，不再传 `cFunctionName` 让 builder 重查。
+
+3. **P1-2：utility not found 报错可读性**
+   - `CallGlobalInsnGen.requireUtilityCall` 在报错中同时输出原始函数名与归一化 lookup key：
+     - `Global utility function '<raw>' not found in registry (lookup key: '<normalized>')`
+
+4. **P2-4：`CallGlobalInsnGen` 缺少文档注释**
+   - 已补充类级与 `generateCCode` 方法级 `///` 注释，说明职责与流程。
+
+5. **P2-5：non-void utility 返回值必须绑定 resultId（无法显式丢弃）**
+   - `CBodyBuilder` 新增 `DiscardRef`（`TargetRef` 新实现）和 `discardRef()` 工厂方法。
+   - `callAssign` / `callUtilityAssign` 新增“丢弃返回值”路径：
+     - 目标是 `DiscardRef` 时仅发射调用语句，不执行赋值语义（destroy/release/own）。
+   - `CallGlobalInsnGen` 对 non-void utility 在 `resultId == null` 时改为走 `discardRef()`，实现显式丢弃返回值。
+
+6. **P2 覆盖缺口补强（部分）**
+   - 新增/更新测试覆盖：
+     - `callUtilityAssign` 丢弃返回值路径；
+     - `callAssign` 丢弃返回值路径与 void 拒绝路径；
+     - vararg extra 为 `ref Variant` 时指针拼接路径；
+     - `printerr` 等其它 vararg utility 调用路径；
+     - `CALL_GLOBAL` non-void 丢弃返回值路径。
+
+### 暂未修复（按本轮范围排除）
+
+- **P1-3 / P1-4（默认参数）**  
+  当前仍保持“校验层允许 default，但渲染层不补默认实参”的现状；按计划留待后续专项修复。
+
+### 本轮验证命令
+
+```bash
+./gradlew test --tests CBodyBuilderCallUtilityTest --tests CallGlobalInsnGenTest --tests CBodyBuilderPhaseCTest --no-daemon --info --console=plain
+./gradlew classes --no-daemon --info --console=plain
+```

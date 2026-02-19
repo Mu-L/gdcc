@@ -2,7 +2,6 @@ package dev.superice.gdcc.backend.c.gen;
 
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.lir.*;
-import dev.superice.gdcc.scope.FunctionSignature;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
@@ -236,6 +235,11 @@ public final class CBodyBuilder {
         return new VarTargetRef(variable);
     }
 
+    /// Creates a special target reference that discards call return values.
+    public @NotNull DiscardRef discardRef() {
+        return DiscardRef.INSTANCE;
+    }
+
     public @NotNull CBodyBuilder assignVar(@NotNull TargetRef target, @NotNull ValueRef value) {
         checkTargetAssignable(target);
         checkAssignable(value.type(), target.type());
@@ -320,6 +324,12 @@ public final class CBodyBuilder {
     /// Supports utility vararg ABI by appending argv/argc automatically.
     public @NotNull CBodyBuilder callUtilityVoid(@NotNull String funcName, @NotNull List<ValueRef> args) {
         var utility = requireUtilityCall(funcName);
+        return callUtilityVoid(utility, args);
+    }
+
+    /// Calls a resolved utility function and emits a statement call.
+    public @NotNull CBodyBuilder callUtilityVoid(@NotNull CGenHelper.UtilityCallResolution utility,
+                                                 @NotNull List<ValueRef> args) {
         validateCallArgs(utility, args, true);
         var argsResult = renderUtilityArgs(utility, args);
         emitTempDecls(argsResult.temps());
@@ -337,18 +347,29 @@ public final class CBodyBuilder {
                                             @NotNull String funcName,
                                             @Nullable GdType returnType,
                                             @NotNull List<ValueRef> args) {
-        checkTargetAssignable(target);
+        var discardResult = target instanceof DiscardRef;
+        if (!discardResult) {
+            checkTargetAssignable(target);
+        }
         rejectVarargUtilityViaNonUtilityPath(funcName);
 
         var resolvedReturnType = resolveReturnType(funcName, returnType);
         validateCallArgs(funcName, args);
-        validateReturnType(funcName, resolvedReturnType, target.type());
+        if (discardResult) {
+            validateDiscardableReturnType(funcName, resolvedReturnType);
+        } else {
+            validateReturnType(funcName, resolvedReturnType, target.type());
+        }
 
         var argsResult = renderArgs(funcName, args);
         emitTempDecls(argsResult.temps());
 
         var callExpr = funcName + "(" + argsResult.code() + ")";
-        emitCallResultAssignment(target, funcName, callExpr);
+        if (discardResult) {
+            out.append(callExpr).append(";\n");
+        } else {
+            emitCallResultAssignment(target, funcName, callExpr);
+        }
 
         emitTempDestroys(argsResult.temps());
         return this;
@@ -359,22 +380,38 @@ public final class CBodyBuilder {
     public @NotNull CBodyBuilder callUtilityAssign(@NotNull TargetRef target,
                                                    @NotNull String funcName,
                                                    @NotNull List<ValueRef> args) {
-        checkTargetAssignable(target);
         var utility = requireUtilityCall(funcName);
+        return callUtilityAssign(target, utility, args);
+    }
+
+    /// Calls a resolved utility function and either assigns or discards its non-void return value.
+    public @NotNull CBodyBuilder callUtilityAssign(@NotNull TargetRef target,
+                                                   @NotNull CGenHelper.UtilityCallResolution utility,
+                                                   @NotNull List<ValueRef> args) {
+        var discardResult = target instanceof DiscardRef;
+        if (!discardResult) {
+            checkTargetAssignable(target);
+        }
         validateCallArgs(utility, args, true);
 
         var returnType = utility.signature().returnType();
         if (returnType == null || returnType instanceof GdVoidType) {
             throw invalidInsn("Utility function '" + utility.lookupName() + "' has no return value");
         }
-        checkAssignable(returnType, target.type());
+        if (!discardResult) {
+            checkAssignable(returnType, target.type());
+        }
 
         var argsResult = renderUtilityArgs(utility, args);
         emitTempDecls(argsResult.temps());
         emitRawLines(argsResult.preCallLines());
 
         var callExpr = utility.cFunctionName() + "(" + argsResult.code() + ")";
-        emitCallResultAssignment(target, utility.cFunctionName(), callExpr);
+        if (discardResult) {
+            out.append(callExpr).append(";\n");
+        } else {
+            emitCallResultAssignment(target, utility.cFunctionName(), callExpr);
+        }
 
         emitTempDestroys(argsResult.temps());
         return this;
@@ -548,7 +585,7 @@ public final class CBodyBuilder {
         validateCallArgs(utility, args, false);
     }
 
-    private void validateCallArgs(@NotNull UtilityCallInfo utility,
+    private void validateCallArgs(@NotNull CGenHelper.UtilityCallResolution utility,
                                   @NotNull List<ValueRef> args,
                                   boolean strictVarargVariant) {
         var signature = utility.signature();
@@ -602,6 +639,15 @@ public final class CBodyBuilder {
         checkAssignable(resolvedReturnType, targetType);
     }
 
+    private void validateDiscardableReturnType(@NotNull String funcName, @Nullable GdType resolvedReturnType) {
+        if (resolvedReturnType == null) {
+            throw invalidInsn("Return type is required for non-utility function: " + funcName);
+        }
+        if (resolvedReturnType instanceof GdVoidType) {
+            throw invalidInsn("CallAssign discard expects a non-void function: " + funcName);
+        }
+    }
+
     /// Renders a ValueRef for a conditional expression without emitting code.
     private @NotNull RenderResult renderCondition(@NotNull ValueRef condition) {
         if (!(condition.type() instanceof GdBoolType)) {
@@ -610,7 +656,7 @@ public final class CBodyBuilder {
         return new RenderResult(condition.generateCode(), List.of());
     }
 
-    private @NotNull UtilityCallInfo requireUtilityCall(@NotNull String funcName) {
+    private @NotNull CGenHelper.UtilityCallResolution requireUtilityCall(@NotNull String funcName) {
         var utility = resolveUtilityCall(funcName);
         if (utility == null) {
             throw invalidInsn("Global utility function '" + funcName + "' not found in registry");
@@ -629,13 +675,8 @@ public final class CBodyBuilder {
         }
     }
 
-    private @Nullable UtilityCallInfo resolveUtilityCall(@NotNull String funcName) {
-        var lookupName = normalizeUtilityLookupName(funcName);
-        var signature = classRegistry().findUtilityFunctionSignature(lookupName);
-        if (signature == null) {
-            return null;
-        }
-        return new UtilityCallInfo(lookupName, toUtilityCFunctionName(lookupName), signature);
+    private @Nullable CGenHelper.UtilityCallResolution resolveUtilityCall(@NotNull String funcName) {
+        return helper.resolveUtilityCall(funcName);
     }
 
     /// Renders arguments for a utility function call, including vararg argv/argc handling.
@@ -644,7 +685,7 @@ public final class CBodyBuilder {
     /// temporary `const godot_Variant*[]` array. The pointers in this array point directly
     /// at the IR variables (`&$varId`), which is safe because `validateCallArgs` guarantees
     /// that all vararg extra arguments are `VarValue` references with stable addresses.
-    private @NotNull UtilityArgsRenderResult renderUtilityArgs(@NotNull UtilityCallInfo utility,
+    private @NotNull UtilityArgsRenderResult renderUtilityArgs(@NotNull CGenHelper.UtilityCallResolution utility,
                                                                @NotNull List<ValueRef> args) {
         var fixedCount = utility.signature().parameterCount();
         var callArgs = new ArrayList<CallArg>();
@@ -676,7 +717,7 @@ public final class CBodyBuilder {
 
     /// Renders the C pointer expression for a vararg extra argument.
     /// Pre-condition: validateCallArgs has already verified that value is a VarValue of Variant type.
-    private @NotNull String renderVarargVariantPointer(@NotNull UtilityCallInfo utility,
+    private @NotNull String renderVarargVariantPointer(@NotNull CGenHelper.UtilityCallResolution utility,
                                                        @NotNull ValueRef value,
                                                        int varargIndex) {
         if (!(value instanceof VarValue varValue)) {
@@ -698,23 +739,6 @@ public final class CBodyBuilder {
         for (var line : lines) {
             out.append(line).append("\n");
         }
-    }
-
-    private @NotNull String normalizeUtilityLookupName(@NotNull String funcName) {
-        if (!funcName.startsWith("godot_")) {
-            return funcName;
-        }
-        if (funcName.length() == "godot_".length()) {
-            return funcName;
-        }
-        return funcName.substring("godot_".length());
-    }
-
-    private @NotNull String toUtilityCFunctionName(@NotNull String lookupName) {
-        if (lookupName.startsWith("godot_")) {
-            return lookupName;
-        }
-        return "godot_" + lookupName;
     }
 
     /// Renders a ValueRef as a C argument, adding '&' if needed for pass-by-reference types.
@@ -1059,7 +1083,7 @@ public final class CBodyBuilder {
         }
     }
 
-    public sealed interface TargetRef permits VarTargetRef, TempVar {
+    public sealed interface TargetRef permits VarTargetRef, TempVar, DiscardRef {
         @NotNull GdType type();
 
         @NotNull String generateCode();
@@ -1085,6 +1109,28 @@ public final class CBodyBuilder {
         @Override
         public boolean isRef() {
             return variable.ref();
+        }
+    }
+
+    public static final class DiscardRef implements TargetRef {
+        private static final DiscardRef INSTANCE = new DiscardRef();
+
+        private DiscardRef() {
+        }
+
+        @Override
+        public @NotNull GdType type() {
+            throw new IllegalStateException("DiscardRef does not carry a target type");
+        }
+
+        @Override
+        public @NotNull String generateCode() {
+            throw new IllegalStateException("DiscardRef does not generate target code");
+        }
+
+        @Override
+        public boolean isRef() {
+            return false;
         }
     }
 
@@ -1154,16 +1200,6 @@ public final class CBodyBuilder {
         private RenderResult {
             Objects.requireNonNull(code);
             Objects.requireNonNull(temps);
-        }
-    }
-
-    private record UtilityCallInfo(@NotNull String lookupName,
-                                   @NotNull String cFunctionName,
-                                   @NotNull FunctionSignature signature) {
-        private UtilityCallInfo {
-            Objects.requireNonNull(lookupName);
-            Objects.requireNonNull(cFunctionName);
-            Objects.requireNonNull(signature);
         }
     }
 
