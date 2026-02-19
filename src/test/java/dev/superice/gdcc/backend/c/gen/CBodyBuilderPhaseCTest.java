@@ -236,10 +236,16 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("callVoid should allow omitted optional args")
+        @DisplayName("callUtilityVoid should allow omitted optional args by materializing defaults")
         void testCallVoidWithDefaultArg() {
-            builder.callVoid("utility_with_default", List.of(builder.valueOfExpr("1", GdIntType.INT)));
-            assertEquals("utility_with_default(1);\n", builder.build());
+            builder.callUtilityVoid("utility_with_default", List.of(builder.valueOfExpr("1", GdIntType.INT)));
+            assertEquals(
+                    """
+                    godot_int __gdcc_tmp_default_int_0 = 7;
+                    godot_utility_with_default(1, __gdcc_tmp_default_int_0);
+                    """,
+                    builder.build()
+            );
         }
     }
 

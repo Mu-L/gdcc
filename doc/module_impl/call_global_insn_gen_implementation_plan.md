@@ -482,7 +482,7 @@ utility 函数 C 形参为：
 
 ### 已完成（utility 名称归一化抽取 + 生成器双重校验，2026-02-19）
 
-本阶段聚焦“消除 utility 名称解析重复逻辑”并增强 `CallGlobalInsnGen` 的防御性校验。
+本轮聚焦“消除 utility 名称解析重复逻辑”并增强 `CallGlobalInsnGen` 的防御性校验。
 
 **本次新增/变更**：
 
@@ -556,7 +556,7 @@ utility 函数 C 形参为：
 
 ### 16.2 当前状态概述
 
-所有现有测试均通过（`CallGlobalInsnGenTest`、`CBodyBuilderCallUtilityTest`、`CGenHelperUtilityResolutionTest`），编译无错误无警告。`CallGlobalInsnGen` 已注册到 `CCodegen`，可处理 `CALL_GLOBAL` 指令的 utility function 调用。
+所有现有测试均通过（`CallGlobalInsnGenTest`、`CBodyBuilderCallUtilityTest`、`CGenHelperUtilityResolutionTest`、`CBodyBuilderPhaseCTest`），编译无错误无警告。`CallGlobalInsnGen` 已注册到 `CCodegen`，可处理 `CALL_GLOBAL` 指令的 utility function 调用。
 
 ---
 
@@ -596,7 +596,7 @@ bodyBuilder.callUtilityAssign(bodyBuilder.targetOfVar(resultVar), utility.cFunct
 
 但 `callUtilityAssign` 内部（第 360 行）又会用这个已经带前缀的名字再次调用 `requireUtilityCall(funcName)`。而 `requireUtilityCall` 内部调用 `resolveUtilityCall(funcName)` → `helper.resolveUtilityCall(funcName)` → `normalizeUtilityLookupName(funcName)`，此函数会再次去除 `godot_` 前缀来查找。
 
-虽然这个流程最终是正确的，但存在 **不必要的二次解析开销**：生成器已经持有 `UtilityCallResolution` 对象（包含 `signature`），却仍将 `cFunctionName` 传给 builder 让它再解析一遍。这是设计上的冗余。
+虽然这个流程最终是正确的，但存在 **不必要的二次解析开销**：生成器已经持有 `UtilityCallResolution` 对象（包含 `signature`），却仍将 `cFunctionName` 传给 builder 让它重解析一遍。这是设计上的冗余。
 
 **影响**：
 - 性能影响微小但增加了路径复杂度。
@@ -679,10 +679,7 @@ if (!(operand instanceof LirInstruction.VariableOperand(var argId))) {
 
 **现状**：
 
-`CallGlobalInsnGenTest` 仅测试了 `float` 返回值（`deg_to_rad`）和 `void` 返回值（`print`）。未覆盖以下场景：
-- 返回 `String`/`StringName` 等值语义类型的 utility — 需验证赋值时的 copy 语义和旧值 destroy。
-- 返回 `Object` 引擎类型的 utility — 需验证 `emitCallResultAssignment` 中的 own 语义。
-- 返回 GDCC Object 类型的 utility — 需验证 `fromGodotObjectPtr` 转换（`checkGlobalFuncReturnGodotRawPtr` 路径）。
+`CallGlobalInsnGenTest` 仅测试了 `float` 返回值（`deg_to_rad`）和 `void` 返回值（`print`）。未覆盖返回 `String`/`StringName` 等值语义类型的 utility — 需验证赋值时的 copy 语义和旧值 destroy。返回 GDCC Object 类型的 utility — 需验证 `fromGodotObjectPtr` 转换（`checkGlobalFuncReturnGodotRawPtr` 路径）。
 
 **影响**：中低。当前 utility functions 很少返回 Object 类型，但补齐这些场景可以防止未来回归。
 
@@ -743,7 +740,8 @@ return "&" + code; // 非 ref 加 &
    - `CBodyBuilder` 新增基于 `UtilityCallResolution` 的重载：
      - `callUtilityVoid(UtilityCallResolution, List<ValueRef>)`
      - `callUtilityAssign(TargetRef, UtilityCallResolution, List<ValueRef>)`
-   - `CallGlobalInsnGen` 直接传入已解析的 `utility`，不再传 `cFunctionName` 让 builder 重查。
+   - `CallGlobalInsnGen.generateCCode` 第 50/53 行直接将已解析的 `utility` 对象传入，不再传 `cFunctionName` 让 builder 重查。
+   - 基于 `String funcName` 的旧重载（第 320/374 行）仍保留供其他 builder 使用者使用，内部自行 resolve，不影响 `CallGlobalInsnGen` 路径。
 
 3. **P1-2：utility not found 报错可读性**
    - `CallGlobalInsnGen.requireUtilityCall` 在报错中同时输出原始函数名与归一化 lookup key：
@@ -775,5 +773,127 @@ return "&" + code; // 非 ref 加 &
 
 ```bash
 ./gradlew test --tests CBodyBuilderCallUtilityTest --tests CallGlobalInsnGenTest --tests CBodyBuilderPhaseCTest --no-daemon --info --console=plain
+./gradlew classes --no-daemon --info --console=plain
+```
+
+## 18. 默认参数渲染修复状态同步（2026-02-19，第三轮）
+
+本轮按 `doc/gdcc_c_backend.md` 的 “Default Argument Values” 约定，完成了 P1-3 / P1-4 的实现修复。
+
+### 已修复
+
+1. **P1-3：`CallGlobalInsnGen` 允许缺省参数但未补全**
+   - `CallGlobalInsnGen` 继续统一走 `CBodyBuilder.callUtility*` 路径。
+   - `CBodyBuilder.renderUtilityArgs` 现在会为缺失的 fixed 参数补齐默认值临时变量，不再生成参数缺失的非法 C 调用。
+
+2. **P1-4：`CBodyBuilder.validateCallArgs` 与渲染逻辑不一致**
+   - `CBodyBuilder` 新增 default 参数补全流程：
+     - 将默认值字面量渲染为 C 表达式；
+     - 表达式先赋值给临时变量；
+     - 调用时使用该临时变量作为实参；
+     - 调用后按临时变量生命周期统一销毁。
+   - 对 generic `callVoid/callAssign` 路径新增约束：不再允许“省略参数并依赖 default”，避免 generic 路径与 utility 渲染能力不匹配。
+
+3. **默认值表达式渲染能力（本轮新增）**
+   - 已支持并用于 utility 默认参数补全：
+     - 数值/布尔字面量直接生成；
+     - `\"...\"` → `GD_STATIC_S(u8\"...\")`，并在 `String` 默认值场景下生成为 `godot_new_String_with_String(...)`；
+     - `&\"...\"`（或 `\"...\"`）在 `StringName` 场景下生成为 `godot_new_StringName_with_StringName(GD_STATIC_SN(...))`；
+     - `null`：
+       - Object 参数 → `NULL`
+       - Variant 参数 → `godot_new_Variant_nil()`
+     - 非对象构造字面量（如 `Vector2(0, 0)`、`PackedVector2Array()`）→ `godot_new_<Type>(...)` 形态。
+
+### 本轮新增测试覆盖
+
+- `CBodyBuilderCallUtilityTest`
+  - 省略 int default 参数时会生成 default temp 并参与调用；
+  - 省略 string default 参数时会生成 temp，调用后销毁 temp。
+- `CBodyBuilderPhaseCTest`
+  - 更新 default 参数场景断言，验证 `callUtilityVoid` 的 default temp 补全行为。
+- `CallGlobalInsnGenTest`
+  - 覆盖 `CALL_GLOBAL` 调用 utility 且省略 optional 参数时，生成 default temp 补全调用。
+
+### 本轮验证命令
+
+```bash
+./gradlew test --tests CBodyBuilderCallUtilityTest --tests CallGlobalInsnGenTest --tests CBodyBuilderPhaseCTest --no-daemon --info --console=plain
+./gradlew classes --no-daemon --info --console=plain
+```
+
+## 19. 审阅问题修复状态全面审查（2026-02-19，第四轮）
+
+本轮对照 §16.3 审阅报告中列出的全部问题，逐项核实当前代码的实际修复情况。
+
+### P1-5：`CallGlobalInsn.args()` 类型为 `List<Operand>` 而非 `List<VariableOperand>` → ⚠️ 未改动（确认为低优先级）
+
+**原始问题**：`CallGlobalInsn.args()` 的类型声明是 `List<Operand>`，运行时防御到位但编译期约束不足。
+
+**当前状态**：
+- `CallGlobalInsn` record 的 `args` 字段仍为 `List<Operand>`。
+- `CallGlobalInsnGen.resolveArgumentVariables`（第 95–110 行）通过 pattern matching 对每个 operand 做 `instanceof VariableOperand` 检查，非变量 operand 立即抛 `InvalidInsnException`。
+- 测试 `callGlobalNonVariableOperand` 验证了此防御。
+
+**结论**：运行时防御有效，但类型层面未收紧。原审阅报告已标注为"确认防御到位"，影响为低。
+
+**建议修改方法**：将 `CallGlobalInsn` record 的 `args` 字段类型从 `List<Operand>` 改为 `List<LirInstruction.VariableOperand>`，并在 `operands()` 方法中做适配。这会将检查提前到 IR 构造阶段（编译期+构造期），消除运行时 pattern matching 开销。但这会影响 IR 层定义，需评估是否有其他指令类同样需要统一调整。
+
+---
+
+### P2-1：测试未覆盖返回 Object 类型的 utility → ⚠️ 未补充
+
+**原始问题**：测试仅覆盖 `float`（`deg_to_rad`）和 `void`（`print`）返回值。未覆盖返回 `String`/`StringName` 等值语义类型的 utility — 需验证赋值时的 copy 语义和旧值 destroy。返回 GDCC Object 类型的 utility — 需验证 `fromGodotObjectPtr` 转换（`checkGlobalFuncReturnGodotRawPtr` 路径）。
+
+**当前状态**：
+- `CallGlobalInsnGenTest` 当前 utility 列表仅包含 `print`（void）、`deg_to_rad`（float）、`utility_with_default`（void）。
+- `CBodyBuilderCallUtilityTest` 中也仅测试 `float` 和 `void` 返回值。
+- 未新增返回 `String`/`StringName`（需验证 copy 语义和旧值 destroy）或返回 Object（需验证 own 语义和 `fromGodotObjectPtr` 转换）的 utility 测试。
+
+**结论**：未修复。影响为中低，因当前 Godot utility 很少返回 Object 类型，但作为防回归手段有价值。
+
+**建议修改方法**：
+1. 在测试辅助方法 `utilityApi()` 中新增假 utility，例如：
+   - 返回 `String` 的 utility（如 `fake_string_util`）→ 验证赋值时的 copy 语义。
+   - 返回 engine Object 的 utility（如 `fake_object_util`）→ 验证 `emitCallResultAssignment` 中的 own 语义。
+   - 返回 GDCC Object 的 utility（如 `fake_gdcc_object_util`）→ 验证 `fromGodotObjectPtr` 转换。
+2. 新增测试用例调用这些 utility 并断言生成的 C 代码包含正确的 copy/own/destroy 语句。
+
+### 修复状态汇总表
+
+| 编号 | 严重度 | 描述 | 修复状态 |
+|------|--------|------|----------|
+| P0-1 | 高 | InsnGen/Builder 双重校验与消息漂移 | ✅ 已修复 |
+| P0-2 | 高 | utility 二次解析冗余 | ✅ 已修复 |
+| P1-2 | 中 | utility not found 报错缺少 lookup key | ✅ 已修复 |
+| P1-3 | 中 | InsnGen 缺省参数无补全 | ✅ 已修复 |
+| P1-4 | 中 | Builder 缺省参数无补全 | ✅ 已修复 |
+| P1-5 | 低 | `CallGlobalInsn.args` 类型宽泛 | ⚠️ 未改动（运行时防御有效） |
+| P2-1 | 中低 | 测试未覆盖 Object 返回类型 utility | ⚠️ 未补充 |
+| P2-2 | 低 | 测试未覆盖 ref vararg extra | ✅ 已修复 |
+| P2-3 | 很低 | 测试未覆盖其他 vararg utility | ✅ 已修复 |
+| P2-4 | 低 | 缺少文档注释 | ✅ 已修复 |
+| P2-5 | 低 | non-void utility 无法丢弃返回值 | ✅ 已修复 |
+
+### 遗留项分析
+
+**P1-5（`CallGlobalInsn.args` 类型宽泛）**：
+- 影响：低。运行时 pattern matching 防御已到位，有测试覆盖。
+- 修改方法：将 `CallGlobalInsn` record 的 `args` 字段类型从 `List<Operand>` 改为 `List<LirInstruction.VariableOperand>`，并在 `operands()` 方法中做适配。这会将检查提前到 IR 构造阶段（编译期+构造期），消除运行时 pattern matching 开销。但这会影响 IR 层定义，需评估是否有其他指令类同样需要统一调整。
+
+**P2-1（测试未覆盖 Object 返回类型 utility）**：
+- 影响：中低。`emitCallResultAssignment` 的 own/release/destroy 和 `fromGodotObjectPtr` 转换路径在当前 utility 测试中未被触发。
+- 修改方法：
+  1. 在 `CallGlobalInsnGenTest.utilityApi()` 和 `CBodyBuilderCallUtilityTest` 的 API fixtures 中新增返回 `String` 和 engine Object 类型的假 utility。
+  2. 新增测试用例验证：
+     - 返回 `String` 的 utility 赋值到 `String` 变量时，生成 copy assign + old destroy + new copy。
+     - 返回 engine Object 的 utility 赋值到 Object 变量时，生成 `try_release_object`/`try_own_object`。
+     - 返回 GDCC Object 的 utility 赋值到 GDCC Object 变量时，生成 `gdcc_object_from_godot_object_ptr` 转换。
+
+---
+
+### 本轮验证命令
+
+```bash
+./gradlew test --tests CallGlobalInsnGenTest --tests CBodyBuilderCallUtilityTest --tests CGenHelperUtilityResolutionTest --tests CBodyBuilderPhaseCTest --no-daemon --info --console=plain
 ./gradlew classes --no-daemon --info --console=plain
 ```

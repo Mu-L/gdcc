@@ -582,12 +582,19 @@ public final class CBodyBuilder {
         if (utility == null) {
             return;
         }
-        validateCallArgs(utility, args, false);
+        validateCallArgs(utility, args, false, false);
     }
 
     private void validateCallArgs(@NotNull CGenHelper.UtilityCallResolution utility,
                                   @NotNull List<ValueRef> args,
                                   boolean strictVarargVariant) {
+        validateCallArgs(utility, args, strictVarargVariant, true);
+    }
+
+    private void validateCallArgs(@NotNull CGenHelper.UtilityCallResolution utility,
+                                  @NotNull List<ValueRef> args,
+                                  boolean strictVarargVariant,
+                                  boolean allowDefaultValueOmission) {
         var signature = utility.signature();
         var paramCount = signature.parameterCount();
         var isVararg = signature.isVararg();
@@ -596,11 +603,19 @@ public final class CBodyBuilder {
                     paramCount + ", got " + args.size());
         }
         if (args.size() < paramCount) {
+            if (!allowDefaultValueOmission) {
+                throw invalidInsn("Too few arguments for utility function '" + utility.lookupName() + "': expected " +
+                        (isVararg ? "at least " : "") + paramCount + ", got " + args.size());
+            }
             for (var i = args.size(); i < paramCount; i++) {
                 var param = signature.parameters().get(i);
                 if (param.defaultValue() == null) {
                     throw invalidInsn("Too few arguments for utility function '" + utility.lookupName() + "': expected " +
                             (isVararg ? "at least " : "") + paramCount + ", got " + args.size());
+                }
+                if (param.type() == null) {
+                    throw invalidInsn("Utility function '" + utility.lookupName() + "' parameter #" + (i + 1) +
+                            " has default value but no type information");
                 }
             }
         }
@@ -693,6 +708,7 @@ public final class CBodyBuilder {
         for (var i = 0; i < fixedLimit; i++) {
             callArgs.add(new ValueCallArg(args.get(i)));
         }
+        var defaultTemps = appendMissingUtilityDefaultArgs(utility, args, callArgs);
 
         var preCallLines = new ArrayList<String>();
         if (utility.signature().isVararg()) {
@@ -712,7 +728,101 @@ public final class CBodyBuilder {
             }
         }
         var rendered = renderCallArgs(utility.cFunctionName(), callArgs);
-        return new UtilityArgsRenderResult(rendered.code(), rendered.temps(), preCallLines);
+        var allTemps = new ArrayList<TempVar>(defaultTemps.size() + rendered.temps().size());
+        allTemps.addAll(defaultTemps);
+        allTemps.addAll(rendered.temps());
+        return new UtilityArgsRenderResult(rendered.code(), allTemps, preCallLines);
+    }
+
+    private @NotNull List<TempVar> appendMissingUtilityDefaultArgs(@NotNull CGenHelper.UtilityCallResolution utility,
+                                                                    @NotNull List<ValueRef> args,
+                                                                    @NotNull List<CallArg> callArgs) {
+        var signature = utility.signature();
+        var paramCount = signature.parameterCount();
+        if (args.size() >= paramCount) {
+            return List.of();
+        }
+        var defaultTemps = new ArrayList<TempVar>(paramCount - args.size());
+        for (var i = args.size(); i < paramCount; i++) {
+            var param = signature.parameters().get(i);
+            var paramType = param.type();
+            var defaultValue = param.defaultValue();
+            if (paramType == null || defaultValue == null) {
+                throw invalidInsn("Utility function '" + utility.lookupName() + "' parameter #" + (i + 1) +
+                        " is missing type/default metadata required for omitted argument");
+            }
+            var defaultExpr = renderUtilityDefaultValueExpr(utility, i, paramType, defaultValue);
+            var typeName = helper.renderGdTypeName(paramType).toLowerCase();
+            var temp = newTempVariable("default_" + typeName, paramType, defaultExpr);
+            defaultTemps.add(temp);
+            callArgs.add(new ValueCallArg(temp));
+        }
+        return defaultTemps;
+    }
+
+    private @NotNull String renderUtilityDefaultValueExpr(@NotNull CGenHelper.UtilityCallResolution utility,
+                                                          int paramIndex,
+                                                          @NotNull GdType type,
+                                                          @NotNull String defaultValue) {
+        var literal = defaultValue.trim();
+        if (literal.equals("null")) {
+            return renderNullDefaultValueExpr(utility, paramIndex, type);
+        }
+        switch (type) {
+            case GdStringType _ when isQuotedStringLiteral(literal) -> {
+                var content = literal.substring(1, literal.length() - 1);
+                return "godot_new_String_with_String(" + renderStaticStringLiteral(content) + ")";
+            }
+            case GdStringNameType _ when (isQuotedStringNameLiteral(literal) || isQuotedStringLiteral(literal)) -> {
+                var offset = literal.startsWith("&\"") ? 2 : 1;
+                var content = literal.substring(offset, literal.length() - 1);
+                return "godot_new_StringName_with_StringName(" + renderStaticStringNameLiteral(content) + ")";
+            }
+            case GdPrimitiveType _ -> {
+                return literal;
+            }
+            default -> {}
+        }
+        var leftParen = literal.indexOf('(');
+        if (leftParen > 0 && literal.endsWith(")")) {
+            var ctorArgs = literal.substring(leftParen + 1, literal.length() - 1).trim();
+            var ctorName = "godot_new_" + helper.renderGdTypeName(type);
+            if (ctorArgs.isEmpty() || ctorArgs.equals("[]") || ctorArgs.equals("{}")) {
+                return ctorName + "()";
+            }
+            return ctorName + "(" + ctorArgs + ")";
+        }
+        throw invalidInsn("Unsupported default value literal '" + defaultValue + "' for utility function '" +
+                utility.lookupName() + "' parameter #" + (paramIndex + 1) + " of type '" + type.getTypeName() + "'");
+    }
+
+    private boolean isQuotedStringLiteral(@NotNull String literal) {
+        return literal.length() >= 2 && literal.startsWith("\"") && literal.endsWith("\"");
+    }
+
+    private boolean isQuotedStringNameLiteral(@NotNull String literal) {
+        return literal.length() >= 3 && literal.startsWith("&\"") && literal.endsWith("\"");
+    }
+
+    private @NotNull String renderNullDefaultValueExpr(@NotNull CGenHelper.UtilityCallResolution utility,
+                                                       int paramIndex,
+                                                       @NotNull GdType type) {
+        if (type instanceof GdObjectType) {
+            return "NULL";
+        }
+        if (type instanceof GdVariantType) {
+            return "godot_new_Variant_nil()";
+        }
+        throw invalidInsn("Unsupported null default value for utility function '" + utility.lookupName() +
+                "' parameter #" + (paramIndex + 1) + " of type '" + type.getTypeName() + "'");
+    }
+
+    private @NotNull String renderStaticStringLiteral(@NotNull String value) {
+        return "GD_STATIC_S(u8\"" + escapeStringLiteral(value) + "\")";
+    }
+
+    private @NotNull String renderStaticStringNameLiteral(@NotNull String value) {
+        return "GD_STATIC_SN(u8\"" + escapeStringLiteral(value) + "\")";
     }
 
     /// Renders the C pointer expression for a vararg extra argument.

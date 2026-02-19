@@ -51,6 +51,25 @@ class CallGlobalInsnGenTest {
     }
 
     @Test
+    @DisplayName("CALL_GLOBAL should materialize omitted default arguments")
+    void callGlobalShouldRenderDefaultArgumentTemp() {
+        var clazz = newTestClass();
+        var func = newFunction("call_utility_with_default");
+        func.createAndAddVariable("required", GdFloatType.FLOAT);
+
+        entry(func).instructions().add(new CallGlobalInsn(
+                null,
+                "utility_with_default",
+                List.of(new LirInstruction.VariableOperand("required"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+        assertTrue(body.contains("godot_int __gdcc_tmp_default_int_0 = 7;"));
+        assertTrue(body.contains("godot_utility_with_default($required, __gdcc_tmp_default_int_0);"));
+    }
+
+    @Test
     @DisplayName("CALL_GLOBAL should render vararg utility with NULL argv when no extras")
     void callGlobalVarargNoExtraUsesNullArgv() {
         var clazz = newTestClass();
@@ -417,6 +436,17 @@ class CallGlobalInsnGenTest {
                                 false,
                                 2140049587,
                                 List.of(new ExtensionFunctionArgument("deg", "float", null, null))
+                        ),
+                        new ExtensionUtilityFunction(
+                                "utility_with_default",
+                                null,
+                                "test",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument("required", "float", null, null),
+                                        new ExtensionFunctionArgument("optional", "int", "7", null)
+                                )
                         )
                 ),
                 List.of(),

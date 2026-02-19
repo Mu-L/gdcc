@@ -13,6 +13,7 @@ import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.lir.insn.NopInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdFloatType;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
@@ -68,6 +69,28 @@ class CBodyBuilderCallUtilityTest {
                                 false,
                                 2140049587,
                                 List.of(new ExtensionFunctionArgument("deg", "float", null, null))
+                        ),
+                        new ExtensionUtilityFunction(
+                                "utility_with_default",
+                                "void",
+                                "test",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument("required", "int", null, null),
+                                        new ExtensionFunctionArgument("optional", "int", "7", null)
+                                )
+                        ),
+                        new ExtensionUtilityFunction(
+                                "utility_with_string_default",
+                                "void",
+                                "test",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument("required", "String", null, null),
+                                        new ExtensionFunctionArgument("optional", "String", "\"suffix\"", null)
+                                )
                         )
                 ),
                 Collections.emptyList(),
@@ -228,6 +251,39 @@ class CBodyBuilderCallUtilityTest {
         builder.callUtilityAssign(builder.discardRef(), "deg_to_rad", List.of(builder.valueOfVar(deg)));
 
         assertEquals("godot_deg_to_rad($deg);\n", builder.build());
+    }
+
+    @Test
+    @DisplayName("callUtilityVoid should fill omitted int default argument")
+    void testCallUtilityVoidWithIntDefaultArgument() {
+        var required = addVar("required", GdIntType.INT);
+
+        builder.callUtilityVoid("utility_with_default", List.of(builder.valueOfVar(required)));
+
+        assertEquals(
+                """
+                godot_int __gdcc_tmp_default_int_0 = 7;
+                godot_utility_with_default($required, __gdcc_tmp_default_int_0);
+                """,
+                builder.build()
+        );
+    }
+
+    @Test
+    @DisplayName("callUtilityVoid should materialize and destroy string default argument temp")
+    void testCallUtilityVoidWithStringDefaultArgument() {
+        var required = addVar("required", GdStringType.STRING);
+
+        builder.callUtilityVoid("utility_with_string_default", List.of(builder.valueOfVar(required)));
+
+        assertEquals(
+                """
+                godot_String __gdcc_tmp_default_string_0 = godot_new_String_with_String(GD_STATIC_S(u8"suffix"));
+                godot_utility_with_string_default(&$required, &__gdcc_tmp_default_string_0);
+                godot_String_destroy(&__gdcc_tmp_default_string_0);
+                """,
+                builder.build()
+        );
     }
 
     @Test
