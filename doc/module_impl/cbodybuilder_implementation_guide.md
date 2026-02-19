@@ -1,475 +1,233 @@
-# CBodyBuilder 后端重构实施说明
-
-## 1. 项目背景
-
-GDCC 当前 C 后端函数体代码生成主要基于 FreeMarker 模板与 `CGenHelper`，存在以下问题：
-
-- 指令级生命周期语义分散在模板中，不易统一维护
-- `Variant` 与 `Object` 生命周期历史实现存在不一致
-- GDCC 类型与 Godot 对象指针转换细节容易遗漏
-- 缺少统一的类型校验与错误定位抽象
-
-本次重构目标是引入 `CBodyBuilder`，作为函数级、单线程使用的链式 C 代码构建器，逐步替换模板路径，并严格遵循 `doc/gdcc_c_backend.md` 的语义。
-
-## 2. 约束与边界
-
-### 2.1 必须遵循
-
-- 语义以 `doc/gdcc_c_backend.md` 为准
-- `setCurrentPosition` 和 `getCurrentInsn` 用于精确错误定位与类型安全
-- 所有相关 API 支持两种输入
-  - 函数内变量
-  - 自定义 C 表达式加显式 `GdType`
-- 赋值目标若为 `ref=true` 变量必须拒绝
-- 赋值语义必须隐式处理旧值销毁和对象所有权交接
-
-### 2.2 明确不做
-
-- `CBodyBuilder` 第一版不支持字段赋值 API
-  - 字段赋值由各指令生成器负责
-- 不一次性删除 `CGenHelper`
-  - 采用渐进迁移
-- 不改动构建脚本
-
-## 3. 核心语义基线
-
-### 3.1 类型与传参
-
-- primitive 与 object 指针按值传递
-- 值语义包装类型传参时按 C ABI 需求传引用
-- 是否加 `&` 必须按静态类型与变量 ref 属性统一判定
-
-### 3.2 赋值语义
-
-赋值不是简单覆盖，必须执行完整流程：
-
-1. 校验目标存在、可赋值
-2. 校验目标不是 ref 变量
-3. 准备 RHS 存储值
-   - 必要时复制或类型转换
-4. 处理旧值
-   - 非对象销毁
-   - 对象 release
-5. 写入新值
-6. 对对象新值 own
-
-### 3.3 GDCC 对象与 Godot 对象
-
-- GDCC 对象不能直接作为 GDExtension API 的对象指针
-  - 需使用 `gdccObj->_object`
-- `gdcc_object_from_godot_object_ptr` 只做转换，不获取所有权
-  - 后续若存储需 own 或 try_own
-
-### 3.4 RefCounted 策略
-
-根据 `ClassRegistry` 查询 `RefCountedStatus`：
-
-- 确定为 RefCounted
-  - 使用 `own_object` 与 `release_object`
-- 确定非 RefCounted
-  - 不做 own/release
-- 不确定
-  - 使用 `try_own_object` 与 `try_release_object`
-
-始终先做对象类型判定；对 GDCC 对象执行 own/release 时传 `_object`。
-
-## 4. 重点注意事项
-
-- `getCurrentInsn` 做 opcode 兼容校验后再进行泛型强转
-  - 可抑制 unchecked 警告
-  - 不依赖 `Class.cast`
-- 临时变量生命周期只对当前指令负责
-  - 指令内创建、使用、销毁
-  - 不接管 IR 显式变量生命周期
-- 唯一例外是赋值语义
-  - 覆盖变量包含隐式销毁和所有权切换
-- 模板与 builder 并存阶段需优先迁移高风险指令
-  - Variant 与 Object 相关优先
-- `render*` 辅助方法必须为纯渲染
-  - 不允许直接写入 `out`
-  - 仅返回渲染结果或登记临时变量需求
-- 所有生成的临时变量必须可追踪并在指令末尾销毁
-  - 生成时登记类型与初始化表达式
-  - 指令级 API 负责在语句前输出声明、语句后输出 destroy
-- `__prepare__` 与 `__finally__` 基本块的语义必须严格遵循
-  - `__prepare__` 中 IR 显式声明的非 ref 变量视为未初始化，赋值不应销毁旧内容
-  - 非 `__finally__` 基本块中 `return/returnValue` 不生成真正的 return
-    - 对于非 void 返回值，将结果赋给隐式变量 `_return_val`
-    - 然后跳转到 `__finally__`
-  - 仅在 `__finally__` 基本块中生成真实的 return
-  - 对于非 void 函数，在 `__prepare__` 基本块顶部声明 `_return_val`
-    - `_return_val` 无需自动销毁
+# CBodyBuilder 实施与迁移总指南
 
-## 5. 易踩坑清单
+> 本文是 `doc/module_impl` 下 CBodyBuilder 相关三份文档的合并版，作为唯一实施基线。  
+> 语义优先级：`doc/gdcc_c_backend.md` > 本文 > 历史迁移记录。
 
-1. 将 GDCC 对象指针直接传入 `try_own_object` 或 `release_object`
-   - 错误，必须传 Godot 对象指针
-2. 认为 `gdcc_object_from_godot_object_ptr` 会自动持有对象
-   - 错误，转换后仍需 own
-3. 对 `ref=true` 变量执行赋值
-   - 必须直接报错
-4. 对非对象类型遗漏 copy 与 destroy
-   - 会导致悬挂引用或资源泄漏
-5. 对对象覆盖赋值漏掉旧值 release
-   - 会导致泄漏
-6. 条件跳转仅支持变量，遗漏表达式
-   - 本次要求两类输入都支持
-7. 错误定位信息缺失 block 与 insnIndex
-   - 影响排查效率
+## 1. 目标与边界
 
-## 6. CBodyBuilder 目标 API
+### 1.1 目标
 
-以下 API 均返回 builder，实现链式调用：
+- 将 C 后端函数体生成从 FTL 分散逻辑收敛到 `CBodyBuilder`。
+- 统一赋值/析构/引用计数/指针转换/错误定位语义。
+- 保证 `__prepare__` / `__finally__` 控制流可验证、可回归。
+- 允许新旧路径并存，但高风险路径（Variant/Object）优先迁移。
 
-- `beginBasicBlock`
-- `assignVar`
-- `callVoid`
-- `callAssign`
-- `jump`
-- `jumpIf`
-- `returnVoid`
-- `returnValue`
-- `assignExpr`
-- `assignGlobalConst`
+### 1.2 必须遵循
 
-统一值输入模型：
+- 所有语义以 `doc/gdcc_c_backend.md` 为准。
+- 每条指令生成前必须 `setCurrentPosition(...)`，异常统一通过 `invalidInsn(...)` 输出定位。
+- Builder API 必须同时支持：
+  - 变量输入（`valueOfVar`）。
+  - 表达式输入（`valueOfExpr(code, type)`，必要时显式 `PtrKind`）。
+- 赋值目标为 `ref=true` 时必须拒绝。
+- 赋值语义必须隐式处理旧值清理与新值所有权。
 
-- `valueOfVar`
-- `valueOfExpr`
+### 1.3 非目标
 
-说明：`jumpIf`、`call`、`returnValue` 必须同时支持变量与表达式输入。
+- 第一版不提供字段赋值 API（字段路径由指令生成器自行负责）。
+- 不一次性删除 `CGenHelper`（按迁移阶段逐步瘦身）。
+- 不修改 Gradle/构建脚本。
 
-## 7. 分阶段实施方案
+## 2. 语义基线
 
-### 阶段 A：值模型与定位能力固化
+### 2.1 统一赋值语义（核心）
 
-- 在 `CBodyBuilder` 增加内部值抽象
-  - `ValueRef`
-  - `TargetRef`
-- 完善 `setCurrentPosition` 与 `getCurrentInsn`
-  - 未设置上下文时抛错
-  - opcode 不匹配抛 `InvalidInsnException`
+`assignVar` / `callAssign` / `callUtilityAssign` 必须统一执行：
 
-交付结果：
+1. 校验目标存在、可写、非 `ref`。
+2. 计算 RHS（必要时 copy/convert）。
+3. 若目标是“已初始化存储”，先销毁旧值：
+   - 非对象：destroy。
+   - 对象：release / try_release。
+4. 写入新值。
+5. 若是对象类型，对新值 own / try_own。
+6. 标记目标初始化状态。
 
-- builder 可安全获取当前指令上下文
-- 后续 API 均基于统一值抽象开发
+特殊规则：
+- 在 `__prepare__` 中，非 ref 变量视为“首次初始化”，不得销毁旧值。
+- 对“未初始化 TempVar”首写也不得走旧值销毁路径。
 
-### 阶段 B：链式 API 主干落地
+### 2.2 对象与所有权语义
 
-实现以下主干方法并接入统一值输入：
+- GDCC 对象传给 GDExtension API 时，必须用 `obj->_object`。
+- `gdcc_object_from_godot_object_ptr` 仅做包装转换，不自动持有；后续存储需 own/try_own。
+- `RefCountedStatus` 策略：
+  - `YES`: `own_object` / `release_object`
+  - `UNKNOWN`: `try_own_object` / `try_release_object`
+  - `NO`: 不做 own/release
 
-- `assignVar`
-- `callVoid`
-- `callAssign`
-- `jump`
-- `jumpIf`
-- `returnVoid`
-- `returnValue`
+### 2.3 `__prepare__` / `__finally__` 语义
 
-交付结果：
+- 非 `__finally__` 块中的 `return*` 不生成真实 `return`，统一跳转 `goto __finally__`。
+- 非 void 函数返回值先写入隐式槽 `_return_val`，最终在 `__finally__` 返回。
+- `_return_val` 为代码生成期隐式变量，不属于 LIR 变量表，不参与自动析构。
+- `__prepare__` 仅初始化非参数、非 ref 变量。
 
-- 指令生成器可直接调用 builder API 生成函数体语句
+## 3. Builder 模型与 API 约束
 
-### 阶段 C：语义内核实现
+### 3.1 值模型
 
-新增内部能力：
+- `ValueRef`：值来源抽象（变量 / 表达式）。
+- `TargetRef`：赋值目标抽象（变量 / 临时 / 丢弃目标）。
+- `PtrKind`：
+  - `GDCC_PTR`
+  - `GODOT_PTR`
+  - `NON_OBJECT`
 
-- 参数渲染与 `&` 决策
-- 可赋值校验
-- RHS 复制与转换
-- 非对象销毁
-- 对象 own/release
+### 3.2 目标 API（指令生成器可直接使用）
 
-交付结果：
+- 控制流：`beginBasicBlock`、`jump`、`jumpIf`、`returnVoid`、`returnValue`
+- 赋值与调用：`assignVar`、`assignExpr`、`callVoid`、`callAssign`
+- utility：`callUtilityVoid`、`callUtilityAssign`
+- 常量：`assignGlobalConst`
+- 值工厂：`valueOfVar`、`valueOfExpr(...)`
 
-- 赋值、传参、返回具备一致语义
+### 3.3 临时变量生命周期
 
-### 阶段 D：GDCC Object 转换与 RefCounted 决策
+- 分类：
+  1. 声明即初始化（表达式物化/copy staging）
+  2. 仅声明后首写（out-init）
+  3. 指令内闭合临时（per-insn）
+- 统一规则：
+  - 临时变量必须可追踪声明与销毁。
+  - `destroyTempVar` 仅对已初始化临时变量生效。
+  - 指令生成器优先用 `assignVar/callAssign` 完成首写，避免手拼初始化。
 
-新增内部方法：
+## 4. 指针转换与参数渲染规则
 
-- toGodotObjectPtr
-- fromGodotObjectPtr
-- ownOrTryOwn
-- releaseOrTryRelease
+### 4.1 参数自动转换
 
-交付结果：
+当函数要求 Godot raw object ptr 且参数是 `GDCC_PTR` 时，参数渲染自动 `toGodotObjectPtr`。
 
-- GDCC 与 Godot 对象转换行为一致
-- 所有权策略由 `RefCountedStatus` 驱动
+典型命中函数：
+- `godot_*`
+- `*own_object` / `*release_object`
+- `try_destroy_object`
+- `gdcc_object_from_godot_object_ptr`
 
-### 阶段 E：接入 CCodegen 渐进迁移
+### 4.2 返回值自动转换
 
-- 在函数级实例化 builder
-- 每条指令先调用 `setCurrentPosition`
-- 优先迁移 Variant 和 Object 敏感指令
-- 其余暂时保留模板路径
+当返回被判定为 Godot raw ptr，且赋值目标是 GDCC 对象类型时，调用表达式自动包裹 `fromGodotObjectPtr(...)`。
 
-交付结果：
+### 4.3 生成器编写约束
 
-- 新旧架构并存可运行
-- 高风险路径先修复
+- 禁止手写 `->_object` 与 `gdcc_object_from_godot_object_ptr(...)`。
+- 统一通过 `valueOfVar` + `call*` 交给 Builder 自动处理。
+- 仅在规则无法覆盖的特殊场景，允许 `valueOfExpr(..., ptrKind)` 显式指定。
 
-### 阶段 F：测试闭环与回归
+## 5. Utility 调用内部设计（保留项）
 
-新增或改造测试覆盖：
+### 5.1 名称解析
 
-- `getCurrentInsn` 校验
-- ref 变量禁赋值
-- 可赋值校验失败路径
-- GDCC 与 Godot 对象转换
-- own/release 决策矩阵
-- `jumpIf` 变量与表达式双路径
-- 临时变量唯一性与即时销毁
+- Registry 查询名使用无前缀 `lookupName`（如 `print`）。
+- C 符号使用 `cFunctionName`（如 `godot_print`）。
+- 归一化为单路径解析，不保留“原名重查”死代码分支。
 
-交付结果：
+### 5.2 vararg 组包与 Raw 参数通道
 
-- 可验证语义正确性
-- 迁移过程可回归
+- vararg utility 采用 `argv/argc`：
+  - `extra == 0` -> `NULL, (godot_int)0`
+  - `extra > 0` -> 声明 `const godot_Variant* __gdcc_tmp_argv_N[] = {...}`
+- `argv/argc/NULL` 走 Raw 参数通道，避免被普通参数渲染二次处理。
+- `renderUtilityArgs` 通过 `preCallLines` 在调用前输出 argv 声明。
 
-## 8. 迁移优先级
+### 5.3 调用结果赋值公共逻辑
 
-- P0: Variant 与 Object 生命周期相关指令
-- P1: 控制流和返回
-- P2: 普通调用与构造
-- P3: 其余模板指令
+- `callAssign` 与 `callUtilityAssign` 共享 `emitCallResultAssignment(...)`：
+  - 旧值清理
+  - 必要时返回值指针转换
+  - 写入
+  - 新值 own
+  - 初始化标记
 
-## 9. 风险与缓解
+### 5.4 防误用守卫
 
-### 风险 1
+- vararg utility 禁止走通用 `callVoid/callAssign`，必须走 `callUtility*`。
+- 违反时应在代码生成期立即抛 `InvalidInsnException`。
 
-新旧生成路径并存导致行为差异
+## 6. 迁移实施策略
 
-缓解：
+### 6.1 优先级
 
-- 先迁移高风险指令
-- 对比关键样例输出并加回归测试
+- P0：Variant/Object 生命周期敏感指令。
+- P1：控制流与返回。
+- P2：普通调用与构造。
+- P3：剩余模板指令。
 
-### 风险 2
+### 6.2 指令迁移顺序建议
 
-`RefCountedStatus` 信息不完整
+1. `ControlFlowInsnGen`（先统一 `__finally__` 路径）
+2. `OwnReleaseObjectInsnGen`
+3. `DestructInsnGen`
+4. `NewDataInsnGen`
+5. 其余模板生成器退役
 
-缓解：
+### 6.3 `CCodegen` 协同规则
 
-- 默认走 try 路径保证正确性
-- 后续逐步完善类型信息提升性能
+- 自动确保存在 `__prepare__` / `__finally__` 块。
+- 已有块内容不清空，按语义等价去重追加（`checkEquals`）。
+- 自动补齐：
+  - `__prepare__` 初始化与入口跳转
+  - `__finally__` 的析构与最终返回
 
-### 风险 3
+## 7. 审阅沉淀：高价值检查项
 
-表达式输入被误用造成类型漂移
+以下为从审阅文档提炼出的长期有效项（去除过程性记录）：
 
-缓解：
+### 7.1 P0（必须持续守护）
 
-- 表达式入口必须显式传 `GdType`
-- 所有关键 API 强制做 assignable 校验
+- `__prepare__` 必须跳过 ref 变量初始化。
+- 指令生成器不得绕过 Builder 直接 `$var = ...` 覆盖 destroyable/object 变量。
 
-## 10. 执行顺序建议
+### 7.2 P1（实现一致性）
 
-1. 完成 builder 值模型与主干 API
-2. 完成语义内核与对象转换
-3. 接入 `CCodegen` 并迁移 P0 指令
-4. 补齐测试后迁移 P1 P2 P3
-5. 准备后续将 `CGenHelper` 静态能力迁出到 util
+- `_return_val` 的非 finally 路径行为必须与文档一致（跳转 finally 或明确拒绝，二选一且文档化）。
+- `CALL_GLOBAL` 不得处于“注册/模板/校验”半完成状态。
+- `__finally__` 自动析构要避免重复析构和手工逻辑覆盖。
 
-## 11. PtrKind 与自动指针转换机制
+### 7.3 P2（可维护性与扩展）
 
-### 11.1 背景与动机
+- 已迁移模板需及时退役，避免被误用。
+- utility 路径错误消息风格统一（`utility function`）。
+- 对未来 default 参数、非 utility global call、Object 返回值场景预留测试。
 
-GDExtension API 不接受 GDCC 对象指针，调用时需要 `gdcc_object->_object` 转换；从 GDExtension API 返回的 `godot_Object*` 若目标为 GDCC 变量则需要 `gdcc_object_from_godot_object_ptr` 转换。在 Phase D 阶段，`toGodotObjectPtr` 和 `fromGodotObjectPtr` 方法已实现，但 `callVoid`/`callAssign`/`renderArgument` 路径未集成这些转换，导致 ABI 不匹配。
+## 8. 测试与回归清单
 
-### 11.2 PtrKind 枚举
+### 8.1 必测语义
 
-在 `ValueRef` 上引入指针来源语义，避免仅靠 `GdType` 推断而产生歧义：
+- `getCurrentInsn` opcode 校验与定位信息。
+- ref 变量禁赋值。
+- `jumpIf` 变量/表达式双路径。
+- GDCC/Godot 指针转换。
+- own/release 决策矩阵。
+- vararg utility 的 `argv/argc` 两路径。
+- 临时变量唯一性与即时销毁。
+- `__prepare__` / `__finally__` 自动补齐与去重行为。
 
-```java
-public enum PtrKind {
-    GDCC_PTR,    // GDCC 对象指针（带 _object 字段的 wrapper）
-    GODOT_PTR,   // Godot/引擎原始对象指针
-    NON_OBJECT   // 非对象指针（基元、值语义类型等）
-}
+### 8.2 建议命令
+
+```bash
+./gradlew test --tests CBodyBuilderPhaseBTest --no-daemon --info --console=plain
+./gradlew test --tests CBodyBuilderPhaseCTest --no-daemon --info --console=plain
+./gradlew test --tests CPhaseAControlFlowAndFinallyTest --no-daemon --info --console=plain
+./gradlew test --tests "C*InsnGenTest" --no-daemon --info --console=plain
+./gradlew classes --no-daemon --info --console=plain
 ```
 
-**解析规则**（`resolvePtrKind`）：
-- `GdObjectType` + `checkGdccType` → `GDCC_PTR`
-- `GdObjectType` + 非 GDCC → `GODOT_PTR`（含引擎类型和未知类型）
-- 其他类型 → `NON_OBJECT`
-- **注意：该规则并非100%准确，GDCC对象的指针可能由于某些操作变为GODOT_PTR，但其类型仍然为GDCC自定义对象类型，反之亦然！**
+## 9. 常见误区速查
 
-**工厂方法**：
-- `valueOfVar(variable)` — 从变量类型自动推断
-- `valueOfExpr(code, type)` — 从类型自动推断
-- `valueOfExpr(code, type, ptrKind)` — 显式指定（用于已知来源语义的表达式）
+1. 直接把 GDCC 对象传给 `release_object`/`try_own_object`。
+2. 误以为 `gdcc_object_from_godot_object_ptr` 会自动持有对象。
+3. 对 `ref=true` 变量执行赋值。
+4. 忽略非对象类型的 copy/destroy。
+5. 对对象覆盖写入时漏掉旧值 release。
+6. 条件跳转仅支持变量，不支持表达式。
+7. 错误消息缺少函数/块/指令索引。
 
-### 11.3 自动转换规则
+## 10. 完成标准（DoD）
 
-#### 参数转换（renderArgument）
-
-调用 `callVoid`/`callAssign` 时，通过 `checkGlobalFuncRequireGodotRawPtr(funcName)` 判断目标函数是否需要 Godot 原始指针：
-
-- 函数名以 `godot_` 开头 → 需要转换
-- 函数名以 `own_object`/`release_object` 结尾 → 需要转换
-- `try_destroy_object`、`gdcc_object_from_godot_object_ptr` → 需要转换
-
-当需要转换且参数 `ptrKind == GDCC_PTR` 时，自动调用 `toGodotObjectPtr`（生成 `$arg->_object`）。
-
-#### 返回值转换（callAssign）
-
-调用 `callAssign` 时，通过 `checkGlobalFuncReturnGodotRawPtr(funcName)` 判断返回值是否为 Godot 原始指针：
-
-- 函数名以 `godot_` 开头 → 返回 Godot 指针
-
-当返回为 Godot 指针且目标变量类型为 GDCC 对象（`checkGdccType`）时，自动调用 `fromGodotObjectPtr` 包裹整个调用表达式。
-
-### 11.4 指令生成器编写指南
-
-**新规则**：指令生成器不应手动拼接 `->_object` 或 `gdcc_object_from_godot_object_ptr`。只需：
-
-1. 使用 `bodyBuilder.valueOfVar(objectVar)` 传递对象参数
-2. 使用正确的函数名调用 `callVoid`/`callAssign`
-3. 转换由 CBodyBuilder 自动完成
-
-**示例** — `LoadPropertyInsnGen` "general" 模式（旧 vs 新）：
-
-```java
-// 旧：手动拼接 ->_object
-var objectRef = helper.checkGdccType(objectType) ? "$" + objectVar.id() + "->_object" : "$" + objectVar.id();
-var objectValue = bodyBuilder.valueOfExpr(objectRef, new GdObjectType("Object"));
-
-// 新：直接传变量，自动转换
-var objectValue = bodyBuilder.valueOfVar(objectVar);
-```
-
-**注意**：`callAssign` 的返回值转换仅在 `funcName` 满足 `checkGlobalFuncReturnGodotRawPtr` 时生效。对于已在函数名中包含显式类型转换的调用（如 `renderUnpackFunctionName` 返回的 `(MyClass*)godot_new_gdcc_Object_with_Variant`），由于函数名不以 `godot_` 开头，不会触发二次转换。
-
-### 11.5 后续迁移指引
-
-对于尚未迁移到 CBodyBuilder 的指令生成器（使用 FreeMarker 模板），迁移时应：
-
-1. 移除模板中手动的 `->_object` 和 `gdcc_object_from_godot_object_ptr` 逻辑
-2. 改用 `callVoid`/`callAssign` + `valueOfVar`，依赖自动转换
-3. 仅在自动转换规则无法覆盖的特殊场景（如非标准函数名）使用 `valueOfExpr` 的显式 `PtrKind` 重载
-
-### 11.6 临时变量使用规范（分类）
-
-为避免跨 API 手工维护状态，`TempVar` 自身维护“是否已初始化”的可变状态。按用途分三类：
-
-1. **声明即初始化（Expression staging）**
-   - 典型场景：表达式物化、copy staging。
-   - 形式：`newTempVariable(prefix, type, initCode)` + `declareTempVar(temp)`。
-   - 语义：声明后立即视为已初始化，可被销毁。
-
-2. **仅声明后首写（Out-init / deferred init）**
-   - 典型场景：某些函数需要接收未初始化存储的指针并在调用中完成初始化。
-   - 形式：`newTempVariable(prefix, type)` + `declareTempVar(temp)`，后续使用 `assignVar/callAssign/initTempVar` 写入。
-   - 语义：在首写前视为未初始化，`assignVar/callAssign` 不得执行旧值 destroy/release。
-
-3. **指令内临时生命周期（Per-insn temp）**
-   - 原则：创建、使用、销毁均在同一条指令逻辑中闭合。
-   - `destroyTempVar` 仅对“已初始化临时变量”生效，销毁后状态重置为未初始化。
-
-**统一规则：**
-
-- 赋值 API（`assignVar`、`callAssign`）必须统一判定 TargetRef：
-  - 若目标是“未初始化 TempVar”，跳过旧值销毁流程，仅执行写入/转换/own。
-  - 其他目标维持既有完整赋值语义。
-- 不强制做“临时变量读前初始化”全局检查，避免阻断合法的 out-init 场景。
-- 指令生成器优先使用 `callAssign`/`assignVar` 完成 temp 首写，减少手写字符串初始化路径。
-
----
-
-本文件作为评审基线，后续代码实施应严格以本说明和 `doc/gdcc_c_backend.md` 为语义依据。
-
-## 12. Utility Function 调用内部设计
-
-本章记录 `CBodyBuilder` 中 utility 调用路径的内部架构决策，供后续扩展和维护参考。
-
-### 12.1 UtilityCallInfo 三元组
-
-内部使用 `UtilityCallInfo` record 统一承载 utility 查询结果：
-
-```java
-record UtilityCallInfo(
-    String lookupName,      // 用于 ClassRegistry 查询的无前缀名，如 "print"
-    String cFunctionName,   // 最终 C 调用符号，如 "godot_print"
-    FunctionSignature signature
-) {}
-```
-
-所有 utility 路径（参数校验、参数渲染、调用发射）共用同一个 `UtilityCallInfo`，避免在不同方法中分别做名称转换导致不一致。
-
-### 12.2 名称归一化流程
-
-`normalizeUtilityLookupName(funcName)` 与 `toUtilityCFunctionName(lookupName)` 两个方法负责名称转换：
-
-- 输入 `"print"` → `lookupName = "print"` → `cFunctionName = "godot_print"`
-- 输入 `"godot_print"` → `lookupName = "print"`（剥离 `"godot_"` 前缀）→ `cFunctionName = "godot_print"`
-
-`ClassRegistry.utilityByName` **只接受无前缀名**，因此所有查询必须先经 normalize。
-`resolveUtilityCall` 的实现是**单路径**（不做二次回退），因为 normalize 后的查询已覆盖全部合法输入。
-
-> 设计陷阱：不要在 `resolveUtilityCall` 里加"用原名再查一次"的回退分支——`ClassRegistry` 不使用 `"godot_"` 前缀作为 key，此类回退是死代码。
-
-### 12.3 RawCallArg：原样参数通道
-
-`argv` 数组名（如 `__gdcc_tmp_argv_0`）和 `argc` 字面量（如 `(godot_int)2`）不是 GDScript 值语义参数，不能经过 `renderArgument` 的自动 `&` 加前缀和对象指针转换。
-
-为此引入 `RawCallArg`，在 `renderCallArgs` 中直接拼接 C 片段，绕过普通参数渲染：
-
-```
-sealed interface CallArg permits ValueCallArg, RawCallArg
-```
-
-**规则**：只在已知片段完全正确且不需要任何 ABI 处理时使用 `RawCallArg`。目前仅用于 `NULL`、`(godot_int)N`、argv 数组名三种场景。
-
-### 12.4 renderUtilityArgs 与 preCallLines 机制
-
-vararg utility 的 argv 数组需要在调用语句之前声明，不能在参数列表内联。`UtilityArgsRenderResult` 通过 `preCallLines` 字段承载这些前置行：
-
-```
-record UtilityArgsRenderResult(String code, List<TempVar> temps, List<String> preCallLines)
-```
-
-调用方在 `callUtilityVoid`/`callUtilityAssign` 中的发射顺序：
-1. `emitTempDecls(temps)` — 声明固定参数的 copy temps
-2. `emitRawLines(preCallLines)` — 声明 argv 数组
-3. 发射函数调用语句
-4. `emitTempDestroys(temps)` — 销毁 copy temps
-
-**argv 指针生命周期**：argv 数组中的指针（`&$varId`）直接指向 IR 变量的存储。这是安全的，因为 `validateCallArgs` 已强制要求所有 vararg extra 参数必须是 `VarValue`（变量引用），地址稳定。一旦放开此约束（允许表达式），必须同步调整此处保证 temp 生命周期不早于函数调用。
-
-### 12.5 emitCallResultAssignment：公共调用结果赋值逻辑
-
-`callAssign` 和 `callUtilityAssign` 共享"将调用结果写入 target"的完整流程：
-1. 若 target 已初始化，destroy/release 旧值（在 `__prepare__` 块跳过）
-2. 若函数名以 `godot_` 开头且 target 是 GDCC 对象类型，用 `fromGodotObjectPtr` 包裹调用表达式
-3. 输出赋值语句
-4. 若 target 是对象类型，own 新值
-5. 标记 target 为已初始化
-
-此逻辑提取为私有方法 `emitCallResultAssignment(target, cFuncName, callExpr)`，两处调用方只需构造好 `callExpr` 即可。
-
-> 维护注意：如果未来需要修改"调用结果赋值语义"（如引入更精确的 ptr 转换判断），只改 `emitCallResultAssignment` 一处，勿在 `callAssign`/`callUtilityAssign` 中分别修改。
-
-### 12.6 rejectVarargUtilityViaNonUtilityPath 防误用守卫
-
-`callVoid`/`callAssign` 在入口处调用此方法检测 vararg utility：
-
-```java
-private void rejectVarargUtilityViaNonUtilityPath(String funcName) {
-    var utility = resolveUtilityCall(funcName);
-    if (utility != null && utility.signature().isVararg()) {
-        throw invalidInsn("Vararg utility function '...' must be called via callUtilityVoid/callUtilityAssign, ...");
-    }
-}
-```
-
-**目的**：若指令生成器误用通用路径调用 vararg utility，会在代码生成阶段立即失败，而不是静默生成缺少 argv/argc 的非法 C 代码。
-
-### 12.7 non-vararg utility 通过通用路径的说明
-
-`callVoid`/`callAssign` 通过 `resolveUtilityCall` 对非 vararg utility 仍做参数与返回类型校验，但不阻止调用。这允许调用者使用通用路径调用非 vararg utility（例如某些 one-off 场景）。
-
-目前不强制要求 non-vararg utility 也走专用路径，但未来如果需要统一，可在 `rejectVarargUtilityViaNonUtilityPath` 中去掉 `isVararg` 条件。
-
+- 核心指令路径已迁移到 Builder，且无关键模板依赖。
+- `__prepare__` / `__finally__` 语义与文档一致并有测试守护。
+- 对象生命周期、utility vararg、指针转换语义可回归验证。
+- 关键失败路径均通过 `InvalidInsnException` 提供可定位错误信息。
 
