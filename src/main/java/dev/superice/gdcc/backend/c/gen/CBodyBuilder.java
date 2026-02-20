@@ -311,30 +311,9 @@ public final class CBodyBuilder {
     }
 
     public @NotNull CBodyBuilder callVoid(@NotNull String funcName, @NotNull List<ValueRef> args) {
-        rejectVarargUtilityViaNonUtilityPath(funcName);
-        validateCallArgs(funcName, args);
         var argsResult = renderArgs(funcName, args);
         emitTempDecls(argsResult.temps());
         out.append(funcName).append("(").append(argsResult.code()).append(");\n");
-        emitTempDestroys(argsResult.temps());
-        return this;
-    }
-
-    /// Calls a utility function and always renders the canonical C symbol name (`godot_<name>`).
-    /// Supports utility vararg ABI by appending argv/argc automatically.
-    public @NotNull CBodyBuilder callUtilityVoid(@NotNull String funcName, @NotNull List<ValueRef> args) {
-        var utility = requireUtilityCall(funcName);
-        return callUtilityVoid(utility, args);
-    }
-
-    /// Calls a resolved utility function and emits a statement call.
-    public @NotNull CBodyBuilder callUtilityVoid(@NotNull CGenHelper.UtilityCallResolution utility,
-                                                 @NotNull List<ValueRef> args) {
-        validateCallArgs(utility, args, true);
-        var argsResult = renderUtilityArgs(utility, args);
-        emitTempDecls(argsResult.temps());
-        emitRawLines(argsResult.preCallLines());
-        out.append(utility.cFunctionName()).append("(").append(argsResult.code()).append(");\n");
         emitTempDestroys(argsResult.temps());
         return this;
     }
@@ -351,15 +330,6 @@ public final class CBodyBuilder {
         if (!discardResult) {
             checkTargetAssignable(target);
         }
-        rejectVarargUtilityViaNonUtilityPath(funcName);
-
-        var resolvedReturnType = resolveReturnType(funcName, returnType);
-        validateCallArgs(funcName, args);
-        if (discardResult) {
-            validateDiscardableReturnType(funcName, resolvedReturnType);
-        } else {
-            validateReturnType(funcName, resolvedReturnType, target.type());
-        }
 
         var argsResult = renderArgs(funcName, args);
         emitTempDecls(argsResult.temps());
@@ -369,48 +339,6 @@ public final class CBodyBuilder {
             out.append(callExpr).append(";\n");
         } else {
             emitCallResultAssignment(target, funcName, callExpr);
-        }
-
-        emitTempDestroys(argsResult.temps());
-        return this;
-    }
-
-    /// Calls a utility function and assigns its non-void return value to target.
-    /// Supports utility vararg ABI by appending argv/argc automatically.
-    public @NotNull CBodyBuilder callUtilityAssign(@NotNull TargetRef target,
-                                                   @NotNull String funcName,
-                                                   @NotNull List<ValueRef> args) {
-        var utility = requireUtilityCall(funcName);
-        return callUtilityAssign(target, utility, args);
-    }
-
-    /// Calls a resolved utility function and either assigns or discards its non-void return value.
-    public @NotNull CBodyBuilder callUtilityAssign(@NotNull TargetRef target,
-                                                   @NotNull CGenHelper.UtilityCallResolution utility,
-                                                   @NotNull List<ValueRef> args) {
-        var discardResult = target instanceof DiscardRef;
-        if (!discardResult) {
-            checkTargetAssignable(target);
-        }
-        validateCallArgs(utility, args, true);
-
-        var returnType = utility.signature().returnType();
-        if (returnType == null || returnType instanceof GdVoidType) {
-            throw invalidInsn("Utility function '" + utility.lookupName() + "' has no return value");
-        }
-        if (!discardResult) {
-            checkAssignable(returnType, target.type());
-        }
-
-        var argsResult = renderUtilityArgs(utility, args);
-        emitTempDecls(argsResult.temps());
-        emitRawLines(argsResult.preCallLines());
-
-        var callExpr = utility.cFunctionName() + "(" + argsResult.code() + ")";
-        if (discardResult) {
-            out.append(callExpr).append(";\n");
-        } else {
-            emitCallResultAssignment(target, utility.cFunctionName(), callExpr);
         }
 
         emitTempDestroys(argsResult.temps());
@@ -524,14 +452,6 @@ public final class CBodyBuilder {
     }
 
     private @NotNull RenderResult renderArgs(@NotNull String funcName, @NotNull List<ValueRef> args) {
-        var callArgs = new ArrayList<CallArg>(args.size());
-        for (var arg : args) {
-            callArgs.add(new ValueCallArg(arg));
-        }
-        return renderCallArgs(funcName, callArgs);
-    }
-
-    private @NotNull RenderResult renderCallArgs(@NotNull String funcName, @NotNull List<CallArg> args) {
         var requireGodotRawPtr = checkGlobalFuncRequireGodotRawPtr(funcName);
         var rendered = new StringBuilder();
         var temps = new ArrayList<TempVar>();
@@ -539,14 +459,10 @@ public final class CBodyBuilder {
             if (i > 0) {
                 rendered.append(", ");
             }
-            switch (args.get(i)) {
-                case ValueCallArg(var value) -> {
-                    var argResult = renderArgument(value, requireGodotRawPtr);
-                    rendered.append(argResult.code());
-                    temps.addAll(argResult.temps());
-                }
-                case RawCallArg(var code) -> rendered.append(code);
-            }
+            var value = args.get(i);
+            var argResult = renderArgument(value, requireGodotRawPtr);
+            rendered.append(argResult.code());
+            temps.addAll(argResult.temps());
         }
         return new RenderResult(rendered.toString(), temps);
     }
@@ -563,84 +479,6 @@ public final class CBodyBuilder {
     private void checkTargetAssignable(@NotNull TargetRef target) {
         if (target.isRef()) {
             throw invalidInsn("Cannot assign to reference variable");
-        }
-    }
-
-    private @Nullable GdType resolveReturnType(@NotNull String funcName, @Nullable GdType explicitType) {
-        if (explicitType != null) {
-            return explicitType;
-        }
-        var utility = resolveUtilityCall(funcName);
-        if (utility == null) {
-            return null;
-        }
-        return utility.signature().returnType();
-    }
-
-    private void validateCallArgs(@NotNull String funcName, @NotNull List<ValueRef> args) {
-        var utility = resolveUtilityCall(funcName);
-        if (utility == null) {
-            return;
-        }
-        validateCallArgs(utility, args, false, false);
-    }
-
-    private void validateCallArgs(@NotNull CGenHelper.UtilityCallResolution utility,
-                                  @NotNull List<ValueRef> args,
-                                  boolean strictVarargVariant) {
-        validateCallArgs(utility, args, strictVarargVariant, true);
-    }
-
-    private void validateCallArgs(@NotNull CGenHelper.UtilityCallResolution utility,
-                                  @NotNull List<ValueRef> args,
-                                  boolean strictVarargVariant,
-                                  boolean allowDefaultValueOmission) {
-        var signature = utility.signature();
-        var paramCount = signature.parameterCount();
-        var isVararg = signature.isVararg();
-        if (!isVararg && args.size() > paramCount) {
-            throw invalidInsn("Too many arguments for utility function '" + utility.lookupName() + "': expected " +
-                    paramCount + ", got " + args.size());
-        }
-        if (args.size() < paramCount) {
-            if (!allowDefaultValueOmission) {
-                throw invalidInsn("Too few arguments for utility function '" + utility.lookupName() + "': expected " +
-                        (isVararg ? "at least " : "") + paramCount + ", got " + args.size());
-            }
-            for (var i = args.size(); i < paramCount; i++) {
-                var param = signature.parameters().get(i);
-                if (param.defaultValue() == null) {
-                    throw invalidInsn("Too few arguments for utility function '" + utility.lookupName() + "': expected " +
-                            (isVararg ? "at least " : "") + paramCount + ", got " + args.size());
-                }
-                if (param.type() == null) {
-                    throw invalidInsn("Utility function '" + utility.lookupName() + "' parameter #" + (i + 1) +
-                            " has default value but no type information");
-                }
-            }
-        }
-        var checkCount = Math.min(args.size(), paramCount);
-        for (var i = 0; i < checkCount; i++) {
-            var param = signature.parameters().get(i);
-            var paramType = param.type();
-            if (paramType == null) {
-                continue;
-            }
-            checkAssignable(args.get(i).type(), paramType);
-        }
-        if (!isVararg || !strictVarargVariant) {
-            return;
-        }
-        for (var i = paramCount; i < args.size(); i++) {
-            var arg = args.get(i);
-            if (!classRegistry().checkAssignable(arg.type(), GdVariantType.VARIANT)) {
-                throw invalidInsn("Vararg argument #" + (i - paramCount + 1) + " of utility '" +
-                        utility.lookupName() + "' must be Variant, got '" + arg.type().getTypeName() + "'");
-            }
-            if (!(arg instanceof VarValue)) {
-                throw invalidInsn("Vararg argument #" + (i - paramCount + 1) + " of utility '" +
-                        utility.lookupName() + "' must be a variable");
-            }
         }
     }
 
@@ -671,138 +509,6 @@ public final class CBodyBuilder {
         return new RenderResult(condition.generateCode(), List.of());
     }
 
-    private @NotNull CGenHelper.UtilityCallResolution requireUtilityCall(@NotNull String funcName) {
-        var utility = resolveUtilityCall(funcName);
-        if (utility == null) {
-            throw invalidInsn("Global utility function '" + funcName + "' not found in registry");
-        }
-        return utility;
-    }
-
-    /// Guards against accidentally calling a vararg utility via `callVoid`/`callAssign`
-    /// instead of the dedicated `callUtilityVoid`/`callUtilityAssign` APIs.
-    /// Non-vararg utilities are allowed through the generic path since they don't need argv/argc handling.
-    private void rejectVarargUtilityViaNonUtilityPath(@NotNull String funcName) {
-        var utility = resolveUtilityCall(funcName);
-        if (utility != null && utility.signature().isVararg()) {
-            throw invalidInsn("Vararg utility function '" + utility.lookupName() +
-                    "' must be called via callUtilityVoid/callUtilityAssign, not callVoid/callAssign");
-        }
-    }
-
-    private @Nullable CGenHelper.UtilityCallResolution resolveUtilityCall(@NotNull String funcName) {
-        return helper.resolveUtilityCall(funcName);
-    }
-
-    /// Renders arguments for a utility function call, including vararg argv/argc handling.
-    ///
-    /// For vararg utilities, extra arguments beyond fixed parameters are collected into a
-    /// temporary `const godot_Variant*[]` array. The pointers in this array point directly
-    /// at the IR variables (`&$varId`), which is safe because `validateCallArgs` guarantees
-    /// that all vararg extra arguments are `VarValue` references with stable addresses.
-    private @NotNull UtilityArgsRenderResult renderUtilityArgs(@NotNull CGenHelper.UtilityCallResolution utility,
-                                                               @NotNull List<ValueRef> args) {
-        var fixedCount = utility.signature().parameterCount();
-        var callArgs = new ArrayList<CallArg>();
-        var fixedLimit = Math.min(fixedCount, args.size());
-        for (var i = 0; i < fixedLimit; i++) {
-            callArgs.add(new ValueCallArg(args.get(i)));
-        }
-        var defaultArgs = appendMissingUtilityDefaultArgs(utility, args, callArgs);
-
-        var preCallLines = new ArrayList<>(defaultArgs.preCallLines());
-        if (utility.signature().isVararg()) {
-            var extraCount = Math.max(0, args.size() - fixedCount);
-            if (extraCount == 0) {
-                callArgs.add(new RawCallArg("NULL"));
-                callArgs.add(new RawCallArg("(godot_int)0"));
-            } else {
-                var argvName = newTempName("argv");
-                var pointers = new ArrayList<String>(extraCount);
-                for (var i = fixedCount; i < args.size(); i++) {
-                    pointers.add(renderVarargVariantPointer(utility, args.get(i), i - fixedCount));
-                }
-                preCallLines.add("const godot_Variant* " + argvName + "[] = { " + String.join(", ", pointers) + " };");
-                callArgs.add(new RawCallArg(argvName));
-                callArgs.add(new RawCallArg("(godot_int)" + extraCount));
-            }
-        }
-        var rendered = renderCallArgs(utility.cFunctionName(), callArgs);
-        var allTemps = new ArrayList<TempVar>(defaultArgs.temps().size() + rendered.temps().size());
-        allTemps.addAll(defaultArgs.temps());
-        allTemps.addAll(rendered.temps());
-        return new UtilityArgsRenderResult(rendered.code(), allTemps, preCallLines);
-    }
-
-    private @NotNull UtilityDefaultArgsResult appendMissingUtilityDefaultArgs(@NotNull CGenHelper.UtilityCallResolution utility,
-                                                                               @NotNull List<ValueRef> args,
-                                                                               @NotNull List<CallArg> callArgs) {
-        var signature = utility.signature();
-        var paramCount = signature.parameterCount();
-        if (args.size() >= paramCount) {
-            return new UtilityDefaultArgsResult(List.of(), List.of());
-        }
-        var defaultTemps = new ArrayList<TempVar>(paramCount - args.size());
-        var preCallLines = new ArrayList<String>(paramCount - args.size());
-        for (var i = args.size(); i < paramCount; i++) {
-            var param = signature.parameters().get(i);
-            var paramType = param.type();
-            var defaultValue = param.defaultValue();
-            if (paramType == null || defaultValue == null) {
-                throw invalidInsn("Utility function '" + utility.lookupName() + "' parameter #" + (i + 1) +
-                        " is missing type/default metadata required for omitted argument");
-            }
-            var defaultExpr = renderUtilityDefaultValueExpr(utility, i, paramType, defaultValue);
-            var typeName = helper.renderGdTypeName(paramType).toLowerCase();
-            var temp = newTempVariable("default_" + typeName, paramType, defaultExpr.expression());
-            defaultTemps.add(temp);
-            if (defaultExpr.arrayElementTypeForSetTyped() != null) {
-                preCallLines.add(renderTypedArraySetTypedLine(temp, defaultExpr.arrayElementTypeForSetTyped()));
-            }
-            callArgs.add(new ValueCallArg(temp));
-        }
-        return new UtilityDefaultArgsResult(defaultTemps, preCallLines);
-    }
-
-    private @NotNull DefaultValueExprResult renderUtilityDefaultValueExpr(@NotNull CGenHelper.UtilityCallResolution utility,
-                                                                          int paramIndex,
-                                                                          @NotNull GdType type,
-                                                                          @NotNull String defaultValue) {
-        var literal = defaultValue.trim();
-        if (literal.equals("null")) {
-            return new DefaultValueExprResult(renderNullDefaultValueExpr(utility, paramIndex, type), null);
-        }
-        switch (type) {
-            case GdStringType _ when isQuotedStringLiteral(literal) -> {
-                var content = literal.substring(1, literal.length() - 1);
-                return new DefaultValueExprResult(
-                        "godot_new_String_with_String(" + renderStaticStringLiteral(content) + ")",
-                        null
-                );
-            }
-            case GdStringNameType _ when (isQuotedStringNameLiteral(literal) || isQuotedStringLiteral(literal)) -> {
-                var offset = literal.startsWith("&\"") ? 2 : 1;
-                var content = literal.substring(offset, literal.length() - 1);
-                return new DefaultValueExprResult(
-                        "godot_new_StringName_with_StringName(" + renderStaticStringNameLiteral(content) + ")",
-                        null
-                );
-            }
-            case GdPrimitiveType _ -> {
-                return new DefaultValueExprResult(literal, null);
-            }
-            default -> {}
-        }
-        var leftParen = literal.indexOf('(');
-        if (leftParen > 0 && literal.endsWith(")")) {
-            var ctorTypeLiteral = literal.substring(0, leftParen).trim();
-            var ctorArgs = literal.substring(leftParen + 1, literal.length() - 1).trim();
-            return renderBuiltinDefaultConstructorExpr(type, ctorTypeLiteral, ctorArgs);
-        }
-        throw invalidInsn("Unsupported default value literal '" + defaultValue + "' for utility function '" +
-                utility.lookupName() + "' parameter #" + (paramIndex + 1) + " of type '" + type.getTypeName() + "'");
-    }
-
     private boolean isQuotedStringLiteral(@NotNull String literal) {
         return literal.length() >= 2 && literal.startsWith("\"") && literal.endsWith("\"");
     }
@@ -811,223 +517,16 @@ public final class CBodyBuilder {
         return literal.length() >= 3 && literal.startsWith("&\"") && literal.endsWith("\"");
     }
 
-    private @NotNull String renderNullDefaultValueExpr(@NotNull CGenHelper.UtilityCallResolution utility,
-                                                       int paramIndex,
-                                                       @NotNull GdType type) {
-        if (type instanceof GdObjectType) {
-            return "NULL";
-        }
-        if (type instanceof GdVariantType) {
-            return "godot_new_Variant_nil()";
-        }
-        throw invalidInsn("Unsupported null default value for utility function '" + utility.lookupName() +
-                "' parameter #" + (paramIndex + 1) + " of type '" + type.getTypeName() + "'");
+    private boolean isQuotedNodePathLiteral(@NotNull String literal) {
+        return literal.length() >= 3 && literal.startsWith("$\"") && literal.endsWith("\"");
     }
 
-    private @NotNull String renderStaticStringLiteral(@NotNull String value) {
+    @NotNull public static String renderStaticStringLiteral(@NotNull String value) {
         return "GD_STATIC_S(u8\"" + escapeStringLiteral(value) + "\")";
     }
 
-    private @NotNull String renderStaticStringNameLiteral(@NotNull String value) {
+    @NotNull public static String renderStaticStringNameLiteral(@NotNull String value) {
         return "GD_STATIC_SN(u8\"" + escapeStringLiteral(value) + "\")";
-    }
-
-    private @NotNull DefaultValueExprResult renderBuiltinDefaultConstructorExpr(@NotNull GdType type,
-                                                                                 @NotNull String ctorTypeLiteral,
-                                                                                 @NotNull String ctorArgsLiteral) {
-        var ctorName = helper.renderBuiltinConstructorBaseName(type);
-        var ctorArgs = splitCtorArguments(ctorArgsLiteral);
-        if (ctorArgs.isEmpty()) {
-            validateBuiltinConstructor(type, List.of(), false);
-            return new DefaultValueExprResult(ctorName + "()", null);
-        }
-        var arrayElementType = resolveTypedArrayElementTypeForSetTyped(type, ctorTypeLiteral, ctorArgs);
-        if (arrayElementType != null) {
-            validateBuiltinConstructor(type, List.of(), false);
-            return new DefaultValueExprResult(ctorName + "()", arrayElementType);
-        }
-        if (ctorArgs.size() == 1 && ctorArgs.getFirst().equals("{}")) {
-            validateBuiltinConstructor(type, List.of(), false);
-            return new DefaultValueExprResult(ctorName + "()", null);
-        }
-
-        var helperCtorArgTypes = resolveHelperTransformCtorArgTypes(type, ctorArgs.size());
-        if (helperCtorArgTypes != null) {
-            var ctorFunc = helper.renderBuiltinConstructorFunctionNameByTypes(type, helperCtorArgTypes);
-            validateBuiltinConstructor(type, helperCtorArgTypes, true);
-            return new DefaultValueExprResult(ctorFunc + "(" + String.join(", ", ctorArgs) + ")", null);
-        }
-
-        if (type instanceof GdNodePathType
-                && ctorArgs.size() == 1
-                && isQuotedStringLiteral(ctorArgs.getFirst())) {
-            var content = ctorArgs.getFirst().substring(1, ctorArgs.getFirst().length() - 1);
-            var ctorArgTypes = List.<GdType>of(GdStringType.STRING);
-            validateBuiltinConstructor(type, ctorArgTypes, false);
-            var ctorFunc = helper.renderBuiltinConstructorFunctionName(type, List.of("utf8_chars"));
-            return new DefaultValueExprResult(ctorFunc + "(u8\"" + escapeStringLiteral(content) + "\")", null);
-        }
-
-        var numericCtorArgTypes = resolveBuiltinNumericCtorArgTypes(type, ctorArgs.size());
-        if (numericCtorArgTypes != null) {
-            validateBuiltinConstructor(type, numericCtorArgTypes, false);
-            var ctorFunc = helper.renderBuiltinConstructorFunctionNameByTypes(type, numericCtorArgTypes);
-            return new DefaultValueExprResult(ctorFunc + "(" + String.join(", ", ctorArgs) + ")", null);
-        }
-        throw invalidInsn("Unsupported constructor literal arguments for builtin type '" + type.getTypeName() +
-                "': " + String.join(", ", ctorArgs));
-    }
-
-    private @Nullable List<GdType> resolveBuiltinNumericCtorArgTypes(@NotNull GdType type, int argCount) {
-        return switch (type) {
-            case GdFloatVectorType vectorType when argCount == vectorType.getDimension() ->
-                    repeatedCtorArgTypes(GdFloatType.FLOAT, argCount);
-            case GdIntVectorType vectorType when argCount == vectorType.getDimension() ->
-                    repeatedCtorArgTypes(GdIntType.INT, argCount);
-            case GdColorType _ when argCount == 3 || argCount == 4 ->
-                    repeatedCtorArgTypes(GdFloatType.FLOAT, argCount);
-            case GdRect2Type _ when argCount == 4 ->
-                    repeatedCtorArgTypes(GdFloatType.FLOAT, argCount);
-            case GdRect2iType _ when argCount == 4 ->
-                    repeatedCtorArgTypes(GdIntType.INT, argCount);
-            default -> null;
-        };
-    }
-
-    private @Nullable List<GdType> resolveHelperTransformCtorArgTypes(@NotNull GdType type, int argCount) {
-        return switch (type) {
-            case GdTransform2DType _ when argCount == 6 -> repeatedCtorArgTypes(GdFloatType.FLOAT, 6);
-            case GdTransform3DType _ when argCount == 12 -> repeatedCtorArgTypes(GdFloatType.FLOAT, 12);
-            default -> null;
-        };
-    }
-
-    private @NotNull List<GdType> repeatedCtorArgTypes(@NotNull GdType argType, int count) {
-        var suffixes = new ArrayList<GdType>(count);
-        for (var i = 0; i < count; i++) {
-            suffixes.add(argType);
-        }
-        return suffixes;
-    }
-
-    private @Nullable GdType resolveTypedArrayElementTypeForSetTyped(@NotNull GdType type,
-                                                                      @NotNull String ctorTypeLiteral,
-                                                                      @NotNull List<String> ctorArgs) {
-        if (!(type instanceof GdArrayType arrayType)) {
-            return null;
-        }
-        if (ctorArgs.size() == 1 && "[]".equals(ctorArgs.getFirst())) {
-            var parsedCtorType = ClassRegistry.tryParseTextType(ctorTypeLiteral);
-            if (parsedCtorType instanceof GdArrayType literalArrayType) {
-                return literalArrayType.getValueType();
-            }
-            return arrayType.getValueType();
-        }
-        return null;
-    }
-
-    private void validateBuiltinConstructor(@NotNull GdType type,
-                                            @NotNull List<GdType> argTypes,
-                                            boolean skipApiValidation) {
-        if (skipApiValidation) {
-            return;
-        }
-        if (!helper.hasBuiltinConstructor(type, argTypes)) {
-            var argTypeNames = new ArrayList<String>(argTypes.size());
-            for (var argType : argTypes) {
-                argTypeNames.add(helper.renderGdTypeName(argType));
-            }
-            throw invalidInsn("Builtin constructor validation failed: '" + helper.renderGdTypeName(type) +
-                    "' with args [" + String.join(", ", argTypeNames) + "] is not defined in ExtensionBuiltinClass");
-        }
-    }
-
-    private @NotNull String renderTypedArraySetTypedLine(@NotNull TempVar temp, @NotNull GdType elementType) {
-        var gdType = elementType.getGdExtensionType();
-        if (gdType == null) {
-            throw invalidInsn("Typed array element type '" + elementType.getTypeName() + "' has no GDExtension variant type");
-        }
-        var classNamePtr = "GD_STATIC_SN(u8\"\")";
-        if (elementType instanceof GdObjectType objectType) {
-            classNamePtr = renderStaticStringNameLiteral(objectType.getTypeName());
-        }
-        return "godot_array_set_typed(&" + temp.name() + ", GDEXTENSION_VARIANT_TYPE_" + gdType.name() +
-                ", " + classNamePtr + ", NULL);";
-    }
-
-    private @NotNull List<String> splitCtorArguments(@NotNull String argsLiteral) {
-        var trimmed = argsLiteral.trim();
-        if (trimmed.isEmpty()) {
-            return List.of();
-        }
-        var args = new ArrayList<String>();
-        var token = new StringBuilder();
-        var parenDepth = 0;
-        var bracketDepth = 0;
-        var braceDepth = 0;
-        var inString = false;
-        var escaped = false;
-        for (var i = 0; i < trimmed.length(); i++) {
-            var ch = trimmed.charAt(i);
-            if (inString) {
-                token.append(ch);
-                if (escaped) {
-                    escaped = false;
-                    continue;
-                }
-                if (ch == '\\') {
-                    escaped = true;
-                    continue;
-                }
-                if (ch == '"') {
-                    inString = false;
-                }
-                continue;
-            }
-            switch (ch) {
-                case '"' -> {
-                    inString = true;
-                    token.append(ch);
-                }
-                case '(' -> {
-                    parenDepth++;
-                    token.append(ch);
-                }
-                case ')' -> {
-                    parenDepth--;
-                    token.append(ch);
-                }
-                case '[' -> {
-                    bracketDepth++;
-                    token.append(ch);
-                }
-                case ']' -> {
-                    bracketDepth--;
-                    token.append(ch);
-                }
-                case '{' -> {
-                    braceDepth++;
-                    token.append(ch);
-                }
-                case '}' -> {
-                    braceDepth--;
-                    token.append(ch);
-                }
-                case ',' -> {
-                    if (parenDepth == 0 && bracketDepth == 0 && braceDepth == 0) {
-                        args.add(token.toString().trim());
-                        token.setLength(0);
-                    } else {
-                        token.append(ch);
-                    }
-                }
-                default -> token.append(ch);
-            }
-        }
-        if (!token.isEmpty()) {
-            args.add(token.toString().trim());
-        }
-        return args;
     }
 
     /// Renders the C pointer expression for a vararg extra argument.
@@ -1368,7 +867,7 @@ public final class CBodyBuilder {
 
         @Override
         public @NotNull String generateCode() {
-            return "GD_STATIC_SN(u8\"" + escapeStringLiteral(value) + "\")";
+            return renderStaticStringNameLiteral(value);
         }
 
         @Override
@@ -1389,7 +888,7 @@ public final class CBodyBuilder {
 
         @Override
         public @NotNull String generateCode() {
-            return "GD_STATIC_S(u8\"" + escapeStringLiteral(value) + "\")";
+            return renderStaticStringLiteral(value);
         }
 
         @Override
@@ -1533,28 +1032,6 @@ public final class CBodyBuilder {
         private UtilityDefaultArgsResult {
             Objects.requireNonNull(temps);
             Objects.requireNonNull(preCallLines);
-        }
-    }
-
-    private record DefaultValueExprResult(@NotNull String expression,
-                                          @Nullable GdType arrayElementTypeForSetTyped) {
-        private DefaultValueExprResult {
-            Objects.requireNonNull(expression);
-        }
-    }
-
-    private sealed interface CallArg permits ValueCallArg, RawCallArg {
-    }
-
-    private record ValueCallArg(@NotNull ValueRef value) implements CallArg {
-        private ValueCallArg {
-            Objects.requireNonNull(value);
-        }
-    }
-
-    private record RawCallArg(@NotNull String code) implements CallArg {
-        private RawCallArg {
-            Objects.requireNonNull(code);
         }
     }
 }

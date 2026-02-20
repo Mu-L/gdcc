@@ -21,6 +21,14 @@ gdextension-lite 库的构造函数命名规范为：
 
 **全部问题已修复并通过代码审阅和单元测试验证。**
 
+> 补充（2026-02-20 晚些时候）：
+> 默认值内置构造表达式渲染相关方法已从 `CBodyBuilder` 迁移到
+> `CBuiltinBuilder`（例如参数切分、numeric/transform 参数推断、构造校验）。
+> `renderTypedArraySetTypedLine` 也已迁移到 `CBuiltinBuilder`，由 builder 统一渲染
+> typed-array 重标记调用：`godot_new_Array_with_Array_int_StringName_Variant(...)`
+> （含 object/non-object 元素类型分支）。
+> 本文中部分 `CBodyBuilder` 行号引用属于历史记录，请以当前源码为准。
+
 - ✅ 已修复 `renderUtilityDefaultValueExpr` 有参构造缺失 `_with_<types>` 后缀问题。
   - 旧的内联逻辑已完全替换为 `renderBuiltinDefaultConstructorExpr`，
     通过 `CGenHelper.renderBuiltinConstructorFunctionNameByTypes` 正确生成带类型后缀的函数名。
@@ -40,8 +48,9 @@ gdextension-lite 库的构造函数命名规范为：
   - 见 `CBodyBuilder.resolveHelperTransformCtorArgTypes`（第 897 行）。
 - ✅ 已实现类型化数组 `Array[T]([])` 默认值初始化：
   - 先构造 `godot_new_Array()`
-  - 再调用 `godot_array_set_typed(...)` 写入 element type 元数据（含 object 类型 class_name）。
-  - 见 `CBodyBuilder.resolveTypedArrayElementTypeForSetTyped`（第 913 行）和 `renderTypedArraySetTypedLine`（第 945 行）。
+  - 再调用 `godot_new_Array_with_Array_int_StringName_Variant(...)` 完成 typed-array 重标记
+    （含 object 类型 class_name）。
+  - 见 `renderTypedArraySetTypedLine` 的实现与 `CBodyBuilder` 默认参数补全路径。
 - ✅ 已补充并通过单元测试（`CBodyBuilderCallUtilityTest`、`CGenHelperUtilityResolutionTest`）。
   - 测试覆盖了：Vector3 有参构造、NodePath 字符串默认值、类型化数组、Transform2D/3D helper 构造、
     `renderBuiltinConstructorFunctionNameByTypes` 后缀组合、`hasBuiltinConstructor` 元数据校验。
@@ -187,27 +196,24 @@ StringName 同时接受 `&"..."` 和 `"..."` 两种字面量形式。正确。
 
 ---
 
-## ⚠️ 已废弃的 FTL 模板（潜在风险较低）
+## 增量同步（2026-02-20，typed array 默认值路径）
 
-以下 FTL 模板位于 `src/main/c/codegen/insn/` 目录下，但**当前未被任何 Java 代码引用**
-（没有类继承 `TemplateInsnGen`），属于历史遗留文件。
+`Array[T]([])` 的默认值补全链路已从 `godot_array_set_typed(...)` 迁移为
+`godot_new_Array_with_Array_int_StringName_Variant(...)`：
 
-> **2026-02-20 审阅确认：** `TemplateInsnGen` 抽象类仍存在但无任何子类。
-> 模板中的 bug 仍未修复，但因为是死代码，不影响任何功能。
-> 如果将来决定复用这些模板，需要先修复以下问题。
-
-### `load_property.ftl` builtin case (line 43)
-```ftl
-godot_${resultType.typeName}_get_${insn.propertyName}(...)
+```c
+godot_Array __gdcc_tmp_default_array_0 = godot_new_Array();
+__gdcc_tmp_default_array_0 = godot_new_Array_with_Array_int_StringName_Variant(
+    &__gdcc_tmp_default_array_0,
+    (godot_int)GDEXTENSION_VARIANT_TYPE_STRING_NAME,
+    GD_STATIC_SN(u8""),
+    NULL
+);
 ```
-使用了 `resultType`（结果变量的类型），而非 `objectType`（对象变量的类型）。
-- 例如: 获取 Vector2 的 x 属性时，`resultType` 是 `float`，会错误生成 `godot_float_get_x` 而非 `godot_Vector2_get_x`。
-- **风险**: 低，因为已被 Java 实现 `LoadPropertyInsnGen` 替代。
 
-### `store_property.ftl` builtin case (line 35)
-```ftl
-godot_${valueType.typeName}_set_${insn.propertyName}(...)
-```
-使用了 `valueType`（值变量的类型），而非 `objectType`（对象变量的类型）。
-- 例如: 设置 Vector2 的 x 属性时，`valueType` 是 `float`，会错误生成 `godot_float_set_x` 而非 `godot_Vector2_set_x`。
-- **风险**: 低，因为已被 Java 实现 `StorePropertyInsnGen` 替代。
+该迁移发生在 `CBodyBuilder` 的 utility 默认参数补全流程，目标是与后续
+`construct_array` typed 构造路线保持一致。
+
+> 补充（2026-02-20）：
+> `renderTypedArraySetTypedLine` 已删除，typed array 默认值改为由
+> `renderUtilityDefaultValueExpr` 直接返回构造表达式，不再注入额外 pre-call 行。

@@ -5,7 +5,6 @@ import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.exception.NotImplementedException;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.scope.ClassDef;
-import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.FunctionSignature;
 import dev.superice.gdcc.scope.ParameterDef;
@@ -20,10 +19,12 @@ public final class CGenHelper {
     private static final String GODOT_UTILITY_PREFIX = "godot_";
 
     private final @NotNull CodegenContext context;
+    private final @NotNull CBuiltinBuilder builtinBuilder;
     private final @NotNull Set<BindingData> bindingDataSet = new HashSet<>();
 
     public CGenHelper(@NotNull CodegenContext context, @NotNull List<? extends ClassDef> classDefs) {
         this.context = context;
+        this.builtinBuilder = new CBuiltinBuilder(this);
         this.collectBindingData(classDefs);
     }
 
@@ -293,75 +294,6 @@ public final class CGenHelper {
         };
     }
 
-    /// Render `godot_new_<BuiltinType>` constructor base symbol for built-in value types.
-    public @NotNull String renderBuiltinConstructorBaseName(@NotNull GdType type) {
-        return "godot_new_" + renderGdTypeName(type);
-    }
-
-    /// Render constructor symbol `godot_new_<BuiltinType>[_with_<argType>...]`.
-    ///
-    /// `argTypeSuffixes` should match gdextension-lite constructor suffix tokens, e.g.
-    /// `float`, `int`, `Vector2`, `utf8_chars`.
-    public @NotNull String renderBuiltinConstructorFunctionName(@NotNull GdType type,
-                                                                @NotNull List<String> argTypeSuffixes) {
-        var ctorName = renderBuiltinConstructorBaseName(type);
-        if (argTypeSuffixes.isEmpty()) {
-            return ctorName;
-        }
-        var normalizedSuffixes = new ArrayList<String>(argTypeSuffixes.size());
-        for (var suffix : argTypeSuffixes) {
-            if (suffix == null || suffix.isBlank()) {
-                throw new IllegalArgumentException("Constructor argument suffix must not be blank");
-            }
-            normalizedSuffixes.add(suffix);
-        }
-        return ctorName + "_with_" + String.join("_", normalizedSuffixes);
-    }
-
-    /// Render constructor symbol using GD type names as suffixes.
-    ///
-    /// Example: (`Vector3`, [ `float`, `float`, `float` ]) ->
-    /// `godot_new_Vector3_with_float_float_float`.
-    public @NotNull String renderBuiltinConstructorFunctionNameByTypes(@NotNull GdType type,
-                                                                       @NotNull List<GdType> argTypes) {
-        var suffixes = new ArrayList<String>(argTypes.size());
-        for (var argType : argTypes) {
-            suffixes.add(renderGdTypeName(argType));
-        }
-        return renderBuiltinConstructorFunctionName(type, suffixes);
-    }
-
-    /// Checks whether ExtensionBuiltinClass metadata contains a constructor with the exact argument type list.
-    ///
-    /// Matching uses normalized GD type names (`renderGdTypeName`) to avoid instance-based equality pitfalls.
-    public boolean hasBuiltinConstructor(@NotNull GdType type, @NotNull List<GdType> argTypes) {
-        var builtinClass = context.classRegistry().findBuiltinClass(renderGdTypeName(type));
-        if (builtinClass == null) {
-            return false;
-        }
-        var expectedTypeNames = new ArrayList<String>(argTypes.size());
-        for (var argType : argTypes) {
-            expectedTypeNames.add(renderGdTypeName(argType));
-        }
-        for (var ctor : builtinClass.constructors()) {
-            if (ctor.arguments().size() != expectedTypeNames.size()) {
-                continue;
-            }
-            var matches = true;
-            for (var i = 0; i < ctor.arguments().size(); i++) {
-                var parsedType = ClassRegistry.tryParseTextType(ctor.arguments().get(i).type());
-                if (parsedType == null || !renderGdTypeName(parsedType).equals(expectedTypeNames.get(i))) {
-                    matches = false;
-                    break;
-                }
-            }
-            if (matches) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     public @NotNull String renderDefaultValueFunctionName(@NotNull ParameterDef def) {
         if (def.getDefaultValueFunc() == null) {
             throw new IllegalArgumentException("ParameterDef does not have a default value function");
@@ -448,6 +380,10 @@ public final class CGenHelper {
 
     public @NotNull CodegenContext context() {
         return context;
+    }
+
+    public @NotNull CBuiltinBuilder builtinBuilder() {
+        return builtinBuilder;
     }
 
     /// Normalize a utility function name into the class-registry lookup key.

@@ -137,3 +137,10 @@ Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "000000000000000000000000000000000000
 - For `"..."` and `&"..."`, generate `GD_STATIC_S(u8"...")` and `GD_STATIC_SN(u8"...)` respectively.
 - For `null`, generate `NULL`.
 - For non-object type constructor, generate a c constructor function call, see more details in `gdextension-lite.md`.
+- For `$"..."`, generate NodePath constructor with utf8_chars.
+
+### Validation Logic
+
+- `CBodyBuilder` and `CBuiltinBuilder` is only for generating code, they are NOT responsible for validating IR correctness, so they should assume the IR is already valid and throw `InvalidInsnException` when they encounter invalid IR.
+- The validation responsibility is on the instruction generators, they should validate all aspects of the IR and throw `InvalidInsnException` when the IR is invalid, so that the backend can fail fast and avoid generating invalid C code.
+- For function calls, the instruction generator should validate before calling the builder.
