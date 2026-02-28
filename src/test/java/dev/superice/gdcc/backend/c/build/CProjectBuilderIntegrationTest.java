@@ -41,7 +41,7 @@ public class CProjectBuilderIntegrationTest {
         var tempDir = Path.of("tmp/test/c_build");
         Files.createDirectories(tempDir);
 
-        var projectInfo = new CProjectInfo("intproj", GodotVersion.V451, tempDir, COptimizationLevel.DEBUG, TargetPlatform.WINDOWS_X86_64);
+        var projectInfo = new CProjectInfo("intproj", GodotVersion.V451, tempDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
         var builder = new CProjectBuilder();
 
         builder.initProject(projectInfo);
@@ -116,16 +116,16 @@ public class CProjectBuilderIntegrationTest {
 
         var testScriptContent = """
                 extends Node
-
+                
                 const EXPECTED_PITCH_DEGREE = 45.0
                 const TARGET_NODE_NAME = "RotatingCameraNode"
-
+                
                 func _ready() -> void:
                     var camera = get_parent().get_node_or_null(TARGET_NODE_NAME)
                     if camera == null:
                         push_error("Camera node missing.")
                         return
-
+                
                     var pitch = float(camera.call("get_pitch", false))
                     var pitch_radians = float(camera.call("get_pitch", true))
                     print("Pitch degree:", pitch)
@@ -134,7 +134,7 @@ public class CProjectBuilderIntegrationTest {
                         print("Pitch check passed.")
                     else:
                         push_error("Pitch check failed: expected " + str(EXPECTED_PITCH_DEGREE) + ", got " + str(pitch))
-
+                
                     var expected_radians = deg_to_rad(EXPECTED_PITCH_DEGREE)
                     if absf(pitch_radians - expected_radians) <= 0.001:
                         print("Pitch radians check passed.")

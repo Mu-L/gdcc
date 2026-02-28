@@ -59,7 +59,7 @@ class CConstructInsnGenEngineTest {
                 GodotVersion.V451,
                 tempDir,
                 COptimizationLevel.DEBUG,
-                TargetPlatform.WINDOWS_X86_64
+                TargetPlatform.getNativePlatform()
         );
         var builder = new CProjectBuilder();
         builder.initProject(projectInfo);
@@ -265,52 +265,52 @@ class CConstructInsnGenEngineTest {
     private static String testScript() {
         return """
                 extends Node
-
+                
                 const TARGET_NODE_NAME = "ConstructNode"
                 const EPSILON = 0.001
-
+                
                 func _ready() -> void:
                     var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
                     if target == null:
                         push_error("Target node missing.")
                         return
-
+                
                     var transform_explicit = target.call("make_transform2d_explicit")
                     if _check_transform2d(transform_explicit, 2.0, 3.0):
                         print("explicit transform check passed.")
                     else:
                         push_error("explicit transform check failed.")
-
+                
                     var transform_prepare = target.call("make_transform2d_prepare")
                     if _check_transform2d(transform_prepare, 0.0, 0.0):
                         print("prepare transform check passed.")
                     else:
                         push_error("prepare transform check failed.")
-
+                
                     var arr_explicit = target.call("make_generic_array_explicit")
                     if _check_generic_array(arr_explicit):
                         print("explicit generic array check passed.")
                     else:
                         push_error("explicit generic array check failed.")
-
+                
                     var arr_prepare = target.call("make_generic_array_prepare")
                     if _check_generic_array(arr_prepare):
                         print("prepare generic array check passed.")
                     else:
                         push_error("prepare generic array check failed.")
-
+                
                     var dict_explicit = target.call("make_generic_dictionary_explicit")
                     if _check_generic_dictionary(dict_explicit):
                         print("explicit generic dictionary check passed.")
                     else:
                         push_error("explicit generic dictionary check failed.")
-
+                
                     var dict_prepare = target.call("make_generic_dictionary_prepare")
                     if _check_generic_dictionary(dict_prepare):
                         print("prepare generic dictionary check passed.")
                     else:
                         push_error("prepare generic dictionary check failed.")
-
+                
                 func _check_transform2d(value: Variant, tx: float, ty: float) -> bool:
                     if typeof(value) != TYPE_TRANSFORM2D:
                         return false
@@ -321,13 +321,13 @@ class CConstructInsnGenEngineTest {
                             and absf(t.y.y - 1.0) <= EPSILON \
                             and absf(t.origin.x - tx) <= EPSILON \
                             and absf(t.origin.y - ty) <= EPSILON
-
+                
                 func _check_generic_array(value: Variant) -> bool:
                     if typeof(value) != TYPE_ARRAY:
                         return false
                     var arr: Array = value
                     return not arr.is_typed() and arr.size() == 0
-
+                
                 func _check_generic_dictionary(value: Variant) -> bool:
                     if typeof(value) != TYPE_DICTIONARY:
                         return false

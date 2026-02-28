@@ -22,7 +22,7 @@ public class CProjectBuilderPlaceHolderTest {
     @Test
     public void buildsUsingInjectedZigCompiler(@TempDir Path tempDir) throws IOException {
         // prepare project info
-        var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, tempDir, COptimizationLevel.DEBUG, TargetPlatform.WINDOWS_X86_64);
+        var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, tempDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
 
         // create builder with fake CCompiler that simulates successful compilation
         var fakeCompiler = new CCompiler() {
@@ -50,6 +50,6 @@ public class CProjectBuilderPlaceHolderTest {
         var result = builder.buildProject(projectInfo, codegen);
         assertTrue(result.success());
         assertEquals(1, result.artifacts().size());
-        assertTrue(Files.exists(result.artifacts().get(0)));
+        assertTrue(Files.exists(result.artifacts().getFirst()));
     }
 }

@@ -57,7 +57,7 @@ class CallGlobalInsnGenEngineTest {
                 GodotVersion.V451,
                 tempDir,
                 COptimizationLevel.DEBUG,
-                TargetPlatform.WINDOWS_X86_64
+                TargetPlatform.getNativePlatform()
         );
         var builder = new CProjectBuilder();
         builder.initProject(projectInfo);
@@ -228,40 +228,40 @@ class CallGlobalInsnGenEngineTest {
     private static String testScript() {
         return """
                 extends Node
-
+                
                 const TARGET_NODE_NAME = "CallGlobalNode"
                 const EPSILON = 0.001
-
+                
                 func _ready() -> void:
                     var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
                     if target == null:
                         push_error("Target node missing.")
                         return
-
+                
                     var tan_value = float(target.call("call_tan", 0.5))
                     if absf(tan_value - tan(0.5)) <= EPSILON:
                         print("tan check passed.")
                     else:
                         push_error("tan check failed.")
-
+                
                     var fposmod_value = float(target.call("call_fposmod", -1.5, 1.0))
                     if absf(fposmod_value - fposmod(-1.5, 1.0)) <= EPSILON:
                         print("fposmod check passed.")
                     else:
                         push_error("fposmod check failed.")
-
+                
                     var lerp_value = float(target.call("call_lerp", 10.0, 20.0, 0.25))
                     if absf(lerp_value - lerp(10.0, 20.0, 0.25)) <= EPSILON:
                         print("lerp check passed.")
                     else:
                         push_error("lerp check failed.")
-
+                
                     var max_value = float(target.call("call_max", 1.25, 4.5, 2.75))
                     if absf(max_value - max(1.25, 4.5, 2.75)) <= EPSILON:
                         print("max check passed.")
                     else:
                         push_error("max check failed.")
-
+                
                     target.call("call_print")
                 """;
     }

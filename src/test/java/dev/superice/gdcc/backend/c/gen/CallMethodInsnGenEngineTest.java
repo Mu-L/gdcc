@@ -60,7 +60,7 @@ class CallMethodInsnGenEngineTest {
                 GodotVersion.V451,
                 tempDir,
                 COptimizationLevel.DEBUG,
-                TargetPlatform.WINDOWS_X86_64
+                TargetPlatform.getNativePlatform()
         );
         var builder = new CProjectBuilder();
         builder.initProject(projectInfo);
@@ -117,7 +117,7 @@ class CallMethodInsnGenEngineTest {
                 GodotVersion.V451,
                 tempDir,
                 COptimizationLevel.DEBUG,
-                TargetPlatform.WINDOWS_X86_64
+                TargetPlatform.getNativePlatform()
         );
         var builder = new CProjectBuilder();
         builder.initProject(projectInfo);
@@ -174,7 +174,7 @@ class CallMethodInsnGenEngineTest {
                 GodotVersion.V451,
                 tempDir,
                 COptimizationLevel.DEBUG,
-                TargetPlatform.WINDOWS_X86_64
+                TargetPlatform.getNativePlatform()
         );
         var builder = new CProjectBuilder();
         builder.initProject(projectInfo);
@@ -238,7 +238,7 @@ class CallMethodInsnGenEngineTest {
                 GodotVersion.V451,
                 tempDir,
                 COptimizationLevel.DEBUG,
-                TargetPlatform.WINDOWS_X86_64
+                TargetPlatform.getNativePlatform()
         );
         var builder = new CProjectBuilder();
         builder.initProject(projectInfo);
@@ -299,7 +299,7 @@ class CallMethodInsnGenEngineTest {
                 GodotVersion.V451,
                 tempDir,
                 COptimizationLevel.DEBUG,
-                TargetPlatform.WINDOWS_X86_64
+                TargetPlatform.getNativePlatform()
         );
         var builder = new CProjectBuilder();
         builder.initProject(projectInfo);

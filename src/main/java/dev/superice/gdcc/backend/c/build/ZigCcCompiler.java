@@ -22,13 +22,7 @@ public class ZigCcCompiler implements CCompiler {
         }
 
         // Build command: zig cc -shared -I<includeDir> -o <output> <cFiles...>
-        var outName = outputBaseName;
-        if (targetPlatform == TargetPlatform.WINDOWS_X86_64) {
-            outName = outputBaseName + ".dll";
-        } else {
-            // default to unix-like
-            outName = "lib" + outputBaseName + ".so";
-        }
+        var outName = targetPlatform.sharedLibraryFileName(outputBaseName);
 
         var outputPath = projectDir.resolve(outName).toAbsolutePath();
         var cachePath = projectDir.resolve("compiler-cache").toAbsolutePath();
@@ -36,13 +30,8 @@ public class ZigCcCompiler implements CCompiler {
         var cmd = new ArrayList<String>();
         cmd.add(zig.toString());
         cmd.add("cc");
-        //noinspection SwitchStatementWithTooFewBranches
-        switch (targetPlatform) {
-            case WINDOWS_X86_64 -> {
-                cmd.add("-target");
-                cmd.add("x86_64-windows-msvc");
-            }
-        }
+        cmd.add("-target");
+        cmd.add(targetPlatform.zigTarget);
         cmd.add("-std=c23");
         cmd.add("-shared");
         cmd.add("-flto");
@@ -77,7 +66,7 @@ public class ZigCcCompiler implements CCompiler {
             var artifacts = new ArrayList<Path>(3);
             if (success) {
                 artifacts.add(outputPath);
-                if (targetPlatform == TargetPlatform.WINDOWS_X86_64) {
+                if (targetPlatform.isWindows()) {
                     var pdbPath = projectDir.resolve(outputBaseName + ".pdb").toAbsolutePath();
                     if (Files.exists(pdbPath)) {
                         artifacts.add(pdbPath);
