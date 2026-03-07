@@ -9,7 +9,18 @@ import org.jetbrains.annotations.UnmodifiableView;
 
 import java.util.*;
 
-public final class ClassRegistry {
+/// Global metadata registry shared by type parsing, scope lookup, and backend/frontend semantic helpers.
+///
+/// Today it still plays two roles at once:
+/// - legacy loose lookup such as `findType(...)`, which may guess unknown object names
+/// - new strict scope lookup such as `resolveValueHere(...)`, `resolveFunctionsHere(...)`, and
+///   `resolveTypeMetaHere(...)`
+///
+/// As a `Scope`, `ClassRegistry` is always the global root:
+/// - it never has a parent scope
+/// - value/function/type namespaces remain independent
+/// - legacy `findXxx(...)` helpers stay available for compatibility callers
+public final class ClassRegistry implements Scope {
     /// Built-in type are language built-in types, they are not engine defined types.
     private final Map<String, ExtensionBuiltinClass> builtinByName = new HashMap<>();
     /// Engine defined classes exposed to scripts via GDExtension API. Aka engine types.
@@ -95,11 +106,58 @@ public final class ClassRegistry {
         return gdccClassByName.get(name);
     }
 
+    @Override
+    public @Nullable Scope getParentScope() {
+        return null;
+    }
+
+    @Override
+    public void setParentScope(@Nullable Scope parentScope) {
+        if (parentScope != null) {
+            throw new IllegalArgumentException("ClassRegistry is the global root scope and cannot have a parent scope");
+        }
+    }
+
+    @Override
+    public @Nullable ScopeValue resolveValueHere(@NotNull String name) {
+        Objects.requireNonNull(name, "name");
+
+        var singleton = singletonByName.get(name);
+        if (singleton != null) {
+            var singletonType = findSingletonType(name);
+            if (singletonType != null) {
+                return new ScopeValue(name, singletonType, ScopeValueKind.SINGLETON, singleton, true, false);
+            }
+        }
+
+        var globalEnum = globalEnumByName.get(name);
+        if (globalEnum != null) {
+            return new ScopeValue(name, GdIntType.INT, ScopeValueKind.GLOBAL_ENUM, globalEnum, true, false);
+        }
+
+        return null;
+    }
+
+    @Override
+    public @NotNull List<? extends FunctionDef> resolveFunctionsHere(@NotNull String name) {
+        Objects.requireNonNull(name, "name");
+
+        var utilityFunction = utilityByName.get(name);
+        return utilityFunction != null ? List.of(utilityFunction) : List.of();
+    }
+
     /// Strict type-meta lookup for the global namespace.
     ///
-    /// Unlike `findType(...)`, this method does not guess unknown names as object types.
-    /// It only resolves names that are already known to the registry or supported by the
-    /// strict textual builtin/container parser.
+    /// Resolution order is intentionally narrow and deterministic:
+    /// 1. global enum names
+    /// 2. GDCC user classes already registered in this compilation
+    /// 3. engine classes exposed by the extension API
+    /// 4. strict builtin and container text types such as `String`, `Array[int]`, or `Dictionary[String, Node]`
+    ///
+    /// Unlike `findType(...)`, this method never guesses that an unknown identifier is an object type.
+    /// If the name is not already known to the registry and cannot be parsed as a strict builtin/container
+    /// type expression, the method returns `null`.
+    @Override
     public @Nullable ScopeTypeMeta resolveTypeMetaHere(@NotNull String name) {
         var trimmed = name.trim();
         if (trimmed.isEmpty()) {
@@ -147,6 +205,12 @@ public final class ClassRegistry {
         return null;
     }
 
+    /// Recursive type-meta lookup entry for the current global scope root.
+    ///
+    /// `ClassRegistry` is not yet wired into the full `Scope` hierarchy, so the current implementation
+    /// is equivalent to `resolveTypeMetaHere(...)`. The dedicated method still exists to freeze the
+    /// future protocol shape and give callers a strict API that does not depend on `findType(...)`.
+    @Override
     public @Nullable ScopeTypeMeta resolveTypeMeta(@NotNull String name) {
         return resolveTypeMetaHere(name);
     }
@@ -192,7 +256,11 @@ public final class ClassRegistry {
         return findType(typeName);
     }
 
-    /// Textual mapping (exact, case-sensitive). Returns a concrete GdType or GdObjectType as fallback.
+    /// Compatibility-oriented textual type parsing.
+    ///
+    /// This is the older, looser parser used by existing code paths. It first attempts strict parsing,
+    /// but if the name is still unknown it falls back to `new GdObjectType(name)`. New binder-style code
+    /// should prefer `resolveTypeMeta(...)` or `tryParseStrictTextType(...)` when it needs a definitive answer.
     public static @Nullable GdType tryParseTextType(@NotNull String typeName) {
         var strict = tryParseStrictTextType(typeName, null);
         if (strict != null) {
@@ -203,9 +271,13 @@ public final class ClassRegistry {
         return new GdObjectType(t);
     }
 
-    /// Strict textual parsing used by TypeMeta resolution.
+    /// Strict textual parsing used by type-meta resolution.
     ///
-    /// Returns null for unknown identifiers instead of guessing `GdObjectType(name)`.
+    /// This helper only accepts builtins and builtin-style container expressions that the compiler can
+    /// interpret without guessing. If a `registry` is provided, nested container arguments may recurse into
+    /// `resolveTypeMetaHere(...)` so constructs like `Array[MyScriptClass]` can be resolved strictly.
+    ///
+    /// Returns `null` for unknown identifiers instead of inventing `GdObjectType(name)`.
     public static @Nullable GdType tryParseStrictTextType(@NotNull String typeName,
                                                           @Nullable ClassRegistry registry) {
         var t = typeName.trim();
@@ -258,6 +330,14 @@ public final class ClassRegistry {
         };
     }
 
+    /// Parses builtin container type expressions in strict mode.
+    ///
+    /// Supported forms are currently limited to:
+    /// - `Array[T]`
+    /// - `Dictionary[K, V]`
+    ///
+    /// Nested element/key/value types are resolved strictly as well, so any unknown inner type causes the
+    /// whole container parse to fail with `null` instead of degrading into a guessed object type.
     private static @Nullable GdType tryParseStrictContainerType(@NotNull String textType,
                                                                 @Nullable ClassRegistry registry) {
         if (textType.startsWith("Array[") && textType.endsWith("]")) {
@@ -284,6 +364,11 @@ public final class ClassRegistry {
         return null;
     }
 
+    /// Resolves a nested type argument used inside strict container parsing.
+    ///
+    /// The helper first tries strict builtin parsing. If that fails and a registry is available, it then
+    /// consults the strict type-meta namespace so user classes and global enums can participate inside
+    /// container type expressions.
     private static @Nullable GdType resolveStrictNestedType(@NotNull String typeText,
                                                             @Nullable ClassRegistry registry) {
         var strictType = tryParseStrictTextType(typeText, registry);
@@ -297,6 +382,10 @@ public final class ClassRegistry {
         return typeMeta != null ? typeMeta.instanceType() : null;
     }
 
+    /// Splits the two type arguments of a strict `Dictionary[K, V]` expression.
+    ///
+    /// The current implementation is intentionally minimal and only looks for the first comma separator.
+    /// This is sufficient for the current Phase 2 scope but not for deeply nested dictionary generics.
     private static @Nullable List<String> splitDictionaryTypeArgs(@NotNull String argsText) {
         var commaIndex = argsText.indexOf(',');
         if (commaIndex < 0) {

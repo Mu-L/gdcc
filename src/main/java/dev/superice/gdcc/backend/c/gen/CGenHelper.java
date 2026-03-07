@@ -390,6 +390,7 @@ public final class CGenHelper {
         };
     }
 
+    /// This is a thin layer
     public @NotNull GdType parseExtensionType(@Nullable String rawTypeName,
                                               @NotNull String typeUseSite) {
         if (rawTypeName == null || rawTypeName.isBlank()) {
