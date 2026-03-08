@@ -24,7 +24,7 @@ import java.util.Objects;
 /// - captures
 /// - future callable-local type aliases through the inherited `defineTypeMeta(...)` API
 ///
-/// `self` is intentionally not modeled as an implicit value binding in Phase 4 follow-up.
+/// `self` is intentionally not modeled as an implicit value binding here.
 ///
 /// This scope now participates in restriction-aware lookup, but parameters/captures themselves are
 /// not filtered by class-member static/instance restrictions. The frontend binder still owns the

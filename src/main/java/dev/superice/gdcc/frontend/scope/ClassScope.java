@@ -24,7 +24,7 @@ import java.util.Objects;
 
 /// Frontend lexical scope for a class body and the unqualified member view seen from inside that class.
 ///
-/// This scope now carries three intertwined policies that Phase 4 follow-up needs to freeze:
+/// This scope carries three intertwined policies:
 /// - lexical chaining for type/meta lookup
 /// - current/inherited class-member lookup for values/functions
 /// - minimal static-vs-instance restrictions for unqualified member access
@@ -35,11 +35,11 @@ import java.util.Objects;
 ///   `ClassScope` ancestors when it recurses lexically
 /// - restriction blocks still shadow outer/global names, matching Godot's static-context behavior
 ///
-/// This means GDCC intentionally diverges from Godot on one axis in this phase:
+/// This means GDCC intentionally diverges from Godot on one axis:
 /// - inner classes keep outer lexical type-meta visibility
 /// - inner classes do not inherit outer unqualified value/function bindings
 ///
-/// The difference is deliberate and documented in the follow-up plan as an engineering compromise.
+/// The difference is deliberate and treated as an engineering compromise.
 public final class ClassScope extends AbstractFrontendScope {
     private final ClassRegistry classRegistry;
     private final ClassDef currentClass;
@@ -246,7 +246,7 @@ public final class ClassScope extends AbstractFrontendScope {
     ///
     /// The walk stops when metadata becomes unavailable because the scope layer itself should remain
     /// a lightweight metadata adapter. The caller can still diagnose missing superclass metadata in a
-    /// richer semantic phase. Cycles, however, indicate malformed metadata and are rejected eagerly.
+    /// richer semantic analysis layer. Cycles, however, indicate malformed metadata and are rejected eagerly.
     private @NotNull List<ClassDef> walkInheritedClasses(
             @NotNull String memberName,
             @NotNull String memberKind
@@ -285,7 +285,7 @@ public final class ClassScope extends AbstractFrontendScope {
 
     /// Finds the lexical continuation point for value/function lookup.
     ///
-    /// Phase 4 follow-up keeps a single parent chain for all namespaces, so inner-class isolation is
+    /// The scope model keeps a single parent chain for all namespaces, so inner-class isolation is
     /// implemented by explicitly skipping continuous `ClassScope` ancestors here instead of changing
     /// the shared parent pointer itself. Type/meta lookup continues to use the ordinary parent chain.
     private @Nullable Scope findFirstNonClassScopeAncestor() {

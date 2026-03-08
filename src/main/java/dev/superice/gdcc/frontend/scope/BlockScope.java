@@ -23,12 +23,12 @@ import java.util.Objects;
 /// - loop iterators
 /// - pattern bindings in future `match` support
 ///
-/// In Phase 4 the block scope is intentionally small:
+/// The block scope is intentionally small:
 /// - value lookup only covers bindings defined in the current block
 /// - function lookup always falls through to outer scopes
 /// - type/meta lookup defaults to the parent chain unless the caller explicitly adds a local type
 ///
-/// The follow-up restriction work simply forwards the restriction through this layer. Block-owned
+/// Restriction-aware lookup simply forwards the restriction through this layer. Block-owned
 /// locals/constants are always legal once found here because class-member static/instance rules do
 /// not apply to block-local bindings.
 public final class BlockScope extends AbstractFrontendScope {

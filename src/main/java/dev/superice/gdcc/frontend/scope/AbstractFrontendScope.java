@@ -59,9 +59,9 @@ public abstract class AbstractFrontendScope implements Scope {
 
     /// Resolves a local type/meta binding owned by the current frontend scope layer.
     ///
-    /// Current Phase 4 contract keeps type/meta lookup on an explicit always-allowed policy:
+    /// Type/meta lookup stays on an explicit always-allowed policy:
     /// - `restriction` is accepted only for signature uniformity with value/function lookup
-    /// - today's type/meta bindings may resolve only to `FOUND_ALLOWED` or `NOT_FOUND`
+    /// - local type/meta bindings may resolve only to `FOUND_ALLOWED` or `NOT_FOUND`
     /// - any later legality split belongs to binder/static-access consumption, not this lookup step
     @Override
     public @NotNull ScopeLookupResult<ScopeTypeMeta> resolveTypeMetaHere(

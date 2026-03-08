@@ -6,7 +6,7 @@ import org.jetbrains.annotations.Nullable;
 import java.nio.file.Path;
 import java.util.Objects;
 
-/// Unified diagnostic record for GDCC frontend parse and semantic phases.
+/// Unified diagnostic record for GDCC frontend parsing and semantic analysis.
 public record FrontendDiagnostic(
         @NotNull FrontendDiagnosticSeverity severity,
         @NotNull String category,
