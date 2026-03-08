@@ -22,7 +22,7 @@
    - 类型提示是 `TypeRef`，不是 Godot `TYPE` 节点。
    - `match` 的 `PATTERN` / `MATCH_BRANCH` / `SUITE` 被简化成 `MatchSection` + `PatternBindingExpression` + `Block`。
    - 这意味着语义分析器需要自己恢复“注解归属”“模式绑定”“block/suite 语义”。
-9. **新增 AST 节点并不等于新增 feature 已经可编译。** 例如 `AwaitExpression` 现在已经能进 AST，但 GDCC 当前 LIR / backend 文档并没有 coroutine 方案，因此前端要么显式报“暂不支持”，要么把它明确列为后续里程碑。
+9. **新增 AST 节点并不等于新增 feature 已经可编译。** 例如 `AwaitExpression` 现在已经能进 AST，但 GDCC 当前仍没有通用 coroutine 方案，因此前端仍应显式报 unsupported，或把它明确列为后续里程碑。
 10. **前端设计重点应从“AST 还缺什么”转向“如何消费已经补齐的 AST”**。尤其是 `AnnotationStatement`、`ClassDeclaration`、`ConstructorDeclaration`、`BaseCallExpression`、`SelfExpression`、`CastExpression`、`TypeTestExpression` 这些节点，已经足够影响 semantic analyzer 的数据结构设计。
 11. **最稳妥的实现路径仍然不是直接写 lowering，而是先把语义 side-table 设计完整。** 至少应有：绑定表、表达式类型表、调用决议表、成员访问表、注解归属表、作用域树、控制流合流结果表、构造器/基类调用语义表。
 12. **相对于旧版报告，GDCC 第一阶段的边界应当被重新定义**：不是“AST 缺口很大，所以只能做极小 MVP”，而是“AST 主干已经足够支撑更完整的 binder/type/call/member 设计，但 backend/LIR 能力仍决定近期真正可 lower 的子集”。
@@ -81,7 +81,7 @@
 
 几个现在需要明确写入报告的边界：
 
-- `AwaitExpression`：AST 已支持，但 `doc/module_impl/frontend_implementation_plan.md` 仍把 `await/yield` 放在 coroutine 范畴，当前 `gdcc` LIR / backend 没有配套设计。
+- `AwaitExpression`：AST 已支持，但当前 `gdcc` LIR / backend 仍没有通用 coroutine lowering，近期仍应视为 recognized but unsupported。
 - `PreloadExpression`：AST 已支持，但项目已确认“第一阶段不把 `preload(...)` 当作类型来源”。
 - `GetNodeExpression`：AST 已支持，但当前 GDCC 没有场景树元数据，静态类型通常只能保守降级。
 - `ClassDeclaration` / `ConstructorDeclaration` / `BaseCallExpression`：AST 已支持，但当前 `FrontendClassSkeletonBuilder` 仍完全没有消费这些节点。
@@ -687,6 +687,7 @@ public record FrontendAnalysisResult(
 - `PARAMETER`
 - `CAPTURE`
 - `PROPERTY`
+- `SIGNAL`
 - `CONSTANT`
 - `SINGLETON`
 - `GLOBAL_ENUM`
@@ -694,7 +695,7 @@ public record FrontendAnalysisResult(
 - `TYPE_META`
 - `UNKNOWN`
 
-如果后续要显式支持类内 `enum` / `signal` / `function-as-callable`，可以继续细分，但 `TYPE_META` 现在就该补。
+`signal` 不应再归入“后续再细分”的 deferred 桶。当前建议直接补齐 `FrontendBindingKind.SIGNAL`；若后续还要显式支持类内 `enum` / `function-as-callable`，可以继续细分，但 `TYPE_META` 与 `SIGNAL` 现在都应补。
 
 ## 7.4 assignable analyzer 仍应保持统一入口
 
@@ -903,10 +904,14 @@ frontend 要做的是根据 receiver type + key type 选择最合适的语义通
    - `_init` 参数类型
    - `BaseCallExpression` 的 owner / signature 选择
 
-5. `FrontendAwaitUnsupportedDiagnosticTest`
+5. `FrontendSignalBindingTest`
+   - `my_signal` / `self.my_signal` / `obj.some_signal` 的绑定结果稳定，且不再把 signal 临时伪装成 property 或 unknown
+   - static context 下访问 signal 命中后报错，不回退 outer/global 同名绑定
+
+6. `FrontendAwaitUnsupportedDiagnosticTest`
    - `AwaitExpression` 应给稳定 unsupported diagnostic，而不是 unknown node
 
-6. `FrontendInnerClassSkeletonTest`
+7. `FrontendInnerClassSkeletonTest`
    - `ClassDeclaration` 至少要么被纳入 skeleton，要么显式报 unsupported；不能静默丢失
 
 ### 9.2 现有 parity / fallback 测试仍然应该保留
