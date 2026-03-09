@@ -991,3 +991,10 @@ frontend 要做的是根据 receiver type + key type 选择最合适的语义通
 - `godotengine/godot`：`modules/gdscript/gdscript_analyzer.cpp`
 - `godotengine/godot`：`modules/gdscript/gdscript_parser.h`
 - `godotengine/godot-docs`：`tutorials/scripting/gdscript/static_typing.rst`
+
+### 11.4 Signal scope status (2026-03-09)
+
+- `signal` scope �����Ķ�����ʵԴΪ `doc/module_impl/frontend/scope_architecture_refactor_plan.md`��
+- ���ڶ� `godotengine/godot` �� `modules/gdscript/gdscript_parser.h`��`modules/gdscript/gdscript_analyzer.cpp` �Լ� analyzer ���Խű� `modules/gdscript/tests/scripts/analyzer/features/static_non_static_access.gd` �Ķ��գ�GDCC ��ǰ�������á�signal ����ֵ��ʵ����Ա��static context ���к������ֹ���Ա��� shadowing���Ľ��ۡ�
+- ���� 2026-03-09��GDCC ����� signal �ƻ��� S0/S1��ģ�Ͳ�λ�����ɱ� `GdSignalType`��`ClassScope` �� receiver signal �������Ӧ targeted tests ����ء�
+- ��������� receiver-based signal metadata lookup �� frontend binder ���룬���������ѭ `scope_architecture_refactor_plan.md` �� S2+ �Ľ׶α߽磬���ð� signal ����Ϊ property/function ����ʱ��֧��

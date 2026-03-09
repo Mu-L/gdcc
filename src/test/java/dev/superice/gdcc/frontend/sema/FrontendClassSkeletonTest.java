@@ -4,6 +4,7 @@ import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdIntType;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -66,7 +67,11 @@ class FrontendClassSkeletonTest {
         var baseClass = findClassByName(result.classDefs(), "BaseClass");
         assertEquals("RefCounted", baseClass.getSuperName());
         assertEquals(1, baseClass.getSignals().size());
-        assertEquals("changed", baseClass.getSignals().getFirst().getName());
+        var changedSignal = baseClass.getSignals().getFirst();
+        assertEquals("changed", changedSignal.getName());
+        assertEquals(1, changedSignal.getParameterCount());
+        assertEquals("value", changedSignal.getParameter(0).getName());
+        assertEquals(GdIntType.INT, changedSignal.getParameter(0).getType());
 
         var derivedNameClass = findClassByName(result.classDefs(), "NoNameScript");
         assertEquals("RefCounted", derivedNameClass.getSuperName());

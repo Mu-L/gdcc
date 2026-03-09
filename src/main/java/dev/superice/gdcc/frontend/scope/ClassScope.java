@@ -10,7 +10,9 @@ import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeLookupResult;
 import dev.superice.gdcc.scope.ScopeValue;
 import dev.superice.gdcc.scope.ScopeValueKind;
+import dev.superice.gdcc.scope.SignalDef;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdSignalType;
 import dev.superice.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -48,6 +50,7 @@ public final class ClassScope extends AbstractFrontendScope {
     ///
     /// What lives here:
     /// - direct properties declared by `currentClass`
+    /// - direct signals declared by `currentClass`
     /// - class constants explicitly registered through `defineConstant(...)`
     ///
     /// What intentionally does **not** live here:
@@ -104,6 +107,16 @@ public final class ClassScope extends AbstractFrontendScope {
         defineDirectValue(toPropertyScopeValue(property));
     }
 
+    /// Registers a direct signal belonging to the current class scope.
+    ///
+    /// Signals live in the value namespace on purpose: unqualified `my_signal` should be resolved by
+    /// `resolveValue(...)`, participate in current-class shadowing, and surface a value-side
+    /// `GdSignalType` instead of pretending to be a function overload set.
+    public void defineSignal(@NotNull SignalDef signal) {
+        Objects.requireNonNull(signal, "signal");
+        defineDirectValue(toSignalScopeValue(signal));
+    }
+
     /// Registers a direct class constant.
     ///
     /// GDScript constants are modeled as class-member bindings here, so they participate in the
@@ -145,7 +158,7 @@ public final class ClassScope extends AbstractFrontendScope {
         //
         // This mirrors Godot's identifier reduction order: locals first, then current/inherited
         // members, then global names. We keep type/meta lookup separate from this inheritance walk.
-        return resolveInheritedProperty(name, restriction);
+        return resolveInheritedValueMember(name, restriction);
     }
 
     @Override
@@ -197,6 +210,9 @@ public final class ClassScope extends AbstractFrontendScope {
         for (var property : classDef.getProperties()) {
             defineDirectValue(toPropertyScopeValue(property));
         }
+        for (var signal : classDef.getSignals()) {
+            defineSignal(signal);
+        }
         for (var function : classDef.getFunctions()) {
             defineFunction(function);
         }
@@ -210,15 +226,20 @@ public final class ClassScope extends AbstractFrontendScope {
         }
     }
 
-    private @NotNull ScopeLookupResult<ScopeValue> resolveInheritedProperty(
+    private @NotNull ScopeLookupResult<ScopeValue> resolveInheritedValueMember(
             @NotNull String name,
             @NotNull ResolveRestriction restriction
     ) {
-        var inheritedClasses = walkInheritedClasses(name, "property");
+        var inheritedClasses = walkInheritedClasses(name, "value member");
         for (var inheritedClass : inheritedClasses) {
             for (var property : inheritedClass.getProperties()) {
                 if (property.getName().equals(name)) {
                     return toClassValueResult(toPropertyScopeValue(property), restriction);
+                }
+            }
+            for (var signal : inheritedClass.getSignals()) {
+                if (signal.getName().equals(name)) {
+                    return toClassValueResult(toSignalScopeValue(signal), restriction);
                 }
             }
         }
@@ -283,6 +304,23 @@ public final class ClassScope extends AbstractFrontendScope {
         );
     }
 
+    /// Converts signal metadata into the value-side binding shape expected by the scope protocol.
+    ///
+    /// Signals are treated as read-only instance members for the current S1 scope phase:
+    /// - `kind = SIGNAL` anchors the semantic category explicitly
+    /// - `type = GdSignalType` carries the stable parameter signature
+    /// - `declaration = SignalDef` lets later frontend stages recover owner-specific metadata
+    private @NotNull ScopeValue toSignalScopeValue(@NotNull SignalDef signal) {
+        return new ScopeValue(
+                signal.getName(),
+                GdSignalType.from(signal),
+                ScopeValueKind.SIGNAL,
+                signal,
+                true,
+                false
+        );
+    }
+
     /// Finds the lexical continuation point for value/function lookup.
     ///
     /// The scope model keeps a single parent chain for all namespaces, so inner-class isolation is
@@ -334,7 +372,7 @@ public final class ClassScope extends AbstractFrontendScope {
     private boolean isClassValueAllowed(@NotNull ScopeValue value, @NotNull ResolveRestriction restriction) {
         return switch (value.kind()) {
             case CONSTANT -> restriction.allowClassConstants();
-            case PROPERTY -> value.staticMember()
+            case PROPERTY, SIGNAL -> value.staticMember()
                     ? restriction.allowStaticProperties()
                     : restriction.allowInstanceProperties();
             default -> true;

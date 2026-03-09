@@ -13,6 +13,13 @@ public enum ScopeValueKind {
     CAPTURE,
     /// An instance or static property exposed by the current class scope.
     PROPERTY,
+    /// A value-side signal binding exposed by the current class scope.
+    ///
+    /// Signals intentionally stay in the value namespace instead of being modeled as function
+    /// overloads. The corresponding `ScopeValue` usually carries a `SignalDef` declaration plus a
+    /// `GdSignalType` value type so later frontend stages can still tell "this identifier is a
+    /// signal" without guessing.
+    SIGNAL,
     /// A compile-time constant binding.
     CONSTANT,
     /// A global engine singleton exposed as a value binding.
