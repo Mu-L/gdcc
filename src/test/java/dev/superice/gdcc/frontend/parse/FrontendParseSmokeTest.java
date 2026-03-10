@@ -26,9 +26,8 @@ class FrontendParseSmokeTest {
 
         assertNotNull(unit.ast());
         assertFalse(unit.ast().statements().isEmpty());
-        assertNotNull(unit.parseDiagnostics());
         assertEquals(sourcePath, unit.path());
-        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot().asList());
+        assertTrue(diagnostics.snapshot().isEmpty());
     }
 
     @Test
@@ -45,16 +44,16 @@ class FrontendParseSmokeTest {
         var diagnostics = new DiagnosticManager();
         var sourcePath = Path.of("tmp", "broken.gd");
         var unit = parserService.parseUnit(sourcePath, source, diagnostics);
+        var snapshot = diagnostics.snapshot();
 
         assertNotNull(unit.ast());
-        assertFalse(unit.parseDiagnostics().isEmpty());
-        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot().asList());
+        assertFalse(snapshot.isEmpty());
         assertTrue(
-                unit.parseDiagnostics().stream()
+                snapshot.asList().stream()
                         .anyMatch(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
         );
 
-        var firstDiagnostic = unit.parseDiagnostics().getFirst();
+        var firstDiagnostic = snapshot.getFirst();
         assertEquals(sourcePath, firstDiagnostic.sourcePath());
     }
 }

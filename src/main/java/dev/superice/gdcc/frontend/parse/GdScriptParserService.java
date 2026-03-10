@@ -29,9 +29,9 @@ public final class GdScriptParserService {
 
     /// Parses one source unit and reports this parse call's diagnostics into the shared manager.
     ///
-    /// The returned `FrontendSourceUnit` keeps only this parse call's diagnostics as an immutable
-    /// phase snapshot. The manager may already contain diagnostics from earlier units in the same
-    /// pipeline, so callers must treat the unit snapshot and manager snapshot as different views.
+    /// The returned `FrontendSourceUnit` now contains only source text and AST. Parse diagnostics
+    /// live exclusively in the shared manager, so callers that need a phase-local parse view must
+    /// snapshot the manager themselves at the desired boundary.
     public @NotNull FrontendSourceUnit parseUnit(
             @NotNull Path sourcePath,
             @NotNull String source,
@@ -56,7 +56,7 @@ public final class GdScriptParserService {
                     ))
                     .toList();
             diagnosticManager.reportAll(parseDiagnostics);
-            return new FrontendSourceUnit(sourcePath, source, mappingResult.ast(), parseDiagnostics);
+            return new FrontendSourceUnit(sourcePath, source, mappingResult.ast());
         } catch (RuntimeException exception) {
             var parseDiagnostics = List.of(FrontendDiagnostic.error(
                     "parse.internal",
@@ -65,7 +65,7 @@ public final class GdScriptParserService {
                     null
             ));
             diagnosticManager.reportAll(parseDiagnostics);
-            return new FrontendSourceUnit(sourcePath, source, emptySourceFile(), parseDiagnostics);
+            return new FrontendSourceUnit(sourcePath, source, emptySourceFile());
         }
     }
 

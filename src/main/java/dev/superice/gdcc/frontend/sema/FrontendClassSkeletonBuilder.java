@@ -27,10 +27,9 @@ public final class FrontendClassSkeletonBuilder {
     /// Builds the module skeleton while appending all newly discovered skeleton diagnostics
     /// into the shared pipeline manager.
     ///
-    /// The manager is expected to already own any parse-phase diagnostics collected from the
-    /// same `FrontendSourceUnit`s. This builder therefore must not re-import
-    /// `FrontendSourceUnit.parseDiagnostics()` or it would duplicate diagnostics that the parse
-    /// phase already published earlier in the pipeline.
+    /// The manager is expected to already own any parse-phase diagnostics collected from the same
+    /// `FrontendSourceUnit`s. Units themselves no longer store parse diagnostics, so this builder
+    /// must treat the shared manager as the only parse diagnostic source of truth.
     public @NotNull FrontendModuleSkeleton build(
             @NotNull String moduleName,
             @NotNull List<FrontendSourceUnit> units,

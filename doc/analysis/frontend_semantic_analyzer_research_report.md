@@ -362,7 +362,7 @@
 
 1. **没有独立的 frontend interface phase。** 当前只有 skeleton builder，还没有统一的 declaration/interface analysis 结果层。
 2. **没有 frontend body phase。** 当前没有 AST 级 binder、表达式类型推断、assignable analyzer、return/suite merge、lambda capture 分析器。
-3. **没有统一的 `FrontendAnalysisResult`。** 还没有一套 side-table 容器承载 symbol binding、expression type、resolved call、resolved member、scope-by-node 等分析结果。
+3. **虽然已有统一的 `FrontendAnalysisData`，但真正的 body/interface 分析产物仍未落地。** 当前 side-table 容器已经存在，并稳定承载 annotation / scope / binding / type / resolved member / resolved call 的统一拓扑，但除 annotation 与诊断边界外，其余表仍主要等待后续 binder/body phase 正式填充。
 4. **没有 frontend binder 对现有 scope/resolver 的正式接线。** `FrontendBindingKind`、`ClassScope`、`ResolveRestriction`、shared resolver 仍主要停留在基础设施层。
 5. **没有 AST body -> LIR lowering。** 当前 `FrontendClassSkeletonBuilder` 只产生 `LirClassDef` 的声明骨架，并不生成函数体 LIR。
 6. **没有前端级 feature boundary 诊断框架。** 对 `await`、更完整 annotation 语义、constructor/base-call/self/cast/type-test 等节点，还没有统一的“recognized but unsupported / deferred” 诊断策略。

@@ -28,9 +28,9 @@ public final class FrontendSemanticAnalyzer {
     /// Runs the current frontend analyzer framework against one module using a shared
     /// `DiagnosticManager`.
     ///
-    /// The analyzer intentionally does not auto-import `FrontendSourceUnit.parseDiagnostics()`.
-    /// Callers that construct units manually must decide whether those parse diagnostics belong
-    /// to the shared pipeline manager before invoking analysis.
+    /// `FrontendSourceUnit` no longer stores parse diagnostics. The analyzer therefore consumes
+    /// parse diagnostics only through the shared manager state that callers prepared earlier in
+    /// the pipeline.
     public @NotNull FrontendAnalysisData analyze(
             @NotNull String moduleName,
             @NotNull List<FrontendSourceUnit> units,

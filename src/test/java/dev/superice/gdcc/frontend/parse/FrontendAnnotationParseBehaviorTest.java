@@ -22,7 +22,6 @@ class FrontendAnnotationParseBehaviorTest {
                 @export var hp: int = 1
                 """);
 
-        assertTrue(unit.parseDiagnostics().isEmpty());
         assertEquals(2, unit.ast().statements().size());
 
         var exportAnnotation = assertInstanceOf(AnnotationStatement.class, unit.ast().statements().getFirst());
@@ -40,7 +39,6 @@ class FrontendAnnotationParseBehaviorTest {
                 @onready var target = $Node
                 """);
 
-        assertTrue(unit.parseDiagnostics().isEmpty());
         assertEquals(2, unit.ast().statements().size());
 
         var onreadyAnnotation = assertInstanceOf(AnnotationStatement.class, unit.ast().statements().getFirst());
@@ -58,7 +56,6 @@ class FrontendAnnotationParseBehaviorTest {
                 @export_range(0, 20, 0.5) var speed: float = 1.0
                 """);
 
-        assertTrue(unit.parseDiagnostics().isEmpty());
         assertEquals(2, unit.ast().statements().size());
 
         var exportRange = assertInstanceOf(AnnotationStatement.class, unit.ast().statements().getFirst());
@@ -82,7 +79,6 @@ class FrontendAnnotationParseBehaviorTest {
                     pass
                 """);
 
-        assertTrue(unit.parseDiagnostics().isEmpty());
         assertEquals(3, unit.ast().statements().size());
 
         var rpcAnnotation = assertInstanceOf(AnnotationStatement.class, unit.ast().statements().getFirst());
@@ -106,7 +102,6 @@ class FrontendAnnotationParseBehaviorTest {
                 var keep := 2
                 """);
 
-        assertTrue(unit.parseDiagnostics().isEmpty());
         assertEquals(4, unit.ast().statements().size());
         assertEquals(
                 "warning_ignore_start",
@@ -123,7 +118,7 @@ class FrontendAnnotationParseBehaviorTest {
     private FrontendSourceUnit parse(String fileName, String source) {
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
-        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot().asList());
+        assertTrue(diagnostics.snapshot().isEmpty());
         return unit;
     }
 }

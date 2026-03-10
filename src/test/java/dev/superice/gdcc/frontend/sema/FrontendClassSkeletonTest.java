@@ -1,7 +1,6 @@
 package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
-import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
@@ -91,8 +90,8 @@ class FrontendClassSkeletonTest {
     }
 
     /// Verifies the shared parse->skeleton pipeline keeps the original parse diagnostics exactly
-    /// once, instead of silently re-importing the same `FrontendSourceUnit.parseDiagnostics()`
-    /// when the builder already shares the same `DiagnosticManager`.
+    /// once. Parse diagnostics live only in the shared manager, so the builder must not invent
+    /// an extra diagnostic source or duplicate what parse already published earlier.
     @Test
     void buildKeepsSharedParseDiagnosticsWithoutDuplicatingThem() throws IOException {
         var parserService = new GdScriptParserService();
@@ -114,22 +113,20 @@ class FrontendClassSkeletonTest {
         var classDef = findClassByName(result.classDefs(), "BrokenSharedPipeline");
 
         assertEquals("BrokenSharedPipeline", classDef.getName());
-        assertFalse(unit.parseDiagnostics().isEmpty());
-        assertEquals(parseSnapshot.asList(), unit.parseDiagnostics());
         assertEquals(diagnostics.snapshot(), result.diagnostics());
-        assertEquals(unit.parseDiagnostics(), result.diagnostics().asList());
-        assertEquals(unit.parseDiagnostics().size(), result.diagnostics().size());
+        assertEquals(parseSnapshot, result.diagnostics());
+        assertEquals(parseSnapshot.size(), result.diagnostics().size());
         assertTrue(result.diagnostics().asList().stream().allMatch(diagnostic -> diagnostic.category().equals("parse.lowering")));
     }
 
     @Test
-    void buildDoesNotAutoImportPreexistingUnitParseDiagnostics() throws IOException {
+    void buildDoesNotSynthesizeParseDiagnosticsForManualUnitsWithoutSharedManagerState() throws IOException {
         var parserService = new GdScriptParserService();
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
         var analysisData = FrontendAnalysisData.bootstrap();
 
-        var parsed = parserService.parseUnit(Path.of("tmp", "manual_parse_snapshot.gd"), """
+        var parsed = parserService.parseUnit(Path.of("tmp", "manual_unit.gd"), """
                 class_name ManualParseSnapshot
                 extends Node
                 
@@ -139,13 +136,7 @@ class FrontendClassSkeletonTest {
         var manualUnit = new FrontendSourceUnit(
                 parsed.path(),
                 parsed.source(),
-                parsed.ast(),
-                List.of(FrontendDiagnostic.error(
-                        "parse.lowering",
-                        "manually attached parse diagnostic",
-                        parsed.path(),
-                        null
-                ))
+                parsed.ast()
         );
         var diagnostics = new DiagnosticManager();
 

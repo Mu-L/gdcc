@@ -28,13 +28,13 @@ class GdScriptParserServiceDiagnosticManagerTest {
                     print("ok")
                 """, diagnostics);
 
-        assertTrue(unit.parseDiagnostics().isEmpty());
+        assertNotNull(unit.ast());
         assertTrue(diagnostics.isEmpty());
         assertFalse(diagnostics.hasErrors());
     }
 
     @Test
-    void parseUnitMapsMalformedScriptToLoweringDiagnosticsAndMirrorsThemIntoManager() {
+    void parseUnitMapsMalformedScriptToLoweringDiagnosticsAndPublishesThemOnlyThroughManager() {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
 
@@ -46,10 +46,11 @@ class GdScriptParserServiceDiagnosticManagerTest {
                     pass
                 """, diagnostics);
 
-        assertFalse(unit.parseDiagnostics().isEmpty());
-        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot().asList());
-        assertTrue(unit.parseDiagnostics().stream().allMatch(diagnostic -> diagnostic.category().equals("parse.lowering")));
-        assertTrue(unit.parseDiagnostics().stream().anyMatch(diagnostic ->
+        var snapshot = diagnostics.snapshot();
+
+        assertFalse(snapshot.isEmpty());
+        assertTrue(snapshot.asList().stream().allMatch(diagnostic -> diagnostic.category().equals("parse.lowering")));
+        assertTrue(snapshot.asList().stream().anyMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
                         && diagnostic.message().startsWith("CST structural issue:")
                         && diagnostic.sourcePath().equals(Path.of("tmp", "broken.gd"))
@@ -58,7 +59,7 @@ class GdScriptParserServiceDiagnosticManagerTest {
     }
 
     @Test
-    void parseUnitKeepsPerUnitSnapshotsStableWhenOneManagerParsesMultipleUnits() {
+    void parseUnitKeepsEarlierManagerSnapshotsStableWhenOneManagerParsesMultipleUnits() {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
 
@@ -66,7 +67,7 @@ class GdScriptParserServiceDiagnosticManagerTest {
                 func _ready(
                     pass
                 """, diagnostics);
-        var firstSnapshot = first.parseDiagnostics();
+        var firstSnapshot = diagnostics.snapshot();
 
         var second = parserService.parseUnit(Path.of("tmp", "second_broken.gd"), """
                 class_name Broken
@@ -74,10 +75,10 @@ class GdScriptParserServiceDiagnosticManagerTest {
                     pass
                 """, diagnostics);
 
-        assertEquals(firstSnapshot, first.parseDiagnostics());
+        assertNotNull(first.ast());
         assertFalse(firstSnapshot.isEmpty());
-        assertFalse(second.parseDiagnostics().isEmpty());
-        assertEquals(firstSnapshot.size() + second.parseDiagnostics().size(), diagnostics.snapshot().size());
+        assertNotNull(second.ast());
+        assertTrue(diagnostics.snapshot().size() > firstSnapshot.size());
     }
 
     @Test
@@ -86,11 +87,11 @@ class GdScriptParserServiceDiagnosticManagerTest {
         var diagnostics = new DiagnosticManager();
 
         var unit = parserService.parseUnit(Path.of("tmp", "internal_failure.gd"), "class_name Broken", diagnostics);
+        var snapshot = diagnostics.snapshot();
 
-        assertEquals(1, unit.parseDiagnostics().size());
-        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot().asList());
+        assertEquals(1, snapshot.size());
 
-        var diagnostic = unit.parseDiagnostics().getFirst();
+        var diagnostic = snapshot.getFirst();
         assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity());
         assertEquals("parse.internal", diagnostic.category());
         assertTrue(diagnostic.message().startsWith("Unexpected parser failure:"));

@@ -3,7 +3,6 @@ package dev.superice.gdcc.frontend.sema;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
-import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
@@ -98,7 +97,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void analyzeDoesNotAutoImportUnitParseDiagnosticsOutsideSharedManagerPipeline() throws Exception {
+    void analyzeDoesNotInventParseDiagnosticsForManualUnitsOutsideSharedManagerPipeline() throws Exception {
         var parserService = new GdScriptParserService();
         var parsed = parserService.parseUnit(Path.of("tmp", "manual_unit.gd"), """
                 class_name ManualUnit
@@ -110,13 +109,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var unit = new FrontendSourceUnit(
                 parsed.path(),
                 parsed.source(),
-                parsed.ast(),
-                List.of(FrontendDiagnostic.error(
-                        "parse.lowering",
-                        "manually attached parse diagnostic",
-                        parsed.path(),
-                        null
-                ))
+                parsed.ast()
         );
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
@@ -148,11 +141,12 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var analyzer = new FrontendSemanticAnalyzer();
 
         var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var parseSnapshot = diagnostics.snapshot();
         var beforeMutation = result.diagnostics();
         diagnostics.error("sema.synthetic", "late diagnostic", unit.path(), null);
 
         assertFalse(beforeMutation.isEmpty());
-        assertEquals(unit.parseDiagnostics(), beforeMutation.asList());
+        assertEquals(parseSnapshot.asList(), beforeMutation.asList());
         assertEquals(beforeMutation, result.diagnostics());
         assertEquals(beforeMutation, result.moduleSkeleton().diagnostics());
         assertEquals(beforeMutation.size() + 1, diagnostics.snapshot().size());
