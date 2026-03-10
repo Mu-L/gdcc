@@ -69,6 +69,7 @@ public final class FrontendClassSkeletonBuilder {
 
         var classDef = new LirClassDef(className, superClassName);
         classDef.setSourceFile(unit.path().toString().replace('\\', '/'));
+        var annotationsByAst = new FrontendAnnotationCollector().collect(unit);
 
         for (var statement : unit.ast().statements()) {
             switch (statement) {
@@ -77,7 +78,13 @@ public final class FrontendClassSkeletonBuilder {
                 );
                 case VariableDeclaration variableDeclaration -> {
                     if (variableDeclaration.kind() == DeclarationKind.VAR) {
-                        classDef.addProperty(toLirProperty(variableDeclaration, classRegistry, unit.path(), diagnostics));
+                        classDef.addProperty(toLirProperty(
+                                variableDeclaration,
+                                classRegistry,
+                                unit.path(),
+                                diagnostics,
+                                annotationsByAst
+                        ));
                     }
                 }
                 case FunctionDeclaration functionDeclaration -> classDef.addFunction(
@@ -155,7 +162,8 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull VariableDeclaration variableDeclaration,
             @NotNull ClassRegistry classRegistry,
             @NotNull Path sourcePath,
-            @NotNull List<FrontendDiagnostic> diagnostics
+            @NotNull List<FrontendDiagnostic> diagnostics,
+            @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst
     ) {
         var propertyType = resolveTypeOrVariant(
                 variableDeclaration.type(),
@@ -165,13 +173,24 @@ public final class FrontendClassSkeletonBuilder {
         );
         var propertyDef = new LirPropertyDef(variableDeclaration.name().trim(), propertyType);
         propertyDef.setStatic(variableDeclaration.isStatic());
-        switch (variableDeclaration.sourceNodeType()) {
-            case "export_variable_statement" -> propertyDef.getAnnotations().put("export", "true");
-            case "onready_variable_statement" -> propertyDef.getAnnotations().put("onready", "true");
-            default -> {
+        applyPropertyAnnotations(variableDeclaration, propertyDef, annotationsByAst);
+        return propertyDef;
+    }
+
+    private void applyPropertyAnnotations(
+            @NotNull VariableDeclaration variableDeclaration,
+            @NotNull LirPropertyDef propertyDef,
+            @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst
+    ) {
+        for (var annotation : annotationsByAst.getOrDefault(variableDeclaration, List.of())) {
+            switch (annotation.name()) {
+                case "export" -> propertyDef.getAnnotations().put("export", "");
+                case "onready" -> propertyDef.getAnnotations().put("onready", "");
+                default -> {
+                    // TODO: emit diagnostic for annotation that is not supported.
+                }
             }
         }
-        return propertyDef;
     }
 
     private @NotNull LirFunctionDef toLirFunction(

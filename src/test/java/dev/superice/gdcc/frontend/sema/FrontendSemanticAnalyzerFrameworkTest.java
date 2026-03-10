@@ -1,0 +1,113 @@
+package dev.superice.gdcc.frontend.sema;
+
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdcc.frontend.parse.GdScriptParserService;
+import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.scope.ClassRegistry;
+import org.junit.jupiter.api.Test;
+
+import java.nio.file.Path;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class FrontendSemanticAnalyzerFrameworkTest {
+    @Test
+    void analyzeBootstrapsSideTablesAndCollectsSemanticallyRelevantAnnotations() throws Exception {
+        var parserService = new GdScriptParserService();
+        var unit = parserService.parseUnit(Path.of("tmp", "annotated_player.gd"), """
+                @tool
+                class_name AnnotatedPlayer
+                extends Node
+                
+                @export var hp: int = 1
+                
+                @rpc("authority")
+                func ping(value):
+                    pass
+                
+                @warning_ignore_start("unused_variable")
+                var tmp := 1
+                
+                @warning_ignore_restore("unused_variable")
+                var keep := 2
+                """);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analyzer = new FrontendSemanticAnalyzer();
+
+        var result = analyzer.analyze("test_module", List.of(unit), registry);
+        var topLevelStatements = unit.ast().statements();
+        var hpProperty = findVariable(topLevelStatements, "hp");
+        var tmpProperty = findVariable(topLevelStatements, "tmp");
+        var keepProperty = findVariable(topLevelStatements, "keep");
+        var pingFunction = findFunction(topLevelStatements, "ping");
+
+        assertEquals(1, result.moduleSkeleton().classDefs().size());
+        assertEquals("AnnotatedPlayer", result.moduleSkeleton().classDefs().getFirst().getName());
+        assertEquals(List.of("tool"), annotationNames(result.annotationsByAst().get(unit.ast())));
+        assertEquals(List.of("export"), annotationNames(result.annotationsByAst().get(hpProperty)));
+        assertEquals(List.of("rpc"), annotationNames(result.annotationsByAst().get(pingFunction)));
+        assertNull(result.annotationsByAst().get(tmpProperty));
+        assertNull(result.annotationsByAst().get(keepProperty));
+
+        assertTrue(result.scopesByAst().isEmpty());
+        assertTrue(result.symbolBindings().isEmpty());
+        assertTrue(result.expressionTypes().isEmpty());
+        assertTrue(result.resolvedMembers().isEmpty());
+        assertTrue(result.resolvedCalls().isEmpty());
+        assertNotNull(result.diagnostics());
+    }
+
+    private VariableDeclaration findVariable(List<?> statements, String name) {
+        return statements.stream()
+                .filter(VariableDeclaration.class::isInstance)
+                .map(VariableDeclaration.class::cast)
+                .filter(variableDeclaration -> variableDeclaration.name().equals(name))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Variable not found: " + name));
+    }
+
+    private FunctionDeclaration findFunction(List<?> statements, String name) {
+        return statements.stream()
+                .filter(FunctionDeclaration.class::isInstance)
+                .map(FunctionDeclaration.class::cast)
+                .filter(functionDeclaration -> functionDeclaration.name().equals(name))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Function not found: " + name));
+    }
+
+    @Test
+    void analyzeCollectsNestedBlockAnnotationsAndStillIgnoresRegionAnnotations() throws Exception {
+        var parserService = new GdScriptParserService();
+        var unit = parserService.parseUnit(Path.of("tmp", "nested_annotations.gd"), """
+                class_name NestedAnnotations
+                extends Node
+                
+                func ping(value):
+                    @warning_ignore("unused_variable")
+                    var inner := 1
+                    @warning_ignore_start("unused_variable")
+                    var region_ignored := 2
+                """);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analyzer = new FrontendSemanticAnalyzer();
+
+        var result = analyzer.analyze("test_module", List.of(unit), registry);
+        var pingFunction = findFunction(unit.ast().statements(), "ping");
+        var bodyStatements = pingFunction.body().statements();
+        var innerVariable = findVariable(bodyStatements, "inner");
+        var regionIgnoredVariable = findVariable(bodyStatements, "region_ignored");
+
+        assertEquals(List.of("warning_ignore"), annotationNames(result.annotationsByAst().get(innerVariable)));
+        assertNull(result.annotationsByAst().get(regionIgnoredVariable));
+    }
+
+    private List<String> annotationNames(List<FrontendGdAnnotation> annotations) {
+        assertNotNull(annotations);
+        return annotations.stream().map(FrontendGdAnnotation::name).toList();
+    }
+}
