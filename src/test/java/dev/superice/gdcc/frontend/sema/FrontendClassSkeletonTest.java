@@ -1,5 +1,6 @@
 package dev.superice.gdcc.frontend.sema;
 
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
@@ -49,9 +50,9 @@ class FrontendClassSkeletonTest {
                 """;
 
         var units = List.of(
-                parserService.parseUnit(Path.of("tmp", "base_class.gd"), baseSource),
-                parserService.parseUnit(Path.of("tmp", "child_class.gd"), childSource),
-                parserService.parseUnit(Path.of("tmp", "no_name_script.gd"), anonymousSource)
+                parserService.parseUnit(Path.of("tmp", "base_class.gd"), baseSource, new DiagnosticManager()),
+                parserService.parseUnit(Path.of("tmp", "child_class.gd"), childSource, new DiagnosticManager()),
+                parserService.parseUnit(Path.of("tmp", "no_name_script.gd"), anonymousSource, new DiagnosticManager())
         );
 
         var result = classSkeletonBuilder.build("test_module", units, registry);

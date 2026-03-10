@@ -1,5 +1,6 @@
 package dev.superice.gdcc.frontend.sema;
 
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
@@ -27,7 +28,7 @@ class FrontendClassSkeletonAnnotationTest {
                 @export var hp: int = 1
                 @onready var target = $Node
                 var plain := 3
-                """);
+                """, new DiagnosticManager());
 
         var result = classSkeletonBuilder.build("test_module", List.of(unit), registry);
         var classDef = findClassByName(result.classDefs(), "AnnotatedProps");
@@ -64,7 +65,7 @@ class FrontendClassSkeletonAnnotationTest {
                     pass
                 
                 var after := 3
-                """);
+                """, new DiagnosticManager());
 
         var result = classSkeletonBuilder.build("test_module", List.of(unit), registry);
         var classDef = findClassByName(result.classDefs(), "IgnoredAnnotations");

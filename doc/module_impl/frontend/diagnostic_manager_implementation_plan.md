@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：待实施
+- 状态：Phase 0 / Phase 1 / Phase 2 已完成，Phase 3+ 待实施
 - 更新时间：2026-03-10
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/diagnostic/**`
@@ -254,6 +254,12 @@ private record SkeletonBuildContext(
 - 约束清晰、无互相冲突条目
 - 后续实现可以直接按本文档拆阶段推进，不需要再补口头规则
 
+### 当前状态（2026-03-10）
+
+- [x] 已完成：本文档已落库并作为 `DiagnosticManager` 迁移事实源
+- [x] 已完成：明确冻结“不保留无 manager 兼容方法”“`FrontendClassSkeletonBuilder` 后续必须迁移到 `SkeletonBuildContext`”“manager 不进入 `scope` / resolver” 等边界
+- [x] 已完成：将迁移分解为 Phase 0-7，并给出逐阶段执行清单、验收标准、风险控制与最终验收总表
+
 ---
 
 ## Phase 1. 引入 `DiagnosticManager` 与基础测试
@@ -287,6 +293,20 @@ private record SkeletonBuildContext(
   - 空 manager 的 `snapshot()` 为稳定空列表
 - `DiagnosticManager` 不依赖 parser、sema、scope 包内业务逻辑
 
+### 当前状态（2026-03-10）
+
+- [x] 已完成：新增 `src/main/java/dev/superice/gdcc/frontend/diagnostic/DiagnosticManager.java`
+- [x] 已完成：`DiagnosticManager` 提供 `report(...)`、`reportAll(...)`、`warning(...)`、`error(...)`、`hasErrors()`、`isEmpty()`、`snapshot()`
+- [x] 已完成：`reportAll(...)` 已实现“先完整校验，再一次性追加”的原子批量导入语义，避免 null 元素导致半提交状态污染后续快照
+- [x] 已完成：新增 `src/test/java/dev/superice/gdcc/frontend/diagnostic/DiagnosticManagerTest.java`
+- [x] 已完成：单测已锚定以下行为：
+  - 插入顺序稳定
+  - 早期快照不会被后续追加改写
+  - `snapshot()` 不可变
+  - `hasErrors()` 只在出现 `ERROR` 后返回 true
+  - `reportAll(...)` 对 null collection / null element fail-fast，且不会留下部分提交状态
+  - `warning(...)` / `error(...)` 的 metadata 保持稳定
+
 ---
 
 ## Phase 2. parser phase 接入 `DiagnosticManager`
@@ -317,6 +337,31 @@ private record SkeletonBuildContext(
   - `FrontendSourceUnit.parseDiagnostics` 与本次 parse 产生的 diagnostics 一致
   - parse 异常路径同样会写入 manager
 - parser 内部不再依赖“先构造列表，再把列表交给外层”的隐式协议
+
+### 当前状态（2026-03-10）
+
+- [x] 已完成：`GdScriptParserService.parseUnit(...)` 已改为显式接收 `DiagnosticManager`
+- [x] 已完成：无 manager 的 `parseUnit(...)` 入口已删除，未保留兼容重载
+- [x] 已完成：parse 正常路径现在会：
+  - 先将 `gdparser` lowering diagnostics 映射为 `FrontendDiagnostic`
+  - 再通过 `DiagnosticManager.reportAll(...)` 汇入共享收集器
+  - 最后把本次 parse 的局部快照写入 `FrontendSourceUnit.parseDiagnostics`
+- [x] 已完成：parse 异常路径现在会：
+  - 产出 `parse.internal` error diagnostic
+  - 写入 `DiagnosticManager`
+  - 返回带空 `SourceFile` 与该局部快照的 `FrontendSourceUnit`
+- [x] 已完成：新增 `src/test/java/dev/superice/gdcc/frontend/parse/GdScriptParserServiceDiagnosticManagerTest.java`
+- [x] 已完成：更新现有 parse/sema 测试调用点，全部显式传入 `DiagnosticManager`
+- [x] 已完成：通过测试和本地 `gdparser:0.4.0` 源码核对，已冻结以下实际行为：
+  - malformed script 的常规失败路径来自 `gdparser` lowering diagnostics，应映射为 `parse.lowering`
+  - `gdparser` lowering diagnostics 保留 `severity/message/nodeType/range` 语义，其中结构错误消息形如 `CST structural issue: ...`
+  - `parse.internal` 只在 `parserFacade.parseCstRoot(...)` 或 `cstToAstMapper.map(...)` 真正抛出 `RuntimeException` 时出现，不能把普通语法错误误判为 internal failure
+  - 同一 `DiagnosticManager` 可跨多个 `parseUnit(...)` 调用累积 diagnostics，但每个 `FrontendSourceUnit.parseDiagnostics` 必须保持该次 parse 的独立快照
+- [x] 已完成：当前测试已覆盖以下 parser 行为锚点：
+  - well-formed script 不产生多余 diagnostics，manager 仍为空
+  - malformed script 会生成 `parse.lowering` error，并同步写入 manager
+  - 复用同一 manager 多次 parse 时，累计行为正确，旧的 `FrontendSourceUnit.parseDiagnostics` 不会被后续 parse 改写
+  - parserFacade 运行时失败会包装为 `parse.internal`，并返回空 AST body 的 `FrontendSourceUnit`
 
 ---
 

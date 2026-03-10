@@ -1,5 +1,6 @@
 package dev.superice.gdcc.frontend.parse;
 
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import org.junit.jupiter.api.Test;
 
@@ -19,13 +20,15 @@ class FrontendParseSmokeTest {
                 """;
 
         var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
         var sourcePath = Path.of("tmp", "player.gd");
-        var unit = parserService.parseUnit(sourcePath, source);
+        var unit = parserService.parseUnit(sourcePath, source, diagnostics);
 
         assertNotNull(unit.ast());
         assertFalse(unit.ast().statements().isEmpty());
         assertNotNull(unit.parseDiagnostics());
         assertEquals(sourcePath, unit.path());
+        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot());
     }
 
     @Test
@@ -39,11 +42,13 @@ class FrontendParseSmokeTest {
                 """;
 
         var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
         var sourcePath = Path.of("tmp", "broken.gd");
-        var unit = parserService.parseUnit(sourcePath, source);
+        var unit = parserService.parseUnit(sourcePath, source, diagnostics);
 
         assertNotNull(unit.ast());
         assertFalse(unit.parseDiagnostics().isEmpty());
+        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot());
         assertTrue(
                 unit.parseDiagnostics().stream()
                         .anyMatch(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)

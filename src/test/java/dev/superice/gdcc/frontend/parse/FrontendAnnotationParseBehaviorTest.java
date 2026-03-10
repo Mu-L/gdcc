@@ -4,6 +4,7 @@ import dev.superice.gdparser.frontend.ast.AnnotationStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -120,6 +121,9 @@ class FrontendAnnotationParseBehaviorTest {
     }
 
     private FrontendSourceUnit parse(String fileName, String source) {
-        return parserService.parseUnit(Path.of("tmp", fileName), source);
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
+        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot());
+        return unit;
     }
 }

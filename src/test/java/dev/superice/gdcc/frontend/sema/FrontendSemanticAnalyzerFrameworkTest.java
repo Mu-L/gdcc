@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
@@ -35,7 +36,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 
                 @warning_ignore_restore("unused_variable")
                 var keep := 2
-                """);
+                """, new DiagnosticManager());
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
 
@@ -92,7 +93,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                     var inner := 1
                     @warning_ignore_start("unused_variable")
                     var region_ignored := 2
-                """);
+                """, new DiagnosticManager());
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
 

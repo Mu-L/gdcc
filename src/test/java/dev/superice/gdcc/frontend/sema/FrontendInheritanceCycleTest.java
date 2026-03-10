@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.exception.FrontendSemanticException;
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
@@ -36,8 +37,8 @@ class FrontendInheritanceCycleTest {
                 """;
 
         var units = List.of(
-                parserService.parseUnit(Path.of("tmp", "a.gd"), sourceA),
-                parserService.parseUnit(Path.of("tmp", "b.gd"), sourceB)
+                parserService.parseUnit(Path.of("tmp", "a.gd"), sourceA, new DiagnosticManager()),
+                parserService.parseUnit(Path.of("tmp", "b.gd"), sourceB, new DiagnosticManager())
         );
 
         var exception = assertThrows(

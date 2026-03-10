@@ -3,6 +3,7 @@ package dev.superice.gdcc.frontend.parse;
 import dev.superice.gdparser.frontend.ast.*;
 import dev.superice.gdparser.frontend.lowering.CstToAstMapper;
 import dev.superice.gdparser.infra.treesitter.GdParserFacade;
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
@@ -26,39 +27,46 @@ public final class GdScriptParserService {
         this.cstToAstMapper = Objects.requireNonNull(cstToAstMapper, "cstToAstMapper must not be null");
     }
 
-    public @NotNull FrontendSourceUnit parseUnit(@NotNull Path sourcePath, @NotNull String source) {
+    /// Parses one source unit and reports this parse call's diagnostics into the shared manager.
+    ///
+    /// The returned `FrontendSourceUnit` keeps only this parse call's diagnostics as an immutable
+    /// phase snapshot. The manager may already contain diagnostics from earlier units in the same
+    /// pipeline, so callers must treat the unit snapshot and manager snapshot as different views.
+    public @NotNull FrontendSourceUnit parseUnit(
+            @NotNull Path sourcePath,
+            @NotNull String source,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
         Objects.requireNonNull(sourcePath, "sourcePath must not be null");
         Objects.requireNonNull(source, "source must not be null");
+        Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
         try {
             var root = parserFacade.parseCstRoot(source);
             var mappingResult = cstToAstMapper.map(source, root);
-            var diagnostics = mappingResult.diagnostics().stream()
-                    .map(astDiagnostic -> toFrontendDiagnostic(sourcePath, astDiagnostic))
+            var parseDiagnostics = mappingResult.diagnostics().stream()
+                    .map(diagnostic -> new FrontendDiagnostic(
+                            switch (diagnostic.severity()) {
+                                case ERROR -> FrontendDiagnosticSeverity.ERROR;
+                                case WARNING -> FrontendDiagnosticSeverity.WARNING;
+                            },
+                            "parse.lowering",
+                            diagnostic.message(),
+                            sourcePath,
+                            FrontendRange.fromAstRange(diagnostic.range())
+                    ))
                     .toList();
-            return new FrontendSourceUnit(sourcePath, source, mappingResult.ast(), diagnostics);
+            diagnosticManager.reportAll(parseDiagnostics);
+            return new FrontendSourceUnit(sourcePath, source, mappingResult.ast(), parseDiagnostics);
         } catch (RuntimeException exception) {
-            var diagnostics = List.of(FrontendDiagnostic.error(
+            var parseDiagnostics = List.of(FrontendDiagnostic.error(
                     "parse.internal",
                     "Unexpected parser failure: " + exception.getMessage(),
                     sourcePath,
                     null
             ));
-            return new FrontendSourceUnit(sourcePath, source, emptySourceFile(), diagnostics);
+            diagnosticManager.reportAll(parseDiagnostics);
+            return new FrontendSourceUnit(sourcePath, source, emptySourceFile(), parseDiagnostics);
         }
-    }
-
-    private @NotNull FrontendDiagnostic toFrontendDiagnostic(@NotNull Path sourcePath, @NotNull AstDiagnostic diagnostic) {
-        var severity = switch (diagnostic.severity()) {
-            case ERROR -> FrontendDiagnosticSeverity.ERROR;
-            case WARNING -> FrontendDiagnosticSeverity.WARNING;
-        };
-        return new FrontendDiagnostic(
-                severity,
-                "parse.lowering",
-                diagnostic.message(),
-                sourcePath,
-                FrontendRange.fromAstRange(diagnostic.range())
-        );
     }
 
     private @NotNull SourceFile emptySourceFile() {
