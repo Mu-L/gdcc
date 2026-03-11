@@ -52,9 +52,11 @@ public class ScopeTypeMetaChainTest {
         );
         classScope.defineTypeMeta(outerTypeMeta);
 
-        var callable = new CallableScope(classScope);
-        var block = new BlockScope(callable);
+        var callable = new CallableScope(classScope, CallableScopeKind.FUNCTION_DECLARATION);
+        var block = new BlockScope(callable, BlockScopeKind.BLOCK_STATEMENT);
 
+        assertEquals(CallableScopeKind.FUNCTION_DECLARATION, callable.kind());
+        assertEquals(BlockScopeKind.BLOCK_STATEMENT, block.kind());
         assertEquals(outerTypeMeta, callable.resolveTypeMeta("InnerType"));
         assertEquals(outerTypeMeta, block.resolveTypeMeta("InnerType"));
 
@@ -85,8 +87,8 @@ public class ScopeTypeMetaChainTest {
         );
         classScope.defineTypeMeta(outerTypeMeta);
 
-        var callable = new CallableScope(classScope);
-        var block = new BlockScope(callable);
+        var callable = new CallableScope(classScope, CallableScopeKind.FUNCTION_DECLARATION);
+        var block = new BlockScope(callable, BlockScopeKind.BLOCK_STATEMENT);
 
         var staticResult = block.resolveTypeMeta("InnerType", ResolveRestriction.staticContext());
         var instanceResult = block.resolveTypeMeta("InnerType", ResolveRestriction.instanceContext());

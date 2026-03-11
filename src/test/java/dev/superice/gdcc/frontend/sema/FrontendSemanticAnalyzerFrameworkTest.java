@@ -59,7 +59,11 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertNull(result.annotationsByAst().get(tmpProperty));
         assertNull(result.annotationsByAst().get(keepProperty));
 
-        assertTrue(result.scopesByAst().isEmpty());
+        assertFalse(result.scopesByAst().isEmpty());
+        assertTrue(result.scopesByAst().containsKey(unit.ast()));
+        assertTrue(result.scopesByAst().containsKey(pingFunction));
+        assertTrue(result.scopesByAst().containsKey(pingFunction.body()));
+        assertTrue(result.scopesByAst().containsKey(pingFunction.parameters().getFirst()));
         assertTrue(result.symbolBindings().isEmpty());
         assertTrue(result.expressionTypes().isEmpty());
         assertTrue(result.resolvedMembers().isEmpty());

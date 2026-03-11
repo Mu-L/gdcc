@@ -32,10 +32,17 @@ import java.util.Objects;
 /// locals/constants are always legal once found here because class-member static/instance rules do
 /// not apply to block-local bindings.
 public final class BlockScope extends AbstractFrontendScope {
+    private final @NotNull BlockScopeKind kind;
     private final Map<String, ScopeValue> valuesByName = new LinkedHashMap<>();
 
-    public BlockScope(@NotNull Scope parentScope) {
+    public BlockScope(@NotNull Scope parentScope, @NotNull BlockScopeKind kind) {
         super(Objects.requireNonNull(parentScope, "parentScope"));
+        this.kind = Objects.requireNonNull(kind, "kind");
+    }
+
+    /// Returns the semantic source that created this lexical block boundary.
+    public @NotNull BlockScopeKind kind() {
+        return kind;
     }
 
     /// Registers a mutable local binding owned by the current block.

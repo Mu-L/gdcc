@@ -24,13 +24,15 @@ public class ScopeChainTest {
         registry.addGdccClass(classDef);
 
         var classScope = new ClassScope(registry, registry, classDef);
-        var callable = new CallableScope(classScope);
+        var callable = new CallableScope(classScope, CallableScopeKind.FUNCTION_DECLARATION);
         var ownerFunction = FrontendScopeTestSupport.createFunction("tick", GdStringType.STRING);
         callable.defineParameter(FrontendScopeTestSupport.createParameter("score", GdIntType.INT, ownerFunction));
 
-        var block = new BlockScope(callable);
+        var block = new BlockScope(callable, BlockScopeKind.BLOCK_STATEMENT);
         block.defineLocal("score", GdBoolType.BOOL, "local score");
 
+        assertEquals(CallableScopeKind.FUNCTION_DECLARATION, callable.kind());
+        assertEquals(BlockScopeKind.BLOCK_STATEMENT, block.kind());
         var resolved = block.resolveValue("score");
         assertNotNull(resolved);
         assertEquals(ScopeValueKind.LOCAL, resolved.kind());
@@ -49,10 +51,11 @@ public class ScopeChainTest {
         registry.addGdccClass(classDef);
 
         var classScope = new ClassScope(registry, registry, classDef);
-        var callable = new CallableScope(classScope);
+        var callable = new CallableScope(classScope, CallableScopeKind.FUNCTION_DECLARATION);
         var ownerFunction = FrontendScopeTestSupport.createFunction("tick", GdStringType.STRING);
         callable.defineParameter(FrontendScopeTestSupport.createParameter("name", GdIntType.INT, ownerFunction));
 
+        assertEquals(CallableScopeKind.FUNCTION_DECLARATION, callable.kind());
         var resolved = callable.resolveValue("name");
         assertNotNull(resolved);
         assertEquals(ScopeValueKind.PARAMETER, resolved.kind());
@@ -97,9 +100,16 @@ public class ScopeChainTest {
         var classDef = FrontendScopeTestSupport.createClass("Hero", "Object", java.util.List.of(), java.util.List.of());
         registry.addGdccClass(classDef);
 
-        var block = new BlockScope(new CallableScope(new ClassScope(registry, registry, classDef)));
+        var block = new BlockScope(
+                new CallableScope(
+                        new ClassScope(registry, registry, classDef),
+                        CallableScopeKind.FUNCTION_DECLARATION
+                ),
+                BlockScopeKind.BLOCK_STATEMENT
+        );
         block.defineLocal("dup", GdIntType.INT, "first");
 
+        assertEquals(BlockScopeKind.BLOCK_STATEMENT, block.kind());
         assertThrows(IllegalArgumentException.class, () -> block.defineLocal("dup", GdBoolType.BOOL, "second"));
     }
 }

@@ -30,11 +30,18 @@ import java.util.Objects;
 /// not filtered by class-member static/instance restrictions. The frontend binder still owns the
 /// policy decision of whether `self` should be explicit or represented by a dedicated binding kind.
 public final class CallableScope extends AbstractFrontendScope {
+    private final @NotNull CallableScopeKind kind;
     private final Map<String, ScopeValue> parametersByName = new LinkedHashMap<>();
     private final Map<String, ScopeValue> capturesByName = new LinkedHashMap<>();
 
-    public CallableScope(@NotNull Scope parentScope) {
+    public CallableScope(@NotNull Scope parentScope, @NotNull CallableScopeKind kind) {
         super(Objects.requireNonNull(parentScope, "parentScope"));
+        this.kind = Objects.requireNonNull(kind, "kind");
+    }
+
+    /// Returns the semantic source that created this callable boundary.
+    public @NotNull CallableScopeKind kind() {
+        return kind;
     }
 
     /// Registers a parameter binding owned by the current callable.

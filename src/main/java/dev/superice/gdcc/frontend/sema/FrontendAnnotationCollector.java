@@ -8,6 +8,7 @@ import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
+import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
@@ -38,7 +39,7 @@ public final class FrontendAnnotationCollector {
     }
 
     private void collectStatementList(
-            @NotNull Object owner,
+            @NotNull Node owner,
             @NotNull List<Statement> statements,
             @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst
     ) {
@@ -69,7 +70,7 @@ public final class FrontendAnnotationCollector {
     }
 
     private void appendAnnotations(
-            @NotNull Object target,
+            @NotNull Node target,
             @NotNull List<FrontendGdAnnotation> annotations,
             @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst
     ) {

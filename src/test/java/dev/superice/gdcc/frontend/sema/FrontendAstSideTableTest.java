@@ -1,5 +1,9 @@
 package dev.superice.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.PassStatement;
+import dev.superice.gdparser.frontend.ast.Point;
+import dev.superice.gdparser.frontend.ast.Range;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -12,11 +16,13 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendAstSideTableTest {
+    private static final Range RANGE = new Range(0, 1, new Point(0, 0), new Point(0, 1));
+
     @Test
     void behavesAsMapWhilePreservingIdentityKeySemantics() {
-        Map<Object, String> sideTable = new FrontendAstSideTable<>();
-        var firstKey = new String("node");
-        var secondKey = new String("node");
+        Map<Node, String> sideTable = new FrontendAstSideTable<>();
+        var firstKey = passNode();
+        var secondKey = passNode();
         assertNotSame(firstKey, secondKey);
 
         sideTable.put(firstKey, "value");
@@ -31,8 +37,8 @@ class FrontendAstSideTableTest {
     @Test
     void supportsBulkPutAllFromMapAndTypedSideTable() {
         var sideTable = new FrontendAstSideTable<String>();
-        var mapKey = new Object();
-        var typedKey = new Object();
+        var mapKey = passNode();
+        var typedKey = passNode();
         var other = new FrontendAstSideTable<String>();
         other.put(typedKey, "typed");
 
@@ -46,8 +52,8 @@ class FrontendAstSideTableTest {
 
     @Test
     void exposesBackedMapViewsForConvenientMutation() {
-        Map<Object, String> sideTable = new FrontendAstSideTable<>();
-        var key = new Object();
+        Map<Node, String> sideTable = new FrontendAstSideTable<>();
+        var key = passNode();
         sideTable.put(key, "initial");
 
         var entry = sideTable.entrySet().iterator().next();
@@ -60,8 +66,8 @@ class FrontendAstSideTableTest {
 
     @Test
     void supportsStandardMapDefaultingAndComputeOperations() {
-        Map<Object, String> sideTable = new FrontendAstSideTable<>();
-        var key = new Object();
+        Map<Node, String> sideTable = new FrontendAstSideTable<>();
+        var key = passNode();
 
         assertEquals("fallback", sideTable.getOrDefault(key, "fallback"));
 
@@ -73,10 +79,12 @@ class FrontendAstSideTableTest {
     }
 
     @Test
-    void rejectsNullKeysAndValuesAcrossMapOperations() {
+    void rejectsNullNonNodeKeysAndValuesAcrossMapOperations() {
         var sideTable = new FrontendAstSideTable<String>();
-        var key = new Object();
+        var key = passNode();
         sideTable.put(key, "value");
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        var rawMap = (Map) sideTable;
 
         assertThrows(NullPointerException.class, () -> sideTable.put(null, "value"));
         assertThrows(NullPointerException.class, () -> sideTable.put(key, null));
@@ -84,7 +92,14 @@ class FrontendAstSideTableTest {
         assertThrows(NullPointerException.class, () -> sideTable.containsKey(null));
         assertThrows(NullPointerException.class, () -> sideTable.containsValue(null));
         assertThrows(NullPointerException.class, () -> sideTable.remove(null));
-        assertThrows(NullPointerException.class, () -> sideTable.putAll((Map<Object, String>) null));
+        assertThrows(IllegalArgumentException.class, () -> rawMap.get("not a node"));
+        assertThrows(IllegalArgumentException.class, () -> rawMap.containsKey("not a node"));
+        assertThrows(IllegalArgumentException.class, () -> rawMap.remove("not a node"));
+        assertThrows(NullPointerException.class, () -> sideTable.putAll((Map<Node, String>) null));
         assertThrows(NullPointerException.class, () -> sideTable.putAll((FrontendAstSideTable<String>) null));
+    }
+
+    private static PassStatement passNode() {
+        return new PassStatement(RANGE);
     }
 }

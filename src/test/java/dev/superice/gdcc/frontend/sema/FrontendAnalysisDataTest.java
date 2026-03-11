@@ -5,6 +5,9 @@ import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.Scope;
+import dev.superice.gdparser.frontend.ast.PassStatement;
+import dev.superice.gdparser.frontend.ast.Point;
+import dev.superice.gdparser.frontend.ast.Range;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -15,6 +18,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendAnalysisDataTest {
+    private static final Range RANGE = new Range(0, 1, new Point(0, 0), new Point(0, 1));
+
     @Test
     void bootstrapCreatesAllSideTablesBeforeAnyPhaseBoundaryIsPublished() {
         var analysisData = FrontendAnalysisData.bootstrap();
@@ -49,7 +54,7 @@ class FrontendAnalysisDataTest {
         var analysisData = FrontendAnalysisData.bootstrap();
         var originalSideTable = analysisData.annotationsByAst();
         var replacement = new FrontendAstSideTable<List<FrontendGdAnnotation>>();
-        var astNode = new Object();
+        var astNode = passNode();
         var annotation = new FrontendGdAnnotation("tool", List.of(), null);
         replacement.put(astNode, List.of(annotation));
 
@@ -64,7 +69,7 @@ class FrontendAnalysisDataTest {
         var analysisData = FrontendAnalysisData.bootstrap();
         var originalSideTable = analysisData.scopesByAst();
         var replacement = new FrontendAstSideTable<Scope>();
-        var astNode = new Object();
+        var astNode = passNode();
         var scope = new ClassRegistry(ExtensionApiLoader.loadDefault());
         replacement.put(astNode, scope);
 
@@ -72,5 +77,9 @@ class FrontendAnalysisDataTest {
 
         assertSame(originalSideTable, analysisData.scopesByAst());
         assertSame(scope, analysisData.scopesByAst().get(astNode));
+    }
+
+    private static PassStatement passNode() {
+        return new PassStatement(RANGE);
     }
 }
