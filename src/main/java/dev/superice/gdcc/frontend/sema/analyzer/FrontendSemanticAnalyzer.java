@@ -12,19 +12,28 @@ import java.util.List;
 
 /// Basic frontend semantic-analyzer framework.
 ///
-/// This round intentionally stops at framework wiring: it builds the existing skeleton result
-/// and returns one shared `FrontendAnalysisData` carrier that already owns every planned
-/// side table. Binder, expression typing, member/call resolution, and diagnostics beyond the
-/// skeleton stage remain future work.
+/// This round intentionally stops at phase wiring: it builds the existing skeleton result,
+/// inserts a dedicated scope phase boundary, and returns one shared `FrontendAnalysisData`
+/// carrier that already owns every planned side table. Binder, lexical scope graph population,
+/// expression typing, and member/call resolution remain future work.
 public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder;
+    private final @NotNull FrontendScopeAnalyzer scopeAnalyzer;
 
     public FrontendSemanticAnalyzer() {
-        this(new FrontendClassSkeletonBuilder());
+        this(new FrontendClassSkeletonBuilder(), new FrontendScopeAnalyzer());
     }
 
     public FrontendSemanticAnalyzer(@NotNull FrontendClassSkeletonBuilder classSkeletonBuilder) {
+        this(classSkeletonBuilder, new FrontendScopeAnalyzer());
+    }
+
+    public FrontendSemanticAnalyzer(
+            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
+            @NotNull FrontendScopeAnalyzer scopeAnalyzer
+    ) {
         this.classSkeletonBuilder = Objects.requireNonNull(classSkeletonBuilder, "classSkeletonBuilder must not be null");
+        this.scopeAnalyzer = Objects.requireNonNull(scopeAnalyzer, "scopeAnalyzer must not be null");
     }
 
     /// Runs the current frontend analyzer framework against one module using a shared
@@ -52,7 +61,16 @@ public final class FrontendSemanticAnalyzer {
                 diagnosticManager,
                 analysisData
         );
+
+        // Publish the skeleton boundary before the scope phase starts so later phases can rely on
+        // a stable module snapshot instead of peeking into builder internals.
         analysisData.updateModuleSkeleton(moduleSkeleton);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+
+        // Scope analysis is a separate phase even before it starts producing real scope facts.
+        // This keeps the pipeline shape aligned with the implementation plan and with Godot's
+        // staged analyzer flow.
+        scopeAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return analysisData;
     }

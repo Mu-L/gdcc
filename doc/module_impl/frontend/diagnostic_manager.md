@@ -207,9 +207,12 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 
 - `FrontendSemanticAnalyzer` 当前返回 `FrontendAnalysisData`
 - analyze 流程围绕同一份共享分析数据推进
-- analyze 阶段结束时通过显式字段更新方法写回：
-    - `updateModuleSkeleton(...)`
-    - `updateDiagnostics(...)`
+- analyze 现在已经具备独立的 scope phase 骨架：
+    - skeleton 结束后先发布 `updateModuleSkeleton(...)`
+    - 再发布一次 pre-scope `updateDiagnostics(...)`
+    - 调用 `FrontendScopeAnalyzer.analyze(...)`
+    - scope phase 当前显式发布空的 `scopesByAst`
+    - 最后再次 `updateDiagnostics(...)`，把最终边界快照刷新到最新 shared manager 状态
 
 ### 3.4 exception
 

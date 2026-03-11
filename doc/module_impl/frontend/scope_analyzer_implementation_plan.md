@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：实施计划冻结中（调研完成，代码未开始落地）
-- 更新时间：2026-03-10
+- 状态：Phase 0 / Phase 1 已完成（scope phase 骨架与总控接线已落地，Phase 2+ 待继续实现）
+- 更新时间：2026-03-11
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/scope/**`
@@ -58,9 +58,10 @@
 
 - bootstrap 一份共享 `FrontendAnalysisData`
 - 调用 `FrontendClassSkeletonBuilder`
+- 在 skeleton 之后调用独立的 `FrontendScopeAnalyzer`
 - 用显式 `updateXXX(...)` 方法回写阶段结果
 
-当前它尚未负责 scope 建图，也没有额外 phase worker。
+当前它已经拥有独立的 scope phase worker，但该 worker 仍是 Phase 1 骨架实现，尚未开始 AST scope 建图。
 
 ### 2.2 `FrontendAnalysisData` 已是统一 side-table 载体
 
@@ -73,7 +74,7 @@
 - `resolvedMembers`
 - `resolvedCalls`
 
-其中只有 `annotationsByAst` 和阶段边界 diagnostics 已在生产代码中有实际写入。`scopesByAst` 当前仍是空表，但它的存在已经说明 scope analyzer 的结果应当写入这里，而不是再新建一份并行结构。
+其中 `annotationsByAst`、阶段边界 diagnostics，以及 scope phase 的显式空 `scopesByAst` 发布已在生产代码中落地。`scopesByAst` 当前仍不承载真实 scope facts，但它的存在已经说明 scope analyzer 的结果应当写入这里，而不是再新建一份并行结构。
 
 ### 2.3 `frontend.scope` 的协议已经冻结
 
@@ -457,6 +458,14 @@ scope analyzer 实施计划纳入以下内容：
   - 与 Godot 的对齐和差异
 - 不存在与 `diagnostic_manager.md` 或 `scope_architecture_refactor_plan.md` 冲突的职责描述
 
+### 当前状态（2026-03-11）
+
+- [x] 已冻结 `scopesByAst` 的语义为“某个 AST 对象当前应使用的 lexical scope”，而不是“拥有 scope 的节点集合”。
+- [x] 已明确 scope analyzer 的输入输出、与 `FrontendAnalysisData` 的集成方式，以及 `DiagnosticManager` 的共享 manager 约束。
+- [x] 已补齐 callable / block scope 来源盘点，并把 `CallableScopeKind` / `BlockScopeKind` 作为后续 Phase 2 的明确任务。
+- [x] 已把普通 locals、captures、pattern bindings、`for` 迭代变量预填等内容显式标记为 deferred，避免在首轮 scope phase 中扩大职责。
+- [x] 已把 inner class 初版 lexical-boundary 策略、match section 边界规则、与 Godot 的对齐结论和有意差异写成事实源。
+
 ### 7.2 Phase 1：引入 `FrontendScopeAnalyzer` 并接入总控流程
 
 ### 目标
@@ -483,6 +492,15 @@ scope analyzer 实施计划纳入以下内容：
 - `FrontendAnalysisData.moduleSkeleton()` 在 scope analyzer 运行前已经可用
 - analyze 返回结果仍然通过显式 `updateDiagnostics(...)` 保持最终 diagnostics 快照为最新值
 - 现有 skeleton 相关测试在行为上不回退
+
+### 当前状态（2026-03-11）
+
+- [x] 已新增 `FrontendScopeAnalyzer`，并保持它位于 `frontend.sema.analyzer` 下而非 `frontend.scope` 协议层。
+- [x] 已冻结其公开入口为 `analyze(ClassRegistry, FrontendAnalysisData, DiagnosticManager)`，不提供无 manager 的兼容入口。
+- [x] `FrontendSemanticAnalyzer` 已按计划在 skeleton 之后发布 `moduleSkeleton` 与 pre-scope diagnostics boundary，再调用 `FrontendScopeAnalyzer`。
+- [x] `FrontendSemanticAnalyzer` 已在 scope phase 返回后再次调用 `updateDiagnostics(...)`，确保最终 diagnostics 快照反映 scope phase 之后的 shared manager 状态。
+- [x] Phase 1 的 `FrontendScopeAnalyzer` 当前只显式发布空的 `scopesByAst` side-table，不提前开始 Phase 2 的 AST 建图或 binding 预填。
+- [x] 已新增 `FrontendScopeAnalyzerTest`，并补充 `FrontendAnalysisDataTest`，用正反测试锚定 phase 顺序、前置条件和 shared side-table 语义。
 
 ### 7.3 Phase 2：建立结构性 AST walker 与顶层/类/callable scope
 

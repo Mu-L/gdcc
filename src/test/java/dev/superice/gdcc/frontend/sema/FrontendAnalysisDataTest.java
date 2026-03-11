@@ -2,6 +2,9 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.scope.Scope;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -54,5 +57,20 @@ class FrontendAnalysisDataTest {
 
         assertSame(originalSideTable, analysisData.annotationsByAst());
         assertEquals(List.of(annotation), analysisData.annotationsByAst().get(astNode));
+    }
+
+    @Test
+    void updateScopesByAstCopiesContentsWithoutReplacingStableSideTableReference() throws Exception {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var originalSideTable = analysisData.scopesByAst();
+        var replacement = new FrontendAstSideTable<Scope>();
+        var astNode = new Object();
+        var scope = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        replacement.put(astNode, scope);
+
+        analysisData.updateScopesByAst(replacement);
+
+        assertSame(originalSideTable, analysisData.scopesByAst());
+        assertSame(scope, analysisData.scopesByAst().get(astNode));
     }
 }
