@@ -244,37 +244,52 @@ public final class ClassRegistry implements Scope {
     /// Return a GdType instance for the given type name if known.
     /// Rules:
     /// - Prefer textual parsing which maps builtin and container types to concrete GdType instances.
-    /// - If textual parsing yields a concrete non-GdObjectType -> return it (these are builtins, primitives, containers).
+    /// - If textual parsing succeeds -> return the parsed type directly.
     /// - If the name refers to a gd class (API `classes`) -> return engine GdObjectType(name, true).
     /// - If the name refers to builtin class from API (API.builtin_classes) -> treat as builtin type (non-engine);
-    /// - If the name is a container class -> treat as builtin container type and resolve its inner types accordingly.
+    /// - If the text is a container expression and one type argument is unknown but still looks like a legal
+    ///   Godot identifier, preserve the container shape and guess only that leaf object type.
     /// - If the name refers to a user defined class in `gdccClassByName` -> treat as user type (non-engine).
-    ///   we prefer tryParseTextType result for precise mapping; if tryParseTextType didn't recognize it, return a plain non-engine GdObjectType.
     /// - Do NOT return a type for global enums/utility functions in this method (return null instead).
-    /// - If none of the above matched, return a plain non-engine GdObjectType(name) (represents a user type reference).
+    /// - If none of the above matched, return a plain non-engine GdObjectType(name) only when `name`
+    ///   is a legal Godot identifier. Structured texts such as `Array[Foo]` must never degrade into
+    ///   a guessed top-level object type.
     public @Nullable GdType findType(@NotNull String name) {
+        var trimmed = name.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+
         // textual parsing first, including built-in type and container built-in type
-        var parsed = tryParseStrictTextType(name, this);
-        if (parsed != null && !(parsed instanceof GdObjectType)) {
+        var parsed = tryParseStrictTextType(trimmed, this);
+        if (parsed != null) {
             return parsed;
         }
 
         // If name corresponds to a gd class (engine type)
-        if (isGdClass(name)) return new GdObjectType(name);
+        if (isGdClass(trimmed)) return new GdObjectType(trimmed);
 
         // If name corresponds to a user-defined gdcc class, return a non-engine object type
-        if (isGdccClass(name)) return new GdObjectType(name);
+        if (isGdccClass(trimmed)) return new GdObjectType(trimmed);
 
         // If name is a global enum or utility function or singleton, we should not return a type here
-        if (isGlobalEnum(name) || isUtilityFunction(name)) return null;
+        if (isGlobalEnum(trimmed) || isUtilityFunction(trimmed)) return null;
 
         // If name is a builtin class defined in API but tryParseTextType couldn't map, then it is an error
-        if (isBuiltinClass(name)) {
-            throw new TypeParsingException("Builtin class type '" + name + "' could not be resolved by parser");
+        if (isBuiltinClass(trimmed)) {
+            throw new TypeParsingException("Builtin class type '" + trimmed + "' could not be resolved by parser");
         }
 
-        // Unknown: return plain non-engine object type
-        return new GdObjectType(name);
+        var compatibleContainerType = tryParseCompatibleContainerType(trimmed, this);
+        if (compatibleContainerType != null) {
+            return compatibleContainerType;
+        }
+        if (looksStructuredTypeText(trimmed)) {
+            return null;
+        }
+
+        // Unknown bare identifiers are still treated as forward-referenced object types.
+        return guessObjectTypeIfValidIdentifier(trimmed);
     }
 
     private @Nullable GdType resolveTypeName(@Nullable String typeName) {
@@ -305,16 +320,132 @@ public final class ClassRegistry implements Scope {
     /// Compatibility-oriented textual type parsing.
     ///
     /// This is the older, looser parser used by existing code paths. It first attempts strict parsing,
-    /// but if the name is still unknown it falls back to `new GdObjectType(name)`. New binder-style code
-    /// should prefer `resolveTypeMeta(...)` or `tryParseStrictTextType(...)` when it needs a definitive answer.
+    /// but if the name is still unknown it guesses only legal bare object identifiers. Container expressions
+    /// keep their `Array[...]` / `Dictionary[...]` shape even when a leaf type argument is guessed as an
+    /// object name; they must never collapse into `new GdObjectType("Array[...]")`.
+    /// New binder-style code should prefer `resolveTypeMeta(...)` or `tryParseStrictTextType(...)` when it
+    /// needs a definitive answer.
     public static @Nullable GdType tryParseTextType(@NotNull String typeName) {
-        var strict = tryParseStrictTextType(typeName, null);
+        var trimmed = typeName.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+
+        var strict = tryParseStrictTextType(trimmed, null);
         if (strict != null) {
             return strict;
         }
-        var t = typeName.trim();
-        if (t.isEmpty()) return null;
-        return new GdObjectType(t);
+
+        var compatibleContainerType = tryParseCompatibleContainerType(trimmed, null);
+        if (compatibleContainerType != null) {
+            return compatibleContainerType;
+        }
+        if (looksStructuredTypeText(trimmed)) {
+            return null;
+        }
+        return guessObjectTypeIfValidIdentifier(trimmed);
+    }
+
+    /// Parses top-level container expressions in compatibility mode.
+    ///
+    /// Compatibility mode differs from strict parsing in exactly one way: an unknown leaf type argument may
+    /// still be treated as a guessed `GdObjectType` when it is a legal Godot identifier. The outer container
+    /// remains typed, so `Array[MissingType]` becomes `Array[MissingType]` instead of degrading into a fake
+    /// top-level object type named `"Array[MissingType]"`.
+    private static @Nullable GdType tryParseCompatibleContainerType(@NotNull String textType,
+                                                                    @Nullable ClassRegistry registry) {
+        if (textType.startsWith("Array[") && textType.endsWith("]")) {
+            var inner = textType.substring(6, textType.length() - 1).trim();
+            if (inner.isEmpty()) {
+                return null;
+            }
+            var innerType = resolveCompatibleNestedType(inner, registry);
+            return innerType != null ? new GdArrayType(innerType) : null;
+        }
+        if (textType.startsWith("Dictionary[") && textType.endsWith("]")) {
+            var inner = textType.substring(11, textType.length() - 1).trim();
+            var parts = splitDictionaryTypeArgs(inner);
+            if (parts == null) {
+                return null;
+            }
+            var keyType = resolveCompatibleNestedType(parts.getFirst(), registry);
+            var valueType = resolveCompatibleNestedType(parts.getLast(), registry);
+            if (keyType == null || valueType == null) {
+                return null;
+            }
+            return new GdDictionaryType(keyType, valueType);
+        }
+        return null;
+    }
+
+    /// Resolves a leaf container type argument in compatibility mode.
+    ///
+    /// GDScript does not allow nested *structured* container declarations, so once we are inside `Array[...]`
+    /// or `Dictionary[..., ...]` we intentionally reject texts such as `Array[int]` or
+    /// `Dictionary[String, int]`. Bare container family names like `Array` / `Dictionary` are still legal
+    /// leaf types here and represent `Array[Variant]` / `Dictionary[Variant, Variant]`.
+    private static @Nullable GdType resolveCompatibleNestedType(@NotNull String typeText,
+                                                                @Nullable ClassRegistry registry) {
+        var trimmed = typeText.trim();
+        if (trimmed.isEmpty() || looksStructuredTypeText(trimmed)) {
+            return null;
+        }
+
+        var strictType = tryParseStrictTextType(trimmed, registry);
+        if (strictType != null) {
+            return strictType;
+        }
+        if (registry != null) {
+            var typeMeta = registry.resolveTypeMetaHere(trimmed);
+            if (typeMeta != null) {
+                return typeMeta.instanceType();
+            }
+            if (registry.isUtilityFunction(trimmed)) {
+                return null;
+            }
+        }
+        return guessObjectTypeIfValidIdentifier(trimmed);
+    }
+
+    /// `findType(...)` and `tryParseTextType(...)` may guess only bare object identifiers.
+    /// Any text that still looks like a structured type expression must fail instead of being wrapped
+    /// into a fake `GdObjectType("Array[...]")`.
+    private static boolean looksStructuredTypeText(@NotNull String typeText) {
+        return typeText.indexOf('[') >= 0 || typeText.indexOf(']') >= 0 || typeText.indexOf(',') >= 0;
+    }
+
+    private static @Nullable GdObjectType guessObjectTypeIfValidIdentifier(@NotNull String typeName) {
+        return isLegalGodotIdentifier(typeName) ? new GdObjectType(typeName) : null;
+    }
+
+    /// Godot identifiers follow UAX#31-style identifier rules: they cannot start with a digit and may only
+    /// contain identifier characters plus `_`. We use this guard before inventing an unknown object type so
+    /// malformed texts like `Array[bad-name]` or `123Foo` do not silently become fake class names.
+    static boolean isLegalGodotIdentifier(@NotNull String text) {
+        var trimmed = text.trim();
+        if (trimmed.isEmpty()) {
+            return false;
+        }
+        var firstCodePoint = trimmed.codePointAt(0);
+        if (!isGodotIdentifierStart(firstCodePoint)) {
+            return false;
+        }
+        for (var index = Character.charCount(firstCodePoint); index < trimmed.length(); ) {
+            var codePoint = trimmed.codePointAt(index);
+            if (!isGodotIdentifierPart(codePoint)) {
+                return false;
+            }
+            index += Character.charCount(codePoint);
+        }
+        return true;
+    }
+
+    private static boolean isGodotIdentifierStart(int codePoint) {
+        return codePoint == '_' || Character.isUnicodeIdentifierStart(codePoint);
+    }
+
+    private static boolean isGodotIdentifierPart(int codePoint) {
+        return codePoint == '_' || Character.isUnicodeIdentifierPart(codePoint);
     }
 
     /// Strict textual parsing used by type-meta resolution.
@@ -414,24 +545,34 @@ public final class ClassRegistry implements Scope {
     ///
     /// The helper first tries strict builtin parsing. If that fails and a registry is available, it then
     /// consults the strict type-meta namespace so user classes and global enums can participate inside
-    /// container type expressions.
+    /// container type expressions. Structured nested container texts are still rejected up front, but bare
+    /// container family names such as `Array` remain valid leaf types.
     private static @Nullable GdType resolveStrictNestedType(@NotNull String typeText,
                                                             @Nullable ClassRegistry registry) {
-        var strictType = tryParseStrictTextType(typeText, registry);
+        var trimmed = typeText.trim();
+        if (trimmed.isEmpty() || looksStructuredTypeText(trimmed)) {
+            return null;
+        }
+
+        var strictType = tryParseStrictTextType(trimmed, registry);
         if (strictType != null) {
             return strictType;
         }
         if (registry == null) {
             return null;
         }
-        var typeMeta = registry.resolveTypeMetaHere(typeText);
-        return typeMeta != null ? typeMeta.instanceType() : null;
+        var typeMeta = registry.resolveTypeMetaHere(trimmed);
+        if (typeMeta == null) {
+            return null;
+        }
+        return typeMeta.instanceType();
     }
 
     /// Splits the two type arguments of a strict `Dictionary[K, V]` expression.
     ///
     /// The current implementation is intentionally minimal and only looks for the first comma separator.
-    /// This is sufficient for the current Phase 2 scope but not for deeply nested dictionary generics.
+    /// This is sufficient because GDScript forbids nested container type declarations, so we do not need
+    /// bracket-depth-aware splitting here.
     private static @Nullable List<String> splitDictionaryTypeArgs(@NotNull String argsText) {
         var commaIndex = argsText.indexOf(',');
         if (commaIndex < 0) {

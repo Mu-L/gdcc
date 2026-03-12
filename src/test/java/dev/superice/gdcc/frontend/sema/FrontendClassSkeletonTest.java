@@ -5,8 +5,12 @@ import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
+import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.Statement;
 import org.junit.jupiter.api.Test;
@@ -156,6 +160,35 @@ class FrontendClassSkeletonTest {
         assertNull(registry.findGdccClass("InnerA"));
         assertNull(registry.findGdccClass("Deep"));
         assertNull(registry.findGdccClass("InnerB"));
+    }
+
+    @Test
+    void buildPreservesContainerTypesWhenLeafTypeFallsBackToUnknownObject() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "inventory_owner.gd"), """
+                class_name InventoryOwner
+                extends RefCounted
+
+                var items: Array[FutureItem]
+                var item_lookup: Dictionary[String, FutureItem]
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
+        var owner = findClassByName(result.classDefs(), "InventoryOwner");
+
+        var itemsType = assertInstanceOf(GdArrayType.class, owner.getProperties().get(0).getType());
+        assertEquals(new GdObjectType("FutureItem"), itemsType.getValueType());
+
+        var lookupType = assertInstanceOf(GdDictionaryType.class, owner.getProperties().get(1).getType());
+        assertEquals(GdStringType.STRING, lookupType.getKeyType());
+        assertEquals(new GdObjectType("FutureItem"), lookupType.getValueType());
+
+        assertTrue(diagnostics.isEmpty());
+        assertTrue(result.diagnostics().isEmpty());
     }
 
     /// Verifies the shared parse->skeleton pipeline keeps the original parse diagnostics exactly

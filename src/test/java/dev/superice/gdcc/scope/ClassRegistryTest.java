@@ -183,6 +183,61 @@ public class ClassRegistryTest {
     }
 
     @Test
+    void compatibilityTypeParsingShouldPreserveContainerShapeForUnknownLeafIdentifiers() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        assertEquals(
+                new GdArrayType(new GdObjectType("FutureEnemy")),
+                ClassRegistry.tryParseTextType("Array[FutureEnemy]")
+        );
+        assertEquals(
+                new GdDictionaryType(GdStringType.STRING, new GdObjectType("FutureEnemy")),
+                ClassRegistry.tryParseTextType("Dictionary[String, FutureEnemy]")
+        );
+        assertEquals(
+                new GdArrayType(new GdObjectType("FutureEnemy")),
+                registry.findType("Array[FutureEnemy]")
+        );
+        assertEquals(
+                new GdDictionaryType(GdStringType.STRING, new GdObjectType("FutureEnemy")),
+                registry.findType("Dictionary[String, FutureEnemy]")
+        );
+
+        assertNull(registry.tryResolveDeclaredType("Array[FutureEnemy]"));
+        assertNull(registry.tryResolveDeclaredType("Dictionary[String, FutureEnemy]"));
+    }
+
+    @Test
+    void compatibilityTypeParsingShouldRejectInvalidObjectIdentifiers() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        assertNull(ClassRegistry.tryParseTextType("1Enemy"));
+        assertNull(ClassRegistry.tryParseTextType("bad-name"));
+        assertNull(ClassRegistry.tryParseTextType("Array[1Enemy]"));
+        assertNull(ClassRegistry.tryParseTextType("Dictionary[String, bad-name]"));
+
+        assertNull(registry.findType("Array[1Enemy]"));
+        assertNull(registry.findType("Dictionary[String, bad-name]"));
+    }
+
+    @Test
+    void declaredTypeParsingShouldAllowBareContainerFamiliesButRejectStructuredNestedContainers() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        assertEquals(
+                new GdArrayType(new GdArrayType(GdVariantType.VARIANT)),
+                registry.tryResolveDeclaredType("Array[Array]")
+        );
+        assertEquals(
+                new GdDictionaryType(GdStringType.STRING, new GdArrayType(GdVariantType.VARIANT)),
+                registry.tryResolveDeclaredType("Dictionary[String, Array]")
+        );
+
+        assertNull(registry.tryResolveDeclaredType("Array[Array[int]]"));
+        assertNull(registry.tryResolveDeclaredType("Dictionary[String, Array[int]]"));
+    }
+
+    @Test
     void findDefaultValues() throws IOException {
         var api = ExtensionApiLoader.loadDefault();
         var registry = new ClassRegistry(api);

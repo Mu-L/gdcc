@@ -598,7 +598,7 @@ public final class ScopeMethodResolver {
         return switch (ownerKind) {
             case GDCC, ENGINE -> new GdObjectType(ownerClassName);
             case BUILTIN -> {
-                var parsed = ClassRegistry.tryParseTextType(ownerClassName);
+                var parsed = ClassRegistry.tryParseStrictTextType(ownerClassName, null);
                 if (parsed == null) {
                     throw new ScopeMethodResolutionException(
                             FailureKind.MALFORMED_METADATA,

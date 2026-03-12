@@ -90,6 +90,24 @@ class UtilityDefaultLiteralMaterializationTest {
         assertDoesNotThrow(() -> materializeWithSample(api, sample));
     }
 
+    @Test
+    @DisplayName("materializeUtilityDefaultValue should support typed array defaults whose element family is Array")
+    void shouldMaterializeTypedArrayOfArrayDefault() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        var sample = new DefaultSample(
+                ScopeTypeParsers.parseExtensionTypeMetadata(
+                        "typedarray::Array",
+                        "test typedarray array default metadata",
+                        classRegistry
+                ),
+                "Array[Array]([])",
+                "synthetic:typedarray_array_default"
+        );
+
+        assertDoesNotThrow(() -> materializeWithSample(api, sample));
+    }
+
     private void materializeWithSample(ExtensionAPI api, DefaultSample sample) {
         var builder = newBodyBuilder(api);
         var temp = builder.newTempVariable("default_literal", sample.type());

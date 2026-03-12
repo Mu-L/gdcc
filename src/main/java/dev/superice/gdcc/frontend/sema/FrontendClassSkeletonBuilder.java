@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.*;
+import dev.superice.gdcc.exception.TypeParsingException;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
@@ -325,16 +326,22 @@ public final class FrontendClassSkeletonBuilder {
             @Nullable TypeRef typeRef,
             @NotNull SkeletonBuildContext context
     ) {
-        if (typeRef == null || typeRef.sourceText().isBlank()) {
+        if (typeRef == null) {
+            return GdVariantType.VARIANT;
+        }
+        var typeText = typeRef.sourceText().trim();
+        // `gdparser` currently surfaces the inferred-declaration token `:=` through `TypeRef.sourceText()`.
+        // Skeleton build treats that marker as "no explicit type annotation" instead of a real type name.
+        if (typeText.isEmpty() || typeText.equals(":=")) {
             return GdVariantType.VARIANT;
         }
 
         try {
-            var resolvedType = context.classRegistry().findType(typeRef.sourceText().trim());
+            var resolvedType = context.classRegistry().findType(typeText);
             if (resolvedType != null) {
                 return resolvedType;
             }
-        } catch (RuntimeException ignored) {
+        } catch (TypeParsingException ignored) {
             // Preserve tolerant frontend behavior: downgrade to Variant with warning.
         }
 
