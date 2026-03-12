@@ -652,7 +652,7 @@ scope analyzer 实施计划纳入以下内容：
 - [x] `FrontendScopeAnalyzer` 已基于上述 relation 为 inner class 物化独立 `ClassScope`，并把 `ClassDeclaration`、其 body 以及内部 callable/control-flow 子树完整写入 `scopesByAst()`。
 - [x] `ClassDeclaration.body` 不再误建为普通 `BlockScope`；它现在复用 owning `ClassScope`，避免类成员容器被错误压成 block lexical layer。
 - [x] 若某个 inner class 没有已发布 skeleton relation，scope analyzer 会局部跳过该 subtree，同时继续分析同一 source 中其他合法节点，不再出现“整棵 source 被拖死”的扩大化失败。
-- [x] 已补齐正反测试，覆盖 source relation 显式映射、nested inner class、inner callable parent chain，以及 missing-relation recovery path。
+- [x] 已补齐正反测试，覆盖 source relation 显式映射、多级 inner class、inner class 与多层 lambda 混合嵌套、multi-source-unit module，以及 missing-relation recovery path。
 
 ### 7.6 Phase 5：冻结“先建完整 scope graph，再做独立 binding pass”的边界
 

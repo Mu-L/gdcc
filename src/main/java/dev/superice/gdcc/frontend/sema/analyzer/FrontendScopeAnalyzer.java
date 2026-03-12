@@ -68,7 +68,7 @@ public class FrontendScopeAnalyzer {
         analysisData.updateScopesByAst(scopesByAst);
     }
 
-    /// Phase-3 scope builder that reacts to nodes traversed by `gdparser`'s built-in `ASTWalker`.
+    /// Phase-4 scope builder that reacts to nodes traversed by `gdparser`'s built-in `ASTWalker`.
     ///
     /// The handler keeps semantic policy local while delegating traversal mechanics to the parser
     /// library:
@@ -76,6 +76,8 @@ public class FrontendScopeAnalyzer {
     /// - callables create their own `CallableScope`
     /// - callable bodies create a separate `BlockScope`
     /// - control-flow bodies create dedicated branch/loop `BlockScope`s
+    ///
+    /// - nested `ClassDeclaration` nodes reopen a `ClassScope` from source-local skeleton facts
     ///
     /// Everything else is either:
     /// - visited under the current already-established lexical scope, or

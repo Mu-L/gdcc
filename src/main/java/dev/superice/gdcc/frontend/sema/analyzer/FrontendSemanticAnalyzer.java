@@ -12,10 +12,11 @@ import java.util.List;
 
 /// Basic frontend semantic-analyzer framework.
 ///
-/// This round intentionally stops at phase wiring: it builds the existing skeleton result,
-/// inserts a dedicated scope phase boundary, and returns one shared `FrontendAnalysisData`
-/// carrier that already owns every planned side table. Binder, lexical scope graph population,
-/// expression typing, and member/call resolution remain future work.
+/// The current framework already wires three stable frontend phases into one shared
+/// `FrontendAnalysisData` carrier:
+/// - skeleton publication
+/// - lexical scope graph construction
+/// - diagnostics boundary refresh after each phase
 public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder;
     private final @NotNull FrontendScopeAnalyzer scopeAnalyzer;
@@ -67,9 +68,9 @@ public final class FrontendSemanticAnalyzer {
         analysisData.updateModuleSkeleton(moduleSkeleton);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
-        // Scope analysis is a separate phase even before it starts producing real scope facts.
-        // This keeps the pipeline shape aligned with the implementation plan and with Godot's
-        // staged analyzer flow.
+        // Scope analysis remains a dedicated phase after skeleton publication so later binder/body
+        // work can consume one stable lexical graph instead of interleaving scope creation with
+        // later semantic binding.
         scopeAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return analysisData;

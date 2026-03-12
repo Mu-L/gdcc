@@ -459,6 +459,141 @@ class FrontendScopeAnalyzerTest {
     }
 
     @Test
+    void analyzeBuildsMixedNestedInnerClassAndLambdaScopesAcrossMultipleLevels() throws Exception {
+        var analyzed = analyze("""
+                class_name MixedNestedBoundaries
+                extends Node
+                
+                class Inner:
+                    var class_lambda := func(seed: int):
+                        var nested_lambda := func(offset: int):
+                            return offset
+                        return nested_lambda
+                
+                    func host(value: int) -> Callable:
+                        var local_lambda := func(multiplier: int):
+                            var deeper_lambda := func(extra: int):
+                                return extra
+                            return multiplier
+                        return local_lambda
+                
+                    class Deep:
+                        var deep_lambda := func(flag: bool):
+                            return flag
+                
+                        class Bottom:
+                            func bottom_host() -> Callable:
+                                var bottom_lambda := func(code: int):
+                                    return code
+                                return bottom_lambda
+                """);
+        var sourceFile = analyzed.unit().ast();
+        var scopesByAst = analyzed.analysisData().scopesByAst();
+        var sourceScope = assertInstanceOf(ClassScope.class, scopesByAst.get(sourceFile));
+
+        var innerClass = findStatement(sourceFile.statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Inner"));
+        var innerScope = assertInstanceOf(ClassScope.class, scopesByAst.get(innerClass));
+        assertSame(sourceScope, innerScope.getParentScope());
+        assertSame(innerScope, scopesByAst.get(innerClass.body()));
+
+        var classLambdaDeclaration = findStatement(
+                innerClass.body().statements(),
+                VariableDeclaration.class,
+                variable -> variable.name().equals("class_lambda")
+        );
+        assertSame(innerScope, scopesByAst.get(classLambdaDeclaration));
+        var classLambda = assertInstanceOf(LambdaExpression.class, classLambdaDeclaration.value());
+        var classLambdaScope = assertInstanceOf(CallableScope.class, scopesByAst.get(classLambda));
+        assertEquals(CallableScopeKind.LAMBDA_EXPRESSION, classLambdaScope.kind());
+        assertSame(innerScope, classLambdaScope.getParentScope());
+        var classLambdaBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(classLambda.body()));
+        assertEquals(BlockScopeKind.LAMBDA_BODY, classLambdaBodyScope.kind());
+        assertSame(classLambdaScope, classLambdaBodyScope.getParentScope());
+
+        var nestedLambdaDeclaration = findStatement(
+                classLambda.body().statements(),
+                VariableDeclaration.class,
+                variable -> variable.name().equals("nested_lambda")
+        );
+        assertSame(classLambdaBodyScope, scopesByAst.get(nestedLambdaDeclaration));
+        var nestedLambda = assertInstanceOf(LambdaExpression.class, nestedLambdaDeclaration.value());
+        var nestedLambdaScope = assertInstanceOf(CallableScope.class, scopesByAst.get(nestedLambda));
+        assertSame(classLambdaBodyScope, nestedLambdaScope.getParentScope());
+        var nestedLambdaBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(nestedLambda.body()));
+        assertSame(nestedLambdaScope, nestedLambdaBodyScope.getParentScope());
+
+        var hostFunction = findStatement(innerClass.body().statements(), FunctionDeclaration.class, function -> function.name().equals("host"));
+        var hostScope = assertInstanceOf(CallableScope.class, scopesByAst.get(hostFunction));
+        assertSame(innerScope, hostScope.getParentScope());
+        var hostBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(hostFunction.body()));
+        assertSame(hostScope, hostBodyScope.getParentScope());
+
+        var localLambdaDeclaration = findStatement(
+                hostFunction.body().statements(),
+                VariableDeclaration.class,
+                variable -> variable.name().equals("local_lambda")
+        );
+        assertSame(hostBodyScope, scopesByAst.get(localLambdaDeclaration));
+        var localLambda = assertInstanceOf(LambdaExpression.class, localLambdaDeclaration.value());
+        var localLambdaScope = assertInstanceOf(CallableScope.class, scopesByAst.get(localLambda));
+        assertSame(hostBodyScope, localLambdaScope.getParentScope());
+        var localLambdaBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(localLambda.body()));
+        assertSame(localLambdaScope, localLambdaBodyScope.getParentScope());
+
+        var deeperLambdaDeclaration = findStatement(
+                localLambda.body().statements(),
+                VariableDeclaration.class,
+                variable -> variable.name().equals("deeper_lambda")
+        );
+        assertSame(localLambdaBodyScope, scopesByAst.get(deeperLambdaDeclaration));
+        var deeperLambda = assertInstanceOf(LambdaExpression.class, deeperLambdaDeclaration.value());
+        var deeperLambdaScope = assertInstanceOf(CallableScope.class, scopesByAst.get(deeperLambda));
+        assertSame(localLambdaBodyScope, deeperLambdaScope.getParentScope());
+        var deeperLambdaBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(deeperLambda.body()));
+        assertSame(deeperLambdaScope, deeperLambdaBodyScope.getParentScope());
+
+        var deepClass = findStatement(innerClass.body().statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Deep"));
+        var deepScope = assertInstanceOf(ClassScope.class, scopesByAst.get(deepClass));
+        assertSame(innerScope, deepScope.getParentScope());
+        assertSame(deepScope, scopesByAst.get(deepClass.body()));
+
+        var deepLambdaDeclaration = findStatement(
+                deepClass.body().statements(),
+                VariableDeclaration.class,
+                variable -> variable.name().equals("deep_lambda")
+        );
+        assertSame(deepScope, scopesByAst.get(deepLambdaDeclaration));
+        var deepLambda = assertInstanceOf(LambdaExpression.class, deepLambdaDeclaration.value());
+        var deepLambdaScope = assertInstanceOf(CallableScope.class, scopesByAst.get(deepLambda));
+        assertSame(deepScope, deepLambdaScope.getParentScope());
+        var deepLambdaBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(deepLambda.body()));
+        assertSame(deepLambdaScope, deepLambdaBodyScope.getParentScope());
+
+        var bottomClass = findStatement(deepClass.body().statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Bottom"));
+        var bottomScope = assertInstanceOf(ClassScope.class, scopesByAst.get(bottomClass));
+        assertSame(deepScope, bottomScope.getParentScope());
+        assertSame(bottomScope, scopesByAst.get(bottomClass.body()));
+
+        var bottomHost = findStatement(bottomClass.body().statements(), FunctionDeclaration.class, function -> function.name().equals("bottom_host"));
+        var bottomHostScope = assertInstanceOf(CallableScope.class, scopesByAst.get(bottomHost));
+        assertSame(bottomScope, bottomHostScope.getParentScope());
+        var bottomHostBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(bottomHost.body()));
+        assertSame(bottomHostScope, bottomHostBodyScope.getParentScope());
+
+        var bottomLambdaDeclaration = findStatement(
+                bottomHost.body().statements(),
+                VariableDeclaration.class,
+                variable -> variable.name().equals("bottom_lambda")
+        );
+        assertSame(bottomHostBodyScope, scopesByAst.get(bottomLambdaDeclaration));
+        var bottomLambda = assertInstanceOf(LambdaExpression.class, bottomLambdaDeclaration.value());
+        var bottomLambdaScope = assertInstanceOf(CallableScope.class, scopesByAst.get(bottomLambda));
+        assertSame(bottomHostBodyScope, bottomLambdaScope.getParentScope());
+        var bottomLambdaBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(bottomLambda.body()));
+        assertSame(bottomLambdaScope, bottomLambdaBodyScope.getParentScope());
+    }
+
+    @Test
     void analyzeSkipsOnlyInnerClassSubtreeWhenSourceRelationDoesNotPublishItsSkeleton() throws Exception {
         var nestedFunctionBody = new Block(List.of(new PassStatement(SYNTHETIC_RANGE)), SYNTHETIC_RANGE);
         var nestedFunction = new FunctionDeclaration("nested", List.of(), null, false, nestedFunctionBody, SYNTHETIC_RANGE);
@@ -498,6 +633,204 @@ class FrontendScopeAnalyzerTest {
         assertFalse(scopesByAst.containsKey(innerClassBody));
         assertFalse(scopesByAst.containsKey(nestedFunction));
         assertFalse(scopesByAst.containsKey(nestedFunctionBody));
+    }
+
+    @Test
+    void semanticAnalysisBuildsIndependentScopeGraphsForMultipleSourceUnitsWithSameInnerClassNames() throws Exception {
+        var analyzedModule = analyzeModule(List.of(
+                new ModuleSource("alpha_scope_unit.gd", """
+                        class_name AlphaScript
+                        extends Node
+                        
+                        class Inner:
+                            var alpha_builder := func(seed: int):
+                                return seed
+                        """),
+                new ModuleSource("beta_scope_unit.gd", """
+                        class_name BetaScript
+                        extends Node
+                        
+                        class Inner:
+                            func beta() -> int:
+                                var beta_builder := func(code: int):
+                                    return code
+                                return 2
+                        """)
+        ));
+        var unitA = analyzedModule.units().getFirst();
+        var unitB = analyzedModule.units().getLast();
+        var scopesByAst = analyzedModule.analysisData().scopesByAst();
+
+        assertEquals(2, analyzedModule.analysisData().moduleSkeleton().sourceClassRelations().size());
+
+        var sourceAScope = assertInstanceOf(ClassScope.class, scopesByAst.get(unitA.ast()));
+        var sourceBScope = assertInstanceOf(ClassScope.class, scopesByAst.get(unitB.ast()));
+        assertNotSame(sourceAScope, sourceBScope);
+        assertEquals("AlphaScript", sourceAScope.getCurrentClass().getName());
+        assertEquals("BetaScript", sourceBScope.getCurrentClass().getName());
+
+        var innerA = findStatement(unitA.ast().statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Inner"));
+        var innerB = findStatement(unitB.ast().statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Inner"));
+        var innerAScope = assertInstanceOf(ClassScope.class, scopesByAst.get(innerA));
+        var innerBScope = assertInstanceOf(ClassScope.class, scopesByAst.get(innerB));
+        assertSame(sourceAScope, innerAScope.getParentScope());
+        assertSame(sourceBScope, innerBScope.getParentScope());
+        assertNotSame(innerAScope, innerBScope);
+
+        var alphaBuilderDeclaration = findStatement(
+                innerA.body().statements(),
+                VariableDeclaration.class,
+                variable -> variable.name().equals("alpha_builder")
+        );
+        var alphaBuilder = assertInstanceOf(LambdaExpression.class, alphaBuilderDeclaration.value());
+        var alphaBuilderScope = assertInstanceOf(CallableScope.class, scopesByAst.get(alphaBuilder));
+        assertSame(innerAScope, alphaBuilderScope.getParentScope());
+
+        var betaFunction = findStatement(innerB.body().statements(), FunctionDeclaration.class, function -> function.name().equals("beta"));
+        var betaFunctionScope = assertInstanceOf(CallableScope.class, scopesByAst.get(betaFunction));
+        assertSame(innerBScope, betaFunctionScope.getParentScope());
+        var betaBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(betaFunction.body()));
+        assertSame(betaFunctionScope, betaBodyScope.getParentScope());
+        var betaBuilderDeclaration = findStatement(
+                betaFunction.body().statements(),
+                VariableDeclaration.class,
+                variable -> variable.name().equals("beta_builder")
+        );
+        var betaBuilder = assertInstanceOf(LambdaExpression.class, betaBuilderDeclaration.value());
+        var betaBuilderScope = assertInstanceOf(CallableScope.class, scopesByAst.get(betaBuilder));
+        assertSame(betaBodyScope, betaBuilderScope.getParentScope());
+    }
+
+    @Test
+    void analyzeSkipsMissingDeepInnerClassRelationWithoutBreakingSiblingUnitsOrNestedLambdas() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var firstUnit = parserService.parseUnit(
+                java.nio.file.Path.of("tmp", "multi_unit_missing_deep_a.gd"),
+                """
+                        class_name MultiUnitNestedA
+                        extends Node
+                        
+                        class OuterInner:
+                            var outer_lambda := func(seed: int):
+                                return seed
+                        
+                            class DeepMissing:
+                                func lost() -> int:
+                                    return 0
+                        
+                            func host() -> Callable:
+                                var survivor := func(value: int):
+                                    return value
+                                return survivor
+                        """,
+                diagnostics
+        );
+        var secondUnit = parserService.parseUnit(
+                java.nio.file.Path.of("tmp", "multi_unit_missing_deep_b.gd"),
+                """
+                        class_name MultiUnitNestedB
+                        extends Node
+                        
+                        class Inner:
+                            func keep() -> Callable:
+                                var factory := func(code: int):
+                                    return code
+                                return factory
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+
+        var firstSourceFile = firstUnit.ast();
+        var outerInner = findStatement(firstSourceFile.statements(), ClassDeclaration.class, declaration -> declaration.name().equals("OuterInner"));
+        var deepMissing = findStatement(outerInner.body().statements(), ClassDeclaration.class, declaration -> declaration.name().equals("DeepMissing"));
+        var lostFunction = findStatement(deepMissing.body().statements(), FunctionDeclaration.class, function -> function.name().equals("lost"));
+
+        var secondSourceFile = secondUnit.ast();
+        var secondInner = findStatement(secondSourceFile.statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Inner"));
+        var keepFunction = findStatement(secondInner.body().statements(), FunctionDeclaration.class, function -> function.name().equals("keep"));
+
+        var boundaryDiagnostics = diagnostics.snapshot();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        analysisData.updateModuleSkeleton(
+                new FrontendModuleSkeleton(
+                        "test_module",
+                        List.of(
+                                new FrontendSourceClassRelation(
+                                        firstUnit,
+                                        new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedA", "Node"),
+                                        List.of(new FrontendInnerClassRelation(
+                                                outerInner,
+                                                new dev.superice.gdcc.lir.LirClassDef("OuterInner", "RefCounted")
+                                        ))
+                                ),
+                                new FrontendSourceClassRelation(
+                                        secondUnit,
+                                        new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedB", "Node"),
+                                        List.of(new FrontendInnerClassRelation(
+                                                secondInner,
+                                                new dev.superice.gdcc.lir.LirClassDef("Inner", "RefCounted")
+                                        ))
+                                )
+                        ),
+                        boundaryDiagnostics
+                )
+        );
+        analysisData.updateDiagnostics(boundaryDiagnostics);
+
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        new FrontendScopeAnalyzer().analyze(registry, analysisData, diagnostics);
+
+        var scopesByAst = analysisData.scopesByAst();
+        var firstSourceScope = assertInstanceOf(ClassScope.class, scopesByAst.get(firstSourceFile));
+        var secondSourceScope = assertInstanceOf(ClassScope.class, scopesByAst.get(secondSourceFile));
+        assertNotSame(firstSourceScope, secondSourceScope);
+
+        var outerInnerScope = assertInstanceOf(ClassScope.class, scopesByAst.get(outerInner));
+        assertSame(firstSourceScope, outerInnerScope.getParentScope());
+        var outerLambdaDeclaration = findStatement(
+                outerInner.body().statements(),
+                VariableDeclaration.class,
+                variable -> variable.name().equals("outer_lambda")
+        );
+        var outerLambda = assertInstanceOf(LambdaExpression.class, outerLambdaDeclaration.value());
+        var outerLambdaScope = assertInstanceOf(CallableScope.class, scopesByAst.get(outerLambda));
+        assertSame(outerInnerScope, outerLambdaScope.getParentScope());
+
+        var hostFunction = findStatement(outerInner.body().statements(), FunctionDeclaration.class, function -> function.name().equals("host"));
+        var hostFunctionScope = assertInstanceOf(CallableScope.class, scopesByAst.get(hostFunction));
+        assertSame(outerInnerScope, hostFunctionScope.getParentScope());
+        var hostBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(hostFunction.body()));
+        assertSame(hostFunctionScope, hostBodyScope.getParentScope());
+        var survivorDeclaration = findStatement(
+                hostFunction.body().statements(),
+                VariableDeclaration.class,
+                variable -> variable.name().equals("survivor")
+        );
+        var survivorLambda = assertInstanceOf(LambdaExpression.class, survivorDeclaration.value());
+        var survivorScope = assertInstanceOf(CallableScope.class, scopesByAst.get(survivorLambda));
+        assertSame(hostBodyScope, survivorScope.getParentScope());
+
+        assertFalse(scopesByAst.containsKey(deepMissing));
+        assertFalse(scopesByAst.containsKey(deepMissing.body()));
+        assertFalse(scopesByAst.containsKey(lostFunction));
+        assertFalse(scopesByAst.containsKey(lostFunction.body()));
+
+        var secondInnerScope = assertInstanceOf(ClassScope.class, scopesByAst.get(secondInner));
+        assertSame(secondSourceScope, secondInnerScope.getParentScope());
+        var keepFunctionScope = assertInstanceOf(CallableScope.class, scopesByAst.get(keepFunction));
+        assertSame(secondInnerScope, keepFunctionScope.getParentScope());
+        var keepBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(keepFunction.body()));
+        assertSame(keepFunctionScope, keepBodyScope.getParentScope());
+        var factoryDeclaration = findStatement(
+                keepFunction.body().statements(),
+                VariableDeclaration.class,
+                variable -> variable.name().equals("factory")
+        );
+        var factoryLambda = assertInstanceOf(LambdaExpression.class, factoryDeclaration.value());
+        var factoryScope = assertInstanceOf(CallableScope.class, scopesByAst.get(factoryLambda));
+        assertSame(keepBodyScope, factoryScope.getParentScope());
     }
 
     @Test
@@ -582,6 +915,24 @@ class FrontendScopeAnalyzerTest {
                 .orElseThrow(() -> new AssertionError("Statement not found: " + statementType.getSimpleName()));
     }
 
+    private AnalyzedModule analyzeModule(@NotNull List<ModuleSource> sources) throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var units = new java.util.ArrayList<FrontendSourceUnit>(sources.size());
+        for (var source : sources) {
+            units.add(parserService.parseUnit(
+                    java.nio.file.Path.of("tmp", source.fileName()),
+                    source.source(),
+                    diagnostics
+            ));
+        }
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analyzer = new FrontendSemanticAnalyzer();
+        var analysisData = analyzer.analyze("test_module", units, registry, diagnostics);
+        return new AnalyzedModule(List.copyOf(units), analysisData);
+    }
+
     /// Scope-phase probe used by the integration test to anchor phase ordering.
     ///
     /// It observes what `FrontendSemanticAnalyzer` has already published when the scope phase
@@ -617,6 +968,18 @@ class FrontendScopeAnalyzerTest {
     private record AnalyzedUnit(
             @NotNull FrontendSourceUnit unit,
             @NotNull FrontendAnalysisData analysisData
+    ) {
+    }
+
+    private record AnalyzedModule(
+            @NotNull List<FrontendSourceUnit> units,
+            @NotNull FrontendAnalysisData analysisData
+    ) {
+    }
+
+    private record ModuleSource(
+            @NotNull String fileName,
+            @NotNull String source
     ) {
     }
 }
