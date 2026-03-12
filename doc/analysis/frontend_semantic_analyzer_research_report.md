@@ -10,7 +10,7 @@
 基于当前代码库，旧版报告里最需要修正的结论有 8 点：
 
 1. **`gdparser` 版本已经明确升级到 `0.5.1`。** 当前事实源是 `build.gradle.kts`，scope analyzer 也已经直接复用库内置 `ASTWalker`，而不是继续维护本地 walker 封装。
-2. **GDCC frontend 已不再只是“parse + 少量 skeleton 测试”。** 目前除了解析和类骨架构建，还已经落地了 `Scope` 协议、`ClassScope` / `CallableScope` / `BlockScope`、restriction-aware lookup、signal 的 unqualified scope 语义，以及一批 frontend/scope/shared-resolver 测试。
+2. **GDCC frontend 已不再只是“parse + 少量 skeleton 测试”。** 目前除了解析和类骨架构建，还已经落地了 shared `DiagnosticManager` + 阶段边界 snapshot、`Scope` 协议、`ClassScope` / `CallableScope` / `BlockScope`、真实的 `FrontendScopeAnalyzer` lexical graph、restriction-aware lookup、signal 的 unqualified scope 语义，以及一批 frontend/scope/shared-resolver 测试。
 3. **但 frontend 仍然没有真正的 body-level semantic analyzer。** 当前仍缺 binder、assignable analyzer、表达式类型推断、调用/成员访问分析结果、统一 `AnalysisResult`、AST body lowering。
 4. **`FrontendBindingKind` 的旧结论已经过时。** 当前代码里已经有 `SIGNAL` 和 `TYPE_META`，旧报告中“缺少 `TYPE_META`”“signal 还未补位”的说法不成立。
 5. **`ClassRegistry` 现在同时承载“宽松旧接口”和“严格新协议”。** `findType(...)` 仍是宽松兼容入口；真正适合未来 binder/type namespace 的，是严格的 `resolveTypeMeta(...)` 与 `Scope` 协议。
@@ -134,6 +134,8 @@
 - **对普通源码错误的恢复策略也已经开始收口：skeleton phase 更倾向于发 diagnostic 并跳过坏 subtree，而不是直接抛 frontend 异常打断整条 pipeline**
 
 与之对应，`FrontendScopeAnalyzer` 当前也不再通过 `moduleSkeleton.units()` 和 `moduleSkeleton.classDefs()` 的索引对齐来恢复来源关系，而是直接消费 `sourceClassRelations()` 中显式发布的顶层类和 inner `ClassDeclaration -> skeleton` pair。inner class 的独立 lexical boundary 现已在 analyzer 阶段被真正物化；当某个 inner class subtree 没有已发布 relation 时，analyzer 会局部跳过该 subtree，而不是扩大成整条 source 的失败。
+
+与此同时，frontend 诊断主链也已经收敛到 shared `DiagnosticManager` + 边界 `DiagnosticSnapshot`：parser、skeleton 与 analyzer 都显式接收同一 manager，`FrontendSemanticAnalyzer` 在 skeleton 之后与 scope phase 之后各发布一次 diagnostics snapshot，而不是通过局部 list 或异常对象透传普通源码错误。
 
 ## 3.3 frontend scope 架构已经从“计划”变成了已落地基础设施
 
@@ -369,7 +371,7 @@
 
 1. **没有独立的 frontend interface phase。** 当前只有 skeleton builder，还没有统一的 declaration/interface analysis 结果层。
 2. **没有 frontend body phase。** 当前没有 AST 级 binder、表达式类型推断、assignable analyzer、return/suite merge、lambda capture 分析器。
-3. **虽然已有统一的 `FrontendAnalysisData`，但真正的 body/interface 分析产物仍未落地。** 当前 side-table 容器已经存在，并稳定承载 annotation / scope / binding / type / resolved member / resolved call 的统一拓扑，但除 annotation 与诊断边界外，其余表仍主要等待后续 binder/body phase 正式填充。
+3. **虽然已有统一的 `FrontendAnalysisData`，但真正的 body/interface 分析产物仍未落地。** 当前 side-table 容器已经存在，并稳定承载 annotation / scope / binding / type / resolved member / resolved call 的统一拓扑；其中 annotation、diagnostics 与 lexical `scopesByAst` 已经 live，binding / type / resolved member / resolved call 仍主要等待后续 binder/body phase 正式填充。
 4. **没有 frontend binder 对现有 scope/resolver 的正式接线。** `FrontendBindingKind`、`ClassScope`、`ResolveRestriction`、shared resolver 仍主要停留在基础设施层。
 5. **没有 AST body -> LIR lowering。** 当前 `FrontendClassSkeletonBuilder` 只产生 `LirClassDef` 的声明骨架，并不生成函数体 LIR。
 6. **没有前端级 feature boundary 诊断框架。** 对 `await`、更完整 annotation 语义、constructor/base-call/self/cast/type-test 等节点，还没有统一的“recognized but unsupported / deferred” 诊断策略。

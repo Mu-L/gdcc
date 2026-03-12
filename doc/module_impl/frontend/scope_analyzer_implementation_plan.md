@@ -22,22 +22,18 @@
 
 ## 1. 背景与目标
 
-当前 frontend 已经完成两块基础工作：
+当前 frontend 已经完成以下基础工作：
 
 - parser 产出 `FrontendSourceUnit`
-- `FrontendSemanticAnalyzer` 完成注解收集与模块骨架分析，并把结果发布到 `FrontendAnalysisData`
+- `FrontendSemanticAnalyzer` 已串起 annotation / skeleton / scope 三个阶段，并把阶段结果发布到 `FrontendAnalysisData`
+- `FrontendScopeAnalyzer` 已为顶层脚本、callable、控制流 block 与 inner class 建立真实 lexical scope graph
 
-但 scope 相关工作仍然停留在“协议与测试已经冻结、生产代码尚未接线”的状态：
-
-- `frontend.scope` 已有 `ClassScope`、`CallableScope`、`BlockScope`
-- `FrontendAnalysisData` 已预留 `scopesByAst()` side-table
-- 生产代码中仍没有任何阶段为 AST 实际建立 scope graph，也没有任何地方向 `scopesByAst()` 写入事实
-
-因此，下一个 frontend 语义阶段应当是一个专门的 scope analyzer，其目标不是一次性完成全部 binding，而是在已经完成：
+但 frontend 仍然没有真正的 binder/body phase，因此 scope 计划的当前价值已经从“是否接线”切换为“冻结 scope graph 的事实源与后续边界”。本计划关注的目标不再是从零引入 scope phase，而是明确在已经完成：
 
 - annotation collection
 - module/class skeleton
 - diagnose phase boundary publication
+- lexical scope graph publication
 
 之后，为 AST 建立可被后续 binder/body phase 消费的 scope side-table。
 
@@ -74,7 +70,7 @@
 - `resolvedMembers`
 - `resolvedCalls`
 
-其中 `annotationsByAst`、阶段边界 diagnostics，以及 scope phase 的显式空 `scopesByAst` 发布已在生产代码中落地。`scopesByAst` 当前仍不承载真实 scope facts，但它的存在已经说明 scope analyzer 的结果应当写入这里，而不是再新建一份并行结构。
+其中 `annotationsByAst`、阶段边界 diagnostics 与 `scopesByAst` 都已在生产代码中落地。当前 `scopesByAst` 已稳定承载顶层脚本、callable、控制流 block、match section 与 inner class 的 lexical scope facts；其余 `symbolBindings`、`expressionTypes`、`resolvedMembers`、`resolvedCalls` 仍主要等待后续 binder/body phase 填充。
 
 ### 2.3 `frontend.scope` 的协议已经冻结
 
@@ -161,17 +157,17 @@ Godot 调研支持以下实施原则：
 
 ## 4. Scope Analyzer 的冻结职责边界
 
-### 4.1 建议入口与包路径
+### 4.1 当前入口与包路径
 
-建议新增入口类：
+当前入口类为：
 
 - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendScopeAnalyzer.java`
 
 其定位是 `FrontendSemanticAnalyzer` 调度的一个 phase worker，而不是 `frontend.scope` 包中的协议对象。
 
-### 4.2 建议输入与输出
+### 4.2 当前输入与输出
 
-建议 `FrontendScopeAnalyzer` 显式接收：
+`FrontendScopeAnalyzer` 当前显式接收：
 
 - `ClassRegistry`
 - `FrontendAnalysisData`
@@ -186,16 +182,16 @@ Godot 调研支持以下实施原则：
 
 但这些上下文对象应当仅服务于 scope analyzer，不应复用 skeleton phase 的 context。
 
-建议输出保持为对 `FrontendAnalysisData` 的原位写入：
+当前输出保持为对 `FrontendAnalysisData` 的原位写入：
 
 - 向 `analysisData.scopesByAst()` 写入 `Node -> Scope` 映射
 - 如有必要，向 manager 追加少量结构性 diagnostics
 
 ### 4.3 `FrontendSemanticAnalyzer` 的接线顺序
 
-scope analyzer 的推荐接线方式如下：
+当前 `FrontendSemanticAnalyzer` 的接线顺序如下：
 
-1. `FrontendAnalysisData.bootstrap(sourcePath, sourceUnit)`
+1. `FrontendAnalysisData.bootstrap()`
 2. `FrontendClassSkeletonBuilder.build(...)`
 3. `analysisData.updateModuleSkeleton(moduleSkeleton)`
 4. `analysisData.updateDiagnostics(diagnosticManager.snapshot())`

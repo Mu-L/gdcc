@@ -5,8 +5,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（parser / skeleton / analyzer / exception 诊断链路已落地，binder / body phase 待扩展）
-- 更新时间：2026-03-10
+- 状态：事实源维护中（parser / skeleton / analyzer / exception 诊断链路已落地；scope graph 与 inner class lexical boundary 已进入 analyzer 主链路，binder / body phase 待扩展）
+- 更新时间：2026-03-12
 - 适用范围：
     - `src/main/java/dev/superice/gdcc/frontend/diagnostic/**`
     - `src/main/java/dev/superice/gdcc/frontend/parse/**`
@@ -127,7 +127,7 @@ frontend 当前已经冻结的诊断承载方式如下：
 - `resolvedMembers`
 - `resolvedCalls`
 
-其中除 annotation 与边界 diagnostics 外，其余表目前仍主要为后续 binder/body phase 预留。
+其中 `annotationsByAst` 与 `scopesByAst` 已在生产链路中稳定填充；`symbolBindings`、`expressionTypes`、`resolvedMembers`、`resolvedCalls` 目前仍主要为后续 binder/body phase 预留。
 
 ### 2.6 `SkeletonBuildContext` 只服务于 skeleton phase
 
@@ -205,11 +205,11 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 
 - `FrontendSemanticAnalyzer` 当前返回 `FrontendAnalysisData`
 - analyze 流程围绕同一份共享分析数据推进
-- analyze 现在已经具备独立的 scope phase 骨架：
+- analyze 现在已经具备独立的 scope phase 主链路：
     - skeleton 结束后先发布 `updateModuleSkeleton(...)`
     - 再发布一次 pre-scope `updateDiagnostics(...)`
     - 调用 `FrontendScopeAnalyzer.analyze(...)`
-    - scope phase 当前显式发布空的 `scopesByAst`
+    - scope phase 会重建并发布真实的 `scopesByAst`，当前已覆盖顶层脚本、callable、控制流 block、match section 与 inner class lexical boundary
     - 最后再次 `updateDiagnostics(...)`，把最终边界快照刷新到最新 shared manager 状态
 
 ### 3.4 exception
@@ -243,6 +243,10 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - analyzer 返回共享 `FrontendAnalysisData`
     - parse->analyze shared pipeline 不重复导入 parse diagnostics
     - `FrontendAnalysisData` / `FrontendModuleSkeleton` 的 snapshot 在阶段后保持稳定
+- `FrontendScopeAnalyzerTest`
+    - scope phase 会发布真实 `scopesByAst`，而不是空 side-table
+    - inner class / nested lambda / multi-source-unit module 的 lexical scope graph 稳定
+    - missing inner-class relation 只跳过坏 subtree，不扩大成整条 module 失败
 - `FrontendInheritanceCycleTest`
     - inheritance cycle diagnostics 会跳过 cyclic class 与其依赖者
     - 其他合法 class 仍可继续发布到 module skeleton / registry
@@ -250,10 +254,10 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `FrontendAnnotationParseBehaviorTest`
 - `FrontendAnalysisDataTest`
 
-最近一次通过的定向测试命令为：
+最近一次通过的 frontend 相关定向测试命令为：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests FrontendAnalysisDataTest,FrontendSemanticAnalyzerFrameworkTest,FrontendClassSkeletonTest,FrontendClassSkeletonAnnotationTest,FrontendInheritanceCycleTest,DiagnosticManagerTest,GdScriptParserServiceDiagnosticManagerTest,FrontendParseSmokeTest,FrontendAnnotationParseBehaviorTest
+powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests FrontendScopeAnalyzerTest,FrontendClassSkeletonTest,FrontendSemanticAnalyzerFrameworkTest,FrontendAnalysisDataTest,FrontendParseSmokeTest,FrontendAnnotationParseBehaviorTest,FrontendClassSkeletonAnnotationTest,FrontendInheritanceCycleTest,GdScriptParserServiceDiagnosticManagerTest
 ```
 
 ---
@@ -279,7 +283,7 @@ powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -T
 frontend 诊断基础设施已经能够支撑后续 binder/body phase。当前更高优先级的后续工程是：
 
 1. 在 `FrontendAnalysisData` 中真正填充 `symbolBindings`、`expressionTypes`、`resolvedMembers`、`resolvedCalls`、
-   `scopesByAst`
+   并在新增 lexical boundary 时继续扩展 `scopesByAst`
 2. 将 signal、type-meta、static-context、member/call 解析失败统一接入 frontend binder diagnostics
 3. 为更完整的 unsupported / deferred feature 建立稳定 category 与测试矩阵
 4. 将 AST body -> LIR lowering 接到已有 skeleton / analysis data / diagnostics 主干上
