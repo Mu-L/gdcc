@@ -1,9 +1,7 @@
 package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.*;
-import dev.superice.gdcc.exception.FrontendSemanticException;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
-import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.lir.LirClassDef;
@@ -20,9 +18,11 @@ import org.jetbrains.annotations.Nullable;
 import java.nio.file.Path;
 import java.util.*;
 
-/// Build class skeletons from parsed AST units and inject them into ClassRegistry.
+/// Build class skeletons from parsed AST units and inject top-level ones into ClassRegistry.
 public final class FrontendClassSkeletonBuilder {
-    private static final String DEFAULT_SUPER_CLASS_NAME = "Object";
+    /// Matches upstream Godot GDScript behavior: scripts/classes without an explicit `extends`
+    /// default to `RefCounted`.
+    private static final String DEFAULT_SUPER_CLASS_NAME = "RefCounted";
 
     /// Builds the module skeleton while appending all newly discovered skeleton diagnostics
     /// into the shared pipeline manager.
@@ -44,7 +44,8 @@ public final class FrontendClassSkeletonBuilder {
         Objects.requireNonNull(analysisData, "analysisData must not be null");
 
         var classByName = new LinkedHashMap<String, ClassSkeletonCandidate>();
-        var classOrder = new ArrayList<ClassSkeletonCandidate>();
+        var topLevelClassOrder = new ArrayList<ClassSkeletonCandidate>();
+        var acceptedSourceRelationsByName = new LinkedHashMap<String, FrontendSourceClassRelation>();
         var annotationCollector = new FrontendAnnotationCollector();
 
         for (var unit : units) {
@@ -57,30 +58,43 @@ public final class FrontendClassSkeletonBuilder {
                     unit.path(),
                     analysisData
             );
-            var classCandidate = buildClassCandidate(unit, context);
-            var existing = classByName.putIfAbsent(classCandidate.classDef().getName(), classCandidate);
+            var relation = buildSourceClassRelation(unit, context);
+
+            var topLevelCandidate = new ClassSkeletonCandidate(
+                    unit.path(),
+                    FrontendRange.fromAstRange(topLevelClassRange(unit)),
+                    relation.topLevelClassDef()
+            );
+            var existing = classByName.putIfAbsent(topLevelCandidate.classDef().getName(), topLevelCandidate);
             if (existing != null) {
-                throw duplicateClassException(existing, classCandidate, diagnosticManager);
+                reportDuplicateTopLevelClass(existing, topLevelCandidate, diagnosticManager);
+                continue;
             }
-            classOrder.add(classCandidate);
+            acceptedSourceRelationsByName.put(topLevelCandidate.classDef().getName(), relation);
+            topLevelClassOrder.add(topLevelCandidate);
         }
 
-        detectInheritanceCycles(classByName, diagnosticManager);
+        var rejectedClassNames = detectRejectedTopLevelClasses(classByName, diagnosticManager);
+        var sourceClassRelations = new ArrayList<FrontendSourceClassRelation>();
 
-        for (var classCandidate : classOrder) {
+        for (var classCandidate : topLevelClassOrder) {
+            if (rejectedClassNames.contains(classCandidate.classDef().getName())) {
+                continue;
+            }
             classRegistry.addGdccClass(classCandidate.classDef());
+            sourceClassRelations.add(acceptedSourceRelationsByName.get(classCandidate.classDef().getName()));
         }
 
-        var classDefs = classOrder.stream()
-                .map(ClassSkeletonCandidate::classDef)
-                .toList();
-        return new FrontendModuleSkeleton(moduleName, units, classDefs, diagnosticManager.snapshot());
+        return new FrontendModuleSkeleton(moduleName, sourceClassRelations, diagnosticManager.snapshot());
     }
 
-    /// Builds one class candidate using a per-unit context that bundles stable skeleton
-    /// construction inputs together. This keeps helper signatures small and prevents the
-    /// builder from slipping back to the old “pass diagnostics list through every helper” shape.
-    private @NotNull ClassSkeletonCandidate buildClassCandidate(
+    /// Builds one source-owned skeleton relation:
+    /// - exactly one top-level script class
+    /// - zero or more nested classes discovered under `ClassDeclaration` subtrees
+    ///
+    /// The relation is stable even when later phases need more than one class skeleton from the
+    /// same source file; callers no longer have to recover that ownership through list indexes.
+    private @NotNull FrontendSourceClassRelation buildSourceClassRelation(
             @NotNull FrontendSourceUnit unit,
             @NotNull SkeletonBuildContext context
     ) {
@@ -88,30 +102,14 @@ public final class FrontendClassSkeletonBuilder {
         var className = resolveClassName(unit.path(), classNameStatement);
         var superClassName = resolveSuperClassName(unit.ast().statements(), classNameStatement);
 
-        var classDef = new LirClassDef(className, superClassName);
-        classDef.setSourceFile(unit.path().toString().replace('\\', '/'));
-
-        for (var statement : unit.ast().statements()) {
-            switch (statement) {
-                case SignalStatement signalStatement -> classDef.addSignal(toLirSignal(signalStatement, context));
-                case VariableDeclaration variableDeclaration -> {
-                    if (variableDeclaration.kind() == DeclarationKind.VAR) {
-                        classDef.addProperty(toLirProperty(variableDeclaration, context));
-                    }
-                }
-                case FunctionDeclaration functionDeclaration ->
-                        classDef.addFunction(toLirFunction(functionDeclaration, context));
-                default -> {
-                }
-            }
-        }
-
-        var classRange = classNameStatement != null ? classNameStatement.range() : unit.ast().range();
-        return new ClassSkeletonCandidate(
-                unit.path(),
-                FrontendRange.fromAstRange(classRange),
-                classDef
+        var topLevelClassDef = buildClassSkeleton(
+                className,
+                superClassName,
+                unit.ast().statements(),
+                context
         );
+        var innerClassDefs = collectInnerClassDefs(unit.ast().statements(), context);
+        return new FrontendSourceClassRelation(unit, topLevelClassDef, innerClassDefs);
     }
 
     private @Nullable ClassNameStatement firstClassNameStatement(@NotNull List<Statement> statements) {
@@ -143,6 +141,99 @@ public final class FrontendClassSkeletonBuilder {
             }
         }
         return DEFAULT_SUPER_CLASS_NAME;
+    }
+
+    private @NotNull Range topLevelClassRange(@NotNull FrontendSourceUnit unit) {
+        var classNameStatement = firstClassNameStatement(unit.ast().statements());
+        return classNameStatement != null ? classNameStatement.range() : unit.ast().range();
+    }
+
+    /// Builds one `LirClassDef` from a statement list without recursively embedding child classes
+    /// into the parent object. Nested classes are collected separately into
+    /// `FrontendSourceClassRelation`, which keeps ownership explicit without overloading
+    /// `LirClassDef` itself with new hierarchy semantics.
+    private @NotNull LirClassDef buildClassSkeleton(
+            @NotNull String className,
+            @NotNull String superClassName,
+            @NotNull List<Statement> statements,
+            @NotNull SkeletonBuildContext context
+    ) {
+        var classDef = new LirClassDef(className, superClassName);
+        classDef.setSourceFile(context.sourcePath().toString().replace('\\', '/'));
+
+        for (var statement : statements) {
+            switch (statement) {
+                case SignalStatement signalStatement -> classDef.addSignal(toLirSignal(signalStatement, context));
+                case VariableDeclaration variableDeclaration -> {
+                    if (variableDeclaration.kind() == DeclarationKind.VAR) {
+                        classDef.addProperty(toLirProperty(variableDeclaration, context));
+                    }
+                }
+                case FunctionDeclaration functionDeclaration ->
+                        classDef.addFunction(toLirFunction(functionDeclaration, context));
+                default -> {
+                }
+            }
+        }
+        return classDef;
+    }
+
+    /// Recursively collects every non-top-level class declared inside the current statement list.
+    ///
+    /// The returned list is source-local metadata only for now:
+    /// - it is preserved on `FrontendModuleSkeleton`
+    /// - it is not injected into `ClassRegistry` yet, because global registration semantics for
+    ///   nested classes remain a separate design question
+    /// - malformed nested classes are diagnosed and skipped together with their own subtrees
+    private @NotNull List<LirClassDef> collectInnerClassDefs(
+            @NotNull List<Statement> statements,
+            @NotNull SkeletonBuildContext context
+    ) {
+        var innerClassDefs = new ArrayList<LirClassDef>();
+        for (var statement : statements) {
+            if (!(statement instanceof ClassDeclaration classDeclaration)) {
+                continue;
+            }
+
+            var innerClassName = resolveInnerClassName(classDeclaration, context);
+            if (innerClassName == null) {
+                continue;
+            }
+            var innerClassDef = buildClassSkeleton(
+                    innerClassName,
+                    resolveInnerClassSuperName(classDeclaration),
+                    classDeclaration.body().statements(),
+                    context
+            );
+            innerClassDefs.add(innerClassDef);
+            innerClassDefs.addAll(collectInnerClassDefs(classDeclaration.body().statements(), context));
+        }
+        return List.copyOf(innerClassDefs);
+    }
+
+    private @NotNull String resolveInnerClassSuperName(@NotNull ClassDeclaration classDeclaration) {
+        var extendsTarget = classDeclaration.extendsTarget();
+        if (extendsTarget == null || extendsTarget.isBlank()) {
+            return DEFAULT_SUPER_CLASS_NAME;
+        }
+        return extendsTarget.trim();
+    }
+
+    private @Nullable String resolveInnerClassName(
+            @NotNull ClassDeclaration classDeclaration,
+            @NotNull SkeletonBuildContext context
+    ) {
+        var className = classDeclaration.name().trim();
+        if (className.isEmpty()) {
+            context.diagnostics().error(
+                    "sema.class_skeleton",
+                    "Inner class declaration is missing a class name and will be skipped",
+                    context.sourcePath(),
+                    FrontendRange.fromAstRange(classDeclaration.range())
+            );
+            return null;
+        }
+        return className;
     }
 
     private @NotNull LirSignalDef toLirSignal(
@@ -253,22 +344,33 @@ public final class FrontendClassSkeletonBuilder {
         return GdVariantType.VARIANT;
     }
 
-    private void detectInheritanceCycles(
+    private @NotNull Set<String> detectRejectedTopLevelClasses(
             @NotNull Map<String, ClassSkeletonCandidate> classByName,
             @NotNull DiagnosticManager diagnosticManager
     ) {
         var states = new HashMap<String, VisitState>();
         var visitStack = new ArrayList<String>();
+        var rejectedClassNames = new LinkedHashSet<String>();
         for (var className : classByName.keySet()) {
-            detectInheritanceCyclesDfs(className, classByName, states, visitStack, diagnosticManager);
+            detectInheritanceProblemsDfs(
+                    className,
+                    classByName,
+                    states,
+                    visitStack,
+                    rejectedClassNames,
+                    diagnosticManager
+            );
         }
+        rejectClassesDependingOnRejectedSupers(classByName, rejectedClassNames, diagnosticManager);
+        return Set.copyOf(rejectedClassNames);
     }
 
-    private void detectInheritanceCyclesDfs(
+    private void detectInheritanceProblemsDfs(
             @NotNull String className,
             @NotNull Map<String, ClassSkeletonCandidate> classByName,
             @NotNull Map<String, VisitState> states,
             @NotNull List<String> visitStack,
+            @NotNull Set<String> rejectedClassNames,
             @NotNull DiagnosticManager diagnosticManager
     ) {
         var state = states.getOrDefault(className, VisitState.UNVISITED);
@@ -276,7 +378,8 @@ public final class FrontendClassSkeletonBuilder {
             return;
         }
         if (state == VisitState.VISITING) {
-            throw buildInheritanceCycleException(className, classByName, visitStack, diagnosticManager);
+            reportInheritanceCycle(className, classByName, visitStack, rejectedClassNames, diagnosticManager);
+            return;
         }
 
         states.put(className, VisitState.VISITING);
@@ -284,17 +387,25 @@ public final class FrontendClassSkeletonBuilder {
 
         var superName = classByName.get(className).classDef().getSuperName();
         if (classByName.containsKey(superName)) {
-            detectInheritanceCyclesDfs(superName, classByName, states, visitStack, diagnosticManager);
+            detectInheritanceProblemsDfs(
+                    superName,
+                    classByName,
+                    states,
+                    visitStack,
+                    rejectedClassNames,
+                    diagnosticManager
+            );
         }
 
         visitStack.removeLast();
         states.put(className, VisitState.VISITED);
     }
 
-    private @NotNull FrontendSemanticException buildInheritanceCycleException(
+    private void reportInheritanceCycle(
             @NotNull String reenteredClassName,
             @NotNull Map<String, ClassSkeletonCandidate> classByName,
             @NotNull List<String> visitStack,
+            @NotNull Set<String> rejectedClassNames,
             @NotNull DiagnosticManager diagnosticManager
     ) {
         var cycleStart = visitStack.indexOf(reenteredClassName);
@@ -302,38 +413,71 @@ public final class FrontendClassSkeletonBuilder {
         cyclePath.add(reenteredClassName);
         var chainText = String.join(" -> ", cyclePath);
 
-        var cycleDiagnostics = new ArrayList<FrontendDiagnostic>();
         for (var className : new LinkedHashSet<>(cyclePath)) {
             var classCandidate = classByName.get(className);
-            if (classCandidate == null) {
+            if (classCandidate == null || !rejectedClassNames.add(className)) {
                 continue;
             }
-            cycleDiagnostics.add(FrontendDiagnostic.error(
+            diagnosticManager.error(
                     "sema.inheritance_cycle",
-                    "Class '" + className + "' participates in inheritance cycle: " + chainText,
+                    "Class '" + className + "' participates in inheritance cycle: "
+                            + chainText
+                            + "; its skeleton subtree will be skipped",
                     classCandidate.sourcePath(),
                     classCandidate.range()
-            ));
+            );
         }
-        diagnosticManager.reportAll(cycleDiagnostics);
-        return new FrontendSemanticException("Detected inheritance cycle: " + chainText, diagnosticManager.snapshot());
     }
 
-    private @NotNull FrontendSemanticException duplicateClassException(
+    private void rejectClassesDependingOnRejectedSupers(
+            @NotNull Map<String, ClassSkeletonCandidate> classByName,
+            @NotNull Set<String> rejectedClassNames,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        boolean changed;
+        do {
+            changed = false;
+            for (var entry : classByName.entrySet()) {
+                var className = entry.getKey();
+                if (rejectedClassNames.contains(className)) {
+                    continue;
+                }
+
+                var classCandidate = entry.getValue();
+                var superName = classCandidate.classDef().getSuperName();
+                if (!rejectedClassNames.contains(superName)) {
+                    continue;
+                }
+
+                diagnosticManager.error(
+                        "sema.class_skeleton",
+                        "Class '" + className + "' will be skipped because its super class '"
+                                + superName
+                                + "' was rejected by earlier inheritance diagnostics",
+                        classCandidate.sourcePath(),
+                        classCandidate.range()
+                );
+                rejectedClassNames.add(className);
+                changed = true;
+            }
+        } while (changed);
+    }
+
+    private void reportDuplicateTopLevelClass(
             @NotNull ClassSkeletonCandidate existing,
             @NotNull ClassSkeletonCandidate duplicate,
             @NotNull DiagnosticManager diagnosticManager
     ) {
         var className = duplicate.classDef().getName();
         var message = "Duplicate class name '" + className + "' found in "
-                + existing.sourcePath() + " and " + duplicate.sourcePath();
+                + existing.sourcePath() + " and " + duplicate.sourcePath()
+                + "; duplicate skeleton subtree will be skipped";
         diagnosticManager.error(
                 "sema.class_skeleton",
                 message,
                 duplicate.sourcePath(),
                 duplicate.range()
         );
-        return new FrontendSemanticException(message, diagnosticManager.snapshot());
     }
 
     private @NotNull String deriveClassNameFromFileName(@NotNull Path sourcePath) {

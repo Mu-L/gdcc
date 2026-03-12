@@ -1,6 +1,6 @@
 # GDCC 前端语义分析器调研报告（按当前代码库校对）
 
-- 日期：2026-03-09
+- 日期：2026-03-12
 - 校对范围：本报告只依据当前仓库中的文档、源码、测试，以及当前工作区已存在的代码文件进行修订；不再把仓库外 `E:/Projects/gdparser` 本地副本或旧的 GitHub 快照当作本报告的直接事实源。
 
 ---
@@ -9,14 +9,14 @@
 
 基于当前代码库，旧版报告里最需要修正的结论有 8 点：
 
-1. **`gdparser` 版本已经明确升级到 `0.4.0`。** 当前事实源是 `build.gradle.kts`，而不是旧报告里引用的仓库外本地副本路径。
+1. **`gdparser` 版本已经明确升级到 `0.5.1`。** 当前事实源是 `build.gradle.kts`，scope analyzer 也已经直接复用库内置 `ASTWalker`，而不是继续维护本地 walker 封装。
 2. **GDCC frontend 已不再只是“parse + 少量 skeleton 测试”。** 目前除了解析和类骨架构建，还已经落地了 `Scope` 协议、`ClassScope` / `CallableScope` / `BlockScope`、restriction-aware lookup、signal 的 unqualified scope 语义，以及一批 frontend/scope/shared-resolver 测试。
 3. **但 frontend 仍然没有真正的 body-level semantic analyzer。** 当前仍缺 binder、assignable analyzer、表达式类型推断、调用/成员访问分析结果、统一 `AnalysisResult`、AST body lowering。
 4. **`FrontendBindingKind` 的旧结论已经过时。** 当前代码里已经有 `SIGNAL` 和 `TYPE_META`，旧报告中“缺少 `TYPE_META`”“signal 还未补位”的说法不成立。
 5. **`ClassRegistry` 现在同时承载“宽松旧接口”和“严格新协议”。** `findType(...)` 仍是宽松兼容入口；真正适合未来 binder/type namespace 的，是严格的 `resolveTypeMeta(...)` 与 `Scope` 协议。
-6. **`FrontendClassSkeletonBuilder` 的现状应描述得更准确。** 它不只是收集 `class_name / extends / signal / var / func`；还会做派生类名、重复类名检查、继承环检测、宽松类型解析降级，以及对 `export_variable_statement` / `onready_variable_statement` 的有限注解保留。
+6. **`FrontendClassSkeletonBuilder` 与 `FrontendModuleSkeleton` 的现状应描述得更准确。** 它们不只是收集 `class_name / extends / signal / var / func`；现在还会通过 `FrontendSourceClassRelation` 显式记录每个 `FrontendSourceUnit` 对一个顶层类和多个同源 inner class skeleton 的归属，并保留 `classDefs()` 作为仅顶层类的兼容视图。
 7. **signal 相关状态比旧报告更前进。** `ClassScope` 的 unqualified signal lookup 已经落地并有测试；当前工作区还出现了 `ScopeSignalResolver` / `ScopeResolvedSignal` 及对应测试，说明 receiver-based signal metadata lookup 已经开始落代码，虽然 frontend binder 仍未接上。
-8. **旧报告里大量“按外部 `gdparser` AST 全量节点覆盖面下结论”的段落，应当降级或删除。** 当前仓库能直接证明的是：frontend 已依赖 `gdparser:0.4.0`，并消费了 AST 通用模型与少量声明节点；至于 `gdparser` 全量 AST 形态，若要继续做跨仓库调研，应单独写附录，而不应混进这份“按当前代码库校对”的报告里。
+8. **旧报告里大量“按外部 `gdparser` AST 全量节点覆盖面下结论”的段落，应当降级或删除。** 当前仓库能直接证明的是：frontend 已依赖 `gdparser:0.5.1`，并消费了 AST 通用模型与少量声明节点；至于 `gdparser` 全量 AST 形态，若要继续做跨仓库调研，应单独写附录，而不应混进这份“按当前代码库校对”的报告里。
 
 ---
 
@@ -29,6 +29,8 @@
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendClassSkeletonBuilder.java`
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendBindingKind.java`
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendModuleSkeleton.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendSourceClassRelation.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendScopeAnalyzer.java`
 - `src/main/java/dev/superice/gdcc/frontend/scope/AbstractFrontendScope.java`
 - `src/main/java/dev/superice/gdcc/frontend/scope/ClassScope.java`
 - `src/main/java/dev/superice/gdcc/frontend/scope/CallableScope.java`
@@ -91,11 +93,11 @@
 
 ## 3. 当前 GDCC frontend 的真实状态
 
-## 3.1 解析层已经稳定接入 `gdparser:0.4.0`
+## 3.1 解析层已经稳定接入 `gdparser:0.5.1`
 
 当前 `build.gradle.kts` 明确声明：
 
-- `implementation("com.github.SuperIceCN:gdparser:0.4.0")`
+- `implementation("com.github.SuperIceCN:gdparser:0.5.1")`
 
 `GdScriptParserService` 当前职责非常清晰：
 
@@ -112,21 +114,26 @@
 
 ## 3.2 类骨架阶段已经超出“只收集声明名字”的程度
 
-`FrontendClassSkeletonBuilder` 现在已经完成这些事情：
+`FrontendClassSkeletonBuilder` 与 `FrontendModuleSkeleton` 现在已经完成这些事情：
 
 - 从 `class_name` 或文件名推导类名
-- 从 `class_name extends` 或顶层 `extends` 推导父类名
+- 从 `class_name extends` 或顶层 `extends` 推导父类名；未显式 `extends` 时按 Godot 当前语义默认收口到 `RefCounted`
 - 收集 `signal`、`var`、`func` 并注入 `LirClassDef`
-- 将结果注册进 `ClassRegistry`
+- 通过 `FrontendSourceClassRelation` 显式记录每个 source file 的顶层 skeleton 与同源 inner class skeleton
+- 仅将 top-level class 注册进 `ClassRegistry`，inner class 暂时保持 source-local metadata
 - 检查重复类名
-- 检查继承环，并在发现环时抛出 `FrontendSemanticException`
+- 检查继承环，并以 diagnostics 形式拒绝 cyclic class subtree
 - 用宽松 `findType(...)` 解析类型提示；解析失败时降级到 `Variant` 并发出 `sema.type_resolution` warning
 - 对 `export_variable_statement` / `onready_variable_statement` 做有限注解保留
 
 所以，旧报告把它描述成“非常浅的 declaration collector”并不完全准确。更准确的说法是：
 
-- **它仍然只是 skeleton/interface 之前的浅层阶段**
-- **但已经包含一部分容错、诊断、注解保留和继承合法性检查逻辑**
+- **它仍然只是 skeleton/interface 之前的浅层阶段，但已经不再依赖“每文件一个 classDef、靠平行列表索引配对”的脆弱协议**
+- **它已经包含一部分容错、诊断、注解保留、继承合法性检查，以及 source-local inner class skeleton ownership 记录**
+- **其隐式继承语义也必须与上游 Godot 保持一致：无 `extends` 的脚本类默认基类是 `RefCounted`，而不是 `Object`**
+- **对普通源码错误的恢复策略也已经开始收口：skeleton phase 更倾向于发 diagnostic 并跳过坏 subtree，而不是直接抛 frontend 异常打断整条 pipeline**
+
+与之对应，`FrontendScopeAnalyzer` 当前也不再通过 `moduleSkeleton.units()` 和 `moduleSkeleton.classDefs()` 的索引对齐来恢复来源关系，而是直接消费 `sourceClassRelations()` 中的 `topLevelClassDef()`。不过 inner class 的独立 lexical boundary 仍处于 deferred 状态，尚未在 analyzer 阶段被真正物化。
 
 ## 3.3 frontend scope 架构已经从“计划”变成了已落地基础设施
 
@@ -346,7 +353,7 @@
 
 当前更稳妥的写法应当是：
 
-- `gdcc` 已依赖 `gdparser:0.4.0`
+- `gdcc` 已依赖 `gdparser:0.5.1`
 - 当前 frontend 已稳定消费 AST 通用结构与浅层声明节点
 - 未来若要展开 `gdparser` AST 形态评估，应另开附录或单独报告
 
@@ -454,7 +461,7 @@ signal 相关模型和 scope 语义已经有明显进展，因此下一步重点
 
 如果只按当前仓库与当前工作区代码来下结论，那么最准确的描述应当是：
 
-> GDCC frontend 已经完成了 `gdparser:0.4.0` 接入、容错解析、类骨架构建、严格/宽松 type lookup 共存、restriction-aware scope 协议、signal 的 unqualified scope 语义，以及一套较完整的 scope/shared-resolver 基础设施；但真正的 frontend semantic analyzer 仍未落地，当前最大的工程任务已经不再是“AST 还缺什么”，而是“如何把现有 scope、type-meta、method/property/signal resolver 正式接入 interface/body 分析结果，并形成稳定的 AST -> LIR 语义闭环”。
+> GDCC frontend 已经完成了 `gdparser:0.5.1` 接入、容错解析、类骨架构建、严格/宽松 type lookup 共存、restriction-aware scope 协议、signal 的 unqualified scope 语义，以及一套较完整的 scope/shared-resolver 基础设施；但真正的 frontend semantic analyzer 仍未落地，当前最大的工程任务已经不再是“AST 还缺什么”，而是“如何把现有 scope、type-meta、method/property/signal resolver 正式接入 interface/body 分析结果，并形成稳定的 AST -> LIR 语义闭环”。
 
 ---
 

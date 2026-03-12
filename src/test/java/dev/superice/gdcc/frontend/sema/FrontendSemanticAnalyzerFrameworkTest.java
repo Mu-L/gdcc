@@ -157,6 +157,46 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertEquals(beforeMutation.size() + 1, diagnostics.snapshot().size());
     }
 
+    @Test
+    void analyzeKeepsPipelineAliveWhenSkeletonReportsRecoverableDiagnostics() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var duplicateA = parserService.parseUnit(Path.of("tmp", "duplicate_a.gd"), """
+                class_name SharedName
+                extends Node
+                
+                func from_a():
+                    pass
+                """, diagnostics);
+        var duplicateB = parserService.parseUnit(Path.of("tmp", "duplicate_b.gd"), """
+                class_name SharedName
+                extends Node
+                
+                func from_b():
+                    pass
+                """, diagnostics);
+        var stable = parserService.parseUnit(Path.of("tmp", "stable.gd"), """
+                class_name StableAfterError
+                extends Node
+                
+                func ok():
+                    pass
+                """, diagnostics);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analyzer = new FrontendSemanticAnalyzer();
+
+        var result = analyzer.analyze("test_module", List.of(duplicateA, duplicateB, stable), registry, diagnostics);
+
+        assertEquals(List.of("SharedName", "StableAfterError"), result.moduleSkeleton().classDefs().stream().map(classDef -> classDef.getName()).toList());
+        assertFalse(result.scopesByAst().isEmpty());
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("Duplicate class name 'SharedName'")
+        ));
+        assertNotNull(registry.findGdccClass("SharedName"));
+        assertNotNull(registry.findGdccClass("StableAfterError"));
+    }
+
     private VariableDeclaration findVariable(List<?> statements, String name) {
         return statements.stream()
                 .filter(VariableDeclaration.class::isInstance)

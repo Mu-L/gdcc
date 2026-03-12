@@ -27,7 +27,8 @@ interface/body phase、binder diagnostics、unsupported feature 归类和多 sid
 当前 frontend 诊断流的冻结目标不是再引入一套新的诊断数据模型，而是明确区分两类对象：
 
 - 过程态：`DiagnosticManager`
-- 产物态：`FrontendSourceUnit` / `FrontendModuleSkeleton` / `FrontendAnalysisData` / `FrontendSemanticException`
+- 产物态：`FrontendSourceUnit` / `FrontendModuleSkeleton` / `FrontendAnalysisData`
+- 保护性异常：`FrontendSemanticException`（仅用于不可恢复 frontend guard rail，不作为普通源码错误的主路径）
 
 这意味着 frontend 后续工程都必须围绕“共享 manager 收集 + 阶段边界快照发布”推进，而不是重新回到局部 list 透传。
 
@@ -81,13 +82,10 @@ frontend 当前已经冻结的诊断承载方式如下：
 - `FrontendModuleSkeleton.diagnostics`
     - 使用 `DiagnosticSnapshot`
     - 表达 skeleton 阶段完成时的边界快照
+    - `FrontendModuleSkeleton` 当前还通过 `sourceClassRelations` 显式承载 source-owned class skeleton facts，而不是再靠 `units` / `classDefs` 的平行列表协议
 - `FrontendAnalysisData.diagnostics`
     - 使用 `DiagnosticSnapshot`
     - 表达 analyze 阶段完成时的边界快照
-- `FrontendSemanticException.diagnostics`
-    - 使用 `DiagnosticSnapshot`
-    - 表达 fail-fast 抛出瞬间的边界快照
-
 因此，frontend 主链路中的诊断真源已经完全收敛到 shared manager 与阶段边界 snapshot。
 
 ### 2.4 parser / skeleton / analyzer 的共享 manager 规则
@@ -199,7 +197,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 ### 3.2 skeleton
 
 - `FrontendClassSkeletonBuilder` 已不再使用裸 `List<FrontendDiagnostic>` 透传
-- duplicate class / inheritance cycle 会先写入 manager，再以 snapshot 构造 `FrontendSemanticException`
+- duplicate class / inheritance cycle / malformed nested class 现在统一先写入 manager，再跳过受影响 subtree，而不是直接中断整个 module skeleton 过程
 - skeleton 会把 annotation side-table 写入共享 `FrontendAnalysisData`
 - builder 不会创造或重复导入第二份 parse diagnostics
 
@@ -216,8 +214,8 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 
 ### 3.4 exception
 
-- `FrontendSemanticException` 已统一持有 `DiagnosticSnapshot`
-- 异常对象只表达抛出瞬间的 diagnostics 快照
+- `FrontendSemanticException` 仍统一持有 `DiagnosticSnapshot`
+- 但它现在只保留给不可恢复 frontend guard rail，不再是 parser / skeleton / analyzer 主干处理普通源码错误的推荐出口
 - 异常对象不持有 `DiagnosticManager`
 
 ---
@@ -236,7 +234,8 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - `parse.internal` 仅在真正运行时失败路径出现
 - `FrontendClassSkeletonTest`
     - skeleton 共享 parse diagnostics 但不重复导入
-    - registry 注入、继承环 fail-fast 和 snapshot 边界稳定
+    - duplicate / cycle diagnostics 会跳过坏 subtree，但不打断同一 module 的其余 skeleton
+    - registry 注入和 snapshot 边界稳定
 - `FrontendClassSkeletonAnnotationTest`
     - `export` / `onready` 语义稳定
     - unsupported property annotation 会发 warning，且仍保留 side-table 事实
@@ -245,7 +244,8 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - parse->analyze shared pipeline 不重复导入 parse diagnostics
     - `FrontendAnalysisData` / `FrontendModuleSkeleton` 的 snapshot 在阶段后保持稳定
 - `FrontendInheritanceCycleTest`
-    - 异常快照与 manager 边界一致
+    - inheritance cycle diagnostics 会跳过 cyclic class 与其依赖者
+    - 其他合法 class 仍可继续发布到 module skeleton / registry
 - `FrontendParseSmokeTest`
 - `FrontendAnnotationParseBehaviorTest`
 - `FrontendAnalysisDataTest`
@@ -270,6 +270,7 @@ powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -T
    list 或无分类 warning。
 6. 若未来需要单独暴露 parse-phase 局部诊断视图，应新增明确的边界对象或 helper，而不是重新把 diagnostics 塞回
    `FrontendSourceUnit`。
+7. 对普通源码错误，frontend phase 应优先采用“发诊断 + 跳过当前 subtree”的恢复策略；只有不可恢复 guard rail 才允许抛异常。
 
 ---
 

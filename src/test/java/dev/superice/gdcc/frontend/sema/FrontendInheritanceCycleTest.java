@@ -1,10 +1,10 @@
 package dev.superice.gdcc.frontend.sema;
 
-import dev.superice.gdcc.exception.FrontendSemanticException;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import org.junit.jupiter.api.Test;
 
@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class FrontendInheritanceCycleTest {
     @Test
-    void buildFailsFastWhenInheritanceCycleExists() throws IOException {
+    void buildReportsInheritanceCycleAndSkipsAffectedClasses() throws IOException {
         var parserService = new GdScriptParserService();
         var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
@@ -37,25 +37,52 @@ class FrontendInheritanceCycleTest {
                 func g():
                     pass
                 """;
+        var sourceDependent = """
+                class_name DependentOnCycle
+                extends A
+                
+                func h():
+                    pass
+                """;
+        var sourceStable = """
+                class_name StableClass
+                extends Node
+                
+                func ok():
+                    pass
+                """;
 
         var units = List.of(
                 parserService.parseUnit(Path.of("tmp", "a.gd"), sourceA, diagnostics),
-                parserService.parseUnit(Path.of("tmp", "b.gd"), sourceB, diagnostics)
+                parserService.parseUnit(Path.of("tmp", "b.gd"), sourceB, diagnostics),
+                parserService.parseUnit(Path.of("tmp", "dependent.gd"), sourceDependent, diagnostics),
+                parserService.parseUnit(Path.of("tmp", "stable.gd"), sourceStable, diagnostics)
         );
 
-        var exception = assertThrows(
-                FrontendSemanticException.class,
-                () -> classSkeletonBuilder.build("cycle_module", units, registry, diagnostics, analysisData)
-        );
-        assertTrue(exception.getMessage().contains("A"));
-        assertTrue(exception.getMessage().contains("B"));
-        assertTrue(exception.getMessage().contains("->"));
+        var result = classSkeletonBuilder.build("cycle_module", units, registry, diagnostics, analysisData);
 
-        assertEquals(diagnostics.snapshot(), exception.diagnostics());
-        assertFalse(exception.diagnostics().isEmpty());
-        assertEquals(FrontendDiagnosticSeverity.ERROR, exception.diagnostics().getFirst().severity());
-        assertTrue(exception.diagnostics().asList().stream().anyMatch(diagnostic ->
+        assertEquals(diagnostics.snapshot(), result.diagnostics());
+        assertFalse(result.diagnostics().isEmpty());
+        assertEquals(List.of("StableClass"), result.classDefs().stream().map(LirClassDef::getName).toList());
+        assertEquals(1, result.sourceClassRelations().size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, result.diagnostics().getFirst().severity());
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.inheritance_cycle")
         ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("A")
+                        && diagnostic.message().contains("B")
+                        && diagnostic.message().contains("->")
+        ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("DependentOnCycle")
+                        && diagnostic.message().contains("super class 'A'")
+        ));
+
+        assertNull(registry.findGdccClass("A"));
+        assertNull(registry.findGdccClass("B"));
+        assertNull(registry.findGdccClass("DependentOnCycle"));
+        assertNotNull(registry.findGdccClass("StableClass"));
     }
 }

@@ -40,7 +40,7 @@ class FrontendAnalysisDataTest {
         var diagnostics = new DiagnosticSnapshot(List.of(
                 FrontendDiagnostic.warning("sema.unsupported_annotation", "warning", null, null)
         ));
-        var moduleSkeleton = new FrontendModuleSkeleton("test_module", List.of(), List.of(), diagnostics);
+        var moduleSkeleton = new FrontendModuleSkeleton("test_module", List.of(), diagnostics);
 
         analysisData.updateModuleSkeleton(moduleSkeleton);
         analysisData.updateDiagnostics(diagnostics);

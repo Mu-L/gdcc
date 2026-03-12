@@ -44,8 +44,6 @@ class FrontendClassSkeletonTest {
                     pass
                 """;
         var anonymousSource = """
-                extends RefCounted
-                
                 var flag := true
                 
                 func tick():
@@ -59,7 +57,9 @@ class FrontendClassSkeletonTest {
         );
 
         var result = classSkeletonBuilder.build("test_module", units, registry, diagnostics, analysisData);
+        assertEquals(3, result.sourceClassRelations().size());
         assertEquals(3, result.classDefs().size());
+        assertEquals(3, result.allClassDefs().size());
         assertEquals(diagnostics.snapshot(), result.diagnostics());
         assertTrue(result.diagnostics().isEmpty());
 
@@ -87,6 +87,59 @@ class FrontendClassSkeletonTest {
         assertNotNull(registry.findGdccClass("BaseClass"));
         assertNotNull(registry.findGdccClass("ChildClass"));
         assertNotNull(registry.findGdccClass("NoNameScript"));
+    }
+
+    @Test
+    void buildRecordsSourceUnitToTopLevelAndInnerClassRelationsExplicitly() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "outer_with_inner.gd"), """
+                class_name OuterWithInner
+                extends Node
+                
+                class InnerA:
+                    var hp: int = 1
+                    func ping():
+                        pass
+                
+                    class Deep:
+                        func nested():
+                            pass
+                
+                class InnerB:
+                    signal changed(value: int)
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
+        var relation = result.sourceClassRelations().getFirst();
+
+        assertEquals(1, result.sourceClassRelations().size());
+        assertSame(unit, relation.unit());
+        assertEquals("OuterWithInner", relation.topLevelClassDef().getName());
+        assertEquals(List.of("InnerA", "Deep", "InnerB"), relation.innerClassDefs().stream().map(LirClassDef::getName).toList());
+        assertEquals(List.of("OuterWithInner"), result.classDefs().stream().map(LirClassDef::getName).toList());
+        assertEquals(List.of("OuterWithInner", "InnerA", "Deep", "InnerB"), result.allClassDefs().stream().map(LirClassDef::getName).toList());
+
+        var innerA = findClassByName(relation.innerClassDefs(), "InnerA");
+        assertEquals("RefCounted", innerA.getSuperName());
+        assertEquals("hp", innerA.getProperties().getFirst().getName());
+        assertEquals("ping", innerA.getFunctions().getFirst().getName());
+
+        var innerB = findClassByName(relation.innerClassDefs(), "InnerB");
+        assertEquals(1, innerB.getSignals().size());
+        assertEquals("changed", innerB.getSignals().getFirst().getName());
+
+        var deep = findClassByName(relation.innerClassDefs(), "Deep");
+        assertEquals("RefCounted", deep.getSuperName());
+        assertEquals("nested", deep.getFunctions().getFirst().getName());
+
+        assertNotNull(registry.findGdccClass("OuterWithInner"));
+        assertNull(registry.findGdccClass("InnerA"));
+        assertNull(registry.findGdccClass("Deep"));
+        assertNull(registry.findGdccClass("InnerB"));
     }
 
     /// Verifies the shared parse->skeleton pipeline keeps the original parse diagnostics exactly
@@ -117,6 +170,57 @@ class FrontendClassSkeletonTest {
         assertEquals(parseSnapshot, result.diagnostics());
         assertEquals(parseSnapshot.size(), result.diagnostics().size());
         assertTrue(result.diagnostics().asList().stream().allMatch(diagnostic -> diagnostic.category().equals("parse.lowering")));
+    }
+
+    @Test
+    void buildReportsDuplicateTopLevelClassAndSkipsDuplicateSourceSubtree() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+
+        var original = parserService.parseUnit(Path.of("tmp", "first_shared.gd"), """
+                class_name SharedName
+                extends Node
+                
+                func from_first():
+                    pass
+                """, diagnostics);
+        var duplicate = parserService.parseUnit(Path.of("tmp", "second_shared.gd"), """
+                class_name SharedName
+                extends Node
+                
+                func from_second():
+                    pass
+                """, diagnostics);
+        var unique = parserService.parseUnit(Path.of("tmp", "unique.gd"), """
+                class_name UniqueName
+                extends Node
+                
+                func ok():
+                    pass
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                "duplicate_module",
+                List.of(original, duplicate, unique),
+                registry,
+                diagnostics,
+                analysisData
+        );
+
+        assertEquals(List.of("SharedName", "UniqueName"), result.classDefs().stream().map(LirClassDef::getName).toList());
+        assertEquals(2, result.sourceClassRelations().size());
+        assertEquals("from_first", findClassByName(result.classDefs(), "SharedName").getFunctions().getFirst().getName());
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("Duplicate class name 'SharedName'")
+                        && diagnostic.message().contains("second_shared.gd")
+        ));
+
+        assertNotNull(registry.findGdccClass("SharedName"));
+        assertNotNull(registry.findGdccClass("UniqueName"));
     }
 
     @Test

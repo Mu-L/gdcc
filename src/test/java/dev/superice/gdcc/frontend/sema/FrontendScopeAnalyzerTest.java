@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -50,7 +51,7 @@ class FrontendScopeAnalyzerTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = FrontendAnalysisData.bootstrap();
         var diagnostics = new DiagnosticManager();
-        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), List.of(), diagnostics.snapshot()));
+        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), diagnostics.snapshot()));
 
         assertThrows(IllegalStateException.class, () -> analyzer.analyze(registry, analysisData, diagnostics));
     }
@@ -217,24 +218,73 @@ class FrontendScopeAnalyzerTest {
     }
 
     @Test
-    void analyzeKeepsPhase3AndPhase4BoundariesDeferredWhileStillCoveringSafeOuterExpressions() throws Exception {
+    void analyzeBuildsDistinctIfElifElseScopesAndKeepsConditionsInOuterScope() throws Exception {
         var analyzed = analyze("""
-                class_name DeferredBoundaries
+                class_name BranchScopeCoverage
                 extends Node
-                
-                class Inner:
-                    func nested():
-                        pass
                 
                 func ping(value: int) -> int:
                     if value > 0:
-                        var from_if := value
+                        var positive := value
+                    elif value == 0:
+                        var zero := value
+                    else:
+                        var negative := value
+                    return value
+                """);
+        var sourceFile = analyzed.unit().ast();
+        var scopesByAst = analyzed.analysisData().scopesByAst();
+        var pingFunction = findStatement(sourceFile.statements(), FunctionDeclaration.class, function -> function.name().equals("ping"));
+        var pingBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(pingFunction.body()));
+
+        var ifStatement = findStatement(pingFunction.body().statements(), IfStatement.class, _ -> true);
+        assertSame(pingBodyScope, scopesByAst.get(ifStatement));
+        assertSame(pingBodyScope, scopesByAst.get(ifStatement.condition()));
+        var ifBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(ifStatement.body()));
+        assertEquals(BlockScopeKind.IF_BODY, ifBodyScope.kind());
+        assertSame(pingBodyScope, ifBodyScope.getParentScope());
+        var positive = findStatement(ifStatement.body().statements(), VariableDeclaration.class, variable -> variable.name().equals("positive"));
+        assertSame(ifBodyScope, scopesByAst.get(positive));
+        assertSame(ifBodyScope, scopesByAst.get(positive.value()));
+
+        var elifClause = ifStatement.elifClauses().getFirst();
+        assertSame(pingBodyScope, scopesByAst.get(elifClause));
+        assertSame(pingBodyScope, scopesByAst.get(elifClause.condition()));
+        var elifBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(elifClause.body()));
+        assertEquals(BlockScopeKind.ELIF_BODY, elifBodyScope.kind());
+        assertSame(pingBodyScope, elifBodyScope.getParentScope());
+        var zero = findStatement(elifClause.body().statements(), VariableDeclaration.class, variable -> variable.name().equals("zero"));
+        assertSame(elifBodyScope, scopesByAst.get(zero));
+        assertSame(elifBodyScope, scopesByAst.get(zero.value()));
+
+        var elseBody = assertInstanceOf(Block.class, ifStatement.elseBody());
+        var elseBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(elseBody));
+        assertEquals(BlockScopeKind.ELSE_BODY, elseBodyScope.kind());
+        assertSame(pingBodyScope, elseBodyScope.getParentScope());
+        var negative = findStatement(elseBody.statements(), VariableDeclaration.class, variable -> variable.name().equals("negative"));
+        assertSame(elseBodyScope, scopesByAst.get(negative));
+        assertSame(elseBodyScope, scopesByAst.get(negative.value()));
+
+        assertNotSame(ifBodyScope, elifBodyScope);
+        assertNotSame(ifBodyScope, elseBodyScope);
+        assertNotSame(elifBodyScope, elseBodyScope);
+    }
+
+    @Test
+    void analyzeBuildsLoopAndMatchBranchScopesWhileLeavingDeferredBindingsUnfilled() throws Exception {
+        var analyzed = analyze("""
+                class_name LoopAndMatchScopes
+                extends Node
+                
+                func ping(value: int) -> int:
                     while value > 1:
-                        pass
-                    for item: int in [1, 2]:
-                        pass
+                        var from_while := value
+                    for item: int in [value, value + 1]:
+                        var from_for := item
                     match value:
                         var bound when bound > 0:
+                            var from_match := bound
+                        0:
                             pass
                     return value
                 """);
@@ -243,33 +293,126 @@ class FrontendScopeAnalyzerTest {
         var pingFunction = findStatement(sourceFile.statements(), FunctionDeclaration.class, function -> function.name().equals("ping"));
         var pingBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(pingFunction.body()));
 
-        var innerClass = findStatement(sourceFile.statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Inner"));
-        assertFalse(scopesByAst.containsKey(innerClass));
-
-        var ifStatement = findStatement(pingFunction.body().statements(), IfStatement.class, _ -> true);
-        assertSame(pingBodyScope, scopesByAst.get(ifStatement));
-        assertSame(pingBodyScope, scopesByAst.get(ifStatement.condition()));
-        assertFalse(scopesByAst.containsKey(ifStatement.body()));
-        var fromIf = findStatement(ifStatement.body().statements(), VariableDeclaration.class, variable -> variable.name().equals("from_if"));
-        assertFalse(scopesByAst.containsKey(fromIf));
-
         var whileStatement = findStatement(pingFunction.body().statements(), WhileStatement.class, _ -> true);
         assertSame(pingBodyScope, scopesByAst.get(whileStatement));
         assertSame(pingBodyScope, scopesByAst.get(whileStatement.condition()));
-        assertFalse(scopesByAst.containsKey(whileStatement.body()));
+        var whileBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(whileStatement.body()));
+        assertEquals(BlockScopeKind.WHILE_BODY, whileBodyScope.kind());
+        assertSame(pingBodyScope, whileBodyScope.getParentScope());
+        var fromWhile = findStatement(whileStatement.body().statements(), VariableDeclaration.class, variable -> variable.name().equals("from_while"));
+        assertSame(whileBodyScope, scopesByAst.get(fromWhile));
+        assertSame(whileBodyScope, scopesByAst.get(fromWhile.value()));
 
         var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
         assertSame(pingBodyScope, scopesByAst.get(forStatement));
         assertSame(pingBodyScope, scopesByAst.get(forStatement.iteratorType()));
         assertSame(pingBodyScope, scopesByAst.get(forStatement.iterable()));
-        assertFalse(scopesByAst.containsKey(forStatement.body()));
+        var forBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(forStatement.body()));
+        assertEquals(BlockScopeKind.FOR_BODY, forBodyScope.kind());
+        assertSame(pingBodyScope, forBodyScope.getParentScope());
+        var fromFor = findStatement(forStatement.body().statements(), VariableDeclaration.class, variable -> variable.name().equals("from_for"));
+        assertSame(forBodyScope, scopesByAst.get(fromFor));
+        assertSame(forBodyScope, scopesByAst.get(fromFor.value()));
+        assertNull(forBodyScope.resolveValue("item"));
 
         var matchStatement = findStatement(pingFunction.body().statements(), MatchStatement.class, _ -> true);
         assertSame(pingBodyScope, scopesByAst.get(matchStatement));
         assertSame(pingBodyScope, scopesByAst.get(matchStatement.value()));
+
         var firstSection = matchStatement.sections().getFirst();
-        assertFalse(scopesByAst.containsKey(firstSection));
-        assertFalse(scopesByAst.containsKey(firstSection.body()));
+        var firstSectionScope = assertInstanceOf(BlockScope.class, scopesByAst.get(firstSection));
+        assertEquals(BlockScopeKind.MATCH_SECTION_BODY, firstSectionScope.kind());
+        assertSame(pingBodyScope, firstSectionScope.getParentScope());
+        assertSame(firstSectionScope, scopesByAst.get(firstSection.body()));
+        var firstPattern = assertInstanceOf(PatternBindingExpression.class, firstSection.patterns().getFirst());
+        assertSame(firstSectionScope, scopesByAst.get(firstPattern));
+        assertSame(firstSectionScope, scopesByAst.get(firstSection.guard()));
+        var fromMatch = findStatement(firstSection.body().statements(), VariableDeclaration.class, variable -> variable.name().equals("from_match"));
+        assertSame(firstSectionScope, scopesByAst.get(fromMatch));
+        assertSame(firstSectionScope, scopesByAst.get(fromMatch.value()));
+        assertNull(firstSectionScope.resolveValue("bound"));
+
+        var secondSection = matchStatement.sections().get(1);
+        var secondSectionScope = assertInstanceOf(BlockScope.class, scopesByAst.get(secondSection));
+        assertEquals(BlockScopeKind.MATCH_SECTION_BODY, secondSectionScope.kind());
+        assertSame(pingBodyScope, secondSectionScope.getParentScope());
+        assertSame(secondSectionScope, scopesByAst.get(secondSection.body()));
+
+        assertNotSame(whileBodyScope, forBodyScope);
+        assertNotSame(firstSectionScope, secondSectionScope);
+    }
+
+    @Test
+    void analyzeCreatesBlockStatementScopeForStandaloneBlockNodes() throws Exception {
+        var nestedBlock = new Block(List.of(new PassStatement(SYNTHETIC_RANGE)), SYNTHETIC_RANGE);
+        var functionBody = new Block(List.of(nestedBlock), SYNTHETIC_RANGE);
+        var function = new FunctionDeclaration("ping", List.of(), null, false, functionBody, SYNTHETIC_RANGE);
+        var sourceFile = new SourceFile(List.of(function), SYNTHETIC_RANGE);
+        var unit = new FrontendSourceUnit(java.nio.file.Path.of("tmp", "synthetic_block_scope.gd"), "", sourceFile);
+
+        var boundaryDiagnostics = new DiagnosticSnapshot(List.of());
+        var analysisData = FrontendAnalysisData.bootstrap();
+        analysisData.updateModuleSkeleton(
+                new FrontendModuleSkeleton(
+                        "test_module",
+                        List.of(new FrontendSourceClassRelation(
+                                unit,
+                                new dev.superice.gdcc.lir.LirClassDef("SyntheticBlockScope", "Node"),
+                                List.of()
+                        )),
+                        boundaryDiagnostics
+                )
+        );
+        analysisData.updateDiagnostics(boundaryDiagnostics);
+
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        new FrontendScopeAnalyzer().analyze(registry, analysisData, new DiagnosticManager());
+
+        var scopesByAst = analysisData.scopesByAst();
+        var sourceScope = assertInstanceOf(ClassScope.class, scopesByAst.get(sourceFile));
+        var functionScope = assertInstanceOf(CallableScope.class, scopesByAst.get(function));
+        assertSame(sourceScope, functionScope.getParentScope());
+
+        var functionBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(functionBody));
+        assertEquals(BlockScopeKind.FUNCTION_BODY, functionBodyScope.kind());
+        assertSame(functionScope, functionBodyScope.getParentScope());
+
+        var nestedBlockScope = assertInstanceOf(BlockScope.class, scopesByAst.get(nestedBlock));
+        assertEquals(BlockScopeKind.BLOCK_STATEMENT, nestedBlockScope.kind());
+        assertSame(functionBodyScope, nestedBlockScope.getParentScope());
+        var nestedPass = assertInstanceOf(PassStatement.class, nestedBlock.statements().getFirst());
+        assertSame(nestedBlockScope, scopesByAst.get(nestedPass));
+    }
+
+    @Test
+    void analyzeKeepsInnerClassLexicalBoundaryDeferredAfterPhase3() throws Exception {
+        var analyzed = analyze("""
+                class_name DeferredInnerClassBoundary
+                extends Node
+                
+                class Inner:
+                    func nested():
+                        pass
+                
+                func ping(value: int) -> int:
+                    if value > 0:
+                        pass
+                    return value
+                """);
+        var sourceFile = analyzed.unit().ast();
+        var scopesByAst = analyzed.analysisData().scopesByAst();
+
+        var innerClass = findStatement(sourceFile.statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Inner"));
+        assertFalse(scopesByAst.containsKey(innerClass));
+        var nestedFunction = findStatement(innerClass.body().statements(), FunctionDeclaration.class, function -> function.name().equals("nested"));
+        assertFalse(scopesByAst.containsKey(nestedFunction));
+
+        var pingFunction = findStatement(sourceFile.statements(), FunctionDeclaration.class, function -> function.name().equals("ping"));
+        var pingBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(pingFunction.body()));
+        var ifStatement = findStatement(pingFunction.body().statements(), IfStatement.class, _ -> true);
+        var ifBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(ifStatement.body()));
+        assertEquals(BlockScopeKind.IF_BODY, ifBodyScope.kind());
+        assertSame(pingBodyScope, ifBodyScope.getParentScope());
     }
 
     @Test
@@ -326,7 +469,7 @@ class FrontendScopeAnalyzerTest {
     private FrontendAnalysisData publishedAnalysisData() {
         var analysisData = FrontendAnalysisData.bootstrap();
         var boundaryDiagnostics = new DiagnosticSnapshot(List.of());
-        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), List.of(), boundaryDiagnostics));
+        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), boundaryDiagnostics));
         analysisData.updateDiagnostics(boundaryDiagnostics);
         return analysisData;
     }
@@ -372,7 +515,8 @@ class FrontendScopeAnalyzerTest {
                 @NotNull DiagnosticManager diagnosticManager
         ) {
             invoked = true;
-            moduleSkeletonPublished = analysisData.moduleSkeleton().classDefs().size() == 1;
+            moduleSkeletonPublished = analysisData.moduleSkeleton().sourceClassRelations().size() == 1
+                    && analysisData.moduleSkeleton().classDefs().size() == 1;
             preScopeDiagnostics = analysisData.diagnostics();
             preScopeDiagnosticsMatchedManager = preScopeDiagnostics.equals(diagnosticManager.snapshot());
             diagnosticManager.warning(
