@@ -20,8 +20,8 @@ import org.jetbrains.annotations.Nullable;
 import java.nio.file.Path;
 import java.util.*;
 
-/// Build class skeletons from parsed AST units via a module-level header discovery pass and inject
-/// accepted top-level ones into `ClassRegistry`.
+/// Build class skeletons from parsed AST units via a module-level header discovery pass, then
+/// publish accepted class shells into `ClassRegistry` before member filling starts.
 public final class FrontendClassSkeletonBuilder {
     /// Matches upstream Godot GDScript behavior: scripts/classes without an explicit `extends`
     /// default to `RefCounted`.
@@ -56,9 +56,6 @@ public final class FrontendClassSkeletonBuilder {
         var headerDiscovery = discoverModuleClassHeaders(units, diagnosticManager);
         var sourceClassRelations = new ArrayList<FrontendSourceClassRelation>();
 
-        // Phase 2 stops short of Phase 3's early shell publication. We still build every accepted
-        // source relation against the preexisting registry state first, then publish accepted
-        // top-level skeletons afterward.
         for (var sourceUnitGraph : headerDiscovery.sourceUnitGraphs()) {
             if (sourceUnitGraph.topLevelHeader() == null) {
                 continue;
@@ -69,10 +66,17 @@ public final class FrontendClassSkeletonBuilder {
                     sourceUnitGraph.unit().path(),
                     analysisData
             );
-            sourceClassRelations.add(buildSourceClassRelation(sourceUnitGraph, context));
+            sourceClassRelations.add(buildSourceClassRelationShell(sourceUnitGraph, context));
         }
+        publishClassShells(sourceClassRelations, classRegistry);
         for (var sourceClassRelation : sourceClassRelations) {
-            classRegistry.addGdccClass(sourceClassRelation.topLevelClassDef());
+            var context = new SkeletonBuildContext(
+                    classRegistry,
+                    diagnosticManager,
+                    sourceClassRelation.unit().path(),
+                    analysisData
+            );
+            fillSourceClassRelationMembers(sourceClassRelation, context);
         }
 
         return new FrontendModuleSkeleton(moduleName, sourceClassRelations, diagnosticManager.snapshot());
@@ -85,7 +89,7 @@ public final class FrontendClassSkeletonBuilder {
     ///
     /// Rejected roots and their descendants never reach this stage. The relation therefore mirrors
     /// the accepted header graph instead of rediscovering validity while filling member skeletons.
-    private @NotNull FrontendSourceClassRelation buildSourceClassRelation(
+    private @NotNull FrontendSourceClassRelation buildSourceClassRelationShell(
             @NotNull SourceUnitClassHeaderGraph sourceUnitGraph,
             @NotNull SkeletonBuildContext context
     ) {
@@ -93,10 +97,9 @@ public final class FrontendClassSkeletonBuilder {
                 sourceUnitGraph.topLevelHeader(),
                 "Accepted source unit graph must have a top-level header"
         );
-        var topLevelClassDef = buildClassSkeleton(
+        var topLevelClassDef = createClassShell(
                 topLevelHeader.canonicalName(),
                 topLevelHeader.effectiveSuperName(),
-                sourceUnitGraph.unit().ast().statements(),
                 context
         );
         var innerClassRelations = collectAcceptedInnerClassRelations(
@@ -109,6 +112,42 @@ public final class FrontendClassSkeletonBuilder {
                 topLevelClassDef,
                 innerClassRelations
         );
+    }
+
+    /// Phase 3 publishes every accepted shell before any member signature is filled so the current
+    /// module can already resolve self and same-module gdcc types through the registry during
+    /// skeleton filling.
+    private void publishClassShells(
+            @NotNull List<FrontendSourceClassRelation> sourceClassRelations,
+            @NotNull ClassRegistry classRegistry
+    ) {
+        for (var sourceClassRelation : sourceClassRelations) {
+            classRegistry.addGdccClass(sourceClassRelation.topLevelClassDef());
+            for (var innerClassRelation : sourceClassRelation.innerClassRelations()) {
+                classRegistry.addGdccClass(
+                        innerClassRelation.classDef(),
+                        innerClassRelation.sourceName()
+                );
+            }
+        }
+    }
+
+    private void fillSourceClassRelationMembers(
+            @NotNull FrontendSourceClassRelation sourceClassRelation,
+            @NotNull SkeletonBuildContext context
+    ) {
+        fillClassMembers(
+                sourceClassRelation.topLevelClassDef(),
+                sourceClassRelation.unit().ast().statements(),
+                context
+        );
+        for (var innerClassRelation : sourceClassRelation.innerClassRelations()) {
+            fillClassMembers(
+                    innerClassRelation.classDef(),
+                    innerClassRelation.declaration().body().statements(),
+                    context
+            );
+        }
     }
 
     private @Nullable ClassNameStatement firstClassNameStatement(@NotNull List<Statement> statements) {
@@ -157,20 +196,32 @@ public final class FrontendClassSkeletonBuilder {
         return classNameStatement != null ? classNameStatement.range() : unit.ast().range();
     }
 
-    /// Builds one `LirClassDef` from a statement list without recursively embedding child classes
-    /// into the parent object. Nested classes are collected separately into
-    /// `FrontendSourceClassRelation`, which keeps ownership explicit without overloading
-    /// `LirClassDef` itself with new hierarchy semantics. Inner-class skeletons still use their
-    /// canonical names here even before later phases publish them into the registry.
-    private @NotNull LirClassDef buildClassSkeleton(
+    /// Creates the minimal class shell needed for Phase 3 publication.
+    ///
+    /// Member signatures are filled later against the already-published registry state. This keeps
+    /// all accepted canonical class identities queryable before any property/function/signal type is
+    /// resolved.
+    private @NotNull LirClassDef createClassShell(
             @NotNull String className,
             @NotNull String superClassName,
-            @NotNull List<Statement> statements,
             @NotNull SkeletonBuildContext context
     ) {
         var classDef = new LirClassDef(className, superClassName);
         classDef.setSourceFile(context.sourcePath().toString().replace('\\', '/'));
+        return classDef;
+    }
 
+    /// Fills member skeletons into an already-published class shell.
+    ///
+    /// Inner classes are still excluded here because they already own their own shell and relation
+    /// entry. The parent class only receives signals/properties/functions/constructors declared
+    /// directly in its own statement list. Constructors are lowered into the special `_init`
+    /// function slot on `ClassDef` so later phases can keep using one shared member surface.
+    private void fillClassMembers(
+            @NotNull LirClassDef classDef,
+            @NotNull List<Statement> statements,
+            @NotNull SkeletonBuildContext context
+    ) {
         for (var statement : statements) {
             switch (statement) {
                 case SignalStatement signalStatement -> classDef.addSignal(toLirSignal(signalStatement, context));
@@ -179,13 +230,25 @@ public final class FrontendClassSkeletonBuilder {
                         classDef.addProperty(toLirProperty(variableDeclaration, context));
                     }
                 }
-                case FunctionDeclaration functionDeclaration ->
-                        classDef.addFunction(toLirFunction(functionDeclaration, context));
+                case FunctionDeclaration functionDeclaration -> addFunctionMember(
+                        classDef,
+                        functionDeclaration.name().trim().equals("_init")
+                                ? toLirInitFunction(functionDeclaration.parameters(), context)
+                                : toLirFunction(functionDeclaration, context),
+                        functionDeclaration,
+                        context
+                );
+                case ConstructorDeclaration constructorDeclaration ->
+                        addFunctionMember(
+                                classDef,
+                                toLirInitFunction(constructorDeclaration.parameters(), context),
+                                constructorDeclaration,
+                                context
+                        );
                 default -> {
                 }
             }
         }
-        return classDef;
     }
 
     /// Builds accepted inner class relations in pre-order so later phases can keep using the stable
@@ -197,10 +260,9 @@ public final class FrontendClassSkeletonBuilder {
         var innerClassRelations = new ArrayList<FrontendInnerClassRelation>();
         for (var acceptedInnerHeader : acceptedInnerHeaders) {
             var classDeclaration = requireInnerClassDeclaration(acceptedInnerHeader);
-            var innerClassDef = buildClassSkeleton(
+            var innerClassDef = createClassShell(
                     acceptedInnerHeader.canonicalName(),
                     acceptedInnerHeader.effectiveSuperName(),
-                    classDeclaration.body().statements(),
                     context
             );
             innerClassRelations.add(new FrontendInnerClassRelation(
@@ -293,8 +355,32 @@ public final class FrontendClassSkeletonBuilder {
     ) {
         var functionDef = new LirFunctionDef(functionDeclaration.name().trim());
         functionDef.setReturnType(resolveTypeOrVariant(functionDeclaration.returnType(), context));
+        fillFunctionParameters(functionDef, functionDeclaration.parameters(), context);
+        return functionDef;
+    }
 
-        for (var parameter : functionDeclaration.parameters()) {
+    /// The shared gdcc class surface models constructors as the special `_init` function entry used
+    /// by Godot, regardless of whether the parser surfaced them as `ConstructorDeclaration` or as a
+    /// function declaration literally named `_init`.
+    ///
+    /// Constructors are always modeled as `void _init(...)` at the skeleton layer. We therefore do
+    /// not forward any parser-side return annotation placeholder into the shared `ClassDef`
+    /// function surface.
+    private @NotNull LirFunctionDef toLirInitFunction(
+            @NotNull List<Parameter> parameters,
+            @NotNull SkeletonBuildContext context
+    ) {
+        var functionDef = new LirFunctionDef("_init");
+        fillFunctionParameters(functionDef, parameters, context);
+        return functionDef;
+    }
+
+    private void fillFunctionParameters(
+            @NotNull LirFunctionDef functionDef,
+            @NotNull List<Parameter> parameters,
+            @NotNull SkeletonBuildContext context
+    ) {
+        for (var parameter : parameters) {
             var parameterType = resolveTypeOrVariant(parameter.type(), context);
             functionDef.addParameter(new LirParameterDef(
                     parameter.name().trim(),
@@ -306,7 +392,30 @@ public final class FrontendClassSkeletonBuilder {
                 functionDef.setVararg(true);
             }
         }
-        return functionDef;
+    }
+
+    /// `_init` is the only constructor slot on a gdcc class.
+    ///
+    /// Godot exposes constructors through the special `_init` member name, so a class must never
+    /// publish more than one `_init` function into its skeleton. Tolerant frontend behavior here is
+    /// still diagnostic + skip-duplicate instead of a hard failure.
+    private void addFunctionMember(
+            @NotNull LirClassDef classDef,
+            @NotNull LirFunctionDef functionDef,
+            @NotNull Node sourceNode,
+            @NotNull SkeletonBuildContext context
+    ) {
+        if (functionDef.getName().equals("_init") && classDef.hasFunction("_init")) {
+            context.diagnostics().error(
+                    "sema.class_skeleton",
+                    "Class '" + classDef.getName()
+                            + "' declares more than one '_init' constructor/function; duplicate declaration will be skipped",
+                    context.sourcePath(),
+                    FrontendRange.fromAstRange(sourceNode.range())
+            );
+            return;
+        }
+        classDef.addFunction(functionDef);
     }
 
     private @NotNull GdType resolveTypeOrVariant(

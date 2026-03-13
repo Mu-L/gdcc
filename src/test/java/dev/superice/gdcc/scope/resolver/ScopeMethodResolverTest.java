@@ -220,6 +220,28 @@ class ScopeMethodResolverTest {
     }
 
     @Test
+    @DisplayName("shared method resolver should keep _init out of ordinary instance method lookup")
+    void resolveInstanceMethodShouldRejectInitConstructorMember() {
+        var workerClass = newClass("Worker", "RefCounted");
+        var init = newFunction("_init");
+        init.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, init));
+        entry(init).instructions().add(new ReturnInsn(null));
+        workerClass.addFunction(init);
+
+        var registry = newRegistry(emptyApi(), List.of(workerClass));
+        var result = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("Worker"),
+                "_init",
+                List.of()
+        );
+
+        var failed = assertInstanceOf(ScopeMethodResolver.Failed.class, result);
+        assertEquals(ScopeMethodResolver.FailureKind.CONSTRUCTOR_ROUTE_UNSUPPORTED, failed.kind());
+        assertTrue(failed.message().contains("_init"), failed.message());
+    }
+
+    @Test
     @DisplayName("shared method resolver should resolve canonical container metadata against registry")
     void resolveInstanceMethodShouldResolveCanonicalContainerMetadataAgainstRegistry() {
         var registry = newRegistry(

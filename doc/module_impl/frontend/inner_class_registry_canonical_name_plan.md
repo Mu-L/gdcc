@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：Phase 1 / Phase 2 已完成，Phase 3+ 待实施
+- 状态：Phase 1 / Phase 2 / Phase 3 已完成，Phase 4+ 待实施
 - 更新时间：2026-03-13
 - 基线提交：`c74d37e fix(scope): preserve container leaf types in text parsing`
 - 本轮范围：
@@ -30,7 +30,7 @@
 - `FrontendScopeAnalyzer` 已能根据这些 relation 为顶层 class 与 inner class 建立 `ClassScope`，inner class 子树也不再被整棵跳过。
 - `ClassRegistry` 已具备严格 `type-meta` 查询入口，例如 `resolveTypeMetaHere(...)` 与 `tryResolveDeclaredType(...)`。
 
-但当前实现仍存在三个结构性缺口：
+但在本轮启动前，代码存在三个结构性缺口：
 
 1. `FrontendClassSkeletonBuilder` 仍在“收集完所有顶层 class 后才批量注册顶层 class”，而 inner class 仍完全不注册到 `ClassRegistry`。
 2. `FrontendClassSkeletonBuilder#resolveTypeOrVariant(...)` 仍直接走 `ClassRegistry#findType(...)`，这会把 declared type 解析与“未知名字猜测为对象类型”的兼容路径混在一起。
@@ -328,23 +328,29 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
    - 解析并写入 superclass 的最终名字
    - 立即注入 `ClassRegistry`
    - 若该 candidate 是 inner class，则同时写入 `ClassRegistry#gdccClassSourceNameByCanonicalName`
-3. fill members 阶段复用这些已注册 shell：
+3. fill members 阶段复用这些已注册 shell，填充当前 skeleton 模型已承载的成员签名：
    - signal
    - property
    - function
-   - constructor 相关签名
+   - constructor declaration：按 Godot/GDScript 语义降为特殊 `_init` 函数并写入 `ClassDef` 的 function surface；同一类最多允许一个 `_init`
 4. `FrontendModuleSkeleton` 最终只发布 accepted class 的 relation 与 `allClassDefs()`。
 5. 若 publish shells 之后的 fill 阶段遇到某个 class 自身无法继续恢复的错误：
    - 只诊断并跳过该 class 的成员填充
    - 不回滚其他已接受 class 的 skeleton
 
+本阶段当前进度：
+
+- [x] `ClassRegistry` 已增加 `gdccClassSourceNameByCanonicalName` side-table，并通过 `resolveTypeMetaHere(...)` 为已注册 inner class 返回 `canonicalName != sourceName` 的 `ScopeTypeMeta`
+- [x] `FrontendClassSkeletonBuilder` 已改为“先创建 relation shell、统一发布全部 accepted class shell、再填充成员”的两阶段流程
+- [x] 已补齐 Phase 3 范围的针对性正反测试，并确认 scope analyzer 仍可继续消费 relation 恢复 `ClassDef`
+
 验收清单：
 
-- [ ] 在开始填充任意一个 class 的成员前，当前 module 中所有 accepted top-level / inner class 都已经可从 `ClassRegistry` 查询到
-- [ ] inner class 也进入 `FrontendModuleSkeleton#allClassDefs()`
-- [ ] 已注册 inner class 在 `ClassRegistry#gdccClassSourceNameByCanonicalName` 中拥有对应条目，而顶层 class 不写入冗余条目
-- [ ] 没有 rejected shell 泄漏在 `ClassRegistry`
-- [ ] 现有 `FrontendScopeAnalyzer` 仍能通过 relation 正确恢复 `ClassDef`
+- [x] 在开始填充任意一个 class 的成员前，当前 module 中所有 accepted top-level / inner class 都已经可从 `ClassRegistry` 查询到
+- [x] inner class 也进入 `FrontendModuleSkeleton#allClassDefs()`
+- [x] 已注册 inner class 在 `ClassRegistry#gdccClassSourceNameByCanonicalName` 中拥有对应条目，而顶层 class 不写入冗余条目
+- [x] 没有 rejected shell 泄漏在 `ClassRegistry`
+- [x] 现有 `FrontendScopeAnalyzer` 仍能通过 relation 正确恢复 `ClassDef`
 
 ## Phase 4. 把 declared type 解析收紧为 strict frontend 路径
 
@@ -386,6 +392,7 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
 执行项：
 
 1. 更新 `ClassRegistry#resolveTypeMetaHere(...)`，使其在返回 gdcc class 时先查询 `gdccClassSourceNameByCanonicalName`，再构造新的 `ScopeTypeMeta` 形态。
+   - 该 registry 侧基础已在 Phase 3 先行完成；Phase 5 剩余工作集中在 frontend lexical type namespace 的本地发布与解析。
 2. 更新 `AbstractFrontendScope#defineTypeMeta(...)` 与相关调用点：
    - frontend 本地 type-meta namespace 用 `sourceName` 做 lookup key
    - `ScopeTypeMeta` 本体保留 canonical/source 双名
@@ -402,7 +409,7 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
 
 - [ ] 在 outer class 的 lexical type namespace 中，`Inner` 可解析为 `ScopeTypeMeta(canonicalName = "Outer$Inner", sourceName = "Inner", ...)`
 - [ ] 在 inner class 内部，当前 class 自身可通过 sourceName 参与 declared type 解析
-- [ ] `ClassRegistry` 直接按 canonical name 查询 inner class type-meta 时，也会返回正确的 `sourceName`
+- [x] `ClassRegistry` 直接按 canonical name 查询 inner class type-meta 时，也会返回正确的 `sourceName`
 - [ ] outer class 仅通过 type-meta parent 链提供 outer type，可见性规则不破坏现有 `ClassScope` 设计
 - [ ] inner class 不会被错误地放入 value/function namespace
 - [ ] scope analyzer 的 AST -> scope 绑定在引入新 relation 字段后仍保持稳定

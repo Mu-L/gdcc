@@ -6,9 +6,6 @@ import dev.superice.gdcc.type.GdObjectType;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -36,7 +33,7 @@ public class ClassRegistryGdccTest {
         var t = registry.findType("MyUserClass");
         assertNotNull(t);
         assertInstanceOf(GdObjectType.class, t);
-        var got = (GdObjectType)t;
+        var got = (GdObjectType) t;
         assertTrue(got.checkGdccType(registry));
 
         // Remove
@@ -51,6 +48,29 @@ public class ClassRegistryGdccTest {
         var t2 = registry.findType("MyUserClass");
         assertNotNull(t2);
         assertInstanceOf(GdObjectType.class, t2);
-        assertFalse(((GdObjectType)t2).checkGdccType(registry));
+        assertFalse(((GdObjectType) t2).checkGdccType(registry));
+    }
+
+    @Test
+    void addAndRemoveInnerGdccClassKeepsSourceNameOverrideSideTableInSync() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var registry = new ClassRegistry(api);
+        var innerClassDef = new LirClassDef("Outer$Inner", "Object");
+
+        registry.addGdccClass(innerClassDef, "Inner");
+        assertTrue(registry.isGdccClass("Outer$Inner"));
+        assertEquals("Inner", registry.findGdccClassSourceNameOverride("Outer$Inner"));
+        assertNull(registry.resolveTypeMeta("Inner"));
+
+        var innerMeta = registry.resolveTypeMeta("Outer$Inner");
+        assertNotNull(innerMeta);
+        assertEquals("Outer$Inner", innerMeta.canonicalName());
+        assertEquals("Inner", innerMeta.sourceName());
+
+        var removed = registry.removeGdccClass("Outer$Inner");
+        assertSame(innerClassDef, removed);
+        assertNull(registry.findGdccClassSourceNameOverride("Outer$Inner"));
+        assertNull(registry.findGdccClass("Outer$Inner"));
+        assertNull(registry.resolveTypeMeta("Outer$Inner"));
     }
 }

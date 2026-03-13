@@ -64,6 +64,24 @@ public class ClassRegistryTypeMetaTest {
     }
 
     @Test
+    void resolveInnerGdccTypeMetaUsesSourceNameOverrideWithoutCreatingGlobalAlias() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        registry.addGdccClass(new LirClassDef("Outer", "Object"));
+        registry.addGdccClass(new LirClassDef("Outer$Inner", "Object"), "Inner");
+
+        var innerType = registry.resolveTypeMeta("Outer$Inner");
+        assertNotNull(innerType);
+        assertEquals(ScopeTypeMetaKind.GDCC_CLASS, innerType.kind());
+        assertEquals("Outer$Inner", innerType.canonicalName());
+        assertEquals("Inner", innerType.sourceName());
+        assertEquals("Outer$Inner", innerType.instanceType().getTypeName());
+
+        assertNull(registry.findGdccClassSourceNameOverride("Outer"));
+        assertEquals("Inner", registry.findGdccClassSourceNameOverride("Outer$Inner"));
+        assertNull(registry.resolveTypeMeta("Inner"));
+    }
+
+    @Test
     void resolveStrictContainerTypeMetaRecursively() throws IOException {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         registry.addGdccClass(new LirClassDef("InventoryItem", "Object"));

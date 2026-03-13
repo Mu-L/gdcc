@@ -5,18 +5,22 @@ import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
+import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
+import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.Statement;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Predicate;
 
@@ -198,9 +202,18 @@ class FrontendClassSkeletonTest {
         assertEquals("nested", deep.getFunctions().getFirst().getName());
 
         assertNotNull(registry.findGdccClass("OuterWithInner"));
-        assertNull(registry.findGdccClass("OuterWithInner$InnerA"));
-        assertNull(registry.findGdccClass("OuterWithInner$InnerA$Deep"));
-        assertNull(registry.findGdccClass("OuterWithInner$InnerB"));
+        assertNotNull(registry.findGdccClass("OuterWithInner$InnerA"));
+        assertNotNull(registry.findGdccClass("OuterWithInner$InnerA$Deep"));
+        assertNotNull(registry.findGdccClass("OuterWithInner$InnerB"));
+        assertNull(registry.findGdccClassSourceNameOverride("OuterWithInner"));
+        assertEquals("InnerA", registry.findGdccClassSourceNameOverride("OuterWithInner$InnerA"));
+        assertEquals("Deep", registry.findGdccClassSourceNameOverride("OuterWithInner$InnerA$Deep"));
+        assertEquals("InnerB", registry.findGdccClassSourceNameOverride("OuterWithInner$InnerB"));
+
+        var innerAMeta = registry.resolveTypeMeta("OuterWithInner$InnerA");
+        assertNotNull(innerAMeta);
+        assertEquals("OuterWithInner$InnerA", innerAMeta.canonicalName());
+        assertEquals("InnerA", innerAMeta.sourceName());
     }
 
     @Test
@@ -230,6 +243,183 @@ class FrontendClassSkeletonTest {
 
         assertTrue(diagnostics.isEmpty());
         assertTrue(result.diagnostics().isEmpty());
+    }
+
+    @Test
+    void buildLowersConstructorDeclarationsIntoInitFunctionsPerClass() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "constructor_members.gd"), """
+                class_name ConstructorMembers
+                extends RefCounted
+                
+                func _init(seed: int, alias = seed):
+                    pass
+                
+                class Inner:
+                    func _init(label: String):
+                        pass
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
+        var topLevel = findClassByName(result.classDefs(), "ConstructorMembers");
+        var inner = findClassByName(result.allClassDefs(), "ConstructorMembers$Inner");
+
+        var topLevelInit = findFunctionByName(topLevel, "_init");
+        assertEquals(GdVoidType.VOID, topLevelInit.getReturnType());
+        assertEquals(2, topLevelInit.getParameterCount());
+        assertEquals("seed", topLevelInit.getParameter(0).getName());
+        assertEquals(GdIntType.INT, topLevelInit.getParameter(0).getType());
+        assertEquals("alias", topLevelInit.getParameter(1).getName());
+        assertEquals(GdVariantType.VARIANT, topLevelInit.getParameter(1).getType());
+
+        var innerInit = findFunctionByName(inner, "_init");
+        assertEquals(GdVoidType.VOID, innerInit.getReturnType());
+        assertEquals(1, innerInit.getParameterCount());
+        assertEquals("label", innerInit.getParameter(0).getName());
+        assertEquals(GdStringType.STRING, innerInit.getParameter(0).getType());
+
+        assertTrue(result.diagnostics().isEmpty());
+    }
+
+    @Test
+    void buildSkipsDuplicateInitConstructorsWithinSameClassButKeepsOtherClassesAlive() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "duplicate_init_constructor.gd"), """
+                class_name DuplicateInitConstructor
+                extends RefCounted
+                
+                func _init(seed: int):
+                    pass
+                
+                func _init(name: String):
+                    pass
+                
+                func ping():
+                    pass
+                
+                class Inner:
+                    func _init():
+                        pass
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
+        var topLevel = findClassByName(result.classDefs(), "DuplicateInitConstructor");
+        var inner = findClassByName(result.allClassDefs(), "DuplicateInitConstructor$Inner");
+
+        assertEquals(List.of("_init", "ping"), topLevel.getFunctions().stream()
+                .map(function -> function.getName())
+                .toList());
+        var topLevelInit = findFunctionByName(topLevel, "_init");
+        assertEquals(1, topLevelInit.getParameterCount());
+        assertEquals("seed", topLevelInit.getParameter(0).getName());
+        assertEquals(GdIntType.INT, topLevelInit.getParameter(0).getType());
+
+        var innerInit = findFunctionByName(inner, "_init");
+        assertEquals(0, innerInit.getParameterCount());
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("DuplicateInitConstructor")
+                        && diagnostic.message().contains("more than one '_init'")
+        ));
+    }
+
+    @Test
+    void phase3PublishesAcceptedTopLevelAndInnerShellsBeforeMemberFilling() throws Exception {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var builder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "phase3_probe.gd"), """
+                class_name Phase3Probe
+                extends Node
+                
+                signal changed()
+                
+                func _init(seed: int):
+                    pass
+                
+                class Inner:
+                    var hp: int = 1
+                    func _init():
+                        pass
+                    func ping():
+                        pass
+                """, diagnostics);
+
+        var discovery = invokeBuilderMethod(
+                builder,
+                "discoverModuleClassHeaders",
+                new Class<?>[]{List.class, DiagnosticManager.class},
+                List.of(unit),
+                diagnostics
+        );
+        @SuppressWarnings("unchecked")
+        var sourceUnitGraphs = (List<Object>) invokeAccessor(discovery, "sourceUnitGraphs");
+        var shellContext = newSkeletonBuildContext(registry, diagnostics, unit.path(), analysisData);
+        var shellRelations = new ArrayList<FrontendSourceClassRelation>();
+        for (var sourceUnitGraph : sourceUnitGraphs) {
+            if (invokeAccessor(sourceUnitGraph, "topLevelHeader") == null) {
+                continue;
+            }
+            shellRelations.add((FrontendSourceClassRelation) invokeBuilderMethod(
+                    builder,
+                    "buildSourceClassRelationShell",
+                    new Class<?>[]{sourceUnitGraph.getClass(), shellContext.getClass()},
+                    sourceUnitGraph,
+                    shellContext
+            ));
+        }
+
+        assertEquals(1, shellRelations.size());
+        var shellRelation = shellRelations.getFirst();
+        assertTrue(shellRelation.topLevelClassDef().getSignals().isEmpty());
+        assertTrue(shellRelation.topLevelClassDef().getProperties().isEmpty());
+        assertTrue(shellRelation.topLevelClassDef().getFunctions().isEmpty());
+        assertEquals(1, shellRelation.innerClassRelations().size());
+        var innerShell = shellRelation.innerClassRelations().getFirst().classDef();
+        assertTrue(innerShell.getSignals().isEmpty());
+        assertTrue(innerShell.getProperties().isEmpty());
+        assertTrue(innerShell.getFunctions().isEmpty());
+
+        invokeBuilderMethod(
+                builder,
+                "publishClassShells",
+                new Class<?>[]{List.class, ClassRegistry.class},
+                shellRelations,
+                registry
+        );
+        assertNotNull(registry.findGdccClass("Phase3Probe"));
+        assertNotNull(registry.findGdccClass("Phase3Probe$Inner"));
+        assertNull(registry.findGdccClassSourceNameOverride("Phase3Probe"));
+        assertEquals("Inner", registry.findGdccClassSourceNameOverride("Phase3Probe$Inner"));
+
+        var innerTypeMeta = registry.resolveTypeMeta("Phase3Probe$Inner");
+        assertNotNull(innerTypeMeta);
+        assertEquals("Phase3Probe$Inner", innerTypeMeta.canonicalName());
+        assertEquals("Inner", innerTypeMeta.sourceName());
+
+        invokeBuilderMethod(
+                builder,
+                "fillSourceClassRelationMembers",
+                new Class<?>[]{FrontendSourceClassRelation.class, shellContext.getClass()},
+                shellRelation,
+                shellContext
+        );
+        assertEquals("changed", shellRelation.topLevelClassDef().getSignals().getFirst().getName());
+        assertEquals("_init", shellRelation.topLevelClassDef().getFunctions().getFirst().getName());
+        assertEquals("hp", innerShell.getProperties().getFirst().getName());
+        assertEquals(List.of("_init", "ping"), innerShell.getFunctions().stream()
+                .map(function -> function.getName())
+                .toList());
     }
 
     /// Verifies the shared parse->skeleton pipeline keeps the original parse diagnostics exactly
@@ -341,11 +531,101 @@ class FrontendClassSkeletonTest {
         assertTrue(result.diagnostics().isEmpty());
     }
 
+    @Test
+    void buildDoesNotPublishRejectedInnerClassShellsIntoRegistry() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "rejected_inner_cycle.gd"), """
+                class_name OuterCycle
+                extends RefCounted
+                
+                class Alpha extends Beta:
+                    func alpha():
+                        pass
+                
+                class Beta extends Alpha:
+                    func beta():
+                        pass
+                
+                class StableInner:
+                    func ok():
+                        pass
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
+        var relation = result.sourceClassRelations().getFirst();
+
+        assertEquals(List.of("OuterCycle", "OuterCycle$StableInner"), result.allClassDefs().stream()
+                .map(LirClassDef::getName)
+                .toList());
+        assertEquals(List.of("StableInner"), relation.innerClassRelations().stream()
+                .map(FrontendInnerClassRelation::sourceName)
+                .toList());
+        assertNotNull(registry.findGdccClass("OuterCycle"));
+        assertNotNull(registry.findGdccClass("OuterCycle$StableInner"));
+        assertNull(registry.findGdccClass("OuterCycle$Alpha"));
+        assertNull(registry.findGdccClass("OuterCycle$Beta"));
+        assertNull(registry.findGdccClassSourceNameOverride("OuterCycle$Alpha"));
+        assertNull(registry.findGdccClassSourceNameOverride("OuterCycle$Beta"));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.inheritance_cycle")
+                        && diagnostic.message().contains("OuterCycle$Alpha")
+                        && diagnostic.message().contains("OuterCycle$Beta")
+        ));
+    }
+
     private LirClassDef findClassByName(List<LirClassDef> classDefs, String className) {
         return classDefs.stream()
                 .filter(classDef -> classDef.getName().equals(className))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Class not found: " + className));
+    }
+
+    private LirFunctionDef findFunctionByName(LirClassDef classDef, String functionName) {
+        return classDef.getFunctions().stream()
+                .filter(functionDef -> functionDef.getName().equals(functionName))
+                .findFirst()
+                .map(functionDef -> assertInstanceOf(LirFunctionDef.class, functionDef))
+                .orElseThrow(() -> new AssertionError("Function not found: " + functionName));
+    }
+
+    private Object newSkeletonBuildContext(
+            ClassRegistry classRegistry,
+            DiagnosticManager diagnostics,
+            Path sourcePath,
+            FrontendAnalysisData analysisData
+    ) throws Exception {
+        var contextClass = Class.forName(
+                "dev.superice.gdcc.frontend.sema.FrontendClassSkeletonBuilder$SkeletonBuildContext"
+        );
+        var constructor = contextClass.getDeclaredConstructor(
+                ClassRegistry.class,
+                DiagnosticManager.class,
+                Path.class,
+                FrontendAnalysisData.class
+        );
+        constructor.setAccessible(true);
+        return constructor.newInstance(classRegistry, diagnostics, sourcePath, analysisData);
+    }
+
+    private Object invokeBuilderMethod(
+            FrontendClassSkeletonBuilder builder,
+            String methodName,
+            Class<?>[] parameterTypes,
+            Object... args
+    ) throws Exception {
+        var method = FrontendClassSkeletonBuilder.class.getDeclaredMethod(methodName, parameterTypes);
+        method.setAccessible(true);
+        return method.invoke(builder, args);
+    }
+
+    private Object invokeAccessor(Object target, String methodName) throws Exception {
+        var method = target.getClass().getDeclaredMethod(methodName);
+        method.setAccessible(true);
+        return method.invoke(target);
     }
 
     private <T extends Statement> T findStatement(

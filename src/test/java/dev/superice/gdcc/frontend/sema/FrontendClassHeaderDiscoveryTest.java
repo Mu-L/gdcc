@@ -111,7 +111,11 @@ class FrontendClassHeaderDiscoveryTest {
         ));
         assertNotNull(registry.findGdccClass("Outer"));
         assertNotNull(registry.findGdccClass("StableModule"));
-        assertNull(registry.findGdccClass("Outer$SharedInner"));
+        assertNotNull(registry.findGdccClass("Outer$GoodInner"));
+        assertNotNull(registry.findGdccClass("Outer$SharedInner"));
+        assertEquals("GoodInner", registry.findGdccClassSourceNameOverride("Outer$GoodInner"));
+        assertEquals("SharedInner", registry.findGdccClassSourceNameOverride("Outer$SharedInner"));
+        assertNull(registry.findGdccClass("Outer$SharedInner$HiddenChild"));
     }
 
     @Test
@@ -185,7 +189,9 @@ class FrontendClassHeaderDiscoveryTest {
         ));
         assertNotNull(registry.findGdccClass("Outer"));
         assertNotNull(registry.findGdccClass("KeepAlive"));
-        assertNull(registry.findGdccClass("Outer$Inner"));
+        assertNotNull(registry.findGdccClass("Outer$Inner"));
+        assertEquals("Inner", registry.findGdccClassSourceNameOverride("Outer$Inner"));
+        assertEquals("Sibling", registry.findGdccClassSourceNameOverride("Outer$Sibling"));
     }
 
     @Test

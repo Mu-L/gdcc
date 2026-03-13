@@ -31,7 +31,7 @@ import java.util.StringJoiner;
 /// - supports instance receivers (`GdType`) and static/type-meta receivers (`ScopeTypeMeta`)
 /// - centralizes candidate collection, applicability checks, and ranking rules
 /// - does not decide frontend lowering shape or backend C emission details
-/// - does not treat constructors (`ClassName.new(...)`) as ordinary methods
+/// - does not treat constructors (`ClassName.new(...)` / `_init`) as ordinary methods
 public final class ScopeMethodResolver {
     private ScopeMethodResolver() {
     }
@@ -125,6 +125,12 @@ public final class ScopeMethodResolver {
         Objects.requireNonNull(argTypes, "argTypes");
 
         try {
+            if (methodName.equals("_init")) {
+                throw new ScopeMethodResolutionException(
+                        FailureKind.CONSTRUCTOR_ROUTE_UNSUPPORTED,
+                        "Constructor member '_init' must not be resolved through ordinary instance method lookup"
+                );
+            }
             if (receiverType instanceof GdObjectType objectType) {
                 return resolveKnownObjectInstanceMethod(registry, objectType, methodName, argTypes);
             }

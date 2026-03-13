@@ -33,8 +33,14 @@ public final class ClassRegistry implements Scope {
     private final Map<String, ExtensionUtilityFunction> utilityByName = new HashMap<>();
     private final Map<String, ExtensionGlobalEnum> globalEnumByName = new HashMap<>();
     private final Map<String, ExtensionSingleton> singletonByName = new HashMap<>();
-    /// User defined classes in code that this compiler are compiling.
+    /// User-defined classes keyed strictly by canonical registration name.
     private final Map<String, ClassDef> gdccClassByName = new HashMap<>();
+    /// Source-facing alias side table for canonical inner-class registrations.
+    ///
+    /// Top-level gdcc classes intentionally do not write redundant entries here because their
+    /// source-facing name is identical to the canonical registration key. Only inner classes with
+    /// `canonicalName != sourceName` need an explicit side-table entry.
+    private final Map<String, String> gdccClassSourceNameByCanonicalName = new HashMap<>();
     /// Virtual method for each class
     private final Map<String, Map<String, FunctionDef>> virtualMethodsByClassName = new HashMap<>();
 
@@ -95,19 +101,43 @@ public final class ClassRegistry implements Scope {
         return name.equals("Array") || name.equals("Dictionary") || name.startsWith("Array[") || name.startsWith("Dictionary[");
     }
 
-    /// Add or replace a user-defined class.
+    /// Add or replace a user-defined class using its canonical name as the only registry key.
     public void addGdccClass(@NotNull ClassDef classDef) {
-        gdccClassByName.put(classDef.getName(), classDef);
+        addGdccClass(classDef, null);
     }
 
-    /// Remove a user-defined class by name.
+    /// Add or replace a user-defined class and optionally remember a distinct source-local name.
+    ///
+    /// `sourceNameOverride` is reserved for inner classes such as `Outer$Inner` that should still
+    /// report `sourceName == "Inner"` through `ScopeTypeMeta`. Passing `null` or the same text as
+    /// the canonical class name keeps the side table empty for that class.
+    public void addGdccClass(@NotNull ClassDef classDef, @Nullable String sourceNameOverride) {
+        Objects.requireNonNull(classDef, "classDef");
+        var canonicalName = classDef.getName();
+        gdccClassByName.put(canonicalName, classDef);
+        gdccClassSourceNameByCanonicalName.remove(canonicalName);
+        if (sourceNameOverride != null && !sourceNameOverride.equals(canonicalName)) {
+            gdccClassSourceNameByCanonicalName.put(canonicalName, sourceNameOverride);
+        }
+    }
+
+    /// Remove a user-defined class by canonical name.
     public @Nullable ClassDef removeGdccClass(@NotNull String name) {
+        gdccClassSourceNameByCanonicalName.remove(name);
         return gdccClassByName.remove(name);
     }
 
-    /// Get a user-defined class by name.
+    /// Get a user-defined class by canonical name.
     public @Nullable ClassDef findGdccClass(@NotNull String name) {
         return gdccClassByName.get(name);
+    }
+
+    /// Returns the explicit source-name override recorded for an inner gdcc class.
+    ///
+    /// Missing entries intentionally mean `sourceName == canonicalName`; callers should not treat
+    /// this map as a second global lookup namespace.
+    public @Nullable String findGdccClassSourceNameOverride(@NotNull String canonicalName) {
+        return gdccClassSourceNameByCanonicalName.get(canonicalName);
     }
 
     @Override
@@ -201,9 +231,10 @@ public final class ClassRegistry implements Scope {
             ));
         }
         if (isGdccClass(trimmed)) {
+            var sourceName = resolveGdccSourceName(trimmed);
             return ScopeLookupResult.foundAllowed(new ScopeTypeMeta(
                     trimmed,
-                    trimmed,
+                    sourceName,
                     new GdObjectType(trimmed),
                     ScopeTypeMetaKind.GDCC_CLASS,
                     findGdccClass(trimmed),
@@ -299,6 +330,10 @@ public final class ClassRegistry implements Scope {
     private @Nullable GdType resolveTypeName(@Nullable String typeName) {
         if (typeName == null) return null;
         return findType(typeName);
+    }
+
+    private @NotNull String resolveGdccSourceName(@NotNull String canonicalName) {
+        return gdccClassSourceNameByCanonicalName.getOrDefault(canonicalName, canonicalName);
     }
 
     /// Resolve an explicitly written type name without inventing unknown object types.
