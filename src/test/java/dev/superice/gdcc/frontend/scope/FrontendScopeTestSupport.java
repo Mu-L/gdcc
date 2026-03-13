@@ -168,6 +168,17 @@ final class FrontendScopeTestSupport {
             @Nullable Object declaration,
             boolean pseudoType
     ) {
-        return new ScopeTypeMeta(name, instanceType, kind, declaration, pseudoType);
+        return createTypeMeta(name, name, instanceType, kind, declaration, pseudoType);
+    }
+
+    static @NotNull ScopeTypeMeta createTypeMeta(
+            @NotNull String canonicalName,
+            @NotNull String sourceName,
+            @NotNull GdType instanceType,
+            @NotNull ScopeTypeMetaKind kind,
+            @Nullable Object declaration,
+            boolean pseudoType
+    ) {
+        return new ScopeTypeMeta(canonicalName, sourceName, instanceType, kind, declaration, pseudoType);
     }
 }

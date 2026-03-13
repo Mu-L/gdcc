@@ -110,8 +110,18 @@ public final class FrontendClassSkeletonBuilder {
                 unit.ast().statements(),
                 context
         );
-        var innerClassRelations = collectInnerClassRelations(unit.ast().statements(), context);
-        return new FrontendSourceClassRelation(unit, topLevelClassDef, innerClassRelations);
+        var innerClassRelations = collectInnerClassRelations(
+                unit.ast().statements(),
+                unit.ast(),
+                topLevelClassDef.getName(),
+                context
+        );
+        return new FrontendSourceClassRelation(
+                unit,
+                className,
+                topLevelClassDef,
+                innerClassRelations
+        );
     }
 
     private @Nullable ClassNameStatement firstClassNameStatement(@NotNull List<Statement> statements) {
@@ -153,7 +163,8 @@ public final class FrontendClassSkeletonBuilder {
     /// Builds one `LirClassDef` from a statement list without recursively embedding child classes
     /// into the parent object. Nested classes are collected separately into
     /// `FrontendSourceClassRelation`, which keeps ownership explicit without overloading
-    /// `LirClassDef` itself with new hierarchy semantics.
+    /// `LirClassDef` itself with new hierarchy semantics. Inner-class skeletons still use their
+    /// canonical names here even before later phases publish them into the registry.
     private @NotNull LirClassDef buildClassSkeleton(
             @NotNull String className,
             @NotNull String superClassName,
@@ -182,15 +193,20 @@ public final class FrontendClassSkeletonBuilder {
 
     /// Recursively collects every non-top-level class declared inside the current statement list.
     ///
-    /// The returned list is source-local metadata only for now:
-    /// - it is preserved on `FrontendModuleSkeleton`
-    /// - it is not injected into `ClassRegistry` yet, because global registration semantics for
-    ///   nested classes remain a separate design question
+    /// This phase already freezes inner-class identity into:
+    /// - source-facing `sourceName`
+    /// - canonical `LirClassDef#getName()`
+    /// - exact immediate lexical owner
+    ///
+    /// Actual registry publication is deferred to the later shell-publish phase; the absence of a
+    /// registry entry here is only a temporary phase boundary, not a statement that inner classes
+    /// are permanently source-local only.
     /// - malformed nested classes are diagnosed and skipped together with their own subtrees
-    /// - each entry keeps both the parsed `ClassDeclaration` owner and its built skeleton so later
-    ///   phases can materialize inner-class scope/binding state without guessing
+    /// - each entry keeps both the parsed `ClassDeclaration` owner and its built skeleton
     private @NotNull List<FrontendInnerClassRelation> collectInnerClassRelations(
             @NotNull List<Statement> statements,
+            @NotNull Node lexicalOwner,
+            @NotNull String parentCanonicalName,
             @NotNull SkeletonBuildContext context
     ) {
         var innerClassRelations = new ArrayList<FrontendInnerClassRelation>();
@@ -203,14 +219,26 @@ public final class FrontendClassSkeletonBuilder {
             if (innerClassName == null) {
                 continue;
             }
+            var canonicalName = parentCanonicalName + "$" + innerClassName;
             var innerClassDef = buildClassSkeleton(
-                    innerClassName,
+                    canonicalName,
                     resolveInnerClassSuperName(classDeclaration),
                     classDeclaration.body().statements(),
                     context
             );
-            innerClassRelations.add(new FrontendInnerClassRelation(classDeclaration, innerClassDef));
-            innerClassRelations.addAll(collectInnerClassRelations(classDeclaration.body().statements(), context));
+            innerClassRelations.add(new FrontendInnerClassRelation(
+                    lexicalOwner,
+                    classDeclaration,
+                    innerClassName,
+                    canonicalName,
+                    innerClassDef
+            ));
+            innerClassRelations.addAll(collectInnerClassRelations(
+                    classDeclaration.body().statements(),
+                    classDeclaration,
+                    canonicalName,
+                    context
+            ));
         }
         return List.copyOf(innerClassRelations);
     }

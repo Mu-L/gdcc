@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：待实施
-- 更新时间：2026-03-12
+- 状态：Phase 1 已完成，Phase 2+ 待实施
+- 更新时间：2026-03-13
 - 基线提交：`c74d37e fix(scope): preserve container leaf types in text parsing`
 - 本轮范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -117,6 +117,8 @@
 - `ClassRegistry`：
   - 只用 `canonicalName` 注册 gdcc class
   - 不为 inner class 建立全局 `sourceName` alias
+  - 额外维护 `gdccClassSourceNameByCanonicalName` side-table，仅为已注册的 inner class 记录 `canonicalName -> sourceName`
+  - 普通 gdcc 顶层 class 不需要单独记录该项；缺失 side-table 条目时，等价于 `sourceName == canonicalName`
 - lexical type namespace：
   - 由 frontend scope/relation 暴露 `sourceName`
   - outer class 只通过 type-meta parent 链贡献 outer type，可见性规则继续服从现有 `ClassScope`
@@ -182,20 +184,21 @@
 
 ### 5.3 `FrontendSourceClassRelation`
 
-当前 record 建议显式补齐顶层 class 的双名语义：
+当前 record 建议只显式保存顶层 class 的统一名字：
 
 - `FrontendSourceUnit unit`
-- `String topLevelSourceName`
-- `String topLevelCanonicalName`
+- `String name`
 - `LirClassDef topLevelClassDef`
 - `List<FrontendInnerClassRelation> innerClassRelations`
 
 同时补充以下 helper 语义：
 
+- `FrontendOwnedClassRelation`
+  - 改为共享接口，由 `FrontendSourceClassRelation` 与 `FrontendInnerClassRelation` 直接实现，不再通过临时转换 record 暴露统一 ownership 视图
 - `allClassDefs()`
   - 返回顶层 + 全部 inner class 的 `LirClassDef`
 - `findRelation(Node astOwner)`
-  - 允许后续 phase 通过 AST owner 直接恢复 class relation
+  - 允许后续 phase 通过 AST owner 直接恢复实现 `FrontendOwnedClassRelation` 的原始 relation 条目
 - `findImmediateInnerRelations(Node lexicalOwner)`
   - 允许 scope/binder 只取某个 lexical owner 的直接 inner classes，而不是把所有后代 inner class 一次性扁平暴露
 
@@ -211,10 +214,35 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
 - `FrontendSourceClassRelation`
 - `FrontendInnerClassRelation`
 - `ScopeTypeMeta#sourceName`
+- `ClassRegistry#gdccClassSourceNameByCanonicalName`
 
 承担。
 
 这样可以把“对 backend 透明的稳定注册名”与“只服务于 source 语义的局部名字”分层，不需要在本轮引入 `cSymbolName`。
+
+### 5.5 `ClassRegistry` inner class source-name side-table
+
+为了让 inner class 在进入 `ClassRegistry` 之后仍能返回正确的双名 `ScopeTypeMeta`，本轮需要在 registry 中增加一个显式 side-table：
+
+- `Map<String, String> gdccClassSourceNameByCanonicalName`
+
+字段语义冻结为：
+
+- key
+  - 已注册 gdcc class 的 canonical name
+- value
+  - 仅当该 class 是 inner class 时，记录其 source-local `sourceName`
+- 不变量
+  - 对顶层 gdcc class，不写入该表
+  - 对 inner class，发布 shell 时同步写入该表
+  - 读取 gdcc type-meta 时，若 side-table 缺失条目，则按 `sourceName == canonicalName` 处理
+  - 该表不是 alias namespace；`ClassRegistry` 仍只允许用 canonical name 命中 gdcc class
+
+采用 side-table 而不是修改 `ClassDef` / `LirClassDef` 的原因是：
+
+- `ClassDef#getName()` 已冻结为 canonical name，不应再混入 source-facing 语义
+- top-level class 不需要重复存储同值字段
+- inner class 的 source name 只在 registry 发布后用于构造 `ScopeTypeMeta` 与 diagnostics，不应改变全局注册键
 
 ---
 
@@ -228,18 +256,18 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
 
 执行项：
 
-1. 修改 `ScopeTypeMeta`，把单一 `name` 拆成 `canonicalName` / `sourceName`。
-2. 扩展 `FrontendInnerClassRelation`，补齐 `lexicalOwner`、`sourceName`、`canonicalName`。
-3. 扩展 `FrontendSourceClassRelation`，显式保存顶层 class 的 `sourceName` / `canonicalName`，并补齐按 AST owner 查询、按 immediate lexical owner 查询的 helper。
-4. 全面审阅 `ClassDef` / `LirClassDef` / 相关注释，冻结“`getName()` 代表 canonical name”的说法。
-5. 修改相关注释与文档，删除任何仍把 inner class 当作“只存在于 source-local relation、不进入统一类型系统”的表述。
+- [x] 修改 `ScopeTypeMeta`，把单一 `name` 拆成 `canonicalName` / `sourceName`，并把 frontend 本地 type-meta namespace 的 key 语义切到 `sourceName`。
+- [x] 扩展 `FrontendInnerClassRelation`，补齐 `lexicalOwner`、`sourceName`、`canonicalName`，并把 inner `LirClassDef#getName()` 冻结为 canonical name。
+- [x] 扩展 `FrontendSourceClassRelation`，把顶层 class 收敛为统一的 `name` 字段，并补齐按 AST owner 查询、按 immediate lexical owner 查询的 helper；顶层类的 source/canonical 双名语义继续由冻结不变量保证。
+- [x] 全面审阅 `ClassDef` / `LirClassDef` / 相关注释，冻结“`getName()` 代表 canonical name”的说法。
+- [x] 修改相关注释与文档，把“inner class 只是 source-local 临时 metadata”的描述收敛为“当前尚未注册，但 identity 模型已冻结，后续 phase 继续消费”。
 
 验收清单：
 
-- [ ] 任何一个 top-level / inner class 都能同时恢复 `sourceName` 与 `canonicalName`
-- [ ] 任何一个 inner class 都能恢复 immediate lexical owner，而不是只能靠扁平列表顺序猜测
-- [ ] 代码与文档中不再把 `ClassDef#getName()` 描述成“总是等于源代码类名”
-- [ ] `ScopeTypeMeta` 的新字段语义在注释中被明确写清
+- [x] 任何一个 top-level / inner class 都能同时恢复 `sourceName` 与 `canonicalName`
+- [x] 任何一个 inner class 都能恢复 immediate lexical owner，而不是只能靠扁平列表顺序猜测
+- [x] 代码与文档中不再把 `ClassDef#getName()` 描述成“总是等于源代码类名”
+- [x] `ScopeTypeMeta` 的新字段语义在注释中被明确写清
 
 ## Phase 2. 建立 module 级 class header 发现与验证 pass
 
@@ -251,7 +279,7 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
 
 1. 在 `FrontendClassSkeletonBuilder` 中引入独立的 class header discovery pass。
 2. discovery pass 对每个 source unit 收集：
-   - 顶层 class source/canonical 名
+   - 顶层 class 统一 `name`
    - 所有 inner class 的 source/canonical 名
    - immediate lexical owner
    - 原始 `extends` 文本
@@ -295,6 +323,7 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
    - 设置 source file
    - 解析并写入 superclass 的最终名字
    - 立即注入 `ClassRegistry`
+   - 若该 candidate 是 inner class，则同时写入 `ClassRegistry#gdccClassSourceNameByCanonicalName`
 3. fill members 阶段复用这些已注册 shell：
    - signal
    - property
@@ -309,6 +338,7 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
 
 - [ ] 在开始填充任意一个 class 的成员前，当前 module 中所有 accepted top-level / inner class 都已经可从 `ClassRegistry` 查询到
 - [ ] inner class 也进入 `FrontendModuleSkeleton#allClassDefs()`
+- [ ] 已注册 inner class 在 `ClassRegistry#gdccClassSourceNameByCanonicalName` 中拥有对应条目，而顶层 class 不写入冗余条目
 - [ ] 没有 rejected shell 泄漏在 `ClassRegistry`
 - [ ] 现有 `FrontendScopeAnalyzer` 仍能通过 relation 正确恢复 `ClassDef`
 
@@ -351,7 +381,7 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
 
 执行项：
 
-1. 更新 `ClassRegistry#resolveTypeMetaHere(...)`，使其在返回 gdcc class 时构造新的 `ScopeTypeMeta` 形态。
+1. 更新 `ClassRegistry#resolveTypeMetaHere(...)`，使其在返回 gdcc class 时先查询 `gdccClassSourceNameByCanonicalName`，再构造新的 `ScopeTypeMeta` 形态。
 2. 更新 `AbstractFrontendScope#defineTypeMeta(...)` 与相关调用点：
    - frontend 本地 type-meta namespace 用 `sourceName` 做 lookup key
    - `ScopeTypeMeta` 本体保留 canonical/source 双名
@@ -368,6 +398,7 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
 
 - [ ] 在 outer class 的 lexical type namespace 中，`Inner` 可解析为 `ScopeTypeMeta(canonicalName = "Outer$Inner", sourceName = "Inner", ...)`
 - [ ] 在 inner class 内部，当前 class 自身可通过 sourceName 参与 declared type 解析
+- [ ] `ClassRegistry` 直接按 canonical name 查询 inner class type-meta 时，也会返回正确的 `sourceName`
 - [ ] outer class 仅通过 type-meta parent 链提供 outer type，可见性规则不破坏现有 `ClassScope` 设计
 - [ ] inner class 不会被错误地放入 value/function namespace
 - [ ] scope analyzer 的 AST -> scope 绑定在引入新 relation 字段后仍保持稳定
@@ -390,6 +421,8 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
    - outer class 能看到直接 inner class
    - inner class 能看到自身与 outer class 的 type-meta
    - 只暴露 immediate inner classes，不一次性平铺全部后代 inner classes
+   - `ClassRegistry` 对顶层 gdcc class 返回 `canonicalName == sourceName`
+   - `ClassRegistry` 对 inner class 返回 `canonicalName != sourceName`
 3. 补齐 negative path：
    - 同一 lexical owner 下 inner class 重名
    - 不合法 lexical 上下文下引用 inner class sourceName
@@ -465,6 +498,13 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
 - 应对：
   - relation helper 必须提供“按 immediate lexical owner 取直接 inner classes”的能力
   - scope analyzer 只定义直接 inner classes，不平铺全部后代
+
+风险 6：`ClassRegistry` 的 gdcc source-name side-table 若与已注册 class 集合失配，会让 inner class type-meta 回退成错误的顶层语义
+
+- 应对：
+  - side-table 只在 Phase 3 publish shells 阶段写入 accepted inner classes
+  - 删除/回滚 gdcc class 时必须同步清理 side-table
+  - 用专门测试锚定“顶层类无 side-table 条目也保持正确，inner class 缺条目则属于实现缺陷”
 
 ---
 

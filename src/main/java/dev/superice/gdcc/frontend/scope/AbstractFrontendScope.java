@@ -51,9 +51,9 @@ public abstract class AbstractFrontendScope implements Scope {
     /// when a caller wires the scope graph incorrectly.
     public void defineTypeMeta(@NotNull ScopeTypeMeta typeMeta) {
         Objects.requireNonNull(typeMeta, "typeMeta");
-        var previous = typeMetasByName.putIfAbsent(typeMeta.name(), typeMeta);
+        var previous = typeMetasByName.putIfAbsent(typeMeta.sourceName(), typeMeta);
         if (previous != null) {
-            throw duplicateNamespaceBinding("type-meta", typeMeta.name());
+            throw duplicateNamespaceBinding("type-meta", typeMeta.sourceName());
         }
     }
 

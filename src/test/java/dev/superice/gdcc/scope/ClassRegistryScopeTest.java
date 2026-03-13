@@ -100,9 +100,10 @@ public class ClassRegistryScopeTest {
         assertFalse(unrestrictedResult.isBlocked());
         assertFalse(staticResult.isBlocked());
         assertFalse(instanceResult.isBlocked());
-        assertEquals("InventoryItem", unrestrictedResult.requireValue().name());
-        assertEquals("InventoryItem", staticResult.requireValue().name());
-        assertEquals("InventoryItem", instanceResult.requireValue().name());
+        assertEquals("InventoryItem", unrestrictedResult.requireValue().canonicalName());
+        assertEquals("InventoryItem", unrestrictedResult.requireValue().sourceName());
+        assertEquals("InventoryItem", staticResult.requireValue().canonicalName());
+        assertEquals("InventoryItem", instanceResult.requireValue().canonicalName());
     }
 
     @Test

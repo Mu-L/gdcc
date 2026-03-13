@@ -28,6 +28,7 @@ public class FrontendInnerClassScopeIsolationTest {
         var outerScope = new ClassScope(registry, registry, outerClass);
         outerScope.defineConstant("OUTER_CONST", GdIntType.INT, "outer const");
         var outerTypeMeta = FrontendScopeTestSupport.createTypeMeta(
+                "Outer$OuterInnerType",
                 "OuterInnerType",
                 GdStringType.STRING,
                 ScopeTypeMetaKind.GDCC_CLASS,
@@ -42,6 +43,7 @@ public class FrontendInnerClassScopeIsolationTest {
         assertNull(innerScope.resolveValue("OUTER_CONST"));
         assertTrue(innerScope.resolveFunctions("outer_call").isEmpty());
         assertEquals(outerTypeMeta, innerScope.resolveTypeMeta("OuterInnerType"));
+        assertEquals("Outer$OuterInnerType", innerScope.resolveTypeMeta("OuterInnerType").canonicalName());
 
         var globalValue = innerScope.resolveValue("GlobalPlayer");
         assertNotNull(globalValue);

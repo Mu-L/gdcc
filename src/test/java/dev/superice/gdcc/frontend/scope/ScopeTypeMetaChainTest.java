@@ -33,7 +33,8 @@ public class ScopeTypeMetaChainTest {
         var classLocalTypeMeta = classScope.resolveTypeMeta("SharedType", ResolveRestriction.unrestricted()).requireValue();
         assertEquals(localTypeMeta, classLocalTypeMeta);
         var globalTypeMeta = registry.resolveTypeMeta("SharedType", ResolveRestriction.unrestricted()).requireValue();
-        assertEquals("SharedType", globalTypeMeta.name());
+        assertEquals("SharedType", globalTypeMeta.canonicalName());
+        assertEquals("SharedType", globalTypeMeta.sourceName());
     }
 
     @Test
@@ -44,6 +45,7 @@ public class ScopeTypeMetaChainTest {
 
         var classScope = new ClassScope(registry, registry, classDef);
         var outerTypeMeta = FrontendScopeTestSupport.createTypeMeta(
+                "Hero$InnerType",
                 "InnerType",
                 GdStringType.STRING,
                 ScopeTypeMetaKind.GDCC_CLASS,
@@ -59,6 +61,7 @@ public class ScopeTypeMetaChainTest {
         assertEquals(BlockScopeKind.BLOCK_STATEMENT, block.kind());
         assertEquals(outerTypeMeta, callable.resolveTypeMeta("InnerType"));
         assertEquals(outerTypeMeta, block.resolveTypeMeta("InnerType"));
+        assertEquals("Hero$InnerType", callable.resolveTypeMeta("InnerType").canonicalName());
 
         var localAlias = FrontendScopeTestSupport.createTypeMeta(
                 "LocalAlias",
@@ -79,6 +82,7 @@ public class ScopeTypeMetaChainTest {
 
         var classScope = new ClassScope(registry, registry, classDef);
         var outerTypeMeta = FrontendScopeTestSupport.createTypeMeta(
+                "Hero$InnerType",
                 "InnerType",
                 GdStringType.STRING,
                 ScopeTypeMetaKind.GDCC_CLASS,
@@ -134,6 +138,7 @@ public class ScopeTypeMetaChainTest {
 
         var classScope = new ClassScope(registry, registry, classDef);
         classScope.defineTypeMeta(FrontendScopeTestSupport.createTypeMeta(
+                "Hero$InnerType",
                 "InnerType",
                 GdStringType.STRING,
                 ScopeTypeMetaKind.GDCC_CLASS,
@@ -143,6 +148,7 @@ public class ScopeTypeMetaChainTest {
 
         assertThrows(IllegalArgumentException.class, () -> classScope.defineTypeMeta(
                 FrontendScopeTestSupport.createTypeMeta(
+                        "Hero$ConflictingInnerType",
                         "InnerType",
                         GdIntType.INT,
                         ScopeTypeMetaKind.GLOBAL_ENUM,

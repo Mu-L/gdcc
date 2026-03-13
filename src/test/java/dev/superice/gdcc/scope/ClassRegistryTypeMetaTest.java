@@ -25,11 +25,15 @@ public class ClassRegistryTypeMetaTest {
         var stringType = registry.resolveTypeMeta("String");
         assertNotNull(stringType);
         assertEquals(ScopeTypeMetaKind.BUILTIN, stringType.kind());
+        assertEquals("String", stringType.canonicalName());
+        assertEquals("String", stringType.sourceName());
         assertEquals(GdStringType.STRING, stringType.instanceType());
 
         var nodeType = registry.resolveTypeMeta("Node");
         assertNotNull(nodeType);
         assertEquals(ScopeTypeMetaKind.ENGINE_CLASS, nodeType.kind());
+        assertEquals("Node", nodeType.canonicalName());
+        assertEquals("Node", nodeType.sourceName());
         assertInstanceOf(GdObjectType.class, nodeType.instanceType());
         assertEquals("Node", nodeType.instanceType().getTypeName());
     }
@@ -43,6 +47,8 @@ public class ClassRegistryTypeMetaTest {
         var gdccType = registry.resolveTypeMeta("MyUserClass");
         assertNotNull(gdccType);
         assertEquals(ScopeTypeMetaKind.GDCC_CLASS, gdccType.kind());
+        assertEquals("MyUserClass", gdccType.canonicalName());
+        assertEquals("MyUserClass", gdccType.sourceName());
         assertEquals("MyUserClass", gdccType.instanceType().getTypeName());
 
         if (!api.globalEnums().isEmpty()) {
@@ -50,6 +56,8 @@ public class ClassRegistryTypeMetaTest {
             var enumType = registry.resolveTypeMeta(enumName);
             assertNotNull(enumType);
             assertEquals(ScopeTypeMetaKind.GLOBAL_ENUM, enumType.kind());
+            assertEquals(enumName, enumType.canonicalName());
+            assertEquals(enumName, enumType.sourceName());
             assertEquals(GdIntType.INT, enumType.instanceType());
             assertTrue(enumType.pseudoType());
         }

@@ -125,16 +125,30 @@ class FrontendClassSkeletonTest {
 
         assertEquals(1, result.sourceClassRelations().size());
         assertSame(unit, relation.unit());
+        assertEquals("OuterWithInner", relation.name());
         assertEquals("OuterWithInner", relation.topLevelClassDef().getName());
         assertEquals(List.of("InnerA", "Deep", "InnerB"), relation.innerClassRelations().stream()
-                .map(innerClassRelation -> innerClassRelation.declaration().name())
+                .map(FrontendInnerClassRelation::sourceName)
                 .toList());
-        assertEquals(List.of("InnerA", "Deep", "InnerB"), relation.innerClassRelations().stream()
-                .map(innerClassRelation -> innerClassRelation.classDef().getName())
+        assertEquals(List.of(
+                "OuterWithInner$InnerA",
+                "OuterWithInner$InnerA$Deep",
+                "OuterWithInner$InnerB"
+        ), relation.innerClassRelations().stream()
+                .map(FrontendInnerClassRelation::canonicalName)
                 .toList());
-        assertEquals(List.of("InnerA", "Deep", "InnerB"), relation.innerClassDefs().stream().map(LirClassDef::getName).toList());
+        assertEquals(List.of(
+                "OuterWithInner$InnerA",
+                "OuterWithInner$InnerA$Deep",
+                "OuterWithInner$InnerB"
+        ), relation.innerClassDefs().stream().map(LirClassDef::getName).toList());
         assertEquals(List.of("OuterWithInner"), result.classDefs().stream().map(LirClassDef::getName).toList());
-        assertEquals(List.of("OuterWithInner", "InnerA", "Deep", "InnerB"), result.allClassDefs().stream().map(LirClassDef::getName).toList());
+        assertEquals(List.of(
+                "OuterWithInner",
+                "OuterWithInner$InnerA",
+                "OuterWithInner$InnerA$Deep",
+                "OuterWithInner$InnerB"
+        ), result.allClassDefs().stream().map(LirClassDef::getName).toList());
 
         var innerADeclaration = findStatement(unit.ast().statements(), ClassDeclaration.class, declaration -> declaration.name().equals("InnerA"));
         var deepDeclaration = findStatement(innerADeclaration.body().statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Deep"));
@@ -142,24 +156,51 @@ class FrontendClassSkeletonTest {
         assertSame(innerADeclaration, relation.innerClassRelations().get(0).declaration());
         assertSame(deepDeclaration, relation.innerClassRelations().get(1).declaration());
         assertSame(innerBDeclaration, relation.innerClassRelations().get(2).declaration());
+        assertSame(unit.ast(), relation.innerClassRelations().get(0).lexicalOwner());
+        assertSame(innerADeclaration, relation.innerClassRelations().get(1).lexicalOwner());
+        assertSame(unit.ast(), relation.innerClassRelations().get(2).lexicalOwner());
 
-        var innerA = findClassByName(relation.innerClassDefs(), "InnerA");
+        var topLevelOwned = relation.findRelation(unit.ast());
+        assertNotNull(topLevelOwned);
+        assertSame(relation, topLevelOwned);
+        assertSame(unit.ast(), topLevelOwned.astOwner());
+        assertSame(unit.ast(), topLevelOwned.lexicalOwner());
+        assertEquals("OuterWithInner", topLevelOwned.sourceName());
+        assertEquals("OuterWithInner", topLevelOwned.canonicalName());
+
+        var deepOwned = relation.findRelation(deepDeclaration);
+        assertNotNull(deepOwned);
+        assertSame(relation.innerClassRelations().get(1), deepOwned);
+        assertSame(innerADeclaration, deepOwned.lexicalOwner());
+        assertEquals("Deep", deepOwned.sourceName());
+        assertEquals("OuterWithInner$InnerA$Deep", deepOwned.canonicalName());
+        assertNull(relation.findRelation(unit.ast().statements().getFirst()));
+
+        assertEquals(List.of("InnerA", "InnerB"), relation.findImmediateInnerRelations(unit.ast()).stream()
+                .map(FrontendInnerClassRelation::sourceName)
+                .toList());
+        assertEquals(List.of("Deep"), relation.findImmediateInnerRelations(innerADeclaration).stream()
+                .map(FrontendInnerClassRelation::sourceName)
+                .toList());
+        assertTrue(relation.findImmediateInnerRelations(innerBDeclaration).isEmpty());
+
+        var innerA = findClassByName(relation.innerClassDefs(), "OuterWithInner$InnerA");
         assertEquals("RefCounted", innerA.getSuperName());
         assertEquals("hp", innerA.getProperties().getFirst().getName());
         assertEquals("ping", innerA.getFunctions().getFirst().getName());
 
-        var innerB = findClassByName(relation.innerClassDefs(), "InnerB");
+        var innerB = findClassByName(relation.innerClassDefs(), "OuterWithInner$InnerB");
         assertEquals(1, innerB.getSignals().size());
         assertEquals("changed", innerB.getSignals().getFirst().getName());
 
-        var deep = findClassByName(relation.innerClassDefs(), "Deep");
+        var deep = findClassByName(relation.innerClassDefs(), "OuterWithInner$InnerA$Deep");
         assertEquals("RefCounted", deep.getSuperName());
         assertEquals("nested", deep.getFunctions().getFirst().getName());
 
         assertNotNull(registry.findGdccClass("OuterWithInner"));
-        assertNull(registry.findGdccClass("InnerA"));
-        assertNull(registry.findGdccClass("Deep"));
-        assertNull(registry.findGdccClass("InnerB"));
+        assertNull(registry.findGdccClass("OuterWithInner$InnerA"));
+        assertNull(registry.findGdccClass("OuterWithInner$InnerA$Deep"));
+        assertNull(registry.findGdccClass("OuterWithInner$InnerB"));
     }
 
     @Test
@@ -172,7 +213,7 @@ class FrontendClassSkeletonTest {
         var unit = parserService.parseUnit(Path.of("tmp", "inventory_owner.gd"), """
                 class_name InventoryOwner
                 extends RefCounted
-
+                
                 var items: Array[FutureItem]
                 var item_lookup: Dictionary[String, FutureItem]
                 """, diagnostics);

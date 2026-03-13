@@ -357,6 +357,7 @@ class FrontendScopeAnalyzerTest {
                         "test_module",
                         List.of(new FrontendSourceClassRelation(
                                 unit,
+                                "SyntheticBlockScope",
                                 new dev.superice.gdcc.lir.LirClassDef("SyntheticBlockScope", "Node"),
                                 List.of()
                         )),
@@ -416,7 +417,7 @@ class FrontendScopeAnalyzerTest {
         var innerClass = findStatement(sourceFile.statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Inner"));
         var innerScope = assertInstanceOf(ClassScope.class, scopesByAst.get(innerClass));
         assertSame(sourceScope, innerScope.getParentScope());
-        assertEquals("Inner", innerScope.getCurrentClass().getName());
+        assertEquals("MaterializedInnerClassBoundary$Inner", innerScope.getCurrentClass().getName());
         assertSame(innerScope, scopesByAst.get(innerClass.body()));
         assertNull(innerScope.resolveValue("outer_prop"));
 
@@ -441,7 +442,7 @@ class FrontendScopeAnalyzerTest {
         var deepClass = findStatement(innerClass.body().statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Deep"));
         var deepScope = assertInstanceOf(ClassScope.class, scopesByAst.get(deepClass));
         assertSame(innerScope, deepScope.getParentScope());
-        assertEquals("Deep", deepScope.getCurrentClass().getName());
+        assertEquals("MaterializedInnerClassBoundary$Inner$Deep", deepScope.getCurrentClass().getName());
         assertSame(deepScope, scopesByAst.get(deepClass.body()));
 
         var deeperFunction = findStatement(deepClass.body().statements(), FunctionDeclaration.class, function -> function.name().equals("deeper"));
@@ -611,6 +612,7 @@ class FrontendScopeAnalyzerTest {
                         "test_module",
                         List.of(new FrontendSourceClassRelation(
                                 unit,
+                                "SyntheticMissingInner",
                                 new dev.superice.gdcc.lir.LirClassDef("SyntheticMissingInner", "Node"),
                                 List.of()
                         )),
@@ -759,18 +761,26 @@ class FrontendScopeAnalyzerTest {
                         List.of(
                                 new FrontendSourceClassRelation(
                                         firstUnit,
+                                        "MultiUnitNestedA",
                                         new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedA", "Node"),
                                         List.of(new FrontendInnerClassRelation(
+                                                firstSourceFile,
                                                 outerInner,
-                                                new dev.superice.gdcc.lir.LirClassDef("OuterInner", "RefCounted")
+                                                "OuterInner",
+                                                "MultiUnitNestedA$OuterInner",
+                                                new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedA$OuterInner", "RefCounted")
                                         ))
                                 ),
                                 new FrontendSourceClassRelation(
                                         secondUnit,
+                                        "MultiUnitNestedB",
                                         new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedB", "Node"),
                                         List.of(new FrontendInnerClassRelation(
+                                                secondSourceFile,
                                                 secondInner,
-                                                new dev.superice.gdcc.lir.LirClassDef("Inner", "RefCounted")
+                                                "Inner",
+                                                "MultiUnitNestedB$Inner",
+                                                new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedB$Inner", "RefCounted")
                                         ))
                                 )
                         ),

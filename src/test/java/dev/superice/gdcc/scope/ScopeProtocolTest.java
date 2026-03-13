@@ -82,12 +82,14 @@ public class ScopeProtocolTest {
 
         var rootTypeMeta = new ScopeTypeMeta(
                 "GlobalType",
+                "GlobalType",
                 GdStringType.STRING,
                 ScopeTypeMetaKind.BUILTIN,
                 "root",
                 false
         );
         var middleTypeMeta = new ScopeTypeMeta(
+                "ScopedType",
                 "ScopedType",
                 GdIntType.INT,
                 ScopeTypeMetaKind.GLOBAL_ENUM,
@@ -145,7 +147,7 @@ public class ScopeProtocolTest {
         var childScope = new TestScope();
         childScope.setParentScope(rootScope);
 
-        var typeMeta = new ScopeTypeMeta("ScopedType", GdIntType.INT, ScopeTypeMetaKind.GLOBAL_ENUM, "enum", true);
+        var typeMeta = new ScopeTypeMeta("ScopedType", "ScopedType", GdIntType.INT, ScopeTypeMetaKind.GLOBAL_ENUM, "enum", true);
         rootScope.defineTypeMeta(typeMeta);
 
         var unrestrictedResult = childScope.resolveTypeMeta("ScopedType", ResolveRestriction.unrestricted());
@@ -186,7 +188,7 @@ public class ScopeProtocolTest {
         }
 
         void defineTypeMeta(@NotNull ScopeTypeMeta typeMeta) {
-            typeMetasByName.put(typeMeta.name(), ScopeLookupResult.foundAllowed(typeMeta));
+            typeMetasByName.put(typeMeta.sourceName(), ScopeLookupResult.foundAllowed(typeMeta));
         }
 
         @Override

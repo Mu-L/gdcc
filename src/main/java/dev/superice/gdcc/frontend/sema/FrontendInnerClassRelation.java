@@ -2,21 +2,35 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
+import dev.superice.gdparser.frontend.ast.Node;
 import org.jetbrains.annotations.NotNull;
-
-import java.util.Objects;
 
 /// Source-local ownership pairing for one parsed inner `class` declaration and the skeleton built
 /// from that subtree.
 ///
-/// Keeping the AST declaration alongside the `LirClassDef` lets later phases materialize inner
-/// class scope/binding state without guessing from list order or class name alone.
+/// The declaration keeps the source-facing class name, while `classDef.getName()` is already the
+/// canonical identity that later phases and the registry will use. The record itself is also the
+/// shared ownership view consumed by later phases; no extra adapter object is needed.
 public record FrontendInnerClassRelation(
+        @NotNull Node lexicalOwner,
         @NotNull ClassDeclaration declaration,
+        @NotNull String sourceName,
+        @NotNull String canonicalName,
         @NotNull LirClassDef classDef
-) {
+) implements FrontendOwnedClassRelation {
     public FrontendInnerClassRelation {
-        Objects.requireNonNull(declaration, "declaration must not be null");
-        Objects.requireNonNull(classDef, "classDef must not be null");
+        FrontendOwnedClassRelation.validateOwnedRelation(
+                lexicalOwner,
+                declaration,
+                sourceName,
+                canonicalName,
+                classDef,
+                "Inner class relation"
+        );
+    }
+
+    @Override
+    public @NotNull ClassDeclaration astOwner() {
+        return declaration;
     }
 }

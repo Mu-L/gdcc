@@ -160,7 +160,7 @@ public final class ClassRegistry implements Scope {
 
         var utilityFunction = utilityByName.get(name);
         return utilityFunction != null
-                ? ScopeLookupResult.foundAllowed(List.<FunctionDef>of(utilityFunction))
+                ? ScopeLookupResult.foundAllowed(List.of(utilityFunction))
                 : ScopeLookupResult.notFound();
     }
 
@@ -193,6 +193,7 @@ public final class ClassRegistry implements Scope {
         if (isGlobalEnum(trimmed)) {
             return ScopeLookupResult.foundAllowed(new ScopeTypeMeta(
                     trimmed,
+                    trimmed,
                     GdIntType.INT,
                     ScopeTypeMetaKind.GLOBAL_ENUM,
                     findGlobalEnum(trimmed),
@@ -202,6 +203,7 @@ public final class ClassRegistry implements Scope {
         if (isGdccClass(trimmed)) {
             return ScopeLookupResult.foundAllowed(new ScopeTypeMeta(
                     trimmed,
+                    trimmed,
                     new GdObjectType(trimmed),
                     ScopeTypeMetaKind.GDCC_CLASS,
                     findGdccClass(trimmed),
@@ -210,6 +212,7 @@ public final class ClassRegistry implements Scope {
         }
         if (isGdClass(trimmed)) {
             return ScopeLookupResult.foundAllowed(new ScopeTypeMeta(
+                    trimmed,
                     trimmed,
                     new GdObjectType(trimmed),
                     ScopeTypeMetaKind.ENGINE_CLASS,
@@ -221,6 +224,7 @@ public final class ClassRegistry implements Scope {
         var builtinType = tryParseStrictTextType(trimmed, this);
         if (builtinType != null) {
             return ScopeLookupResult.foundAllowed(new ScopeTypeMeta(
+                    trimmed,
                     trimmed,
                     builtinType,
                     ScopeTypeMetaKind.BUILTIN,

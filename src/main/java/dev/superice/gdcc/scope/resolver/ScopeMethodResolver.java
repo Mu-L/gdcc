@@ -154,7 +154,7 @@ public final class ScopeMethodResolver {
             if (methodName.equals("new")) {
                 throw new ScopeMethodResolutionException(
                         FailureKind.CONSTRUCTOR_ROUTE_UNSUPPORTED,
-                        "Constructor lookup for type '" + receiverTypeMeta.name() +
+                        "Constructor lookup for type '" + receiverTypeMeta.sourceName() +
                                 "' must use constructor resolution instead of static method lookup"
                 );
             }
@@ -165,13 +165,13 @@ public final class ScopeMethodResolver {
             if (candidates.isEmpty()) {
                 throw new ScopeMethodResolutionException(
                         FailureKind.METHOD_NOT_FOUND,
-                        "Static method '" + methodName + "' not found on type '" + receiverTypeMeta.name() + "'"
+                        "Static method '" + methodName + "' not found on type '" + receiverTypeMeta.sourceName() + "'"
                 );
             }
             var selection = chooseBestCandidate(
                     registry,
                     methodName,
-                    receiverTypeMeta.name(),
+                    receiverTypeMeta.sourceName(),
                     candidates,
                     argTypes,
                     false
@@ -181,7 +181,7 @@ public final class ScopeMethodResolver {
                 case CandidateAmbiguous ambiguous -> new Failed(
                         FailureKind.AMBIGUOUS_OVERLOAD,
                         "Ambiguous overload for method '" + methodName + "' on type '" +
-                                receiverTypeMeta.name() + "': " + renderCandidates(ambiguous.pool())
+                                receiverTypeMeta.sourceName() + "': " + renderCandidates(ambiguous.pool())
                 );
                 case CandidateRejected rejected -> new Failed(FailureKind.NO_APPLICABLE_OVERLOAD, rejected.message());
             };
@@ -615,7 +615,7 @@ public final class ScopeMethodResolver {
         if (receiverTypeMeta.pseudoType() || receiverTypeMeta.kind() == ScopeTypeMetaKind.GLOBAL_ENUM) {
             throw new ScopeMethodResolutionException(
                     FailureKind.UNSUPPORTED_STATIC_RECEIVER,
-                    "Type meta '" + receiverTypeMeta.name() + "' does not support static method lookup"
+                    "Type meta '" + receiverTypeMeta.sourceName() + "' does not support static method lookup"
             );
         }
         if (receiverTypeMeta.declaration() instanceof ClassDef classDef) {
@@ -628,7 +628,7 @@ public final class ScopeMethodResolver {
                 if (builtinClass == null) {
                     throw new ScopeMethodResolutionException(
                             FailureKind.BUILTIN_CLASS_NOT_FOUND,
-                            "Builtin class '" + receiverTypeMeta.name() +
+                            "Builtin class '" + receiverTypeMeta.sourceName() +
                                     "' not found for static method receiver (lookup key: '" + lookupName + "')"
                     );
                 }
@@ -643,12 +643,12 @@ public final class ScopeMethodResolver {
                 }
                 throw new ScopeMethodResolutionException(
                         FailureKind.UNSUPPORTED_STATIC_RECEIVER,
-                        "Class metadata for static receiver '" + receiverTypeMeta.name() + "' is unavailable"
+                        "Class metadata for static receiver '" + receiverTypeMeta.sourceName() + "' is unavailable"
                 );
             }
             case GLOBAL_ENUM -> throw new ScopeMethodResolutionException(
                     FailureKind.UNSUPPORTED_STATIC_RECEIVER,
-                    "Type meta '" + receiverTypeMeta.name() + "' does not support static method lookup"
+                    "Type meta '" + receiverTypeMeta.sourceName() + "' does not support static method lookup"
             );
         };
     }

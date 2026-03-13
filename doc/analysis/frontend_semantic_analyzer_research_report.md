@@ -120,7 +120,7 @@
 - 从 `class_name extends` 或顶层 `extends` 推导父类名；未显式 `extends` 时按 Godot 当前语义默认收口到 `RefCounted`
 - 收集 `signal`、`var`、`func` 并注入 `LirClassDef`
 - 通过 `FrontendSourceClassRelation` / `FrontendInnerClassRelation` 显式记录每个 source file 的顶层 skeleton 与同源 inner `ClassDeclaration -> skeleton` pair
-- 仅将 top-level class 注册进 `ClassRegistry`，inner class 暂时保持 source-local metadata
+- 当前仍仅将 top-level class 注册进 `ClassRegistry`，但 inner class 已不再只是“匿名 source-local skeleton”：`FrontendInnerClassRelation` 现已显式保存 `lexicalOwner`、`sourceName`、`canonicalName`，其 `LirClassDef#getName()` 也已冻结为 canonical name，供后续 registry publish phase 继续消费
 - 检查重复类名
 - 检查继承环，并以 diagnostics 形式拒绝 cyclic class subtree
 - 用宽松 `findType(...)` 解析类型提示；解析失败时降级到 `Variant` 并发出 `sema.type_resolution` warning
@@ -129,7 +129,7 @@
 所以，旧报告把它描述成“非常浅的 declaration collector”并不完全准确。更准确的说法是：
 
 - **它仍然只是 skeleton/interface 之前的浅层阶段，但已经不再依赖“每文件一个 classDef、靠平行列表索引配对”的脆弱协议**
-- **它已经包含一部分容错、诊断、注解保留、继承合法性检查，以及 source-local inner class skeleton ownership 记录**
+- **它已经包含一部分容错、诊断、注解保留、继承合法性检查，以及带 lexical owner / dual-name 语义的 inner class skeleton ownership 记录**
 - **其隐式继承语义也必须与上游 Godot 保持一致：无 `extends` 的脚本类默认基类是 `RefCounted`，而不是 `Object`**
 - **对普通源码错误的恢复策略也已经开始收口：skeleton phase 更倾向于发 diagnostic 并跳过坏 subtree，而不是直接抛 frontend 异常打断整条 pipeline**
 
