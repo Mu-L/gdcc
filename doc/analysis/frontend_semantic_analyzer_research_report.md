@@ -1,6 +1,6 @@
 # GDCC 前端语义分析器调研报告（按当前代码库校对）
 
-- 日期：2026-03-12
+- 日期：2026-03-14
 - 校对范围：本报告只依据当前仓库中的文档、源码、测试，以及当前工作区已存在的代码文件进行修订；不再把仓库外 `E:/Projects/gdparser` 本地副本或旧的 GitHub 快照当作本报告的直接事实源。
 
 ---
@@ -10,8 +10,8 @@
 基于当前代码库，旧版报告里最需要修正的结论有 8 点：
 
 1. **`gdparser` 版本已经明确升级到 `0.5.1`。** 当前事实源是 `build.gradle.kts`，scope analyzer 也已经直接复用库内置 `ASTWalker`，而不是继续维护本地 walker 封装。
-2. **GDCC frontend 已不再只是“parse + 少量 skeleton 测试”。** 目前除了解析和类骨架构建，还已经落地了 shared `DiagnosticManager` + 阶段边界 snapshot、`Scope` 协议、`ClassScope` / `CallableScope` / `BlockScope`、真实的 `FrontendScopeAnalyzer` lexical graph、restriction-aware lookup、signal 的 unqualified scope 语义，以及一批 frontend/scope/shared-resolver 测试。
-3. **但 frontend 仍然没有真正的 body-level semantic analyzer。** 当前仍缺 binder、assignable analyzer、表达式类型推断、调用/成员访问分析结果、统一 `AnalysisResult`、AST body lowering。
+2. **GDCC frontend 已不再只是“parse + 少量 skeleton 测试”。** 目前除了解析和类骨架构建，还已经落地了 `FrontendSemanticAnalyzer` 主框架、shared `DiagnosticManager` + 阶段边界 snapshot、`Scope` 协议、`ClassScope` / `CallableScope` / `BlockScope`、真实的 `FrontendScopeAnalyzer` lexical graph、restriction-aware lookup、signal 的 unqualified scope 语义，以及一批 frontend/scope/shared-resolver 测试。
+3. **但 frontend 仍然没有真正的 body/interface semantic analysis 层。** 当前仍缺 binder、assignable analyzer、表达式类型推断、调用/成员访问分析结果、统一 `AnalysisResult`、AST body lowering。已经落地的是 `FrontendSemanticAnalyzer` 框架与 lexical scope phase，未落地的是其后的 body/interface 语义阶段。
 4. **`FrontendBindingKind` 的旧结论已经过时。** 当前代码里已经有 `SIGNAL` 和 `TYPE_META`，旧报告中“缺少 `TYPE_META`”“signal 还未补位”的说法不成立。
 5. **`ClassRegistry` 现在同时承载“宽松旧接口”和“严格新协议”。** `findType(...)` 仍是宽松兼容入口；真正适合未来 binder/type namespace 的，是严格的 `resolveTypeMeta(...)` 与 `Scope` 协议。
 6. **`FrontendClassSkeletonBuilder` 与 `FrontendModuleSkeleton` 的现状应描述得更准确。** 它们不只是收集 `class_name / extends / signal / var / func`；现在还会通过 `FrontendSourceClassRelation` 与 `FrontendInnerClassRelation` 显式记录每个 `FrontendSourceUnit` 对一个顶层类和多个同源 inner `ClassDeclaration -> skeleton` pair 的归属，并保留 `classDefs()` 作为仅顶层类的兼容视图。
@@ -26,10 +26,12 @@
 
 - `build.gradle.kts`
 - `src/main/java/dev/superice/gdcc/frontend/parse/GdScriptParserService.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendAnalysisData.java`
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendClassSkeletonBuilder.java`
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendBindingKind.java`
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendModuleSkeleton.java`
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendSourceClassRelation.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendSemanticAnalyzer.java`
 - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendScopeAnalyzer.java`
 - `src/main/java/dev/superice/gdcc/frontend/scope/AbstractFrontendScope.java`
 - `src/main/java/dev/superice/gdcc/frontend/scope/ClassScope.java`
@@ -61,8 +63,12 @@
 ### 2.3 测试事实源
 
 - `src/test/java/dev/superice/gdcc/frontend/parse/FrontendParseSmokeTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendAnalysisDataTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendAstSideTableTest.java`
 - `src/test/java/dev/superice/gdcc/frontend/sema/FrontendClassSkeletonTest.java`
 - `src/test/java/dev/superice/gdcc/frontend/sema/FrontendInheritanceCycleTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendScopeAnalyzerTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendSemanticAnalyzerFrameworkTest.java`
 - `src/test/java/dev/superice/gdcc/frontend/scope/ClassScopeResolutionTest.java`
 - `src/test/java/dev/superice/gdcc/frontend/scope/ClassScopeSignalResolutionTest.java`
 - `src/test/java/dev/superice/gdcc/frontend/scope/FrontendStaticContextValueRestrictionTest.java`
@@ -368,7 +374,7 @@
 
 ## 5. 当前仍然缺失的关键语义能力
 
-尽管基础设施比旧报告描述得更成熟，但真正的 semantic analyzer 仍未落地。当前缺口主要有：
+尽管基础设施比旧报告描述得更成熟，但真正的 body/interface semantic analysis 仍未落地。当前缺口主要有：
 
 1. **没有独立的 frontend interface phase。** 当前只有 skeleton builder，还没有统一的 declaration/interface analysis 结果层。
 2. **没有 frontend body phase。** 当前没有 AST 级 binder、表达式类型推断、assignable analyzer、return/suite merge、lambda capture 分析器。
@@ -465,7 +471,7 @@ signal 相关模型和 scope 语义已经有明显进展，因此下一步重点
 
 如果只按当前仓库与当前工作区代码来下结论，那么最准确的描述应当是：
 
-> GDCC frontend 已经完成了 `gdparser:0.5.1` 接入、容错解析、类骨架构建、严格/宽松 type lookup 共存、restriction-aware scope 协议、signal 的 unqualified scope 语义，以及一套较完整的 scope/shared-resolver 基础设施；但真正的 frontend semantic analyzer 仍未落地，当前最大的工程任务已经不再是“AST 还缺什么”，而是“如何把现有 scope、type-meta、method/property/signal resolver 正式接入 interface/body 分析结果，并形成稳定的 AST -> LIR 语义闭环”。
+> GDCC frontend 已经完成了 `gdparser:0.5.1` 接入、容错解析、类骨架构建、`FrontendSemanticAnalyzer` 框架、lexical scope analyzer、严格/宽松 type lookup 共存、restriction-aware scope 协议、signal 的 unqualified scope 语义，以及一套较完整的 scope/shared-resolver 基础设施；但真正缺失的仍是 body/interface 语义阶段本身。当前最大的工程任务已经不再是“AST 还缺什么”，而是“如何把现有 scope、type-meta、method/property/signal resolver 正式接入 interface/body 分析结果，并形成稳定的 AST -> LIR 语义闭环”。
 
 ---
 

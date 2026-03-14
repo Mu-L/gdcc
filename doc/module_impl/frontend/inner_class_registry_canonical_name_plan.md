@@ -1,6 +1,6 @@
 # Inner Class 注册与双名模型实施计划
 
-> 本文档细化“将 inner class 统一注册到 `ClassRegistry`，并把类型名拆分为 `canonicalName` / `sourceName`”这一轮 frontend 改造的执行清单。本文档是本轮实施工作单，不替代 `scope_architecture_refactor_plan.md` 与 `scope_analyzer_implementation_plan.md` 的长期事实源地位。
+> 本文档细化“将 inner class 统一注册到 `ClassRegistry`，并把类型名拆分为 `canonicalName` / `sourceName`”这一轮 frontend 改造的执行清单。本文档是本轮实施工作单，不替代 `scope_architecture_refactor_plan.md` 与 `scope_analyzer_implementation.md` 的长期事实源地位。
 
 ## 文档状态
 
@@ -67,7 +67,7 @@
   - 诊断必须继续走 shared `DiagnosticManager`，不能把 manager 塞进 `Scope` 或 registry。
 - `doc/module_impl/frontend/scope_architecture_refactor_plan.md`
   - `ClassRegistry` 是 global scope root，`type-meta` 是独立 namespace，本轮 inner class source-level 可见性必须通过 lexical type namespace 暴露，而不是重新污染 value/function namespace。
-- `doc/module_impl/frontend/scope_analyzer_implementation_plan.md`
+- `doc/module_impl/frontend/scope_analyzer_implementation.md`
   - 当前 scope analyzer 已为 inner class 建立 `ClassScope` 边界，本轮需要在此基础上补齐 inner class type-meta 发布与 source/canonical 双名语义。
 - `doc/analysis/frontend_semantic_analyzer_research_report.md`
   - 作为 frontend 阶段拆分的背景材料；本轮改造仍属于 skeleton -> scope -> binder 这条链路中的 skeleton/type-meta 基础设施完善。
@@ -459,7 +459,7 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
    - 坏 inner class subtree 被跳过后，同 module 其他 class 仍工作
 4. 审阅并同步文档与注释：
    - `scope_architecture_refactor_plan.md`
-   - `scope_analyzer_implementation_plan.md`
+   - `scope_analyzer_implementation.md`
    - 如诊断类别或恢复策略描述发生变化，再同步 `diagnostic_manager.md`
 5. 审阅代码注释，删除所有与新模型冲突的说法：
    - “inner class 不注册到 registry”

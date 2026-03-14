@@ -25,8 +25,8 @@ import java.util.Objects;
 
 /// Scope analysis worker that sits between skeleton publication and future binder/body passes.
 ///
-/// It builds the lexical scope graph described in
-/// `scope_analyzer_implementation_plan.md`:
+/// It builds the lexical scope graph documented in
+/// `scope_analyzer_implementation.md`:
 /// - top-level script `ClassScope` per `SourceFile`
 /// - nested `ClassDeclaration` -> `ClassScope` boundaries driven by source-local skeleton relations
 /// - immediate inner-class type-meta publication on each class boundary

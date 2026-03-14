@@ -15,9 +15,9 @@
   - `src/test/java/dev/superice/gdcc/scope/**`
 - 关联文档：
   - `scope_architecture_refactor_plan.md`
-  - `scope_analyzer_implementation_plan.md`
+  - `scope_analyzer_implementation.md`
   - `inner_class_registry_canonical_name_plan.md`
-- `superclass_canonical_name_contract.md`
+  - `superclass_canonical_name_contract.md`
   - `diagnostic_manager.md`
 - 明确非目标：
   - 不在此处实现完整 frontend binder/body
