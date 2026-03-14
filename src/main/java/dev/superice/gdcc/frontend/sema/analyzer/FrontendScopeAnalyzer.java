@@ -23,9 +23,9 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 
-/// Scope-phase worker that sits between skeleton publication and future binder/body passes.
+/// Scope analysis worker that sits between skeleton publication and future binder/body passes.
 ///
-/// Phase 4 extends the lexical scope graph described in
+/// It builds the lexical scope graph described in
 /// `scope_analyzer_implementation_plan.md`:
 /// - top-level script `ClassScope` per `SourceFile`
 /// - nested `ClassDeclaration` -> `ClassScope` boundaries driven by source-local skeleton relations
@@ -41,16 +41,16 @@ import java.util.Objects;
 /// - parameter prefill, captures, and other bindings
 ///
 /// Keeping this class separate from `frontend.scope` preserves the layering boundary between
-/// protocol objects and semantic-phase orchestration.
+/// protocol objects and semantic-stage orchestration.
 public class FrontendScopeAnalyzer {
-    /// Runs the scope phase against the shared analysis carrier.
+    /// Runs scope analysis against the shared analysis carrier.
     ///
-    /// The scope phase requires the previous skeleton phase to have already published both:
+    /// Scope analysis requires the previous skeleton stage to have already published both:
     /// - `moduleSkeleton()`
     /// - the diagnostics snapshot captured right after skeleton
     ///
     /// Once that boundary is present, the analyzer rebuilds `scopesByAst` from scratch so later
-    /// phases see one stable lexical-scope side table instead of incrementally mutated leftovers.
+    /// stages see one stable lexical-scope side table instead of incrementally mutated leftovers.
     public void analyze(
             @NotNull ClassRegistry classRegistry,
             @NotNull FrontendAnalysisData analysisData,
@@ -60,8 +60,8 @@ public class FrontendScopeAnalyzer {
         Objects.requireNonNull(analysisData, "analysisData must not be null");
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
 
-        // Phase ordering matters: scope analysis is defined to start only after skeleton facts and
-        // the corresponding boundary snapshot have both become observable to later phases.
+        // Pipeline ordering matters: scope analysis starts only after skeleton facts and the
+        // corresponding boundary snapshot have both become observable to later stages.
         var moduleSkeleton = analysisData.moduleSkeleton();
         analysisData.diagnostics();
 
@@ -70,7 +70,7 @@ public class FrontendScopeAnalyzer {
         analysisData.updateScopesByAst(scopesByAst);
     }
 
-    /// Phase-4 scope builder that reacts to nodes traversed by `gdparser`'s built-in `ASTWalker`.
+    /// Scope builder that reacts to nodes traversed by `gdparser`'s built-in `ASTWalker`.
     ///
     /// The handler keeps semantic policy local while delegating traversal mechanics to the parser
     /// library:
@@ -84,7 +84,7 @@ public class FrontendScopeAnalyzer {
     ///
     /// Everything else is either:
     /// - visited under the current already-established lexical scope, or
-    /// - skipped on purpose because its dedicated scope semantics belong to a later phase.
+    /// - skipped on purpose because its dedicated scope semantics are still deferred to later work.
     private static final class ScopeBuildingHandler implements ASTNodeHandler {
         private final @NotNull ClassRegistry classRegistry;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;

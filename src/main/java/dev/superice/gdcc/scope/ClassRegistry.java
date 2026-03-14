@@ -213,8 +213,8 @@ public final class ClassRegistry implements Scope {
     /// It must stay as a local lookup and must not delegate back into `ScopeTypeResolver`.
     ///
     /// The supplied `ResolveRestriction` is accepted only for protocol uniformity. Under the current
-    /// Phase 4 contract, global type/meta bindings are always restriction-allowed, so this method may
-    /// return only `FOUND_ALLOWED` or `NOT_FOUND`.
+    /// type-meta contract, global bindings are always restriction-allowed, so this method may return
+    /// only `FOUND_ALLOWED` or `NOT_FOUND`.
     @Override
     public @NotNull ScopeLookupResult<ScopeTypeMeta> resolveTypeMetaHere(
             @NotNull String name,

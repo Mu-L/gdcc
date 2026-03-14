@@ -18,9 +18,9 @@ import java.util.Objects;
 /// - function lookup follows nearest non-empty scope level
 /// - type/meta lookup stays strict and independent from runtime value lookup
 ///
-/// Phase 4 follow-up extends this protocol with a minimal `ResolveRestriction` input and a richer
-/// `ScopeLookupResult` output so callers can preserve Godot-style shadowing when the current layer is
-/// found-but-blocked in a static context.
+/// The protocol uses a minimal `ResolveRestriction` input and a richer `ScopeLookupResult` output so
+/// callers can preserve Godot-style shadowing when the current layer is found-but-blocked in a static
+/// context.
 ///
 /// Implementations are expected to remain lightweight metadata containers only.
 /// They should not own AST nodes, backend-only state, or code-generation details.
@@ -74,7 +74,8 @@ public interface Scope {
     /// This namespace is separate from values because identifiers such as class names and enum types
     /// participate in type analysis differently from runtime value bindings.
     ///
-    /// Phase 4 follow-up freezes an explicit always-allowed policy for current type/meta kinds:
+    /// Current type/meta lookup follows an explicit always-allowed policy for current
+    /// `ScopeTypeMeta` bindings:
     /// - implementations must not return `FOUND_BLOCKED` for today's `ScopeTypeMeta` bindings
     /// - the result may only be `FOUND_ALLOWED` or `NOT_FOUND`
     /// - `restriction` is carried only so callers can use one protocol shape for all three namespaces
@@ -144,7 +145,7 @@ public interface Scope {
     /// The first found result wins, mirroring value shadowing while keeping type/meta lookup strict
     /// and independent of the runtime value namespace.
     ///
-    /// Under the current Phase 4 contract, type/meta lookup never uses `FOUND_BLOCKED`:
+    /// Under the current contract, type/meta lookup never uses `FOUND_BLOCKED`:
     /// only `FOUND_ALLOWED` stops the search with a binding, while `NOT_FOUND` continues to the parent.
     default @NotNull ScopeLookupResult<ScopeTypeMeta> resolveTypeMeta(
             @NotNull String name,

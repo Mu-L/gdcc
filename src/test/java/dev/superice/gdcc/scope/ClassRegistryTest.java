@@ -365,4 +365,111 @@ public class ClassRegistryTest {
                 signature.parameters().getFirst().defaultValue()
         );
     }
+
+    @Test
+    void extensionMetadataConsumersStillUseCompatibilityTextTypeParsingForUnknownObjectLeaves() {
+        var utility = new ExtensionUtilityFunction(
+                "spawn_wave",
+                "Array[FutureEnemy]",
+                "test",
+                false,
+                0,
+                List.of(new ExtensionFunctionArgument(
+                        "payload",
+                        "Dictionary[String, FutureEnemy]",
+                        null,
+                        null
+                ))
+        );
+        var builtinClass = new ExtensionBuiltinClass(
+                "FutureCarrier",
+                false,
+                List.of(),
+                List.of(new ExtensionBuiltinClass.ClassMethod(
+                        "spawn_array",
+                        "Array[FutureEnemy]",
+                        false,
+                        false,
+                        false,
+                        false,
+                        0,
+                        List.of(new ExtensionFunctionArgument("target", "FutureEnemy", null, null)),
+                        List.of(),
+                        new ExtensionBuiltinClass.ClassMethod.ReturnValue("Array[FutureEnemy]")
+                )),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionBuiltinClass.PropertyInfo(
+                        "items",
+                        "Array[FutureEnemy]",
+                        true,
+                        false,
+                        ""
+                )),
+                List.of()
+        );
+        var engineClass = new ExtensionGdClass(
+                "FutureSpawner",
+                false,
+                true,
+                "RefCounted",
+                "test",
+                List.of(),
+                List.of(new ExtensionGdClass.ClassMethod(
+                        "spawn_dictionary",
+                        false,
+                        false,
+                        false,
+                        false,
+                        0,
+                        List.of(),
+                        new ExtensionGdClass.ClassMethod.ClassMethodReturn("Dictionary[String, FutureEnemy]"),
+                        List.of(new ExtensionFunctionArgument("target", "FutureEnemy", null, null))
+                )),
+                List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo(
+                        "queue",
+                        "Array[FutureEnemy]",
+                        true,
+                        true,
+                        ""
+                )),
+                List.of()
+        );
+
+        assertEquals(
+                new GdArrayType(new GdObjectType("FutureEnemy")),
+                utility.getReturnType()
+        );
+        assertEquals(
+                new GdDictionaryType(GdStringType.STRING, new GdObjectType("FutureEnemy")),
+                utility.getParameter(0).getType()
+        );
+
+        assertEquals(
+                new GdArrayType(new GdObjectType("FutureEnemy")),
+                engineClass.getProperties().getFirst().getType()
+        );
+        assertEquals(
+                new GdObjectType("FutureEnemy"),
+                engineClass.getFunctions().getFirst().getParameter(0).getType()
+        );
+        assertEquals(
+                new GdDictionaryType(GdStringType.STRING, new GdObjectType("FutureEnemy")),
+                engineClass.getFunctions().getFirst().getReturnType()
+        );
+
+        assertEquals(
+                new GdArrayType(new GdObjectType("FutureEnemy")),
+                builtinClass.getProperties().getFirst().getType()
+        );
+        assertEquals(
+                new GdObjectType("FutureEnemy"),
+                builtinClass.getFunctions().getFirst().getParameter(0).getType()
+        );
+        assertEquals(
+                new GdArrayType(new GdObjectType("FutureEnemy")),
+                builtinClass.getFunctions().getFirst().getReturnType()
+        );
+    }
 }

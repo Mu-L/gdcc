@@ -355,6 +355,56 @@ class FrontendClassSkeletonTest {
     }
 
     @Test
+    void buildEmitsExplicitDiagnosticsForDeferredTypeMetaSources() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var helperUnit = parserService.parseUnit(Path.of("tmp", "helper_script.gd"), """
+                class_name HelperScript
+                extends RefCounted
+                """, diagnostics);
+        var deferredUnit = parserService.parseUnit(Path.of("tmp", "deferred_type_sources.gd"), """
+                class_name DeferredTypeSources
+                extends RefCounted
+                
+                enum LocalState { IDLE, RUNNING }
+                const Alias = HelperScript
+                const Preloaded = preload("res://helper_script.gd")
+                
+                var direct: HelperScript
+                var from_enum: LocalState
+                var from_alias: Alias
+                var from_preload: Preloaded
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                "test_module",
+                List.of(helperUnit, deferredUnit),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var deferredClass = findClassByName(result.classDefs(), "DeferredTypeSources");
+
+        assertObjectTypeName(findPropertyByName(deferredClass, "direct").getType(), "HelperScript");
+        assertEquals(GdVariantType.VARIANT, findPropertyByName(deferredClass, "from_enum").getType());
+        assertEquals(GdVariantType.VARIANT, findPropertyByName(deferredClass, "from_alias").getType());
+        assertEquals(GdVariantType.VARIANT, findPropertyByName(deferredClass, "from_preload").getType());
+
+        var typeResolutionDiagnostics = result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.type_resolution"))
+                .filter(diagnostic -> diagnostic.sourcePath() != null
+                        && diagnostic.sourcePath().endsWith("deferred_type_sources.gd"))
+                .toList();
+        assertEquals(3, typeResolutionDiagnostics.size());
+        assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("LocalState")));
+        assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Alias")));
+        assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Preloaded")));
+    }
+
+    @Test
     void buildReportsUnknownDeclaredTypesAcrossMemberSurfacesAndFallsBackToVariant() throws IOException {
         var parserService = new GdScriptParserService();
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());

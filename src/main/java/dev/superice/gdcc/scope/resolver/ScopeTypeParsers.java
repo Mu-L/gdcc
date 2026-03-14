@@ -18,8 +18,8 @@ import org.jetbrains.annotations.Nullable;
 /// - `typedarray::PackedByteArray`
 ///
 /// Backend code used to normalize those spellings through `CGenHelper.parseExtensionType(...)`.
-/// Phase 6 moves the normalization to the neutral `scope` layer so shared member resolvers can use
-/// the same rules without depending on backend-only helpers.
+/// The normalization now lives in the neutral `scope` layer so shared member resolvers can reuse the
+/// same rules without depending on backend-only helpers.
 public final class ScopeTypeParsers {
     private ScopeTypeParsers() {
     }

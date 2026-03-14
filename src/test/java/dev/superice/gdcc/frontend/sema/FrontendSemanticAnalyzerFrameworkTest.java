@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.frontend.scope.ClassScope;
+import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
@@ -13,6 +14,7 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.scope.resolver.ScopeTypeResolver;
+import dev.superice.gdcc.type.GdObjectType;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -193,7 +195,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
 
         var result = analyzer.analyze("test_module", List.of(duplicateA, duplicateB, stable), registry, diagnostics);
 
-        assertEquals(List.of("SharedName", "StableAfterError"), result.moduleSkeleton().classDefs().stream().map(classDef -> classDef.getName()).toList());
+        assertEquals(List.of("SharedName", "StableAfterError"), result.moduleSkeleton().classDefs().stream().map(LirClassDef::getName).toList());
         assertFalse(result.scopesByAst().isEmpty());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
@@ -237,6 +239,84 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 findPropertyByName(inner, "helpers").getType(),
                 ScopeTypeResolver.tryResolveDeclaredType(innerScope, "Array[Helper]")
         );
+        assertTrue(result.diagnostics().isEmpty());
+    }
+
+    @Test
+    void semanticAnalysisCurrentlyPrefersOuterTypeMetaOverBaseTypeMetaWhenNamesCollide() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var baseUnit = parserService.parseUnit(Path.of("tmp", "base_leaf_precedence.gd"), """
+                class_name BaseLeaf
+                extends RefCounted
+                
+                class Shared:
+                    pass
+                """, diagnostics);
+        var outerUnit = parserService.parseUnit(Path.of("tmp", "outer_precedence.gd"), """
+                class_name OuterPrecedence
+                extends RefCounted
+                
+                class Shared:
+                    pass
+                
+                class Leaf extends BaseLeaf:
+                    var picked: Shared
+                """, diagnostics);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = new FrontendSemanticAnalyzer().analyze(
+                "test_module",
+                List.of(baseUnit, outerUnit),
+                registry,
+                diagnostics
+        );
+
+        var leaf = findClassByName(result.moduleSkeleton().allClassDefs(), "OuterPrecedence$Leaf");
+        var pickedType = assertInstanceOf(GdObjectType.class, findPropertyByName(leaf, "picked").getType());
+        assertEquals("OuterPrecedence$Shared", pickedType.getTypeName());
+
+        var leafDeclaration = findClass(outerUnit.ast().statements(), "Leaf");
+        var leafScope = assertInstanceOf(ClassScope.class, result.scopesByAst().get(leafDeclaration));
+        var resolvedShared = assertInstanceOf(
+                GdObjectType.class,
+                ScopeTypeResolver.tryResolveDeclaredType(leafScope, "Shared")
+        );
+        assertEquals("OuterPrecedence$Shared", resolvedShared.getTypeName());
+        assertTrue(result.diagnostics().isEmpty());
+    }
+
+    @Test
+    void semanticAnalysisStillHasSeparateHeaderExtendsPathFromSharedDeclaredTypeResolver() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "header_super_shared_resolver_gap.gd"), """
+                class_name HeaderResolverGap
+                extends RefCounted
+                
+                class Shared:
+                    pass
+                
+                class Leaf extends Shared:
+                    var picked: Shared
+                """, diagnostics);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+
+        var leaf = findClassByName(result.moduleSkeleton().allClassDefs(), "HeaderResolverGap$Leaf");
+        assertEquals("Shared", leaf.getSuperName());
+        assertNull(registry.findGdccClass(leaf.getSuperName()));
+        assertNotNull(registry.findGdccClass("HeaderResolverGap$Shared"));
+
+        var pickedType = assertInstanceOf(GdObjectType.class, findPropertyByName(leaf, "picked").getType());
+        assertEquals("HeaderResolverGap$Shared", pickedType.getTypeName());
+
+        var leafDeclaration = findClass(unit.ast().statements(), "Leaf");
+        var leafScope = assertInstanceOf(ClassScope.class, result.scopesByAst().get(leafDeclaration));
+        var resolvedShared = assertInstanceOf(
+                GdObjectType.class,
+                ScopeTypeResolver.tryResolveDeclaredType(leafScope, "Shared")
+        );
+        assertEquals("HeaderResolverGap$Shared", resolvedShared.getTypeName());
         assertTrue(result.diagnostics().isEmpty());
     }
 

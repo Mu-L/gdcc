@@ -116,9 +116,8 @@ public final class FrontendClassSkeletonBuilder {
         );
     }
 
-    /// Phase 3 publishes every accepted shell before any member signature is filled so the current
-    /// module can already resolve self and same-module gdcc types through the registry during
-    /// skeleton filling.
+    /// Publishes every accepted shell before member signatures are filled so the current module can
+    /// already resolve self and same-module gdcc types through the registry during skeleton filling.
     private void publishClassShells(
             @NotNull List<FrontendSourceClassRelation> sourceClassRelations,
             @NotNull ClassRegistry classRegistry
@@ -174,7 +173,7 @@ public final class FrontendClassSkeletonBuilder {
 
     /// Top-level scripts may spell inheritance either on `class_name Name extends Base` or on a
     /// standalone `extends Base` statement. Header discovery preserves only the trimmed raw text
-    /// here; Phase 2 still defers semantic type resolution itself to later steps.
+    /// here; this path is still separate from shared declared-type resolution.
     private @Nullable String resolveTopLevelRawExtendsText(
             @NotNull List<Statement> statements,
             @Nullable ClassNameStatement classNameStatement
@@ -201,7 +200,7 @@ public final class FrontendClassSkeletonBuilder {
         return classNameStatement != null ? classNameStatement.range() : unit.ast().range();
     }
 
-    /// Creates the minimal class shell needed for Phase 3 publication.
+    /// Creates the minimal class shell that is published before member filling begins.
     ///
     /// Member signatures are filled later against the already-published registry state. This keeps
     /// all accepted canonical class identities queryable before any property/function/signal type is
@@ -221,7 +220,7 @@ public final class FrontendClassSkeletonBuilder {
     /// Inner classes are still excluded here because they already own their own shell and relation
     /// entry. The parent class only receives signals/properties/functions/constructors declared
     /// directly in its own statement list. Constructors are lowered into the special `_init`
-    /// function slot on `ClassDef` so later phases can keep using one shared member surface.
+    /// function slot on `ClassDef` so downstream code can keep using one shared member surface.
     private void fillClassMembers(
             @NotNull LirClassDef classDef,
             @NotNull List<Statement> statements,
@@ -268,8 +267,8 @@ public final class FrontendClassSkeletonBuilder {
         }
     }
 
-    /// Builds accepted inner class relations in pre-order so later phases can keep using the stable
-    /// source traversal order established by the discovery pass.
+    /// Builds accepted inner class relations in pre-order so downstream consumers keep seeing the
+    /// stable source traversal order established by discovery.
     private @NotNull List<FrontendInnerClassRelation> collectAcceptedInnerClassRelations(
             @NotNull List<AcceptedClassHeader> acceptedInnerHeaders,
             @NotNull SkeletonBuildContext context
@@ -558,10 +557,10 @@ public final class FrontendClassSkeletonBuilder {
         return scope;
     }
 
-    /// Phase-2 discovery pass:
+    /// Module class-header discovery pass:
     /// - discovers a complete module-local class header graph before member filling starts
     /// - validates duplicate/canonical/cycle issues against that graph
-    /// - records rejected subtree roots explicitly so later phases can skip only those regions
+    /// - records rejected subtree roots explicitly so downstream stages can skip only those regions
     private @NotNull ModuleClassHeaderDiscovery discoverModuleClassHeaders(
             @NotNull List<FrontendSourceUnit> units,
             @NotNull DiagnosticManager diagnosticManager
@@ -624,8 +623,8 @@ public final class FrontendClassSkeletonBuilder {
     }
 
     /// Every source unit always contributes exactly one synthetic top-level script class header,
-    /// even when later validation rejects it. This lets Phase 2 validate module-wide conflicts
-    /// against one complete header graph before any skeleton object is published.
+    /// even when later validation rejects it. This keeps module-wide conflict validation operating
+    /// on one complete header graph before any skeleton object is published.
     private @NotNull MutableClassHeader discoverTopLevelHeader(
             @NotNull FrontendSourceUnit unit,
             @NotNull List<MutableClassHeader> discoveredHeadersInOrder,
@@ -848,7 +847,7 @@ public final class FrontendClassSkeletonBuilder {
         );
     }
 
-    /// Builds the minimal lookup tables needed by Phase 2 validation:
+    /// Builds the minimal lookup tables needed by class-header validation:
     /// - canonical-name hits for global uniqueness and explicit canonical extends text
     /// - per-owner inner source-name hits for lexical lookup
     /// - AST owner recovery so inner headers can walk back to enclosing lexical owners
@@ -1312,8 +1311,8 @@ public final class FrontendClassSkeletonBuilder {
     ) {
     }
 
-    /// Mutable discovery node used only inside Phase 2 before the final immutable accepted and
-    /// rejected header views are frozen.
+    /// Mutable discovery node used only while class-header discovery and validation assemble the
+    /// final immutable accepted and rejected header views.
     private static final class MutableClassHeader {
         private final @NotNull FrontendSourceUnit unit;
         private final @Nullable MutableClassHeader parentHeader;

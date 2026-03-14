@@ -9,7 +9,7 @@ import org.jetbrains.annotations.NotNull;
 /// - `Scope` only answers whether the current context may legally consume a hit.
 /// - The frontend binder still owns user-facing error reporting and AST-specific reasoning.
 ///
-/// Phase 4 follow-up semantics frozen by the planning docs:
+/// Current semantics:
 /// - `staticContext()` allows class constants, static properties, and static methods.
 /// - `instanceContext()` allows class constants, instance/static properties, and instance/static methods.
 /// - `unrestricted()` keeps compatibility behavior for legacy callers and tests.
