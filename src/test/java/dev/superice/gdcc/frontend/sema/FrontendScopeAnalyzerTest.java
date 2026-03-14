@@ -218,6 +218,77 @@ class FrontendScopeAnalyzerTest {
     }
 
     @Test
+    void analyzePublishesImmediateInnerTypeMetaWithoutLeakingOuterValueOrFunctionBindings() throws Exception {
+        var analyzed = analyze("""
+                class_name ScopeTypePublish
+                extends RefCounted
+                
+                var outer_prop: int
+                
+                func outer_call():
+                    pass
+                
+                class Middle:
+                    func ping() -> Deep:
+                        var local_lambda := func() -> Sibling:
+                            return null
+                        return null
+                
+                    class Deep:
+                        pass
+                
+                class Sibling:
+                    pass
+                """);
+        var sourceFile = analyzed.unit().ast();
+        var scopesByAst = analyzed.analysisData().scopesByAst();
+        var sourceScope = assertInstanceOf(ClassScope.class, scopesByAst.get(sourceFile));
+
+        assertEquals("ScopeTypePublish$Middle", sourceScope.resolveTypeMeta("Middle").canonicalName());
+        assertEquals("ScopeTypePublish$Sibling", sourceScope.resolveTypeMeta("Sibling").canonicalName());
+        assertNull(sourceScope.resolveTypeMeta("Deep"));
+
+        var middleDeclaration = findStatement(
+                sourceFile.statements(),
+                ClassDeclaration.class,
+                classDeclaration -> classDeclaration.name().equals("Middle")
+        );
+        var middleScope = assertInstanceOf(ClassScope.class, scopesByAst.get(middleDeclaration));
+        assertEquals("ScopeTypePublish", middleScope.resolveTypeMeta("ScopeTypePublish").canonicalName());
+        assertEquals("ScopeTypePublish$Middle$Deep", middleScope.resolveTypeMeta("Deep").canonicalName());
+        assertNull(middleScope.resolveValue("outer_prop"));
+        assertTrue(middleScope.resolveFunctions("outer_call").isEmpty());
+
+        var pingFunction = findStatement(
+                middleDeclaration.body().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var pingScope = assertInstanceOf(CallableScope.class, scopesByAst.get(pingFunction));
+        assertEquals("ScopeTypePublish$Middle$Deep", pingScope.resolveTypeMeta("Deep").canonicalName());
+
+        var localLambdaDeclaration = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("local_lambda")
+        );
+        var localLambda = assertInstanceOf(LambdaExpression.class, localLambdaDeclaration.value());
+        var lambdaScope = assertInstanceOf(CallableScope.class, scopesByAst.get(localLambda));
+        assertEquals("ScopeTypePublish$Sibling", lambdaScope.resolveTypeMeta("Sibling").canonicalName());
+
+        var deepDeclaration = findStatement(
+                middleDeclaration.body().statements(),
+                ClassDeclaration.class,
+                classDeclaration -> classDeclaration.name().equals("Deep")
+        );
+        var deepScope = assertInstanceOf(ClassScope.class, scopesByAst.get(deepDeclaration));
+        assertEquals("ScopeTypePublish$Middle", deepScope.resolveTypeMeta("Middle").canonicalName());
+        assertEquals("ScopeTypePublish$Sibling", deepScope.resolveTypeMeta("Sibling").canonicalName());
+        assertNull(deepScope.resolveValue("outer_prop"));
+        assertTrue(deepScope.resolveFunctions("outer_call").isEmpty());
+    }
+
+    @Test
     void analyzeBuildsDistinctIfElifElseScopesAndKeepsConditionsInOuterScope() throws Exception {
         var analyzed = analyze("""
                 class_name BranchScopeCoverage

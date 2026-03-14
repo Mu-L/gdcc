@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：Phase 1 / Phase 2 / Phase 3 已完成，Phase 4+ 待实施
+- 状态：Phase 1 / Phase 2 / Phase 3 / Phase 4 / Phase 5 / Phase 6 已完成
 - 更新时间：2026-03-13
 - 基线提交：`c74d37e fix(scope): preserve container leaf types in text parsing`
 - 本轮范围：
@@ -28,7 +28,7 @@
 
 - `FrontendSourceClassRelation` 与 `FrontendInnerClassRelation` 已替代旧的“`SourceUnit` 与 `ClassDef` 靠索引对齐”模型，能够显式保存 source-local 的 class 归属关系。
 - `FrontendScopeAnalyzer` 已能根据这些 relation 为顶层 class 与 inner class 建立 `ClassScope`，inner class 子树也不再被整棵跳过。
-- `ClassRegistry` 已具备严格 `type-meta` 查询入口，例如 `resolveTypeMetaHere(...)` 与 `tryResolveDeclaredType(...)`。
+- `ClassRegistry` 已具备严格 `type-meta` 查询入口，例如 `resolveTypeMetaHere(...)` 与 `tryResolveDeclaredType(...)`；其中后者现已支持 optional unresolved mapper overload，但 strict frontend 位置仍使用默认 no-mapper 语义。
 
 但在本轮启动前，代码存在三个结构性缺口：
 
@@ -380,10 +380,10 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
 
 本阶段当前进度：
 
-- [x] `FrontendClassSkeletonBuilder` 成员填充阶段已显式携带“source-wide class relation + current owning class relation”上下文，不再把 declared type 当成纯全局名字处理。
+- [x] `FrontendClassSkeletonBuilder` 成员填充阶段已改为先构建 source-local 最小 type-scope 链，再通过 shared `ScopeTypeResolver` 的 strict no-mapper overload 解析 declared type，而不再回放 builder 私有 lexical resolver。
 - [x] `resolveTypeOrVariant(...)` 已改为 strict frontend 路径：
-  - 顶层 `Array[T]` / `Dictionary[K, V]` 先做 strict 解析
-  - 叶子 gdcc 类型先按当前 lexical class 链用 `sourceName` 查找，再回落到 `ClassRegistry#resolveTypeMetaHere(...)`
+  - 顶层 `Array[T]` / `Dictionary[K, V]` 通过 shared `ScopeTypeResolver` 做 strict 解析
+  - leaf gdcc 类型统一通过当前 lexical `Scope` 的 type-meta namespace 解析
   - 命中的 gdcc 类型统一写回 canonical `GdObjectType`
 - [x] frontend declared type 位置已不再直接依赖 `ClassRegistry#findType(...)`；unknown type 也不再静默猜测为 object type，而是统一发出 `sema.type_resolution` warning 并回退 `Variant`
 - [x] 已补齐针对性测试，覆盖：
@@ -425,12 +425,12 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
 
 验收清单：
 
-- [ ] 在 outer class 的 lexical type namespace 中，`Inner` 可解析为 `ScopeTypeMeta(canonicalName = "Outer$Inner", sourceName = "Inner", ...)`
-- [ ] 在 inner class 内部，当前 class 自身可通过 sourceName 参与 declared type 解析
+- [x] 在 outer class 的 lexical type namespace 中，`Inner` 可解析为 `ScopeTypeMeta(canonicalName = "Outer$Inner", sourceName = "Inner", ...)`
+- [x] 在 inner class 内部，当前 class 自身可通过 sourceName 参与 declared type 解析
 - [x] `ClassRegistry` 直接按 canonical name 查询 inner class type-meta 时，也会返回正确的 `sourceName`
-- [ ] outer class 仅通过 type-meta parent 链提供 outer type，可见性规则不破坏现有 `ClassScope` 设计
-- [ ] inner class 不会被错误地放入 value/function namespace
-- [ ] scope analyzer 的 AST -> scope 绑定在引入新 relation 字段后仍保持稳定
+- [x] outer class 仅通过 type-meta parent 链提供 outer type，可见性规则不破坏现有 `ClassScope` 设计
+- [x] inner class 不会被错误地放入 value/function namespace
+- [x] scope analyzer 的 AST -> scope 绑定在引入新 relation 字段后仍保持稳定
 
 ## Phase 6. 测试矩阵补齐与文档收敛
 
@@ -469,8 +469,8 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
 验收清单：
 
 - [x] `FrontendClassSkeletonTest` 覆盖 module/top-level/inner/self/outer 多种 declared type 组合
-- [ ] `FrontendScopeAnalyzerTest` 与 inner-class scope tests 覆盖 sourceName -> canonicalName 的 lexical 绑定
-- [ ] 至少有一组 negative test 锚定“diagnostic + skip subtree + sibling subtree continues”
+- [x] `FrontendScopeAnalyzerTest` 与 inner-class scope tests 覆盖 sourceName -> canonicalName 的 lexical 绑定
+- [x] 至少有一组 negative test 锚定“diagnostic + skip subtree + sibling subtree continues”
 - [x] 文档、实现注释、测试断言三者不再互相冲突
 
 ---
@@ -519,8 +519,9 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
 风险 4：declared type 解析若直接全面切到 strict 路径，可能误伤现有 builtin/container 行为
 
 - 应对：
-  - 继续复用 `ClassRegistry#tryResolveDeclaredType(...)` 的 strict builtin / engine / container 逻辑
-  - 只禁止 declared type 位置继续走 `findType(...)` 的 guessed-object 分支
+  - 继续复用 `ClassRegistry#tryResolveDeclaredType(...)` / shared `ScopeTypeResolver` 的 strict builtin / engine / container 逻辑
+  - `findType(...)` 只通过 optional unresolved mapper 保留 compatibility guessed-object fallback
+  - declared type 位置继续禁止使用 mapper overload
 
 风险 5：scope analyzer 若一次性把所有后代 inner classes 都塞进当前 class 的 type namespace，会破坏 lexical 粒度
 

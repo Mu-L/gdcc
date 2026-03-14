@@ -5,6 +5,7 @@ import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendModuleSkeleton;
+import dev.superice.gdcc.frontend.sema.FrontendSourceClassRelation;
 import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.frontend.scope.BlockScopeKind;
 import dev.superice.gdcc.frontend.scope.CallableScope;
@@ -28,6 +29,7 @@ import java.util.Objects;
 /// `scope_analyzer_implementation_plan.md`:
 /// - top-level script `ClassScope` per `SourceFile`
 /// - nested `ClassDeclaration` -> `ClassScope` boundaries driven by source-local skeleton relations
+/// - immediate inner-class type-meta publication on each class boundary
 /// - callable `CallableScope` for functions, constructors, and lambdas
 /// - dedicated callable-body `BlockScope`
 /// - dedicated control-flow `BlockScope`s for `if` / `elif` / `else`, `while`, `for`, and
@@ -72,12 +74,13 @@ public class FrontendScopeAnalyzer {
     ///
     /// The handler keeps semantic policy local while delegating traversal mechanics to the parser
     /// library:
-    /// - `SourceFile` creates one top-level `ClassScope`
+    /// - `SourceFile` creates one top-level `ClassScope` and publishes its direct inner classes
     /// - callables create their own `CallableScope`
     /// - callable bodies create a separate `BlockScope`
     /// - control-flow bodies create dedicated branch/loop `BlockScope`s
     ///
     /// - nested `ClassDeclaration` nodes reopen a `ClassScope` from source-local skeleton facts
+    ///   and publish only their direct inner classes into the local type namespace
     ///
     /// Everything else is either:
     /// - visited under the current already-established lexical scope, or
@@ -87,6 +90,8 @@ public class FrontendScopeAnalyzer {
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
         private final @NotNull List<SourceFile> sourceFilesInOrder;
         private final @NotNull IdentityHashMap<Node, ClassDef> classByAstOwner = new IdentityHashMap<>();
+        private final @NotNull IdentityHashMap<Node, FrontendSourceClassRelation> sourceRelationByAstOwner =
+                new IdentityHashMap<>();
         private final @NotNull ArrayDeque<Scope> scopeStack = new ArrayDeque<>();
         private final @NotNull ASTWalker astWalker;
 
@@ -132,6 +137,9 @@ public class FrontendScopeAnalyzer {
                     requireClassDef(sourceFile)
             );
             recordScope(sourceFile, sourceFileScope);
+            for (var innerRelation : requireSourceClassRelation(sourceFile).findImmediateInnerRelations(sourceFile)) {
+                sourceFileScope.defineTypeMeta(innerRelation.toTypeMeta());
+            }
             withCurrentScope(sourceFileScope, () -> walkChildren(sourceFile));
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
@@ -246,6 +254,9 @@ public class FrontendScopeAnalyzer {
 
             var classScope = new ClassScope(currentScope(), classRegistry, classDef);
             recordScope(node, classScope);
+            for (var innerRelation : requireSourceClassRelation(node).findImmediateInnerRelations(node)) {
+                classScope.defineTypeMeta(innerRelation.toTypeMeta());
+            }
 
             // `ClassDeclaration.body` is a `Block` in the AST, but semantically it is only the
             // member container of the class boundary. It must reuse the enclosing `ClassScope`
@@ -356,6 +367,19 @@ public class FrontendScopeAnalyzer {
             return classDef;
         }
 
+        private @NotNull FrontendSourceClassRelation requireSourceClassRelation(@NotNull Node astOwner) {
+            var sourceClassRelation = sourceRelationByAstOwner.get(astOwner);
+            if (sourceClassRelation == null) {
+                throw new IllegalStateException(
+                        "No source class relation was indexed for "
+                                + astOwner.getClass().getSimpleName()
+                                + "@"
+                                + System.identityHashCode(astOwner)
+                );
+            }
+            return sourceClassRelation;
+        }
+
         private @NotNull List<SourceFile> indexClassDefsByAstOwner(
                 @NotNull FrontendModuleSkeleton moduleSkeleton
         ) {
@@ -365,8 +389,10 @@ public class FrontendScopeAnalyzer {
                 var sourceFile = sourceClassRelation.unit().ast();
                 sourceFiles.add(sourceFile);
                 indexClassOwner(sourceFile, sourceClassRelation.topLevelClassDef());
+                indexSourceClassRelation(sourceFile, sourceClassRelation);
                 for (var innerClassRelation : sourceClassRelation.innerClassRelations()) {
                     indexClassOwner(innerClassRelation.declaration(), innerClassRelation.classDef());
+                    indexSourceClassRelation(innerClassRelation.declaration(), sourceClassRelation);
                 }
             }
             return List.copyOf(sourceFiles);
@@ -377,6 +403,18 @@ public class FrontendScopeAnalyzer {
             if (previous != null) {
                 throw new IllegalStateException(
                         "Duplicate AST class owner encountered while indexing class skeletons"
+                );
+            }
+        }
+
+        private void indexSourceClassRelation(
+                @NotNull Node astOwner,
+                @NotNull FrontendSourceClassRelation sourceClassRelation
+        ) {
+            var previous = sourceRelationByAstOwner.put(astOwner, sourceClassRelation);
+            if (previous != null) {
+                throw new IllegalStateException(
+                        "Duplicate source relation owner encountered while indexing class skeletons"
                 );
             }
         }

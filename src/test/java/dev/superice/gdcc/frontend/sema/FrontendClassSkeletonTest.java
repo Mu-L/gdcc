@@ -244,6 +244,7 @@ class FrontendClassSkeletonTest {
                     var module_ref: ModuleItem
                     var helper_ref: Helper
                     var helpers: Array[Helper]
+                    var helper_lookup: Dictionary[String, Helper]
                 
                     class Deep:
                         var self_ref: Deep
@@ -295,6 +296,12 @@ class FrontendClassSkeletonTest {
                 findPropertyByName(directInner, "helpers").getType()
         );
         assertObjectTypeName(helpersType.getValueType(), "OuterTypes$Helper");
+        var helperLookupType = assertInstanceOf(
+                GdDictionaryType.class,
+                findPropertyByName(directInner, "helper_lookup").getType()
+        );
+        assertEquals(GdStringType.STRING, helperLookupType.getKeyType());
+        assertObjectTypeName(helperLookupType.getValueType(), "OuterTypes$Helper");
 
         assertObjectTypeName(findPropertyByName(deep, "self_ref").getType(), "OuterTypes$DirectInner$Deep");
         assertObjectTypeName(findPropertyByName(deep, "parent_ref").getType(), "OuterTypes$DirectInner");
@@ -361,6 +368,7 @@ class FrontendClassSkeletonTest {
                 signal changed(payload: MissingSignal)
                 var field: MissingField
                 var bag: Array[MissingArray]
+                var nested_bag: Array[Array[int]]
                 
                 func ping(arg: MissingParam) -> MissingReturn:
                     pass
@@ -378,6 +386,7 @@ class FrontendClassSkeletonTest {
         assertEquals(GdVariantType.VARIANT, changedSignal.getParameter(0).getType());
         assertEquals(GdVariantType.VARIANT, findPropertyByName(unknownTypeSurface, "field").getType());
         assertEquals(GdVariantType.VARIANT, findPropertyByName(unknownTypeSurface, "bag").getType());
+        assertEquals(GdVariantType.VARIANT, findPropertyByName(unknownTypeSurface, "nested_bag").getType());
         assertEquals(GdVariantType.VARIANT, pingFunction.getParameter(0).getType());
         assertEquals(GdVariantType.VARIANT, pingFunction.getReturnType());
         assertEquals(GdVariantType.VARIANT, initFunction.getParameter(0).getType());
@@ -385,10 +394,11 @@ class FrontendClassSkeletonTest {
         var typeResolutionDiagnostics = result.diagnostics().asList().stream()
                 .filter(diagnostic -> diagnostic.category().equals("sema.type_resolution"))
                 .toList();
-        assertEquals(6, typeResolutionDiagnostics.size());
+        assertEquals(7, typeResolutionDiagnostics.size());
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingSignal")));
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingField")));
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingArray")));
+        assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Array[Array[int]]")));
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingParam")));
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingReturn")));
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingCtor")));

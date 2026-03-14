@@ -1,13 +1,18 @@
 package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
+import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.scope.ClassDef;
+import dev.superice.gdcc.scope.PropertyDef;
+import dev.superice.gdcc.scope.resolver.ScopeTypeResolver;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -15,6 +20,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -197,6 +203,43 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertNotNull(registry.findGdccClass("StableAfterError"));
     }
 
+    @Test
+    void semanticAnalysisKeepsSharedTypeResolverAlignedWithSkeletonDeclaredTypes() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "scope_type_resolver_parity.gd"), """
+                class_name ScopeTypeResolverParity
+                extends RefCounted
+                
+                var inner_ref: Inner
+                
+                class Inner:
+                    var helpers: Array[Helper]
+                
+                class Helper:
+                    pass
+                """, diagnostics);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+
+        var topLevel = findClassByName(result.moduleSkeleton().classDefs(), "ScopeTypeResolverParity");
+        var inner = findClassByName(result.moduleSkeleton().allClassDefs(), "ScopeTypeResolverParity$Inner");
+        var sourceScope = assertInstanceOf(ClassScope.class, result.scopesByAst().get(unit.ast()));
+
+        assertEquals(
+                findPropertyByName(topLevel, "inner_ref").getType(),
+                ScopeTypeResolver.tryResolveDeclaredType(sourceScope, "Inner")
+        );
+
+        var innerDeclaration = findClass(unit.ast().statements(), "Inner");
+        var innerScope = assertInstanceOf(ClassScope.class, result.scopesByAst().get(innerDeclaration));
+        assertEquals(
+                findPropertyByName(inner, "helpers").getType(),
+                ScopeTypeResolver.tryResolveDeclaredType(innerScope, "Array[Helper]")
+        );
+        assertTrue(result.diagnostics().isEmpty());
+    }
+
     private VariableDeclaration findVariable(List<?> statements, String name) {
         return statements.stream()
                 .filter(VariableDeclaration.class::isInstance)
@@ -213,6 +256,29 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 .filter(functionDeclaration -> functionDeclaration.name().equals(name))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Function not found: " + name));
+    }
+
+    private ClassDeclaration findClass(List<?> statements, String name) {
+        return statements.stream()
+                .filter(ClassDeclaration.class::isInstance)
+                .map(ClassDeclaration.class::cast)
+                .filter(classDeclaration -> classDeclaration.name().equals(name))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Class not found: " + name));
+    }
+
+    private ClassDef findClassByName(List<? extends ClassDef> classDefs, String name) {
+        return classDefs.stream()
+                .filter(classDef -> classDef.getName().equals(name))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("ClassDef not found: " + name));
+    }
+
+    private PropertyDef findPropertyByName(ClassDef classDef, String name) {
+        return classDef.getProperties().stream()
+                .filter(propertyDef -> propertyDef.getName().equals(name))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Property not found: " + name));
     }
 
     private List<String> annotationNames(List<FrontendGdAnnotation> annotations) {

@@ -1,6 +1,9 @@
 package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.lir.LirClassDef;
+import dev.superice.gdcc.scope.ScopeTypeMeta;
+import dev.superice.gdcc.scope.ScopeTypeMetaKind;
+import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdparser.frontend.ast.Node;
 import org.jetbrains.annotations.NotNull;
 
@@ -22,6 +25,19 @@ public interface FrontendOwnedClassRelation {
     @NotNull String canonicalName();
 
     @NotNull LirClassDef classDef();
+
+    /// Builds the strict type-meta view that this source-owned class contributes to lexical type
+    /// namespaces.
+    default @NotNull ScopeTypeMeta toTypeMeta() {
+        return new ScopeTypeMeta(
+                canonicalName(),
+                sourceName(),
+                new GdObjectType(canonicalName()),
+                ScopeTypeMetaKind.GDCC_CLASS,
+                classDef(),
+                false
+        );
+    }
 
     static void validateOwnedRelation(
             @NotNull Node lexicalOwner,

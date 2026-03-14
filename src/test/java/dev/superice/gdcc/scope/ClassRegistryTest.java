@@ -1,10 +1,13 @@
 package dev.superice.gdcc.scope;
 
+import dev.superice.gdcc.exception.TypeParsingException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
+import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdFloatType;
@@ -113,6 +116,15 @@ public class ClassRegistryTest {
         var api = ExtensionApiLoader.loadDefault();
         var registry = new ClassRegistry(api);
 
+        if (!api.singletons().isEmpty()) {
+            var singleton = api.singletons().getFirst();
+            assertNotNull(singleton.name());
+            if (!registry.isGdClass(singleton.name()) && !registry.isGdccClass(singleton.name())) {
+                assertNull(registry.findType(singleton.name()),
+                        () -> "findType should not return type for singleton name: " + singleton.name());
+            }
+        }
+
         // If global enums exist, findType should not return a type for the enum name
         if (!api.globalEnums().isEmpty()) {
             var ge = api.globalEnums().getFirst();
@@ -126,6 +138,49 @@ public class ClassRegistryTest {
             assertNotNull(uf.name());
             assertNull(registry.findType(uf.name()), () -> "findType should not return type for utility function name: " + uf.name());
         }
+    }
+
+    @Test
+    void findTypeShouldReuseStrictResolverBeforeCompatibilityFallback() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        registry.addGdccClass(new LirClassDef("InventoryItem", "Object"));
+
+        assertEquals(registry.tryResolveDeclaredType("InventoryItem"), registry.findType("InventoryItem"));
+        assertEquals(registry.tryResolveDeclaredType("Array[InventoryItem]"), registry.findType("Array[InventoryItem]"));
+
+        assertNull(registry.tryResolveDeclaredType("FutureEnemy"));
+        assertEquals(new GdObjectType("FutureEnemy"), registry.findType("FutureEnemy"));
+        assertEquals(new GdArrayType(new GdObjectType("FutureEnemy")), registry.findType("Array[FutureEnemy]"));
+    }
+
+    @Test
+    void findTypeShouldExplainBuiltinMappingGapWithoutImplyingBuiltinTypesAreUnsupported() {
+        var registry = new ClassRegistry(new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionBuiltinClass(
+                        "CustomBuiltin",
+                        false,
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of()
+                )),
+                List.of(),
+                List.of(),
+                List.of()
+        ));
+
+        var exception = assertThrows(TypeParsingException.class, () -> registry.findType("CustomBuiltin"));
+        assertEquals(
+                "Name 'CustomBuiltin' is recognized as a Godot builtin class, but GDCC has no builtin-type mapping for it yet",
+                exception.getMessage()
+        );
     }
 
     @Test
