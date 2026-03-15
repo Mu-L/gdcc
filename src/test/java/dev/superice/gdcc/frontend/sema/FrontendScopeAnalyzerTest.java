@@ -540,14 +540,14 @@ class FrontendScopeAnalyzerTest {
         var analyzed = analyze("""
                 class_name MaterializedMemberBindings
                 extends Node
-
+                
                 signal outer_changed(amount: int)
                 var outer_prop: int = 1
-
+                
                 class Inner:
                     signal inner_changed(flag: bool)
                     var inner_prop: int = 2
-
+                
                     func ping() -> int:
                         return inner_prop
                 """);
@@ -978,8 +978,8 @@ class FrontendScopeAnalyzerTest {
     }
 
     @Test
-    void analyzeRecordsParameterScopeFactsBeforePhase5BindingPrefill() throws Exception {
-        var analyzed = analyze("""
+    void scopeAnalysisInIsolationRecordsParameterScopeFactsBeforeVariableBindingPrefill() throws Exception {
+        var analyzed = analyzeScopeOnly("""
                 class_name ParameterBoundary
                 extends Node
                 
@@ -1043,6 +1043,31 @@ class FrontendScopeAnalyzerTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
         var analysisData = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        return new AnalyzedUnit(unit, analysisData);
+    }
+
+    private AnalyzedUnit analyzeScopeOnly(@NotNull String source) throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(
+                java.nio.file.Path.of("tmp", "frontend_scope_analyzer_isolation_test.gd"),
+                source,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
+                "test_module",
+                List.of(unit),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        analysisData.updateModuleSkeleton(moduleSkeleton);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        new FrontendScopeAnalyzer().analyze(registry, analysisData, diagnostics);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
         return new AnalyzedUnit(unit, analysisData);
     }
 

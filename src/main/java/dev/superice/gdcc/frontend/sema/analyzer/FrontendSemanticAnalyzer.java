@@ -16,7 +16,7 @@ import java.util.List;
 /// `FrontendAnalysisData` carrier:
 /// - skeleton publication
 /// - lexical scope graph construction
-/// - variable-phase boundary validation / future local-binding enrichment
+/// - callable-parameter binding plus later local-binding enrichment
 /// - diagnostics boundary refresh after each phase
 public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder;
@@ -94,8 +94,8 @@ public final class FrontendSemanticAnalyzer {
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
         // Variable analysis enriches the published lexical graph without changing how scopes are
-        // constructed. Keeping it as its own phase prevents scope construction and declaration
-        // inventory prefill from drifting into one monolithic analyzer.
+        // constructed. Keeping it as its own phase prevents scope construction, parameter prefill,
+        // and later local inventory work from drifting into one monolithic analyzer.
         variableAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return analysisData;

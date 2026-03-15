@@ -37,7 +37,8 @@
 - `moduleSkeleton`、`diagnostics`、`scopesByAst` 已有稳定发布边界。
 - `symbolBindings`、`expressionTypes`、`resolvedMembers`、`resolvedCalls` 仍然是空 side-table 预留位。
 - scope phase 结束后，`CallableScope` / `BlockScope` 对象已经存在。
-- variable phase 当前已经接入主链路，但在 Phase 2 里仍只负责边界校验与测试 seam，尚未开始 parameter / local binding prefill。
+- variable phase 当前已经接入主链路，并已完成 function / constructor parameter prefill。
+- ordinary local `var`、lambda inventory、`for` / `match` / `const` 仍保持 deferred。
 
 ### 1.2 当前 scope 与 side-table 的可复用事实
 
@@ -57,10 +58,9 @@
 
 当前仍有以下缺口：
 
-1. `FrontendVariableAnalyzer` 当前仍只是 phase-boundary validator，参数写入 `CallableScope` 与普通局部变量写入 `BlockScope` 仍待后续阶段实现。
-2. 现有 `FrontendScopeAnalyzerTest` 中仍保留“parameter 尚未 prefill”的默认主链路锚点；等 Phase 3/4 真正接入 binding 后，需要把这类断言迁移到 scope-analyzer isolation 路径。
+1. 普通局部 `var` 写入 `BlockScope` 仍待 Phase 4 完成；当前主链路还不能通过 `BlockScope.resolveValue(...)` 解析函数体内 local。
+2. `for` / `match` / lambda / block-local `const` 仍未接入 variable inventory，相关 subtree 仍需保持 deferred。
 3. declaration-order 可见性仍未有 frontend 专用消费层；后续 binder 不能直接把 `scope.resolveValue(...)` 当作最终 use-site 结论，需单独接入 `FrontendVisibleValueResolver`。
-4. 变量 phase 的恢复合同还没有作为正文主干冻结清楚，尤其是“缺 scope 记录”和“supported subtree 内 binding target 不可用”这两类负路径。
 
 ---
 
@@ -393,33 +393,33 @@ scope 选择之后再做两步判断：
 - [x] diagnostics 最终快照能够覆盖 variable phase 新增的 warning/error。
 - [x] 不需要改动 `FrontendScopeAnalyzer` 职责。
 
-### Phase 3：参数写入 `CallableScope`
+### Phase 3：参数写入 `CallableScope`（已完成）
 
 #### 实施清单
 
-- 只处理 `FunctionDeclaration` 与 `ConstructorDeclaration`。
-- walker 只进入 supported callable subtree，不进入 lambda。
-- 对每个 `Parameter`：
-  - 从 `scopesByAst` 取目标 scope
-  - 若缺记录：按恢复合同 skip 当前参数
-  - 若 scope 不是 `CallableScope`：发 `sema.variable_binding` 并 skip
-  - 用共享 helper 求 declared type
-  - 调用 `CallableScope.defineParameter(parameter.name().trim(), type, parameter)`
-- 若 `parameter.defaultValue() != null`：
-  - 发出 `sema.unsupported_parameter_default_value` warning
-  - 不继续分析默认值表达式
-- duplicate parameter：
-  - 保留第一个成功写入的 binding
-  - 后续同名 declaration 只发 diagnostic，不覆盖
+- [x] 只处理 `FunctionDeclaration` 与 `ConstructorDeclaration`。
+- [x] walker 只进入 supported callable subtree，不进入 lambda。
+- [x] 对每个 `Parameter`：
+  - [x] 从 `scopesByAst` 取目标 scope
+  - [x] 若缺记录：按恢复合同 skip 当前参数
+  - [x] 若 scope 不是 `CallableScope`：发 `sema.variable_binding` 并 skip
+  - [x] 用共享 helper 求 declared type
+  - [x] 调用 `CallableScope.defineParameter(parameter.name().trim(), type, parameter)`
+- [x] 若 `parameter.defaultValue() != null`：
+  - [x] 发出 `sema.unsupported_parameter_default_value` warning
+  - [x] 不继续分析默认值表达式
+- [x] duplicate parameter：
+  - [x] 保留第一个成功写入的 binding
+  - [x] 后续同名 declaration 只发 diagnostic，不覆盖
 
 #### 验收标准
 
-- function / constructor 的参数可通过对应 `CallableScope.resolveValue(...)` 命中。
-- 未标注类型参数默认得到 `Variant`。
-- unknown type 参数会发出与 skeleton 一致的 `sema.type_resolution` warning。
-- 带默认值表达式的参数会收到 warning，但参数本身仍成功写入 `CallableScope`。
-- lambda 参数仍不可通过 scope 被解析到。
-- `symbolBindings()` 仍为空。
+- [x] function / constructor 的参数可通过对应 `CallableScope.resolveValue(...)` 命中。
+- [x] 未标注类型参数默认得到 `Variant`。
+- [x] unknown type 参数会发出与 skeleton 一致的 `sema.type_resolution` warning。
+- [x] 带默认值表达式的参数会收到 warning，但参数本身仍成功写入 `CallableScope`。
+- [x] lambda 参数仍不可通过 scope 被解析到。
+- [x] `symbolBindings()` 仍为空。
 
 ### Phase 4：普通局部 `var` 写入 `BlockScope`
 
@@ -461,30 +461,32 @@ scope 选择之后再做两步判断：
 
 #### 实施清单
 
-- `FrontendVariableAnalyzerTest` 覆盖：
-  - parameter prefill
-  - constructor parameter prefill
-  - untyped local -> `Variant`
-  - typed local strict resolution
-  - duplicate parameter/local diagnostics
-  - default parameter warning + ignore
-  - skip lambda / for / match / const
-- 新增恢复路径测试：
-  - bad inner class / skipped subtree 不影响同 module 其他合法 subtree
-  - declaration 缺 scope 记录时当前 phase 会 skip，不会中断整模块
-  - declaration target scope kind mismatch 时 diagnostic + skip
-- 更新 `FrontendSemanticAnalyzerFrameworkTest`：
-  - 验证 variable phase 顺序与 diagnostics refresh
-  - 继续断言 `symbolBindings()` / `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 为空
-- 调整 `FrontendScopeAnalyzerTest`：
-  - scope-analyzer-only 测试不再依赖默认全量 `FrontendSemanticAnalyzer`
-  - 原先“parameter 尚未 prefill”的断言移动到 scope-analyzer isolation 路径
+- [x] `FrontendVariableAnalyzerTest` 覆盖：
+  - [x] parameter prefill
+  - [x] constructor parameter prefill
+  - [x] duplicate parameter diagnostics
+  - [x] default parameter warning + ignore
+  - [x] skip lambda
+  - [ ] untyped local -> `Variant`
+  - [ ] typed local strict resolution
+  - [ ] duplicate local diagnostics
+  - [ ] skip `for` / `match` / `const`
+- [x] 新增恢复路径测试：
+  - [x] bad inner class / skipped subtree 不影响同 module 其他合法 subtree
+  - [x] declaration 缺 scope 记录时当前 phase 会 skip，不会中断整模块
+  - [x] declaration target scope kind mismatch 时 diagnostic + skip
+- [x] 更新 `FrontendSemanticAnalyzerFrameworkTest`：
+  - [x] 验证 variable phase 顺序与 diagnostics refresh
+  - [x] 继续断言 `symbolBindings()` / `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 为空
+- [x] 调整 `FrontendScopeAnalyzerTest`：
+  - [x] scope-analyzer-only 测试不再依赖默认全量 `FrontendSemanticAnalyzer`
+  - [x] 原先“parameter 尚未 prefill”的断言移动到 scope-analyzer isolation 路径
 
 #### 验收标准
 
-- scope graph 测试与 variable prefill 测试的责任边界清晰，不互相污染。
-- 默认 analyzer 主链路测试能看到 variable phase 效果。
-- 负路径测试能锚定“不会静默成功，也不会轻易撞死整模块”。
+- [x] scope graph 测试与 variable prefill 测试的责任边界清晰，不互相污染。
+- [x] 默认 analyzer 主链路测试能看到 variable phase 效果。
+- [x] 负路径测试能锚定“不会静默成功，也不会轻易撞死整模块”。
 
 ---
 

@@ -7,6 +7,7 @@ import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
+import dev.superice.gdcc.frontend.scope.CallableScope;
 import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
@@ -26,8 +27,10 @@ import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.PropertyDef;
+import dev.superice.gdcc.scope.ScopeValueKind;
 import dev.superice.gdcc.scope.resolver.ScopeTypeResolver;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdVariantType;
 import org.junit.jupiter.api.Test;
 import org.jetbrains.annotations.NotNull;
 
@@ -39,6 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendSemanticAnalyzerFrameworkTest {
@@ -93,6 +97,12 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(result.scopesByAst().containsKey(pingFunction));
         assertTrue(result.scopesByAst().containsKey(pingFunction.body()));
         assertTrue(result.scopesByAst().containsKey(pingFunction.parameters().getFirst()));
+        var pingScope = assertInstanceOf(CallableScope.class, result.scopesByAst().get(pingFunction));
+        var parameterBinding = pingScope.resolveValue("value");
+        assertNotNull(parameterBinding);
+        assertEquals(GdVariantType.VARIANT, parameterBinding.type());
+        assertEquals(ScopeValueKind.PARAMETER, parameterBinding.kind());
+        assertSame(pingFunction.parameters().getFirst(), parameterBinding.declaration());
         assertTrue(result.symbolBindings().isEmpty());
         assertTrue(result.expressionTypes().isEmpty());
         assertTrue(result.resolvedMembers().isEmpty());
