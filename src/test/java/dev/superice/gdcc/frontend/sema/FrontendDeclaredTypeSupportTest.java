@@ -47,7 +47,7 @@ class FrontendDeclaredTypeSupportTest {
     }
 
     @Test
-    void resolveTypeOrVariantTreatsBlankAndInferredMarkersAsVariantWithoutDiagnostics() throws IOException {
+    void resolveTypeOrVariantTreatsBlankAndInferredMarkersAsDeferredVariantUntilExprTypingExists() throws IOException {
         var diagnostics = new DiagnosticManager();
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 

@@ -9,6 +9,7 @@ import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.frontend.scope.CallableScope;
+import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
@@ -17,12 +18,17 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ScopeValueKind;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
+import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdparser.frontend.ast.WhileStatement;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
@@ -97,16 +103,26 @@ class FrontendVariableAnalyzerTest {
     }
 
     @Test
-    void analyzeBindsFunctionAndConstructorParametersWhileKeepingLocalsDeferred() throws Exception {
-        var phaseInput = publishedPhaseInput("phase3_parameter_prefill.gd", """
+    void analyzeBindsParametersAndSupportedLocalsAcrossSupportedBlocks() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_supported_locals.gd", """
                 class_name VariablePhaseBoundary
                 extends Node
 
                 func ping(value: int, alias):
                     var local := value
+                    if value > 0:
+                        var positive: int = value
+                    elif value == 0:
+                        var zero := value
+                    else:
+                        var negative := alias
+                    while value > 1:
+                        var loop_local := value
+                        break
                     return alias
 
                 func _init(seed: int, mirror):
+                    var ctor_local := seed
                     pass
                 """);
         var analysisData = phaseInput.analysisData();
@@ -121,10 +137,38 @@ class FrontendVariableAnalyzerTest {
         var pingScope = assertInstanceOf(CallableScope.class, scopesByAst.get(pingFunction));
         var pingBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(pingFunction.body()));
         var constructorScope = assertInstanceOf(CallableScope.class, scopesByAst.get(constructor));
+        var constructorBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(constructor.body()));
         var localDeclaration = findStatement(
                 pingFunction.body().statements(),
                 VariableDeclaration.class,
                 variableDeclaration -> variableDeclaration.name().equals("local")
+        );
+        var ifStatement = findStatement(pingFunction.body().statements(), IfStatement.class, _ -> true);
+        var positiveDeclaration = findStatement(
+                ifStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("positive")
+        );
+        var zeroDeclaration = findStatement(
+                ifStatement.elifClauses().getFirst().body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("zero")
+        );
+        var negativeDeclaration = findStatement(
+                assertInstanceOf(Block.class, ifStatement.elseBody()).statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("negative")
+        );
+        var whileStatement = findStatement(pingFunction.body().statements(), WhileStatement.class, _ -> true);
+        var loopLocalDeclaration = findStatement(
+                whileStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("loop_local")
+        );
+        var ctorLocalDeclaration = findStatement(
+                constructor.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("ctor_local")
         );
 
         new FrontendVariableAnalyzer().analyze(analysisData, phaseInput.diagnostics());
@@ -141,6 +185,37 @@ class FrontendVariableAnalyzerTest {
         assertEquals(ScopeValueKind.PARAMETER, aliasBinding.kind());
         assertSame(pingFunction.parameters().getLast(), aliasBinding.declaration());
 
+        var localBinding = pingBodyScope.resolveValue("local");
+        assertNotNull(localBinding);
+        assertEquals(GdVariantType.VARIANT, localBinding.type());
+        assertEquals(ScopeValueKind.LOCAL, localBinding.kind());
+        assertSame(localDeclaration, localBinding.declaration());
+
+        var ifBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(ifStatement.body()));
+        var positiveBinding = ifBodyScope.resolveValue("positive");
+        assertNotNull(positiveBinding);
+        assertEquals(GdIntType.INT, positiveBinding.type());
+        assertSame(positiveDeclaration, positiveBinding.declaration());
+
+        var elifBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(ifStatement.elifClauses().getFirst().body()));
+        var zeroBinding = elifBodyScope.resolveValue("zero");
+        assertNotNull(zeroBinding);
+        assertEquals(GdVariantType.VARIANT, zeroBinding.type());
+        assertSame(zeroDeclaration, zeroBinding.declaration());
+
+        var elseBody = assertInstanceOf(Block.class, ifStatement.elseBody());
+        var elseBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(elseBody));
+        var negativeBinding = elseBodyScope.resolveValue("negative");
+        assertNotNull(negativeBinding);
+        assertEquals(GdVariantType.VARIANT, negativeBinding.type());
+        assertSame(negativeDeclaration, negativeBinding.declaration());
+
+        var whileBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(whileStatement.body()));
+        var loopLocalBinding = whileBodyScope.resolveValue("loop_local");
+        assertNotNull(loopLocalBinding);
+        assertEquals(GdVariantType.VARIANT, loopLocalBinding.type());
+        assertSame(loopLocalDeclaration, loopLocalBinding.declaration());
+
         var seedBinding = constructorScope.resolveValue("seed");
         assertNotNull(seedBinding);
         assertEquals(GdIntType.INT, seedBinding.type());
@@ -151,7 +226,12 @@ class FrontendVariableAnalyzerTest {
         assertEquals(GdVariantType.VARIANT, mirrorBinding.type());
         assertEquals(ScopeValueKind.PARAMETER, mirrorBinding.kind());
 
-        assertNull(pingBodyScope.resolveValue("local"));
+        var ctorLocalBinding = constructorBodyScope.resolveValue("ctor_local");
+        assertNotNull(ctorLocalBinding);
+        assertEquals(GdVariantType.VARIANT, ctorLocalBinding.type());
+        assertEquals(ScopeValueKind.LOCAL, ctorLocalBinding.kind());
+        assertSame(ctorLocalDeclaration, ctorLocalBinding.declaration());
+
         assertSame(scopesByAst, analysisData.scopesByAst());
         assertSame(pingScope, analysisData.scopesByAst().get(pingFunction));
         assertSame(pingBodyScope, analysisData.scopesByAst().get(pingFunction.body()));
@@ -208,14 +288,15 @@ class FrontendVariableAnalyzerTest {
     }
 
     @Test
-    void analyzeKeepsLambdaParametersDeferred() throws Exception {
-        var phaseInput = publishedPhaseInput("phase3_lambda_deferred.gd", """
-                class_name LambdaParameterDeferred
+    void analyzeKeepsLambdaParametersAndLambdaLocalsDeferredWhileBindingOuterLocal() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_lambda_deferred.gd", """
+                class_name LambdaVariableDeferred
                 extends Node
 
                 func ping(seed: int):
                     var builder := func(item: int, fallback = item):
-                        return fallback
+                        var lambda_local := fallback
+                        return lambda_local
                     return seed
                 """);
         var sourceFile = phaseInput.unit().ast();
@@ -229,8 +310,10 @@ class FrontendVariableAnalyzerTest {
                 VariableDeclaration.class,
                 variableDeclaration -> variableDeclaration.name().equals("builder")
         );
+        var pingBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(pingFunction.body()));
         var builderLambda = assertInstanceOf(LambdaExpression.class, builderDeclaration.value());
         var lambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(builderLambda));
+        var lambdaBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(builderLambda.body()));
         var diagnosticsBefore = phaseInput.diagnostics().snapshot();
 
         new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
@@ -239,9 +322,91 @@ class FrontendVariableAnalyzerTest {
                 CallableScope.class,
                 phaseInput.analysisData().scopesByAst().get(pingFunction)
         ).resolveValue("seed"));
+        assertNotNull(pingBodyScope.resolveValue("builder"));
         assertNull(lambdaScope.resolveValue("item"));
         assertNull(lambdaScope.resolveValue("fallback"));
+        assertNull(lambdaBodyScope.resolveValue("lambda_local"));
         assertEquals(diagnosticsBefore, phaseInput.diagnostics().snapshot());
+    }
+
+    @Test
+    void analyzeSkipsForMatchAndConstLocalInventoryWhileKeepingOtherLocalsBound() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_deferred_boundaries.gd", """
+                class_name DeferredBoundaries
+                extends Node
+
+                func ping(value: int):
+                    var plain_local := value
+                    for item: int in [value, value + 1]:
+                        var from_for := item
+                    match value:
+                        var bound when bound > 0:
+                            var from_match := bound
+                        0:
+                            pass
+                    const answer = 42
+                    return plain_local
+                """);
+        var sourceFile = phaseInput.unit().ast();
+        var pingFunction = findStatement(
+                sourceFile.statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var pingBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(pingFunction.body()));
+        var plainLocal = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("plain_local")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var forBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(forStatement.body()));
+        var matchStatement = findStatement(pingFunction.body().statements(), MatchStatement.class, _ -> true);
+        var firstSectionScope = assertInstanceOf(
+                BlockScope.class,
+                phaseInput.analysisData().scopesByAst().get(matchStatement.sections().getFirst())
+        );
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        var plainLocalBinding = pingBodyScope.resolveValueHere("plain_local");
+        assertNotNull(plainLocalBinding);
+        assertEquals(GdVariantType.VARIANT, plainLocalBinding.type());
+        assertEquals(ScopeValueKind.LOCAL, plainLocalBinding.kind());
+        assertSame(plainLocal, plainLocalBinding.declaration());
+        assertNull(forBodyScope.resolveValueHere("from_for"));
+        assertNull(firstSectionScope.resolveValueHere("from_match"));
+        assertNull(pingBodyScope.resolveValueHere("answer"));
+        assertEquals(diagnosticsBefore, phaseInput.diagnostics().snapshot());
+    }
+
+    @Test
+    void analyzeLeavesClassPropertiesAtClassScopeWithoutBindingErrors() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_class_property_boundary.gd", """
+                class_name ClassPropertyBoundary
+                extends Node
+
+                var hp: int = 1
+
+                func ping():
+                    var local := hp
+                """);
+        var sourceFile = phaseInput.unit().ast();
+        var sourceScope = assertInstanceOf(ClassScope.class, phaseInput.analysisData().scopesByAst().get(sourceFile));
+        var pingFunction = findStatement(
+                sourceFile.statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var pingBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(pingFunction.body()));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        assertEquals(diagnosticsBefore, phaseInput.diagnostics().snapshot());
+        assertNotNull(sourceScope.resolveValue("hp"));
+        assertNotNull(pingBodyScope.resolveValueHere("local"));
     }
 
     @Test
@@ -283,6 +448,51 @@ class FrontendVariableAnalyzerTest {
     }
 
     @Test
+    void analyzeWarnsAndFallsBackForUnknownLocalTypes() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_unknown_local_type.gd", """
+                class_name UnknownLocalType
+                extends Node
+
+                func ping():
+                    var missing: MissingType = null
+                """);
+        var sourceFile = phaseInput.unit().ast();
+        var pingFunction = findStatement(
+                sourceFile.statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var pingBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(pingFunction.body()));
+        var missingLocal = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("missing")
+        );
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
+        var warning = newDiagnostics.getFirst();
+
+        assertEquals(1, newDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.WARNING, warning.severity());
+        assertEquals("sema.type_resolution", warning.category());
+        assertTrue(warning.message().contains("MissingType"));
+        assertEquals(phaseInput.unit().path(), warning.sourcePath());
+        assertEquals(
+                FrontendRange.fromAstRange(missingLocal.type().range()),
+                warning.range()
+        );
+        var localBinding = pingBodyScope.resolveValueHere("missing");
+        assertNotNull(localBinding);
+        assertEquals(GdVariantType.VARIANT, localBinding.type());
+        assertEquals(ScopeValueKind.LOCAL, localBinding.kind());
+        assertSame(missingLocal, localBinding.declaration());
+    }
+
+    @Test
     void analyzeReportsDuplicateParametersWithoutOverwritingFirstBinding() throws Exception {
         var phaseInput = publishedPhaseInput("phase3_duplicate_parameter.gd", """
                 class_name DuplicateParameterBinding
@@ -317,6 +527,47 @@ class FrontendVariableAnalyzerTest {
     }
 
     @Test
+    void analyzeReportsDuplicateLocalsWithoutOverwritingFirstBinding() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_duplicate_local.gd", """
+                class_name DuplicateLocalBinding
+                extends Node
+
+                func ping():
+                    var value: int = 1
+                    var value := 2
+                """);
+        var sourceFile = phaseInput.unit().ast();
+        var pingFunction = findStatement(
+                sourceFile.statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var pingBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(pingFunction.body()));
+        var firstLocal = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("value")
+        );
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
+        var error = newDiagnostics.getFirst();
+        var binding = pingBodyScope.resolveValueHere("value");
+        assertNotNull(binding);
+
+        assertEquals(1, newDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
+        assertEquals("sema.variable_binding", error.category());
+        assertTrue(error.message().contains("Duplicate local variable 'value'"));
+        assertEquals(GdIntType.INT, binding.type());
+        assertEquals(ScopeValueKind.LOCAL, binding.kind());
+        assertSame(firstLocal, binding.declaration());
+    }
+
+    @Test
     void analyzeSkipsParameterWithoutScopeRecord() throws Exception {
         var phaseInput = publishedPhaseInput("phase3_missing_parameter_scope.gd", """
                 class_name MissingParameterScope
@@ -341,6 +592,38 @@ class FrontendVariableAnalyzerTest {
         assertEquals(diagnosticsBefore, phaseInput.diagnostics().snapshot());
         assertNotNull(pingScope.resolveValue("value"));
         assertNull(pingScope.resolveValue("alias"));
+    }
+
+    @Test
+    void analyzeSkipsLocalWithoutScopeRecord() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_missing_local_scope.gd", """
+                class_name MissingLocalScope
+                extends Node
+
+                func ping():
+                    var value := 1
+                    var alias := 2
+                """);
+        var sourceFile = phaseInput.unit().ast();
+        var pingFunction = findStatement(
+                sourceFile.statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var aliasLocal = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("alias")
+        );
+        var pingBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(pingFunction.body()));
+        phaseInput.analysisData().scopesByAst().remove(aliasLocal);
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        assertEquals(diagnosticsBefore, phaseInput.diagnostics().snapshot());
+        assertNotNull(pingBodyScope.resolveValueHere("value"));
+        assertNull(pingBodyScope.resolveValueHere("alias"));
     }
 
     @Test
@@ -380,6 +663,118 @@ class FrontendVariableAnalyzerTest {
     }
 
     @Test
+    void analyzeReportsBlockScopeMismatchAndContinuesOtherLocals() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_local_scope_mismatch.gd", """
+                class_name LocalScopeMismatch
+                extends Node
+
+                func ping():
+                    var value := 1
+                    var alias := 2
+                """);
+        var sourceFile = phaseInput.unit().ast();
+        var pingFunction = findStatement(
+                sourceFile.statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var aliasLocal = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("alias")
+        );
+        var pingScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(pingFunction));
+        var pingBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(pingFunction.body()));
+        phaseInput.analysisData().scopesByAst().put(aliasLocal, pingScope);
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
+        var error = newDiagnostics.getFirst();
+
+        assertEquals(1, newDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
+        assertEquals("sema.variable_binding", error.category());
+        assertTrue(error.message().contains("expected BlockScope"));
+        assertTrue(error.message().contains("CallableScope"));
+        assertNotNull(pingBodyScope.resolveValueHere("value"));
+        assertNull(pingBodyScope.resolveValueHere("alias"));
+    }
+
+    @Test
+    void analyzeReportsLocalShadowingParameterAndSkipsBinding() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_local_shadows_parameter.gd", """
+                class_name LocalShadowsParameter
+                extends Node
+
+                func ping(value: int):
+                    if value > 0:
+                        var value := 1
+                    return value
+                """);
+        var sourceFile = phaseInput.unit().ast();
+        var pingFunction = findStatement(
+                sourceFile.statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var ifStatement = findStatement(pingFunction.body().statements(), IfStatement.class, _ -> true);
+        var ifBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(ifStatement.body()));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
+        var error = newDiagnostics.getFirst();
+
+        assertEquals(1, newDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
+        assertEquals("sema.variable_binding", error.category());
+        assertTrue(error.message().contains("shadows parameter 'value'"));
+        assertNull(ifBodyScope.resolveValueHere("value"));
+    }
+
+    @Test
+    void analyzeReportsLocalShadowingOuterLocalAndSkipsBinding() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_local_shadows_outer_local.gd", """
+                class_name LocalShadowsOuterLocal
+                extends Node
+
+                func ping():
+                    var value := 1
+                    if value > 0:
+                        var value := 2
+                    return value
+                """);
+        var sourceFile = phaseInput.unit().ast();
+        var pingFunction = findStatement(
+                sourceFile.statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var pingBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(pingFunction.body()));
+        var ifStatement = findStatement(pingFunction.body().statements(), IfStatement.class, _ -> true);
+        var ifBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(ifStatement.body()));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
+        var error = newDiagnostics.getFirst();
+
+        assertEquals(1, newDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
+        assertEquals("sema.variable_binding", error.category());
+        assertTrue(error.message().contains("shadows outer local 'value'"));
+        assertNotNull(pingBodyScope.resolveValueHere("value"));
+        assertNull(ifBodyScope.resolveValueHere("value"));
+    }
+
+    @Test
     void analyzeSkipsBadInnerClassSubtreeButKeepsSiblingCallableAlive() throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
@@ -392,7 +787,7 @@ class FrontendVariableAnalyzerTest {
                         pass
 
                 func good(value: int):
-                    pass
+                    var keep := value
                 """, diagnostics);
         assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
 
@@ -429,14 +824,14 @@ class FrontendVariableAnalyzerTest {
                 FunctionDeclaration.class,
                 functionDeclaration -> functionDeclaration.name().equals("good")
         );
-        var goodScope = assertInstanceOf(CallableScope.class, analysisData.scopesByAst().get(goodFunction));
+        var goodBodyScope = assertInstanceOf(BlockScope.class, analysisData.scopesByAst().get(goodFunction.body()));
 
         new FrontendVariableAnalyzer().analyze(analysisData, diagnostics);
 
         assertFalse(analysisData.scopesByAst().containsKey(brokenClass));
         assertFalse(analysisData.scopesByAst().containsKey(lostFunction));
         assertEquals(boundaryDiagnostics, diagnostics.snapshot());
-        assertNotNull(goodScope.resolveValue("value"));
+        assertNotNull(goodBodyScope.resolveValueHere("keep"));
     }
 
     @Test

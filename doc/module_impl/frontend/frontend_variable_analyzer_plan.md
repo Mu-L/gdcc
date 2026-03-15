@@ -37,8 +37,10 @@
 - `moduleSkeleton`、`diagnostics`、`scopesByAst` 已有稳定发布边界。
 - `symbolBindings`、`expressionTypes`、`resolvedMembers`、`resolvedCalls` 仍然是空 side-table 预留位。
 - scope phase 结束后，`CallableScope` / `BlockScope` 对象已经存在。
-- variable phase 当前已经接入主链路，并已完成 function / constructor parameter prefill。
-- ordinary local `var`、lambda inventory、`for` / `match` / `const` 仍保持 deferred。
+- variable phase 当前已经接入主链路，并已完成：
+  - function / constructor parameter prefill
+  - function / constructor body 及 supported nested block 中的 ordinary local `var` prefill
+- lambda inventory、`for` / `match` / `const` 仍保持 deferred。
 
 ### 1.2 当前 scope 与 side-table 的可复用事实
 
@@ -58,9 +60,8 @@
 
 当前仍有以下缺口：
 
-1. 普通局部 `var` 写入 `BlockScope` 仍待 Phase 4 完成；当前主链路还不能通过 `BlockScope.resolveValue(...)` 解析函数体内 local。
-2. `for` / `match` / lambda / block-local `const` 仍未接入 variable inventory，相关 subtree 仍需保持 deferred。
-3. declaration-order 可见性仍未有 frontend 专用消费层；后续 binder 不能直接把 `scope.resolveValue(...)` 当作最终 use-site 结论，需单独接入 `FrontendVisibleValueResolver`。
+1. `for` / `match` / lambda / block-local `const` 仍未接入 variable inventory，相关 subtree 仍需保持 deferred。
+2. declaration-order 可见性仍未有 frontend 专用消费层；后续 binder 不能直接把 `scope.resolveValue(...)` 当作最终 use-site 结论，需单独接入 `FrontendVisibleValueResolver`。
 
 ---
 
@@ -421,41 +422,41 @@ scope 选择之后再做两步判断：
 - [x] lambda 参数仍不可通过 scope 被解析到。
 - [x] `symbolBindings()` 仍为空。
 
-### Phase 4：普通局部 `var` 写入 `BlockScope`
+### Phase 4：普通局部 `var` 写入 `BlockScope`（已完成）
 
 #### 实施清单
 
-- 只处理 `VariableDeclaration.kind() == DeclarationKind.VAR`。
-- 只在 supported executable subtree 中处理：
-  - function / constructor body
-  - 普通嵌套 block
-  - `if` / `elif` / `else` body
-  - `while` body
-- 显式跳过：
-  - `ForStatement` 整个 subtree
-  - `MatchStatement` 整个 subtree
-  - `LambdaExpression` 整个 subtree
-  - `DeclarationKind.CONST`
-- 对每个 ordinary local：
-  - 从 `scopesByAst` 取目标 scope
-  - 若缺记录：按恢复合同 skip 当前 declaration
-  - 若 scope 不是 `BlockScope`：发 `sema.variable_binding` 并 skip
-  - 用共享 helper 解析显式类型
-  - 无显式类型时直接写 `Variant`，不看 initializer expression
-- same-callable no-shadowing：
-  - 在 `defineLocal(...)` 前显式检查 parameter / outer local / future capture 冲突
-  - 冲突时发 diagnostic 并 skip
-- duplicate local：
-  - 保留 `defineLocal(...)` 的底层保护
-  - 转成 `sema.variable_binding` error
+- [x] 只处理 `VariableDeclaration.kind() == DeclarationKind.VAR`。
+- [x] 只在 supported executable subtree 中处理：
+  - [x] function / constructor body
+  - [x] 普通嵌套 block
+  - [x] `if` / `elif` / `else` body
+  - [x] `while` body
+- [x] 显式跳过：
+  - [x] `ForStatement` 整个 subtree
+  - [x] `MatchStatement` 整个 subtree
+  - [x] `LambdaExpression` 整个 subtree
+  - [x] `DeclarationKind.CONST`
+- [x] 对每个 ordinary local：
+  - [x] 从 `scopesByAst` 取目标 scope
+  - [x] 若缺记录：按恢复合同 skip 当前 declaration
+  - [x] 若 scope 不是 supported `BlockScope`：发 `sema.variable_binding` 并 skip
+  - [x] 用共享 helper 解析显式类型
+  - [x] 无显式类型时直接写 `Variant`，不看 initializer expression
+- [x] same-callable no-shadowing：
+  - [x] 在 `defineLocal(...)` 前显式检查 parameter / outer local / future capture 冲突
+  - [x] 冲突时发 diagnostic 并 skip
+- [x] duplicate local：
+  - [x] 保留 `defineLocal(...)` 的底层保护
+  - [x] 转成 `sema.variable_binding` error
 
 #### 验收标准
 
-- 普通函数 / 构造器 body 中的 `var` 可通过所属 `BlockScope.resolveValue(...)` 命中。
-- 嵌套 block / `if` / `while` 中的 `var` 会进入各自独立 `BlockScope`。
-- class property 不会被误写成 local。
-- `for` / `match` / lambda / `const` 仍保持 deferred。
-- 未标注类型 local 默认为 `Variant`。
+- [x] 普通函数 / 构造器 body 中的 `var` 可通过所属 `BlockScope.resolveValue(...)` 命中。
+- [x] 嵌套 block / `if` / `while` 中的 `var` 会进入各自独立 `BlockScope`。
+- [x] class property 不会被误写成 local。
+- [x] `for` / `match` / lambda / `const` 仍保持 deferred。
+- [x] 未标注类型 local 默认为 `Variant`。
 
 ### Phase 5：测试收口与文档回填
 
@@ -467,16 +468,18 @@ scope 选择之后再做两步判断：
   - [x] duplicate parameter diagnostics
   - [x] default parameter warning + ignore
   - [x] skip lambda
-  - [ ] untyped local -> `Variant`
-  - [ ] typed local strict resolution
-  - [ ] duplicate local diagnostics
-  - [ ] skip `for` / `match` / `const`
+  - [x] untyped local -> `Variant`
+  - [x] typed local strict resolution
+  - [x] duplicate local diagnostics
+  - [x] local shadows parameter / outer local
+  - [x] skip `for` / `match` / `const`
 - [x] 新增恢复路径测试：
   - [x] bad inner class / skipped subtree 不影响同 module 其他合法 subtree
   - [x] declaration 缺 scope 记录时当前 phase 会 skip，不会中断整模块
   - [x] declaration target scope kind mismatch 时 diagnostic + skip
 - [x] 更新 `FrontendSemanticAnalyzerFrameworkTest`：
   - [x] 验证 variable phase 顺序与 diagnostics refresh
+  - [x] 验证默认主链路能观察到 local binding 生效
   - [x] 继续断言 `symbolBindings()` / `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 为空
 - [x] 调整 `FrontendScopeAnalyzerTest`：
   - [x] scope-analyzer-only 测试不再依赖默认全量 `FrontendSemanticAnalyzer`

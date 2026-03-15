@@ -7,6 +7,7 @@ import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
+import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.frontend.scope.CallableScope;
 import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
@@ -66,7 +67,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 
                 @rpc("authority")
                 func ping(value):
-                    pass
+                    var local := value
                 
                 @warning_ignore_start("unused_variable")
                 var tmp := 1
@@ -98,11 +99,16 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(result.scopesByAst().containsKey(pingFunction.body()));
         assertTrue(result.scopesByAst().containsKey(pingFunction.parameters().getFirst()));
         var pingScope = assertInstanceOf(CallableScope.class, result.scopesByAst().get(pingFunction));
+        var pingBodyScope = assertInstanceOf(BlockScope.class, result.scopesByAst().get(pingFunction.body()));
         var parameterBinding = pingScope.resolveValue("value");
         assertNotNull(parameterBinding);
         assertEquals(GdVariantType.VARIANT, parameterBinding.type());
         assertEquals(ScopeValueKind.PARAMETER, parameterBinding.kind());
         assertSame(pingFunction.parameters().getFirst(), parameterBinding.declaration());
+        var localBinding = pingBodyScope.resolveValue("local");
+        assertNotNull(localBinding);
+        assertEquals(GdVariantType.VARIANT, localBinding.type());
+        assertEquals(ScopeValueKind.LOCAL, localBinding.kind());
         assertTrue(result.symbolBindings().isEmpty());
         assertTrue(result.expressionTypes().isEmpty());
         assertTrue(result.resolvedMembers().isEmpty());

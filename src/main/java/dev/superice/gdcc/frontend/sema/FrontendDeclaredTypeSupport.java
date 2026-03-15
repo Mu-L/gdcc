@@ -16,7 +16,8 @@ import java.util.Objects;
 /// Shared strict declared-type resolution helper for frontend semantic phases.
 ///
 /// The contract is intentionally small:
-/// - missing or inferred declarations (`:=`) stay `Variant`
+/// - missing declarations stay `Variant`
+/// - inferred declarations (`:=`) temporarily stay `Variant` until expression typing exists
 /// - declared type lookup stays on the strict shared resolver
 /// - unresolved declared types emit one warning and fall back to `Variant`
 public final class FrontendDeclaredTypeSupport {
@@ -38,6 +39,8 @@ public final class FrontendDeclaredTypeSupport {
 
         var typeText = typeRef.sourceText().trim();
         // `gdparser` currently exposes inferred declarations as `:=` through `TypeRef.sourceText()`.
+        // The real language meaning is "infer from the RHS expression type", but that remains
+        // deferred until `FrontendExprTypeAnalyzer` publishes expression typing.
         if (typeText.isEmpty() || typeText.equals(":=")) {
             return GdVariantType.VARIANT;
         }

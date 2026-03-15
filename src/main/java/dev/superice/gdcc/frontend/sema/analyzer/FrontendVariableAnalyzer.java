@@ -2,16 +2,20 @@ package dev.superice.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
+import dev.superice.gdcc.frontend.scope.BlockScope;
+import dev.superice.gdcc.frontend.scope.BlockScopeKind;
 import dev.superice.gdcc.frontend.scope.CallableScope;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import dev.superice.gdcc.scope.Scope;
+import dev.superice.gdcc.scope.ScopeValue;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
+import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.ElifClause;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FrontendASTTraversalDirective;
@@ -23,6 +27,7 @@ import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -36,18 +41,20 @@ import java.util.Objects;
 /// The current phase contract is intentionally narrow and recovery-oriented:
 /// - require the skeleton and diagnostics boundaries published by earlier phases
 /// - require one top-level `ClassScope` per accepted source file
-/// - prefill only function/constructor parameters into `CallableScope`
-/// - keep ordinary locals, lambda inventory, `for`, and `match` deferred to later phases
+/// - prefill function/constructor parameters into `CallableScope`
+/// - prefill supported ordinary locals into `BlockScope`
+/// - keep lambda inventory, `for`, `match`, and block-local `const` deferred
 ///
-/// Parameter binding follows the rewritten plan in `frontend_variable_analyzer_plan.md`:
+/// Variable binding follows the rewritten plan in `frontend_variable_analyzer_plan.md`:
 /// - declaration-directed walking through accepted source/class containers only
 /// - skip-and-continue on missing scope records or skipped bad subtrees
-/// - `diagnostic + skip` only when a supported parameter targets a non-`CallableScope`
+/// - `diagnostic + skip` only when a supported declaration targets the wrong scope kind
+/// - reject same-callable local shadowing before mutating the published scope graph
 public class FrontendVariableAnalyzer {
     /// Runs variable analysis against the shared analysis carrier.
     ///
-    /// Phase 3 enriches the already-published lexical graph with callable parameter inventory while
-    /// keeping the public phase seam unchanged for later local-variable work.
+    /// The published scope graph is enriched in place so later phases can consume one stable
+    /// lexical structure plus declaration inventory without rebuilding scope objects.
     public void analyze(
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager
@@ -71,7 +78,7 @@ public class FrontendVariableAnalyzer {
         }
 
         for (var sourceClassRelation : moduleSkeleton.sourceClassRelations()) {
-            new AstWalkerParameterBinder(
+            new AstWalkerVariableBinder(
                     sourceClassRelation.unit().path(),
                     scopesByAst,
                     diagnosticManager
@@ -85,15 +92,28 @@ public class FrontendVariableAnalyzer {
     /// keeps explicit subtree control so deferred domains remain sealed:
     /// - only source/class statement lists and supported executable blocks are descended into
     /// - function/constructor parameters are bound at the callable boundary
+    /// - ordinary locals are bound only while the walker is inside a supported executable block
     /// - lambda / `for` / `match` subtrees are pruned explicitly
     /// - arbitrary expression children stay unvisited in this phase
-    private static final class AstWalkerParameterBinder implements ASTNodeHandler {
+    private static final class AstWalkerVariableBinder implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
+        /// Counts how many supported executable-block boundaries the walker is currently inside.
+        ///
+        /// The counter acts as a narrow capability flag rather than a generic nesting metric:
+        /// - `0` means the current traversal position is outside any block where local-variable
+        ///   binding is allowed, such as source/class declaration containers
+        /// - `> 0` means the walker is inside a function/constructor body or one of the currently
+        ///   supported nested executable blocks beneath it
+        ///
+        /// This deliberately keeps variable binding disabled for non-executable containers while
+        /// still allowing nested `Block` / `if` / `elif` / `while` nodes to participate once the
+        /// callable body has opened the first supported executable scope.
+        private int supportedExecutableBlockDepth;
 
-        private AstWalkerParameterBinder(
+        private AstWalkerVariableBinder(
                 @NotNull Path sourcePath,
                 @NotNull FrontendAstSideTable<Scope> scopesByAst,
                 @NotNull DiagnosticManager diagnosticManager
@@ -115,7 +135,7 @@ public class FrontendVariableAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleSourceFile(@NotNull SourceFile sourceFile) {
-            walkStatements(sourceFile.statements());
+            walkNonExecutableContainerStatements(sourceFile.statements());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -124,7 +144,7 @@ public class FrontendVariableAnalyzer {
             if (isNotPublished(classDeclaration)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
-            astWalker.walk(classDeclaration.body());
+            walkNonExecutableContainerStatements(classDeclaration.body().statements());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -146,7 +166,10 @@ public class FrontendVariableAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleBlock(@NotNull Block block) {
-            if (isNotPublished(block)) {
+            // A plain `Block` is only considered bindable when the current traversal has already
+            // entered a supported executable region. This prevents the walker from treating
+            // structurally block-shaped but non-executable containers as local-binding domains.
+            if (supportedExecutableBlockDepth <= 0 || isNotPublished(block)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             walkStatements(block.statements());
@@ -155,34 +178,54 @@ public class FrontendVariableAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleIfStatement(@NotNull IfStatement ifStatement) {
-            if (isNotPublished(ifStatement)) {
+            // `if` branches contribute local scopes only when they appear inside an already
+            // accepted executable block. At top level or class body they must stay inert.
+            if (supportedExecutableBlockDepth <= 0 || isNotPublished(ifStatement)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
-            astWalker.walk(ifStatement.body());
+            walkSupportedExecutableBlock(ifStatement.body());
             for (var elifClause : ifStatement.elifClauses()) {
                 astWalker.walk(elifClause);
             }
             if (ifStatement.elseBody() != null) {
-                astWalker.walk(ifStatement.elseBody());
+                walkSupportedExecutableBlock(ifStatement.elseBody());
             }
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleElifClause(@NotNull ElifClause elifClause) {
-            if (isNotPublished(elifClause)) {
+            // `elif` is gated by the same executable-context check as `if`, because its body is
+            // only meaningful as a nested runtime branch, never as a declaration container.
+            if (supportedExecutableBlockDepth <= 0 || isNotPublished(elifClause)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
-            astWalker.walk(elifClause.body());
+            walkSupportedExecutableBlock(elifClause.body());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleWhileStatement(@NotNull WhileStatement whileStatement) {
-            if (isNotPublished(whileStatement)) {
+            // Loop bodies are part of the MVP executable-block set, but only once the walker is
+            // already under a callable body. This keeps unsupported outer containers sealed.
+            if (supportedExecutableBlockDepth <= 0 || isNotPublished(whileStatement)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
-            astWalker.walk(whileStatement.body());
+            walkSupportedExecutableBlock(whileStatement.body());
+            return FrontendASTTraversalDirective.SKIP_CHILDREN;
+        }
+
+        @Override
+        public @NotNull FrontendASTTraversalDirective handleVariableDeclaration(
+                @NotNull VariableDeclaration variableDeclaration
+        ) {
+            // Ordinary locals are bound only inside supported executable blocks. Outside that
+            // region, `var` declarations belong to other domains such as class members and must
+            // not be reclassified as block locals by this phase.
+            if (supportedExecutableBlockDepth <= 0 || variableDeclaration.kind() != DeclarationKind.VAR) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            bindLocal(variableDeclaration);
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -212,12 +255,40 @@ public class FrontendVariableAnalyzer {
             for (var parameter : parameters) {
                 bindParameter(parameter);
             }
-            astWalker.walk(body);
+            walkSupportedExecutableBlock(body);
         }
 
         private void walkStatements(@NotNull List<Statement> statements) {
             for (var statement : statements) {
                 astWalker.walk(statement);
+            }
+        }
+
+        /// Top-level and class-body statement lists are only declaration containers.
+        /// Local-variable binding must stay disabled there so class properties are not reclassified
+        /// as block locals.
+        private void walkNonExecutableContainerStatements(@NotNull List<Statement> statements) {
+            var previousDepth = supportedExecutableBlockDepth;
+            supportedExecutableBlockDepth = 0;
+            try {
+                walkStatements(statements);
+            } finally {
+                supportedExecutableBlockDepth = previousDepth;
+            }
+        }
+
+        private void walkSupportedExecutableBlock(@Nullable Block block) {
+            if (isNotPublished(block)) {
+                return;
+            }
+            // Entering a supported executable block enables local binding for its statements and
+            // any further supported nested blocks beneath it. The `finally` restore is required so
+            // sibling top-level/class-body statements do not accidentally inherit executable state.
+            supportedExecutableBlockDepth++;
+            try {
+                astWalker.walk(block);
+            } finally {
+                supportedExecutableBlockDepth--;
             }
         }
 
@@ -258,6 +329,100 @@ public class FrontendVariableAnalyzer {
             callableScope.defineParameter(parameterName, parameterType, parameter);
         }
 
+        private void bindLocal(@NotNull VariableDeclaration variableDeclaration) {
+            var variableName = variableDeclaration.name().trim();
+            var targetScope = scopesByAst.get(variableDeclaration);
+            if (targetScope == null) {
+                return;
+            }
+            if (!(targetScope instanceof BlockScope blockScope)) {
+                reportBindingError(
+                        variableDeclaration,
+                        "Local variable '" + variableName + "' expected BlockScope, but found "
+                                + targetScope.getClass().getSimpleName()
+                );
+                return;
+            }
+
+            if (!isSupportedLocalBlock(blockScope.kind())) {
+                reportBindingError(
+                        variableDeclaration,
+                        "Local variable '" + variableName + "' expected supported executable BlockScope, but found "
+                                + blockScope.kind()
+                );
+                return;
+            }
+
+            var existingLocal = blockScope.resolveValueHere(variableName);
+            if (existingLocal != null) {
+                reportBindingError(variableDeclaration, switch (existingLocal.kind()) {
+                    case LOCAL -> "Duplicate local variable '" + variableName + "' in the same block";
+                    case CONSTANT -> "Local variable '" + variableName + "' conflicts with existing block constant '"
+                            + variableName + "'";
+                    default -> "Local variable '" + variableName + "' conflicts with existing block binding '"
+                            + variableName + "'";
+                });
+                return;
+            }
+
+            var sameCallableConflict = findSameCallableConflict(blockScope, variableName);
+            if (sameCallableConflict != null) {
+                reportBindingError(variableDeclaration, switch (sameCallableConflict.kind()) {
+                    case PARAMETER -> "Local variable '" + variableName + "' shadows parameter '" + variableName
+                            + "' in the same callable";
+                    case CAPTURE -> "Local variable '" + variableName + "' shadows capture '" + variableName
+                            + "' in the same callable";
+                    case LOCAL -> "Local variable '" + variableName + "' shadows outer local '" + variableName
+                            + "' in the same callable";
+                    case CONSTANT -> "Local variable '" + variableName + "' shadows outer constant '" + variableName
+                            + "' in the same callable";
+                    default -> "Local variable '" + variableName
+                            + "' conflicts with existing callable-local binding '" + variableName + "'";
+                });
+                return;
+            }
+
+            var variableType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
+                    variableDeclaration.type(),
+                    blockScope,
+                    sourcePath,
+                    diagnosticManager
+            );
+            try {
+                blockScope.defineLocal(variableName, variableType, variableDeclaration);
+            } catch (IllegalArgumentException exception) {
+                reportBindingError(
+                        variableDeclaration,
+                        "Duplicate local variable '" + variableName + "' in the same block"
+                );
+            }
+        }
+
+        /// Local shadowing is forbidden only inside the current callable boundary.
+        /// Class/global bindings are intentionally not part of this check because they remain legal
+        /// outer names for callable-local declarations.
+        private @Nullable ScopeValue findSameCallableConflict(
+                @NotNull BlockScope blockScope,
+                @NotNull String variableName
+        ) {
+            Scope currentScope = blockScope.getParentScope();
+            while (currentScope != null) {
+                if (currentScope instanceof BlockScope outerBlockScope) {
+                    var outerLocal = outerBlockScope.resolveValueHere(variableName);
+                    if (outerLocal != null) {
+                        return outerLocal;
+                    }
+                    currentScope = outerBlockScope.getParentScope();
+                    continue;
+                }
+                if (currentScope instanceof CallableScope callableScope) {
+                    return callableScope.resolveValueHere(variableName);
+                }
+                return null;
+            }
+            return null;
+        }
+
         private void warnIgnoredDefaultValue(@NotNull Parameter parameter) {
             if (parameter.defaultValue() == null) {
                 return;
@@ -273,19 +438,32 @@ public class FrontendVariableAnalyzer {
         }
 
         private void reportBindingError(
-                @NotNull Parameter parameter,
+                @NotNull Node declaration,
                 @NotNull String message
         ) {
             diagnosticManager.error(
                     "sema.variable_binding",
                     message,
                     sourcePath,
-                    FrontendRange.fromAstRange(parameter.range())
+                    FrontendRange.fromAstRange(declaration.range())
             );
         }
 
         private boolean isNotPublished(@Nullable Node astNode) {
             return astNode == null || !scopesByAst.containsKey(astNode);
+        }
+
+        private boolean isSupportedLocalBlock(@NotNull BlockScopeKind kind) {
+            return switch (kind) {
+                case FUNCTION_BODY,
+                     CONSTRUCTOR_BODY,
+                     BLOCK_STATEMENT,
+                     IF_BODY,
+                     ELIF_BODY,
+                     ELSE_BODY,
+                     WHILE_BODY -> true;
+                default -> false;
+            };
         }
     }
 }
