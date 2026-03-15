@@ -265,9 +265,10 @@ public final class ClassScope extends AbstractFrontendScope {
 
     /// Walks the inheritance chain for member lookup.
     ///
-    /// The walk stops when metadata becomes unavailable because the scope layer itself should remain
-    /// a lightweight metadata adapter. The caller can still diagnose missing superclass metadata in a
-    /// richer semantic analysis layer. Cycles, however, indicate malformed metadata and are rejected eagerly.
+    /// Missing superclass metadata is treated as malformed class metadata instead of a soft miss.
+    /// Once the current class layer is known, the inheritance walk must stay structurally sound;
+    /// otherwise unqualified member lookup could silently fall through to outer/global bindings.
+    /// Cycles are handled the same way for the same reason.
     private @NotNull List<ClassDef> walkInheritedClasses(
             @NotNull String memberName,
             @NotNull String memberKind
@@ -287,7 +288,11 @@ public final class ClassScope extends AbstractFrontendScope {
             // the inheritance-walk lookup key even for inner classes.
             var nextClass = classRegistry.getClassDef(new GdObjectType(nextSuperCanonicalName));
             if (nextClass == null) {
-                break;
+                throw new ScopeLookupException(
+                        "Missing class metadata for super class '" + nextSuperCanonicalName
+                                + "' while resolving " + memberKind + " '" + memberName
+                                + "' for class '" + currentClass.getName() + "'"
+                );
             }
             inheritedClasses.add(nextClass);
             nextSuperCanonicalName = nextClass.getSuperName();

@@ -105,7 +105,7 @@ public class ClassScopeResolutionTest {
     }
 
     @Test
-    void sourceStyledInnerSuperclassNamesStopInheritedLookup() {
+    void sourceStyledInnerSuperclassNamesFailFastForInheritedValueAndFunctionLookup() {
         var registry = FrontendScopeTestSupport.createRegistry();
         var parentPing = FrontendScopeTestSupport.createFunction("ping", GdStringType.STRING);
         var parentClass = FrontendScopeTestSupport.createClass(
@@ -125,8 +125,8 @@ public class ClassScopeResolutionTest {
 
         var classScope = new ClassScope(registry, registry, childClass);
 
-        assertNull(classScope.resolveValueHere("hp"));
-        assertEquals(0, classScope.resolveFunctionsHere("ping").size());
+        assertThrows(ScopeLookupException.class, () -> classScope.resolveValueHere("hp"));
+        assertThrows(ScopeLookupException.class, () -> classScope.resolveFunctionsHere("ping"));
         assertEquals(new GdObjectType("Outer$Shared"), registry.resolveTypeMeta("Outer$Shared").instanceType());
     }
 
@@ -191,13 +191,16 @@ public class ClassScopeResolutionTest {
     }
 
     @Test
-    void missingSuperclassMetadataStopsInheritedLookupButCycleIsRejected() {
+    void missingSuperclassMetadataFailsFastAndBlocksGlobalFallbackButCycleIsRejected() {
         var registry = FrontendScopeTestSupport.createRegistry();
         var missingSuperClass = FrontendScopeTestSupport.createClass("Hero", "MissingBase", java.util.List.of(), java.util.List.of());
         registry.addGdccClass(missingSuperClass);
         var missingSuperScope = new ClassScope(registry, registry, missingSuperClass);
-        assertNull(missingSuperScope.resolveValueHere("missing_property"));
-        assertEquals(0, missingSuperScope.resolveFunctionsHere("missing_function").size());
+
+        assertThrows(ScopeLookupException.class, () -> missingSuperScope.resolveValueHere("missing_property"));
+        assertThrows(ScopeLookupException.class, () -> missingSuperScope.resolveFunctionsHere("missing_function"));
+        assertThrows(ScopeLookupException.class, () -> missingSuperScope.resolveValue("GlobalPlayer"));
+        assertThrows(ScopeLookupException.class, () -> missingSuperScope.resolveFunctions("global_tick"));
 
         var cycleA = FrontendScopeTestSupport.createClass("CycleA", "CycleB", java.util.List.of(), java.util.List.of());
         var cycleB = FrontendScopeTestSupport.createClass("CycleB", "CycleA", java.util.List.of(), java.util.List.of());

@@ -118,13 +118,49 @@ class ClassScopeSignalResolutionTest {
     }
 
     @Test
-    void missingSuperclassMetadataKeepsLightweightPolicyButCyclesStillFail() {
+    void sourceStyledInnerSuperclassNamesFailFastForInheritedSignals() {
+        var registry = FrontendScopeTestSupport.createRegistry();
+        var parentSignal = FrontendScopeTestSupport.createSignal("changed", GdStringType.STRING);
+        var parentClass = FrontendScopeTestSupport.createClass(
+                "Outer$Shared",
+                "Object",
+                List.of(parentSignal),
+                List.of(),
+                List.of()
+        );
+        var childClass = FrontendScopeTestSupport.createClass(
+                "Outer$Leaf",
+                "Shared",
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        registry.addGdccClass(parentClass, "Shared");
+        registry.addGdccClass(childClass, "Leaf");
+
+        var classScope = new ClassScope(registry, registry, childClass);
+        assertThrows(
+                ScopeLookupException.class,
+                () -> classScope.resolveValueHere("changed", ResolveRestriction.instanceContext())
+        );
+    }
+
+    @Test
+    void missingSuperclassMetadataFailsFastForSignalsAndBlocksGlobalFallback() {
         var registry = FrontendScopeTestSupport.createRegistry();
         var missingSuperClass = FrontendScopeTestSupport.createClass("Hero", "MissingBase", List.of(), List.of(), List.of());
         registry.addGdccClass(missingSuperClass);
 
         var missingSuperScope = new ClassScope(registry, registry, missingSuperClass);
-        assertTrue(missingSuperScope.resolveValueHere("missing_signal", ResolveRestriction.instanceContext()).isNotFound());
+
+        assertThrows(
+                ScopeLookupException.class,
+                () -> missingSuperScope.resolveValueHere("missing_signal", ResolveRestriction.instanceContext())
+        );
+        assertThrows(
+                ScopeLookupException.class,
+                () -> missingSuperScope.resolveValue("GlobalPlayer", ResolveRestriction.instanceContext())
+        );
 
         var cycleA = FrontendScopeTestSupport.createClass("CycleA", "CycleB", List.of(), List.of(), List.of());
         var cycleB = FrontendScopeTestSupport.createClass("CycleB", "CycleA", List.of(), List.of(), List.of());
