@@ -1,10 +1,10 @@
-# FrontendVisibleValueResolver 行为与接入说明
+# FrontendVisibleValueResolver 行为、结果模型与接入计划
 
-> 本文档定义 `FrontendVisibleValueResolver` 的职责边界、输入输出、可见性规则、与 `FrontendVariableAnalyzer` / shared `Scope` 协议的分工，以及在“同一 callable 内禁止变量遮蔽”的前提下它仍然需要解决的问题。
+> 本文档定义 `FrontendVisibleValueResolver` 的职责边界、结果模型、有效域/无效域、可见性规则，以及它与 `FrontendVariableAnalyzer` / shared `Scope` 协议的分工。本文在重写后不再把 resolver 描述成一个只返回 `ScopeLookupResult<ScopeValue>` 的窄包装层，而是把它冻结为 frontend binder 专用的可见性事实源。
 
 ## 文档状态
 
-- 性质：frontend binder 辅助设计 / 行为事实源
+- 性质：frontend binder 辅助设计 / 行为事实源 / 实施计划
 - 更新时间：2026-03-15
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -15,6 +15,7 @@
   - `doc/module_impl/frontend/frontend_variable_analyzer_plan.md`
   - `doc/module_impl/frontend/scope_architecture_refactor_plan.md`
   - `doc/module_impl/frontend/scope_analyzer_implementation.md`
+  - `doc/module_impl/frontend/frontend_rules.md`
   - `doc/module_impl/frontend/diagnostic_manager.md`
   - `doc/analysis/frontend_semantic_analyzer_research_report.md`
 
@@ -36,8 +37,21 @@
 
 - 这个 declaration 从源码哪个位置开始可见
 - `var x = x` 右侧是否能看到正在声明的 `x`
+- “当前先命中 outer/class/global，下面会被 local declaration 遮蔽”的中间事实
 
-因此 frontend binder 在 use-site 上不能直接把 `scope.resolveValue(...)` 作为最终答案，而必须额外经过一个前端专用的“可见性修正层”。本文把这层行为冻结为 `FrontendVisibleValueResolver`。
+最后一类信息不是可有可无。Godot 当前 warning 体系里已经有两类直接依赖它的 warning：
+
+- `CONFUSABLE_LOCAL_DECLARATION`
+- `CONFUSABLE_LOCAL_USAGE`
+
+相关事实源至少包括：
+
+- `modules/gdscript/gdscript_warning.h`
+- `modules/gdscript/tests/scripts/analyzer/warnings/confusable_local_usage.gd`
+- `modules/gdscript/tests/scripts/analyzer/warnings/confusable_local_usage_initializer.gd`
+- `modules/gdscript/tests/scripts/analyzer/warnings/confusable_local_usage_loop.gd`
+
+这些测试说明，frontend 需要的不只是“最后解析到谁”，还需要“有哪些 declaration-order 过滤掉的中间命中”。因此本文明确不再推荐把 resolver 的外部合同收窄成单一 `ScopeLookupResult<ScopeValue>`。
 
 ---
 
@@ -45,7 +59,7 @@
 
 `FrontendVisibleValueResolver` 的目标只有一个：
 
-- 在不修改 shared `Scope` 协议的前提下，为 frontend use-site 解析补上 declaration-order 可见性语义。
+- 在不修改 shared `Scope` 协议的前提下，为 frontend use-site 解析补上 declaration-order 可见性语义，并保留后续 warning/diagnostic 所需的中间 provenance。
 
 它不负责：
 
@@ -61,7 +75,7 @@
 
 ## 3. 与 no-shadowing 规则的关系
 
-当前 frontend 还额外冻结一条约束：
+当前 frontend 额外冻结了一条约束：
 
 - 同一 `FunctionDeclaration` / `ConstructorDeclaration` 内，不允许变量遮蔽同一 callable 中更早可见的 parameter / local / future capture。
 
@@ -70,58 +84,140 @@
 因此 `FrontendVisibleValueResolver` 的前提是：
 
 - scope 中已经只保留“合法写入”的 parameter/local inventory
-- 它不需要再额外承担“识别非法 nested shadowing declaration”的职责
+- 它不需要再额外承担“识别非法 same-callable variable shadowing declaration”的职责
 
 但即便如此，它仍然有必要存在。原因是：
 
-- “禁止同一 callable 内变量遮蔽”只能消除一类冲突
+- no-shadowing 只能消除“同一 callable 的变量遮蔽”
 - 它不能解决“首次声明在 use-site 之后”的 declaration-order 问题
 - 它也不能解决 initializer 内自引用问题
+- 它更不能替 binder 保留“future local declaration 会在后面遮蔽当前绑定”这类 warning provenance
 
 ---
 
-## 4. 前置条件
+## 4. 有效域与明确无效域
 
-`FrontendVisibleValueResolver` 的调用依赖以下已发布事实：
+本节是本次重写后最关键的新增内容之一。
 
-1. `FrontendAnalysisData.scopesByAst()` 已经可读
-2. `FrontendVariableAnalyzer` 已经把合法 parameter/local declaration 写入 `CallableScope` / `BlockScope`
-3. parameter/local 对应的 `ScopeValue.declaration()` 分别指向：
-   - `Parameter`
-   - `VariableDeclaration`
-4. `useSite` 节点本身已经能通过 `scopesByAst` 找到当前 lexical scope
+### 4.1 当前有效域
 
-在当前 MVP 下，它不依赖：
+当前 resolver 只对以下 use-site 保证有效：
 
-- `symbolBindings()`
-- `expressionTypes()`
-- `resolvedMembers()`
-- `resolvedCalls()`
+- function body
+- constructor body
+- 普通嵌套 `Block`
+- `if` / `elif` / `else` body
+- `while` body
+
+更准确地说：
+
+- use-site 必须位于 variable inventory 已完成的 executable subtree 中
+- use-site 自身必须能通过 `FrontendAnalysisData.scopesByAst()` 找到当前 lexical scope
+- 若解析链最终回落到 `ClassScope` / `ClassRegistry`，这部分共享 lookup 仍然有效
+
+### 4.2 当前明确无效域
+
+以下位置当前不得把本 resolver 当作“正常可用的绑定器”调用；若调用，必须返回 frontend-only 的 `DEFERRED_UNSUPPORTED` 结果，而不是静默回退到 outer scope 并假装成功：
+
+- parameter default-value expression
+- lambda parameter default subtree
+- lambda body
+- `for` iterator declaration / iterable / body
+- `match` pattern / guard / section body
+- 任何前序 phase 已跳过、当前没有稳定 scope 记录的 subtree
+
+之所以要把这些位置写成显式无效域，是因为当前代码库已经有 scope graph，但还没有对应 binding inventory。单看 `scopesByAst` 会让这些位置“看起来像正常区域”，这是最危险的静默误判来源。
+
+### 4.3 `ClassScope` / `ClassRegistry` 不是无效域
+
+需要区分：
+
+- “callable-local declaration-order 不完整”属于无效域问题
+- `ClassScope` / `ClassRegistry` 的 shared lookup 仍是当前正式协议的一部分
+
+也就是说：
+
+- resolver 到达 `ClassScope` / `ClassRegistry` 后可以继续委托 shared `resolveValue(...)`
+- 但这一步不会帮当前 deferred subtree 自动变得“可用”
 
 ---
 
-## 5. 推荐接口形态
+## 5. 结果模型
 
-推荐保持一个 frontend-only 的窄接口，例如：
+### 5.1 不再使用窄 `ScopeLookupResult<ScopeValue>` 作为最终外部合同
+
+本文冻结的设计结论是：
+
+- `FrontendVisibleValueResolver` 的外部结果必须是 frontend-only richer result
+- 不能再直接把 `ScopeLookupResult<ScopeValue>` 暴露成最终合同
+
+原因：
+
+- `ScopeLookupResult` 只能表达最终 allowed / blocked / not found
+- 它无法表达 declaration-order 过滤掉的命中
+- 它无法表达当前处在 deferred/unsupported 域
+- 它无法给 future warning 生成保留 provenance
+
+### 5.2 推荐结果对象
+
+推荐结果对象至少承载以下信息：
 
 ```java
-public final class FrontendVisibleValueResolver {
-    public @NotNull ScopeLookupResult<ScopeValue> resolve(
-            @NotNull String name,
-            @NotNull Node useSite,
-            @NotNull ResolveRestriction restriction,
-            @NotNull FrontendAnalysisData analysisData
-    ) {
-        ...
-    }
+public record FrontendVisibleValueResolution(
+        @NotNull FrontendVisibleValueStatus status,
+        @Nullable ScopeValue visibleValue,
+        @Nullable FrontendFilteredValueHit filteredHit,
+        @Nullable FrontendVisibleValueDeferredReason deferredReason
+) {
 }
 ```
 
-这里刻意不把它塞进 shared `Scope` 协议，原因是：
+推荐 `status` 至少包括：
 
-- declaration-order 可见性只属于 frontend binder 语义
-- `ClassRegistry` / `ClassScope` / backend/shared resolver 不应承担这个概念
-- 避免把 shared scope protocol 与 frontend AST 位置语义重新耦合
+- `FOUND_ALLOWED`
+- `FOUND_BLOCKED`
+- `NOT_FOUND`
+- `DEFERRED_UNSUPPORTED`
+
+这里的语义是：
+
+- `FOUND_ALLOWED`：找到了当前真正可见的 binding
+- `FOUND_BLOCKED`：找到了当前层 binding，但它在 shared restriction 下非法；这不是 miss
+- `NOT_FOUND`：整个有效解析链都没有可见 binding，也没有 deferred/unsupported 域阻断
+- `DEFERRED_UNSUPPORTED`：当前 use-site 位于本文明确声明的无效域，resolver 拒绝给出“看似成功”的绑定结果
+
+### 5.3 `filteredHit` 的最小要求
+
+`filteredHit` 至少应保留：
+
+- 被 declaration-order 过滤掉的 `ScopeValue`
+- 命中的 lexical scope 层级
+- 过滤原因
+
+推荐原因枚举最少覆盖：
+
+- `DECLARATION_AFTER_USE_SITE`
+- `SELF_REFERENCE_IN_INITIALIZER`
+
+这里刻意只要求保留第一条 filtered hit，而不是所有 filtered hits，原因是：
+
+- 当前 MVP 已冻结 same-callable variable no-shadowing
+- 在 callable-local inventory 合法的前提下，第一条 filtered hit 已足够表达“future shadowing / deferred local”这类后续 warning provenance
+
+若后续真的出现需要完整 filtered chain 的消费者，再扩展为列表，而不是现在就把接口做重。
+
+### 5.4 `DEFERRED_UNSUPPORTED` 的原因枚举
+
+推荐至少区分：
+
+- `MISSING_SCOPE_OR_SKIPPED_SUBTREE`
+- `PARAMETER_DEFAULT_SUBTREE`
+- `LAMBDA_SUBTREE`
+- `FOR_SUBTREE`
+- `MATCH_SUBTREE`
+- `VARIABLE_INVENTORY_NOT_PUBLISHED`
+
+这一步的目标不是给用户直接出诊断，而是防止 binder 在无效域上把“当前不支持”误当成“正常 miss”。
 
 ---
 
@@ -129,40 +225,43 @@ public final class FrontendVisibleValueResolver {
 
 ### 6.1 总体规则
 
-`FrontendVisibleValueResolver.resolve(...)` 的行为应冻结为：
+`FrontendVisibleValueResolver.resolve(...)` 的行为冻结为：
 
-1. 从 `analysisData.scopesByAst().get(useSite)` 获取当前 lexical scope
-2. 对 `BlockScope` / `CallableScope` 使用“逐层 value lookup + declaration-order 过滤”
-3. 对 `ClassScope` / `ClassRegistry` 使用现有 shared `Scope` 语义，不再额外做 statement-order 过滤
-4. `FOUND_BLOCKED` 仍保留原有含义，不可被 declaration-order 过滤误降级成 `NOT_FOUND`
+1. 先判断当前 use-site 是否位于本文定义的有效域
+2. 若不在有效域，返回 `DEFERRED_UNSUPPORTED`
+3. 若在有效域，从 `analysisData.scopesByAst().get(useSite)` 获取当前 lexical scope
+4. 对 `BlockScope` / `CallableScope` 使用“逐层 value lookup + declaration-order 过滤”
+5. 对 `ClassScope` / `ClassRegistry` 使用现有 shared `Scope` 语义
+6. 委托到 shared `Scope` 时若抛 `ScopeLookupException`，原样传播，不得降级成 `NOT_FOUND`
 
 ### 6.2 当前层命中的处理
 
 对于 `BlockScope` / `CallableScope` 当前层命中的 `ScopeValue`：
 
-- 若结果是 `FOUND_BLOCKED`，直接返回
+- 若结果是 `FOUND_BLOCKED`：
+  - 直接返回 `FOUND_BLOCKED`
+  - 保留已有 `filteredHit` 信息，但不能把 blocked hit 降级成 `NOT_FOUND`
 - 若结果是 `FOUND_ALLOWED`：
-  - 若 declaration 当前已可见，则返回
-  - 若 declaration 当前尚不可见，则把它当作“当前层不贡献可用 binding”，继续向 lexical parent 查找
-- 若结果是 `NOT_FOUND`，继续向 lexical parent 查找
+  - 若 declaration 当前已可见，则返回 `FOUND_ALLOWED`
+  - 若 declaration 当前尚不可见：
+    - 记录 `filteredHit`
+    - 继续向 lexical parent 查找
+- 若结果是 `NOT_FOUND`：
+  - 继续向 lexical parent 查找
 
 ### 6.3 declaration 可见性规则
 
-当前 MVP 先冻结以下最小规则。
-
 #### parameter
 
-- `Parameter` 在 function / constructor executable body 内始终视为可见
-- 参数默认值表达式的“只允许看前面参数”规则当前仍 deferred，不在本文当前行为范围内
+- `Parameter` 只在 function / constructor executable body 内按“始终可见”处理
+- 参数默认值表达式不适用这条规则；那属于当前明确 deferred 的无效域
 
 #### ordinary local `var`
 
 - `VariableDeclaration` 只有在 declaration 结束位置早于 use-site 起始位置时才视为可见
-- 推荐比较基准：
-  - `declaration.range().endByte` / `endOffset`
-  - `useSite.range().startByte` / `startOffset`
-- 具体字段名以 `gdparser` 当前 `Range` API 为准，但语义必须保持为：
-  - declaration 整体结束后，binding 才开始可见
+- 推荐比较基准继续使用 `gdparser` 的 `Range`：
+  - declaration -> `range().endByte()`
+  - use-site -> `range().startByte()`
 
 #### class/global bindings
 
@@ -174,7 +273,8 @@ public final class FrontendVisibleValueResolver {
 对于：
 
 ```gdscript
-var x = x
+func ping():
+    var x = x
 ```
 
 右侧 `x` 不应视为已经可见的当前 local declaration。
@@ -182,51 +282,86 @@ var x = x
 因此本文冻结：
 
 - local declaration 的“开始可见点”不能取 declaration 的起始位置
-- 必须至少晚于 declaration/value 初始化表达式所在区间的 use-site
+- 必须至少晚于 declaration/value 初始化表达式内部的 use-site
 - 用 declaration 结束位置做可见性判断可以满足这一要求
 
 ---
 
-## 7. 典型工作流程
+## 7. 与 shared `Scope` 协议的边界
 
-推荐的内部工作流程如下：
+### 7.1 shared `Scope` 继续负责什么
 
-1. 读取 `useSite` 当前 scope
-2. 若当前 scope 为 `BlockScope` 或 `CallableScope`：
-   - 调用 `resolveValueHere(name, restriction)`
-   - 根据 declaration-order 判断当前命中是否可见
-   - 不可见则上移到 parent scope
-3. 若当前 scope 为 `ClassScope` 或 `ClassRegistry`：
-   - 直接委托现有 `resolveValue(name, restriction)` 语义
-4. 直到命中一个可见 binding，或整条 lexical chain 结束
+shared `Scope` 继续负责：
 
-对应的伪代码形态：
+- lexical inventory / namespace / restriction
+- `FOUND_ALLOWED` / `FOUND_BLOCKED` / `NOT_FOUND`
+- `ClassScope` / `ClassRegistry` 上的共享 lookup 事实
 
-```java
-resolve(name, useSite, restriction, analysisData):
-    scope = requireScope(useSite)
-    while (scope != null) {
-        if (scope instanceof BlockScope || scope instanceof CallableScope) {
-            var hit = scope.resolveValueHere(name, restriction)
-            if (hit.isBlocked()) {
-                return hit
-            }
-            if (hit.isAllowed() && isVisibleAtUseSite(hit.requireValue(), useSite)) {
-                return hit
-            }
-            scope = scope.getParentScope()
-            continue
-        }
-        return scope.resolveValue(name, restriction)
-    }
-    return ScopeLookupResult.notFound()
-```
+### 7.2 `FrontendVisibleValueResolver` 额外负责什么
+
+`FrontendVisibleValueResolver` 额外负责：
+
+- statement-order 可见性
+- initializer 自引用过滤
+- future local / filtered declaration provenance 保留
+- deferred/unsupported 域显式封口
+
+### 7.3 本文明确不建议的方向
+
+当前仍不建议：
+
+- 给 `Scope.resolveValue(...)` 增加 `index`
+- 给 `Scope.resolveValue(...)` 增加 frontend-specific `VisibilityFilter`
+
+原因不是这些方案一定做不成，而是它们会把 frontend use-site 位置语义推进 shared scope protocol。
 
 ---
 
-## 8. 场景示例
+## 8. 异常传播与恢复边界
 
-### 8.1 首次声明位于 use-site 之后
+### 8.1 `ClassScope` / `ClassRegistry` 委托可能抛异常
+
+当前代码库已经显式冻结了一个重要事实：
+
+- `ClassScope.resolveValue(...)` / `resolveFunctions(...)` 在 missing super metadata 和 inheritance cycle 上会直接抛 `ScopeLookupException`
+
+相关实现与测试至少包括：
+
+- `src/main/java/dev/superice/gdcc/frontend/scope/ClassScope.java`
+- `src/test/java/dev/superice/gdcc/frontend/scope/ClassScopeResolutionTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/scope/ClassScopeSignalResolutionTest.java`
+
+### 8.2 resolver 不得吞掉 shared-scope 异常
+
+这条行为必须显式写死：
+
+- 当 `FrontendVisibleValueResolver` 委托到 `ClassScope` / `ClassRegistry` 时，若 shared scope 抛出 `ScopeLookupException`，resolver 必须原样传播
+- 不得把它转换成 `NOT_FOUND`
+- 不得把它转换成 `DEFERRED_UNSUPPORTED`
+
+原因：
+
+- 这类异常不是普通 frontend 用户错误
+- 它们表示共享 metadata / inheritance walk 不变量已经损坏
+- 把它们降级成 miss 会破坏当前仓库已经存在的 fail-fast 合同
+
+### 8.3 缺少 use-site scope 记录时的处理
+
+若 `analysisData.scopesByAst().get(useSite)` 缺失：
+
+- 当前推荐返回 `DEFERRED_UNSUPPORTED(MISSING_SCOPE_OR_SKIPPED_SUBTREE)`
+- 不把它降级成 `NOT_FOUND`
+
+原因：
+
+- 在 frontend recovery 体系下，缺 scope 记录通常表示前序 phase 已跳过该 subtree
+- 这里最危险的行为不是“报错”，而是“静默当作没有名字”
+
+---
+
+## 9. 场景示例
+
+### 9.1 首次声明位于 use-site 之后
 
 源码：
 
@@ -236,49 +371,15 @@ func ping():
     var count = 1
 ```
 
-变量分析阶段结束后：
+推荐结果：
 
-- 当前 body `BlockScope` 已写入 `count`
+- `status = NOT_FOUND`
+- `visibleValue = null`
+- `filteredHit` 指向 block 内的 local `count`
 
-若 binder 直接调用裸 `scope.resolveValue("count")`：
+这样 binder 后续既能知道“现在没有可见 local”，也能知道“后面会出现 future local declaration”。
 
-- 会错误命中后面的 local `count`
-
-`FrontendVisibleValueResolver` 的正确行为：
-
-1. 在当前 `BlockScope.resolveValueHere("count")` 命中 local `count`
-2. 比较 declaration 结束位置与 `print(count)` 中标识符的起始位置
-3. 发现 declaration 尚未结束，因此当前 local 不可见
-4. 继续向 parent scope 查找
-5. 若 parent 没有同名 binding，则返回 `NOT_FOUND`
-
-最终效果：
-
-- `print(count)` 不会错误命中尚未生效的 local
-
-### 8.2 inner block 中的 use-site 不能看见 outer block 稍后声明的 local
-
-源码：
-
-```gdscript
-func ping():
-    if ready:
-        print(flag)
-    var flag = true
-```
-
-这里 `flag` 是 outer block 中的首次声明，不属于“非法 shadowing”，但仍然不能在 `if` body 的 use-site 上提前可见。
-
-`FrontendVisibleValueResolver` 的正确行为：
-
-1. 在 `if` body 的 `BlockScope` 中查不到 `flag`
-2. 回退到 outer function body `BlockScope`
-3. 命中 local `flag`
-4. 发现它的 declaration 仍晚于 `print(flag)` 的 use-site
-5. 将这次命中视为“当前仍不可见”，继续向上查
-6. 若更外层也无同名 binding，则返回 `NOT_FOUND`
-
-### 8.3 initializer 内不能看到正在声明的 local
+### 9.2 initializer 内不能看到正在声明的 local
 
 源码：
 
@@ -287,63 +388,94 @@ func ping():
     var node = node
 ```
 
-若直接按 inventory 查询：
+推荐结果：
 
-- 右侧 `node` 会错误命中当前 declaration
+- 右侧 `node` 不命中当前 declaration
+- `filteredHit.reason = SELF_REFERENCE_IN_INITIALIZER`
+- 若外层没有同名 binding，则 `status = NOT_FOUND`
 
-`FrontendVisibleValueResolver` 的正确行为：
-
-1. 当前 `BlockScope` 命中 local `node`
-2. 但右侧 use-site 仍位于 declaration 内部
-3. declaration-order 判定为“尚不可见”
-4. 继续向 parent 查找
-5. 若外层无同名 binding，则返回 `NOT_FOUND`
-
-### 8.4 与 no-shadowing 规则的分工
+### 9.3 future local 会在后面遮蔽 class property
 
 源码：
 
 ```gdscript
-func ping(value):
-    if ready:
-        var value = 1
+var a = 1
+
+func test():
+    print(a)
+    var a = 2
 ```
 
-这里的问题不应由 `FrontendVisibleValueResolver` 处理，而应在 `FrontendVariableAnalyzer` 阶段就被诊断并跳过写入。
+推荐结果：
 
-因此本文冻结的分工是：
+- `status = FOUND_ALLOWED`
+- `visibleValue` 指向 class property `a`
+- `filteredHit` 指向后面的 local `a`
 
-- `FrontendVariableAnalyzer`：负责发现“同一 callable 内非法 shadowing”
-- `FrontendVisibleValueResolver`：只负责在“合法 declaration inventory”之上补 statement-order 可见性
+这正是后续还原 Godot `CONFUSABLE_LOCAL_USAGE` 一类 warning 所需要的最小 provenance。
+
+### 9.4 parameter default subtree 当前必须封口
+
+源码：
+
+```gdscript
+func ping(value, alias = value):
+    return alias
+```
+
+对于 `alias = value` 中的 `value`：
+
+- 当前不应套用 executable body 的参数可见性规则
+- resolver 推荐直接返回 `DEFERRED_UNSUPPORTED(PARAMETER_DEFAULT_SUBTREE)`
+
+### 9.5 `for` / `match` / lambda subtree 当前不得静默成功
+
+源码：
+
+```gdscript
+func ping(values):
+    for item in values:
+        print(item)
+```
+
+对 loop body 中 `item` 的 use-site：
+
+- 当前不能靠“outer lookup miss”或“假装没找到”给出正常结果
+- 应返回 `DEFERRED_UNSUPPORTED(FOR_SUBTREE)`
+
+`match` / lambda 同理。
 
 ---
 
-## 9. 与 shared `Scope` 协议的边界
-
-本文明确不建议：
-
-- 给 `Scope.resolveValue(...)` 增加 `index`
-- 给 `Scope.resolveValue(...)` 增加 frontend-specific `VisibilityFilter`
-
-原因不是这些方案完全不可实现，而是它们会把 frontend use-site 可见性语义推进 shared scope protocol。
-
-当前建议继续冻结：
-
-- shared `Scope` 负责 lexical inventory / namespace / restriction
-- frontend binder 通过 `FrontendVisibleValueResolver` 叠加 declaration-order 可见性
-
----
-
-## 10. 当前实现前建议的测试锚点
+## 10. 建议测试锚点
 
 若后续为 `FrontendVisibleValueResolver` 新增单测，建议至少覆盖：
 
-- 首次 local 声明在 use-site 之后 -> 不可见
-- 首次 outer-block local 声明在 inner use-site 之后 -> 不可见
-- `var x = x` -> 右侧不命中当前 declaration
-- parameter 在 callable body 内始终可见
+### 10.1 基础可见性
+
+- 首次 local 声明在 use-site 之后 -> `NOT_FOUND + filteredHit`
+- 首次 outer-block local 声明在 inner use-site 之后 -> `NOT_FOUND + filteredHit`
+- `var x = x` -> 右侧不命中当前 declaration，且 `filteredHit.reason = SELF_REFERENCE_IN_INITIALIZER`
+- parameter 在 executable callable body 内始终可见
+
+### 10.2 provenance 保留
+
+- class property 先可见、后面 local 同名 -> `FOUND_ALLOWED + filteredHit`
+- 若未来需要 class/global warning parity，可在此基础上扩展 `CONFUSABLE_LOCAL_USAGE` 类诊断消费测试
+
+### 10.3 deferred/unsupported 边界
+
+- parameter default subtree -> `DEFERRED_UNSUPPORTED`
+- lambda subtree -> `DEFERRED_UNSUPPORTED`
+- `for` subtree -> `DEFERRED_UNSUPPORTED`
+- `match` subtree -> `DEFERRED_UNSUPPORTED`
+- skipped subtree / missing use-site scope -> `DEFERRED_UNSUPPORTED`
+
+### 10.4 shared-scope 异常传播
+
+- missing-super exception 传播
+- inheritance-cycle exception 传播
 - `FOUND_BLOCKED` 的 class-member 命中不会被 resolver 错误降级成 `NOT_FOUND`
-- 非 callable-local binding 继续遵循现有 `ClassScope` / `ClassRegistry` 行为
 
 ---
 
@@ -352,6 +484,8 @@ func ping(value):
 若后续实现本文档对应行为，预计会触达：
 
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendVisibleValueResolver.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendVisibleValueResolution.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendFilteredValueHit.java`
 - `src/test/java/dev/superice/gdcc/frontend/sema/FrontendVisibleValueResolverTest.java`
 - 视 binder 接线位置，可能还需要：
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
