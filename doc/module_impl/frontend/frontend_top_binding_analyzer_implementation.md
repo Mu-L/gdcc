@@ -47,6 +47,12 @@
 - supported executable subtree 中的 `SelfExpression`
 - supported executable subtree 中的 `LiteralExpression`
 
+这里需要额外冻结一条当前实现事实：
+
+- `symbolBindings()` 当前只表达“这个 use-site 绑定到了哪一类符号”，不表达 read / write / call 等 usage 语义
+- 因此 assignment 左值链头、普通读取 use-site、bare callee 等位置，当前都可能进入同一张 `symbolBindings()`
+- 后续若要区分读写调用，必须扩展 `FrontendBinding` 的模型，而不是靠当前 binding kind 反推 usage
+
 当前 MVP 明确不发布：
 
 - `resolvedMembers()`
@@ -64,6 +70,7 @@
 - 判断该 use-site 是读取、写入还是调用
 - 判断链式访问/调用后续 segment 的类别
 - 判断 `foo()` 的重载、实参匹配与最终调用目标
+- 记录 assignment 左值、bare callee、value use-site 之间更细的 usage 差异
 
 ### 1.2 当前 MVP 冻结采用的外部语义前提
 
@@ -74,6 +81,10 @@
 - `foo()` 这类 bare callee 的名称解析必须走 function namespace，即 `Scope.resolveFunctions(...)`
 - GDScript 语义保证 `foo()` 里的 `foo` 不会和 callable value 混淆；callable value 调用必须写成 `.call(...)`
 - `ClassName.build()`、`ClassName.VALUE` 这类 qualified static access / call chain 中，最外层 `ClassName` 允许绑定为 `TYPE_META`
+- 若 qualified static access / call chain 的最外层名字同时可见为 ordinary value 与受支持 `TYPE_META`
+  - 当前必须优先绑定 ordinary value
+  - 只有 value `NOT_FOUND` 时才允许回退到 `TYPE_META`
+  - 若 winning value 是 local / parameter / capture，且同时存在受支持 `TYPE_META`，则额外发 shadowing diagnostic
 - `TYPE_META` 顶层绑定在 MVP 阶段只支持：
   - 已注册到 `ClassRegistry` 的 class-like 类型
   - 当前 lexical scope 可见的 inner class
@@ -91,7 +102,7 @@
 这些前提直接约束了 binder 的设计：
 
 - bare callee 不能误走 value namespace
-- qualified static access / call chain 的最外层 segment 需要允许走 type-meta namespace
+- qualified static access / call chain 的最外层 segment 需要允许走 type-meta namespace，但不能压过当前可见的 ordinary value
 - 显式 receiver 的尾部成员不能误写入 `symbolBindings()` / `resolvedMembers()`
 - 容器索引读取中的 index expression 必须继续递归分析
 - ordinary local initializer 内的标识符解析必须复用 `FrontendVisibleValueResolver` 的既有合同，而不是额外封口
@@ -335,7 +346,15 @@
 
 对 qualified static access / call chain 最外层的 `IdentifierExpression`：
 
-- 必须优先尝试 `Scope.resolveTypeMeta(name, restriction)`
+- 必须先按 ordinary value use-site 调用 `FrontendVisibleValueResolver`
+- 若结果为 `DEFERRED_UNSUPPORTED`
+  - 直接发 deferred / unsupported diagnostic
+  - 不得继续尝试 `TYPE_META`
+- 若结果为 `FOUND_ALLOWED` 或 `FOUND_BLOCKED`
+  - ordinary value binding 直接成为最终发布结果
+  - 若同名受支持 `TYPE_META` 也可见，且 winning value 属于 local / parameter / capture
+    - 额外发 `sema.binding` shadowing diagnostic
+- 只有 value 结果为 `NOT_FOUND` 时，才允许尝试 `Scope.resolveTypeMeta(name, restriction)`
 - 当前只接受以下 `TYPE_META` 来源：
   - `ClassRegistry` 已注册的 class-like 类型
   - 当前 lexical scope 可见的 inner class
@@ -370,6 +389,7 @@
 当前 `TYPE_META` 的消费边界冻结为：
 
 - value position 不应顺手消费 type namespace
+- qualified static access / call chain 最外层 segment 即使允许尝试 `TYPE_META`，也必须先让 ordinary value namespace 决胜
 - 一般 type position 不属于 `FrontendTopBindingAnalyzer` 的 MVP 支持面
 - 允许在 qualified static access / call chain 顶层 segment 上发布 `TYPE_META`
 - 但尾部 member / call step 继续留给后续 phase
@@ -515,6 +535,8 @@
 - 按 deferred subtree root 发 warning
 - 同一棵 deferred subtree 当前只发 1 条 `sema.unsupported_binding_subtree`
 - 不再对 deferred subtree 内每个 use-site 逐个降级成 `NOT_FOUND` 或逐个发 warning
+- 对已发布 callable body / executable block 的缺-scope 恢复，同样必须按“被跳过 subtree 的根节点”发 1 条 warning
+- 若只是单个 use-site AST 节点自身缺少 scope，且无法识别更大的恢复根，则允许把该 use-site 节点视为最小 skipped root
 
 ### 5.2 blocked-hit 处理
 
@@ -629,14 +651,18 @@ ordinary local initializer 当前不属于 deferred 域。
 2. 处理 `LiteralExpression`
 3. 处理 qualified static access / call chain 最外层的 `IdentifierExpression`
 4. 只在 supported executable subtree 中为 value-identifier 调用 `FrontendVisibleValueResolver`
-5. 对 top-level `TYPE_META` candidate 调用 `Scope.resolveTypeMeta(name, restriction)`
-6. 只接受当前 MVP 支持的 type-meta 来源：
+5. 对 top-level `TYPE_META` candidate 先执行 ordinary value resolution
+6. 仅当 value resolution 返回 `NOT_FOUND` 时，才调用 `Scope.resolveTypeMeta(name, restriction)`
+7. 只接受当前 MVP 支持的 type-meta 来源：
   - `ClassRegistry` 已注册的 class-like 类型
   - 当前 lexical scope 可见的 inner class
-7. 传入正确的 `ResolveRestriction`：
+8. 若 winning value 属于 local / parameter / capture，且同名受支持 `TYPE_META` 同时可见
+  - 仍优先发布 ordinary value binding
+  - 同时发 `sema.binding` shadowing diagnostic
+9. 传入正确的 `ResolveRestriction`：
   - static function body -> `ResolveRestriction.staticContext()`
   - constructor body / non-static function body -> `ResolveRestriction.instanceContext()`
-8. 根据 `FrontendVisibleValueResolution` 结果分流：
+10. 根据 `FrontendVisibleValueResolution` 结果分流：
   - `FOUND_ALLOWED`
     - 映射到对应的 `FrontendBindingKind`
     - 写入 `symbolBindings()`
@@ -649,12 +675,12 @@ ordinary local initializer 当前不属于 deferred 域。
   - `DEFERRED_UNSUPPORTED`
     - 不写入 binding
     - 由 deferred reporter 发 `sema.unsupported_binding_subtree`
-9. 对 `LiteralExpression`
+11. 对 `LiteralExpression`
   - 直接写入 `LITERAL`
-10. 对 top-level `TYPE_META`
+12. 对 top-level `TYPE_META`
   - 命中支持来源时写入 `TYPE_META`
   - 命中不支持来源时 fail-closed，并发 diagnostic
-11. 处理 `SelfExpression`
+13. 处理 `SelfExpression`
   - 直接发布 `SELF`
   - static context 同时发 `sema.binding` error
 
@@ -665,6 +691,8 @@ ordinary local initializer 当前不属于 deferred 域。
 - [x] `ClassName.build()` / `Inner.build()` 这类链头 `ClassName` / `Inner` 可发布 `TYPE_META`
 - [x] top-level `TYPE_META` 只接受 registry-registered class-like 类型与 lexical 可见 inner class
 - [x] preload alias / const alias / local enum 等其他 context-defined type-meta 不会被误发布为 `TYPE_META`
+- [x] 显式 receiver 链头同名 ordinary value 与受支持 `TYPE_META` 并存时，ordinary value 优先
+- [x] local / parameter / capture 与可见 `TYPE_META` 重名时会额外发 shadowing diagnostic
 - [x] ordinary local initializer 内的 identifier 可正常绑定
 - [x] `arr[i + 1]` 这类索引表达式中的 `i` 与 `1` 可正常进入 binding
 - [x] `var x = x` 的 initializer 自引用行为与 resolver 合同一致
@@ -721,7 +749,7 @@ ordinary local initializer 当前不属于 deferred 域。
   - `get_player().hp` 只绑定 `get_player`
   - `player.move(i + 1)` 绑定 `player`、`i` 与 `1`，但不绑定 `move`
   - `arr[i + 1]` 绑定 `arr`、`i` 与 `1`，但不绑定 subscript operation
-3. 对 deferred subtree 统一按 root-level 发 `sema.unsupported_binding_subtree`
+3. 对 deferred subtree 与 published-scope 缺失 subtree 统一按 root-level 发 `sema.unsupported_binding_subtree`
 4. 补齐 framework 与 analyzer 测试
 
 **推荐测试集合**：
@@ -753,7 +781,7 @@ ordinary local initializer 当前不属于 deferred 域。
 - [x] `player.hp` / `self.hp` / `obj.foo()` 不会错误为尾部成员写 binding
 - [x] `player.move(i + 1)`、`arr[i + 1]` 这类 step/index argument 会继续进入 binding，但 operation 本身不会写 binding
 - [x] array / dictionary / unary / binary / conditional / await / cast / type-test / assignment 等复杂表达式会继续递归绑定其受支持子表达式
-- [x] deferred subtree 当前统一按 root-level warning 发布 `sema.unsupported_binding_subtree`
+- [x] deferred subtree 与 published-scope 缺失 subtree 当前统一按 root-level warning 发布 `sema.unsupported_binding_subtree`
 - [x] 现有 scope / resolver 行为没有被 binder 回写破坏
 
 ---
@@ -768,6 +796,7 @@ ordinary local initializer 当前不属于 deferred 域。
 - ordinary local initializer subtree 中的 identifier 已正式纳入支持面
 - bare callee 的 global utility function / bare method / bare static function 已正式发布到 `symbolBindings()`
 - static context 下的 `self`、instance property、instance signal、instance method 都能稳定出 frontend diagnostic
+- `symbolBindings()` 当前已明确为 usage-agnostic 发布口径，assignment 左值链头等 use-site 也会进入该表
 - `a.xxx` / `a.foo()` 只绑定前导子表达式，不再误写尾部成员
 - `ClassName.build()` / `Inner.build()` 这类链头 type-meta 可只发布最外层 `TYPE_META`
 - `a[index]` 会绑定 `a` 与 index argument expression，但不会为 subscript operation 本身写 binding
@@ -784,8 +813,9 @@ ordinary local initializer 当前不属于 deferred 域。
 3. qualified static access / `TYPE_META` 的尾部消费与更完整来源接线
 4. parameter default 的正式接线
 5. `for` iterator / `match` pattern / lambda capture
-6. `expressionTypes()` 与 assignable analyzer
-7. `.call(...)` / `.emit(...)` / `await` 等更完整 body semantics
+6. 扩展 `FrontendBinding`，为 read / write / call 等 usage 语义提供正式建模
+7. `expressionTypes()` 与 assignable analyzer
+8. `.call(...)` / `.emit(...)` / `await` 等更完整 body semantics
 
 这里故意不把 ordinary local initializer 再列为“未来补做项”，因为它已经属于当前 MVP 支持面。
 
@@ -873,6 +903,20 @@ func ping():
 - `build` 当前不绑定
 
 ```gdscript
+class Inner:
+    static func build():
+        pass
+
+func ping(seed):
+    var Inner = seed
+    Inner.build()
+```
+
+- initializer 里的 `seed` 绑定为 `PARAMETER`
+- `Inner.build()` 链头的 `Inner` 绑定为 `LOCAL_VAR`
+- 由于当前 local 值遮蔽了可见 inner class type-meta，会额外发 `sema.binding` shadowing diagnostic
+
+```gdscript
 class Outer:
     class Inner:
         static func build():
@@ -912,6 +956,15 @@ func ping(arr, i):
 - `i` 绑定为 `PARAMETER`
 - `1` 绑定为 `LITERAL`
 - subscript operation 本身当前不绑定
+
+```gdscript
+func ping(value, matrix, row, col):
+    value = matrix[row][col + 1]
+```
+
+- `value`、`matrix`、`row`、`col` 都会进入 `symbolBindings()`
+- 当前不会区分 `value` 是写入左值、`matrix` / `row` / `col` 是读取 use-site
+- 这属于当前 `FrontendBinding` usage-agnostic 的已知限制，而不是 bug
 
 ```gdscript
 func ping():

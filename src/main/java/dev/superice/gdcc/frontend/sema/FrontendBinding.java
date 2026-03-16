@@ -7,8 +7,9 @@ import java.util.Objects;
 
 /// One resolved frontend binding fact attached to an AST use site.
 ///
-/// The current framework only needs a stable container shape. Later binder phases can enrich
-/// the declaration site and other metadata without changing the side-table topology.
+/// The current framework only stores symbol category plus declaration provenance. Usage semantics
+/// such as read/write/call are intentionally deferred, so assignment left-hand sites and ordinary
+/// reads currently share the same binding container shape.
 public record FrontendBinding(
         @NotNull String symbolName,
         @NotNull FrontendBindingKind kind,

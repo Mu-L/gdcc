@@ -10,7 +10,9 @@ import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDeferredBoun
 import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDeferredReason;
 import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDomain;
 import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueResolveRequest;
+import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueResolution;
 import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueResolver;
+import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueStatus;
 import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ResolveRestriction;
@@ -21,6 +23,7 @@ import dev.superice.gdcc.scope.ScopeValue;
 import dev.superice.gdcc.scope.ScopeValueKind;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
+import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -53,6 +56,7 @@ import dev.superice.gdparser.frontend.ast.WhileStatement;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.IdentityHashMap;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
@@ -126,6 +130,7 @@ public class FrontendTopBindingAnalyzer {
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull FrontendVisibleValueResolver visibleValueResolver;
         private final @NotNull ASTWalker astWalker;
+        private final @NotNull IdentityHashMap<Node, Boolean> reportedUnsupportedRoots = new IdentityHashMap<>();
         private int supportedExecutableBlockDepth;
         private @NotNull ResolveRestriction currentRestriction = ResolveRestriction.unrestricted();
         private boolean currentStaticContext;
@@ -166,6 +171,7 @@ public class FrontendTopBindingAnalyzer {
         @Override
         public @NotNull FrontendASTTraversalDirective handleClassDeclaration(@NotNull ClassDeclaration classDeclaration) {
             if (isNotPublished(classDeclaration)) {
+                reportSkippedSubtree(classDeclaration);
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             walkNonExecutableContainerStatements(classDeclaration.body().statements());
@@ -176,6 +182,10 @@ public class FrontendTopBindingAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleFunctionDeclaration(
                 @NotNull FunctionDeclaration functionDeclaration
         ) {
+            if (isNotPublished(functionDeclaration)) {
+                reportSkippedSubtree(functionDeclaration);
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             reportDeferredParameterDefaults(functionDeclaration.parameters());
             walkCallableBody(
                     functionDeclaration,
@@ -192,6 +202,10 @@ public class FrontendTopBindingAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleConstructorDeclaration(
                 @NotNull ConstructorDeclaration constructorDeclaration
         ) {
+            if (isNotPublished(constructorDeclaration)) {
+                reportSkippedSubtree(constructorDeclaration);
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             reportDeferredParameterDefaults(constructorDeclaration.parameters());
             walkCallableBody(
                     constructorDeclaration,
@@ -204,7 +218,11 @@ public class FrontendTopBindingAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleBlock(@NotNull Block block) {
-            if (supportedExecutableBlockDepth <= 0 || isNotPublished(block)) {
+            if (supportedExecutableBlockDepth <= 0) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            if (isNotPublished(block)) {
+                reportSkippedSubtree(block);
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             walkStatements(block.statements());
@@ -263,7 +281,11 @@ public class FrontendTopBindingAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleIfStatement(@NotNull IfStatement ifStatement) {
-            if (supportedExecutableBlockDepth <= 0 || isNotPublished(ifStatement)) {
+            if (supportedExecutableBlockDepth <= 0) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            if (isNotPublished(ifStatement)) {
+                reportSkippedSubtree(ifStatement);
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             walkValueExpression(ifStatement.condition());
@@ -279,7 +301,11 @@ public class FrontendTopBindingAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleElifClause(@NotNull ElifClause elifClause) {
-            if (supportedExecutableBlockDepth <= 0 || isNotPublished(elifClause)) {
+            if (supportedExecutableBlockDepth <= 0) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            if (isNotPublished(elifClause)) {
+                reportSkippedSubtree(elifClause);
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             walkValueExpression(elifClause.condition());
@@ -289,7 +315,11 @@ public class FrontendTopBindingAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleWhileStatement(@NotNull WhileStatement whileStatement) {
-            if (supportedExecutableBlockDepth <= 0 || isNotPublished(whileStatement)) {
+            if (supportedExecutableBlockDepth <= 0) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            if (isNotPublished(whileStatement)) {
+                reportSkippedSubtree(whileStatement);
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             walkValueExpression(whileStatement.condition());
@@ -302,13 +332,21 @@ public class FrontendTopBindingAnalyzer {
             if (supportedExecutableBlockDepth <= 0) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
+            if (isNotPublished(forStatement)) {
+                reportSkippedSubtree(forStatement);
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             reportDeferredSubtree(forStatement, FrontendVisibleValueDomain.FOR_SUBTREE);
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleMatchStatement(@NotNull MatchStatement matchStatement) {
-            if (supportedExecutableBlockDepth <= 0 || isNotPublished(matchStatement)) {
+            if (supportedExecutableBlockDepth <= 0) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            if (isNotPublished(matchStatement)) {
+                reportSkippedSubtree(matchStatement);
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             walkValueExpression(matchStatement.value());
@@ -330,6 +368,11 @@ public class FrontendTopBindingAnalyzer {
                 boolean staticContext
         ) {
             if (isNotPublished(callableOwner)) {
+                reportSkippedSubtree(callableOwner);
+                return;
+            }
+            if (isNotPublished(body)) {
+                reportSkippedSubtree(body);
                 return;
             }
             var previousRestriction = currentRestriction;
@@ -362,6 +405,7 @@ public class FrontendTopBindingAnalyzer {
 
         private void walkSupportedExecutableBlock(@Nullable Block block) {
             if (isNotPublished(block)) {
+                reportSkippedSubtree(block);
                 return;
             }
             supportedExecutableBlockDepth++;
@@ -387,6 +431,7 @@ public class FrontendTopBindingAnalyzer {
                 case IdentifierExpression identifierExpression -> visitIdentifier(identifierExpression, position);
                 case SelfExpression selfExpression -> visitSelf(selfExpression);
                 case LiteralExpression literalExpression -> visitLiteral(literalExpression);
+                case AssignmentExpression assignmentExpression -> walkAssignmentExpression(assignmentExpression);
                 case AttributeExpression attributeExpression -> walkAttributeExpression(attributeExpression);
                 case SubscriptExpression subscriptExpression -> walkSubscriptExpression(subscriptExpression);
                 case CallExpression callExpression -> walkCallExpression(callExpression);
@@ -396,6 +441,14 @@ public class FrontendTopBindingAnalyzer {
                 );
                 default -> walkGenericExpressionChildren(expression);
             }
+        }
+
+        /// The current `FrontendBinding` model is still usage-agnostic, so assignment left-hand
+        /// sides are classified into `symbolBindings()` the same way as reads. A later extension
+        /// will need explicit usage metadata before the analyzer can distinguish reads/writes/calls.
+        private void walkAssignmentExpression(@NotNull AssignmentExpression assignmentExpression) {
+            walkValueExpression(assignmentExpression.left());
+            walkValueExpression(assignmentExpression.right());
         }
 
         private void walkAttributeExpression(@NotNull AttributeExpression attributeExpression) {
@@ -505,12 +558,24 @@ public class FrontendTopBindingAnalyzer {
         }
 
         private void bindValueIdentifier(@NotNull IdentifierExpression identifierExpression) {
-            var resolution = visibleValueResolver.resolve(new FrontendVisibleValueResolveRequest(
+            publishValueResolution(identifierExpression, resolveVisibleValue(identifierExpression));
+        }
+
+        private @NotNull FrontendVisibleValueResolution resolveVisibleValue(
+                @NotNull IdentifierExpression identifierExpression
+        ) {
+            return visibleValueResolver.resolve(new FrontendVisibleValueResolveRequest(
                     identifierExpression.name(),
                     identifierExpression,
                     currentRestriction,
                     FrontendVisibleValueDomain.EXECUTABLE_BODY
             ));
+        }
+
+        private void publishValueResolution(
+                @NotNull IdentifierExpression identifierExpression,
+                @NotNull FrontendVisibleValueResolution resolution
+        ) {
             switch (resolution.status()) {
                 case FOUND_ALLOWED -> publishScopeValueBinding(identifierExpression, resolution.visibleValue());
                 case FOUND_BLOCKED -> {
@@ -542,7 +607,24 @@ public class FrontendTopBindingAnalyzer {
                 return;
             }
 
+            var valueResolution = resolveVisibleValue(identifierExpression);
+            if (valueResolution.status() == FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED) {
+                reportDeferredUnsupported(
+                        identifierExpression,
+                        identifierExpression.name(),
+                        valueResolution.deferredBoundary()
+                );
+                return;
+            }
+
             var typeMetaResult = currentScope.resolveTypeMeta(identifierExpression.name(), currentRestriction);
+            if (valueResolution.status() == FrontendVisibleValueStatus.FOUND_ALLOWED
+                    || valueResolution.status() == FrontendVisibleValueStatus.FOUND_BLOCKED) {
+                publishValueResolution(identifierExpression, valueResolution);
+                reportLocalTypeMetaShadowing(identifierExpression, valueResolution.visibleValue(), typeMetaResult);
+                return;
+            }
+
             if (typeMetaResult.isAllowed()) {
                 var typeMeta = typeMetaResult.requireValue();
                 if (supportsTopLevelTypeMeta(typeMeta)) {
@@ -562,7 +644,37 @@ public class FrontendTopBindingAnalyzer {
                 return;
             }
 
-            bindValueIdentifier(identifierExpression);
+            publishValueResolution(identifierExpression, valueResolution);
+        }
+
+        private void reportLocalTypeMetaShadowing(
+                @NotNull IdentifierExpression identifierExpression,
+                @Nullable ScopeValue visibleValue,
+                @NotNull dev.superice.gdcc.scope.ScopeLookupResult<ScopeTypeMeta> typeMetaResult
+        ) {
+            var resolvedValue = Objects.requireNonNull(visibleValue, "visibleValue must not be null");
+            if (!isLocalLikeShadowingValue(resolvedValue)) {
+                return;
+            }
+            if (!typeMetaResult.isAllowed()) {
+                return;
+            }
+            var typeMeta = typeMetaResult.requireValue();
+            if (!supportsTopLevelTypeMeta(typeMeta)) {
+                return;
+            }
+            reportBindingError(
+                    identifierExpression,
+                    "Explicit receiver chain head '" + identifierExpression.name()
+                            + "' resolves to a local value and shadows a visible type-meta candidate"
+            );
+        }
+
+        private boolean isLocalLikeShadowingValue(@NotNull ScopeValue scopeValue) {
+            return switch (scopeValue.kind()) {
+                case LOCAL, PARAMETER, CAPTURE -> true;
+                default -> false;
+            };
         }
 
         private void bindBareCalleeIdentifier(@NotNull IdentifierExpression identifierExpression) {
@@ -736,12 +848,22 @@ public class FrontendTopBindingAnalyzer {
                 @NotNull Node subtreeRoot,
                 @NotNull FrontendVisibleValueDomain domain
         ) {
+            if (reportedUnsupportedRoots.putIfAbsent(subtreeRoot, Boolean.TRUE) != null) {
+                return;
+            }
             diagnosticManager.warning(
                     UNSUPPORTED_BINDING_SUBTREE_CATEGORY,
                     "Binding analysis is deferred in " + formatDomain(domain),
                     sourcePath,
                     FrontendRange.fromAstRange(subtreeRoot.range())
             );
+        }
+
+        private void reportSkippedSubtree(@Nullable Node subtreeRoot) {
+            if (subtreeRoot == null) {
+                return;
+            }
+            reportDeferredSubtree(subtreeRoot, FrontendVisibleValueDomain.UNKNOWN_OR_SKIPPED_SUBTREE);
         }
 
         private void reportDeferredUnsupported(

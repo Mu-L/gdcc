@@ -4,6 +4,7 @@
 
 - frontend 对普通源码错误必须优先通过 `DiagnosticManager` 发诊断，不要把异常当成常规控制流。
 - 当某个 AST 节点树已经无法稳定产生产物时，当前 phase 必须跳过该节点树，并继续处理同一 module 中其他仍可恢复的节点树。
+- 对 deferred / skipped subtree 的 warning，优先锚定到被跳过子树的根节点；若无法识别更大的恢复根，才允许退化到节点自身这一最小 skipped root。
 - 只有 programmer error、共享 side-table 破坏、协议不变量失真等不可恢复 guard rail，才允许抛异常；`FrontendSemanticException` 不作为普通源码错误的主路径。
 
 ## 诊断约定
@@ -25,3 +26,5 @@
 - 多 gdcc module 的 header superclass 绑定不在最小可行产品范围内。
 - 函数参数默认值不在最小可行产品范围内。
 - class constant 的收集、注册、继承可见性与绑定不在 MVP 范围内，整体延后到 MVP 之后再实施。
+- `FrontendTopBindingAnalyzer` 当前只发布 symbol category，不区分 read / write / call 等 usage 语义；assignment 左值链头等 use-site 也可能进入 `symbolBindings()`。
+- 若后续 frontend 需要记录完整用法，必须扩展 `FrontendBinding` 模型，不要依赖当前 binding kind 反推读写调用语义。

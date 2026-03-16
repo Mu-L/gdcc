@@ -244,6 +244,48 @@ class FrontendTopBindingAnalyzerTest {
     }
 
     @Test
+    void analyzePrefersLocalValueOverVisibleTypeMetaChainHeadAndReportsShadowingDiagnostic() throws Exception {
+        var preparedInput = prepareBindingInput("shadowed_type_meta_chain_head.gd", """
+                class_name ShadowedTypeMetaChainHead
+                extends Node
+                
+                class Inner:
+                    static func build():
+                        return null
+                
+                func ping(seed):
+                    var Inner = seed
+                    Inner.build()
+                """);
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var initializer = findVariable(pingFunction.body().statements(), "Inner");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(initializer.value(), "seed"),
+                FrontendBindingKind.PARAMETER
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "Inner"),
+                FrontendBindingKind.LOCAL_VAR
+        );
+
+        var publishedSymbolNames = preparedInput.analysisData().symbolBindings().values().stream()
+                .map(FrontendBinding::symbolName)
+                .toList();
+        assertFalse(publishedSymbolNames.contains("build"));
+
+        var bindingDiagnostics = bindingDiagnostics(preparedInput.diagnosticManager());
+        assertEquals(1, bindingDiagnostics.size());
+        assertTrue(bindingDiagnostics.getFirst().message().contains("Inner"));
+        assertTrue(bindingDiagnostics.getFirst().message().contains("shadows a visible type-meta"));
+    }
+
+    @Test
     void analyzeBindsBareMethodsStaticMethodsAndUtilityFunctionsWithoutPublishingResolvedCalls() throws Exception {
         var api = ExtensionApiLoader.loadDefault();
         assertFalse(api.utilityFunctions().isEmpty());
@@ -713,6 +755,56 @@ class FrontendTopBindingAnalyzerTest {
     }
 
     @Test
+    void analyzeTreatsAssignmentSitesAsUsageAgnosticBindingsForNow() throws Exception {
+        var preparedInput = prepareBindingInput("assignment_usage_agnostic.gd", """
+                class_name AssignmentUsageAgnostic
+                extends Node
+                
+                func ping(value, matrix, row, col):
+                    value = matrix[row][col + 1]
+                """);
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "value",
+                FrontendBindingKind.PARAMETER,
+                1
+        );
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "matrix",
+                FrontendBindingKind.PARAMETER,
+                1
+        );
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "row",
+                FrontendBindingKind.PARAMETER,
+                1
+        );
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "col",
+                FrontendBindingKind.PARAMETER,
+                1
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findLiteralExpression(pingFunction.body(), "1"),
+                FrontendBindingKind.LITERAL
+        );
+        assertTrue(preparedInput.diagnosticManager().snapshot().isEmpty());
+    }
+
+    @Test
     void analyzeReportsDeferredBindingSubtreesAtRootsWithoutPublishingInnerBindings() throws Exception {
         var preparedInput = prepareBindingInput("deferred_binding_subtrees.gd", """
                 class_name DeferredBindingSubtrees
@@ -788,6 +880,70 @@ class FrontendTopBindingAnalyzerTest {
         assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("block-local const initializer")));
         assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("for subtree")));
         assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("match subtree")));
+        assertTrue(bindingDiagnostics(preparedInput.diagnosticManager()).isEmpty());
+    }
+
+    @Test
+    void analyzeReportsSingleSkippedSubtreeWarningWhenCallableBodyScopeIsMissing() throws Exception {
+        var preparedInput = prepareBindingInput("missing_callable_body_scope.gd", """
+                class_name MissingCallableBodyScope
+                extends Node
+                
+                func skipped(value):
+                    print(value)
+                
+                func ok(value):
+                    print(value)
+                """);
+        var analyzer = new FrontendTopBindingAnalyzer();
+        var skippedFunction = findFunction(preparedInput.unit().ast(), "skipped");
+        var okFunction = findFunction(preparedInput.unit().ast(), "ok");
+        preparedInput.analysisData().scopesByAst().remove(skippedFunction.body());
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        assertNull(preparedInput.analysisData().symbolBindings().get(findIdentifierExpression(skippedFunction.body(), "value")));
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(okFunction.body(), "value"),
+                FrontendBindingKind.PARAMETER
+        );
+        var unsupportedDiagnostics = unsupportedBindingDiagnostics(preparedInput.diagnosticManager());
+        assertEquals(1, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.getFirst().message().contains("skipped subtree"));
+        assertTrue(bindingDiagnostics(preparedInput.diagnosticManager()).isEmpty());
+    }
+
+    @Test
+    void analyzeReportsSingleSkippedSubtreeWarningWhenNestedBlockScopeIsMissing() throws Exception {
+        var preparedInput = prepareBindingInput("missing_nested_block_scope.gd", """
+                class_name MissingNestedBlockScope
+                extends Node
+                
+                func ping(value):
+                    if value > 0:
+                        print(value)
+                    print(value)
+                """);
+        var analyzer = new FrontendTopBindingAnalyzer();
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var ifStatement = findNode(pingFunction.body(), dev.superice.gdparser.frontend.ast.IfStatement.class, _ -> true);
+        preparedInput.analysisData().scopesByAst().remove(ifStatement.body());
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var printedValues = findNodes(
+                pingFunction.body(),
+                IdentifierExpression.class,
+                identifierExpression -> identifierExpression.name().equals("value")
+        );
+        assertEquals(3, printedValues.size());
+        assertBinding(preparedInput.analysisData(), printedValues.getFirst(), FrontendBindingKind.PARAMETER);
+        assertNull(preparedInput.analysisData().symbolBindings().get(printedValues.get(1)));
+        assertBinding(preparedInput.analysisData(), printedValues.get(2), FrontendBindingKind.PARAMETER);
+        var unsupportedDiagnostics = unsupportedBindingDiagnostics(preparedInput.diagnosticManager());
+        assertEquals(1, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.getFirst().message().contains("skipped subtree"));
         assertTrue(bindingDiagnostics(preparedInput.diagnosticManager()).isEmpty());
     }
 
