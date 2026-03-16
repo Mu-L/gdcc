@@ -556,16 +556,7 @@ func ping(values):
 
 ---
 
-## 12. 分阶段任务计划与验收标准
-
-本文推荐把 `FrontendVisibleValueResolver` 的落地拆成 3 个阶段。拆分原则是：
-
-- 先冻结结果合同与当前 executable-body MVP
-- 再接入 binder 主路径
-- 然后消费 provenance 产出 warning/diagnostic 价值
-- `parameter default`、`lambda`、`for`、`match` 继续作为当前 frontend MVP 的显式 deferred 边界，而不是后续实施阶段
-
-### 12.1 第一阶段：结果合同与 resolver MVP
+## 12. 任务计划与验收标准
 
 当前实施状态：
 
@@ -604,49 +595,7 @@ func ping(values):
 - `ClassScope` / `ClassRegistry` 抛出的 `ScopeLookupException` 会原样传播
 - 本阶段不要求 binder 接线，但 resolver 自身已可被独立调用并返回稳定结果合同
 
-### 12.2 第二阶段：binder 接线与当前主路径替换
-
-任务范围：
-
-- 在 frontend binder 当前负责 value use-site 绑定的位置改为调用 `FrontendVisibleValueResolver`
-- 当前 binder 只传入 `domain = EXECUTABLE_BODY`
-- 去掉 binder 内部与 declaration-order 可见性重复、冲突或临时性的 ad-hoc 逻辑
-- 把 resolver 的 `FOUND_ALLOWED` / `FOUND_BLOCKED` / `NOT_FOUND` / `DEFERRED_UNSUPPORTED` 四类结果接到现有绑定流程
-
-本阶段不做：
-
-- 不实现 parameter default / lambda / `for` / `match` 的正常绑定
-- 不在 shared `Scope` 协议上增加 frontend-specific 参数
-
-验收标准：
-
-- 现有 binder 主路径在 executable body 内改为统一依赖 resolver，而不是继续混用旧逻辑
-- 现有 frontend 语义测试在 executable body 场景下通过，且行为不因接线而回退
-- parameter default / lambda / `for` / `match` use-site 不会再静默成功，而是稳定返回 `DEFERRED_UNSUPPORTED`
-- 代码中不存在第二套与 resolver 竞争的 statement-order 判定实现
-
-### 12.3 第三阶段：provenance 消费与 warning/diagnostic 接线
-
-任务范围：
-
-- 在 warning/diagnostic 生成路径消费 `filteredHits` 或 `primaryFilteredHit()`
-- 先覆盖当前 executable-body 已可稳定支持的 provenance 场景
-- 把“当前绑定是谁”和“后面会出现哪个 future local / filtered declaration”区分开
-- 使后续 `CONFUSABLE_LOCAL_USAGE` / `CONFUSABLE_LOCAL_DECLARATION` 对齐工作不再依赖临时 AST 回溯
-
-本阶段不做：
-
-- 不要求一次性完成所有 Godot warning 对齐
-- parameter default / `lambda` / `for` / `match` 这些 deferred 域不属于当前 frontend MVP 计划
-
-验收标准：
-
-- 至少存在一组测试覆盖“class property 当前可见，但后续 local 同名”的 provenance 消费
-- 至少存在一组测试覆盖 initializer 自引用导致的 `SELF_REFERENCE_IN_INITIALIZER`
-- warning/diagnostic 锚点以具体 use-site 或 declaration-site 为准，而不是按名字全局去重
-- provenance 消费只读取 resolver 结果，不再重新扫描 AST 推断 future local
-
-### 12.4 当前明确不进入计划的范围
+## 13 当前明确不进入计划的范围
 
 根据 `doc/module_impl/frontend/frontend_rules.md` 的 MVP 支持约定，以下内容不属于当前 frontend 计划，不应再作为后续实施阶段出现：
 
