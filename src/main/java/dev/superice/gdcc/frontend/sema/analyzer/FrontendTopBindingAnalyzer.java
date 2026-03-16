@@ -61,26 +61,17 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 
-/// Frontend top-binding analyzer for the current MVP.
+/// Rebuilds frontend top-level symbol bindings from published skeleton, scope, and visible-value
+/// facts.
 ///
-/// The current MVP freezes these responsibilities:
-/// - require skeleton, diagnostics, and published top-level source scopes
-/// - rebuild `symbolBindings()` from scratch on every run
-/// - bind value-position identifiers through `FrontendVisibleValueResolver`
-/// - bind bare-callee identifiers through the function namespace
-/// - bind literals, `self`, and top-level class-like `TYPE_META` chain heads
-/// - recurse through explicit-receiver chain heads and step arguments only
-/// - report deferred subtree boundaries explicitly instead of silently skipping them
-/// - keep member/call-step resolution deferred for later phases
-///
-/// The analyzer still does not publish member or call facts. Its only output in the current MVP is
-/// `symbolBindings()`.
+/// The analyzer publishes only `symbolBindings()`. Member facts, call facts, and expression types
+/// remain untouched here.
 public class FrontendTopBindingAnalyzer {
     private static final @NotNull String BINDING_CATEGORY = "sema.binding";
     private static final @NotNull String UNSUPPORTED_BINDING_SUBTREE_CATEGORY =
             "sema.unsupported_binding_subtree";
 
-    /// Runs the top-binding phase against the shared analysis carrier.
+    /// Runs top-binding analysis and refreshes `symbolBindings()` from scratch.
     public void analyze(
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager
@@ -121,8 +112,8 @@ public class FrontendTopBindingAnalyzer {
         TOP_LEVEL_TYPE_META_CANDIDATE
     }
 
-    /// `ASTWalker` remains the typed dispatch engine, while this handler keeps the current MVP's
-    /// subtree gating and namespace routing local to the binding phase.
+    /// `ASTWalker` remains the typed dispatch engine, while this handler keeps subtree gating and
+    /// namespace routing local to top-binding analysis.
     private static final class AstWalkerTopBindingBinder implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
@@ -443,18 +434,16 @@ public class FrontendTopBindingAnalyzer {
             }
         }
 
-        /// The current `FrontendBinding` model is still usage-agnostic, so assignment left-hand
-        /// sides are classified into `symbolBindings()` the same way as reads. A later extension
-        /// will need explicit usage metadata before the analyzer can distinguish reads/writes/calls.
+        /// `FrontendBinding` does not encode usage semantics, so assignment chain heads are
+        /// published through the same binding table as ordinary reads.
         private void walkAssignmentExpression(@NotNull AssignmentExpression assignmentExpression) {
             walkValueExpression(assignmentExpression.left());
             walkValueExpression(assignmentExpression.right());
         }
 
         private void walkAttributeExpression(@NotNull AttributeExpression attributeExpression) {
-            // Current MVP binds only the outermost chain head, but arguments nested inside
-            // attribute-call/subscript steps still belong to the executable expression tree and
-            // therefore must continue through normal binding analysis.
+            // Only the outermost chain head is bound here, but arguments nested inside
+            // attribute-call/subscript steps still belong to the executable expression tree.
             walkChainHeadBaseExpression(attributeExpression.base());
             for (var step : attributeExpression.steps()) {
                 switch (step) {
@@ -699,9 +688,8 @@ public class FrontendTopBindingAnalyzer {
             }
         }
 
-        /// Bare-callee binding currently consumes only the nearest overload set already chosen by
-        /// `Scope.resolveFunctions(...)`. The binder classifies that set, but still leaves call
-        /// legality and final dispatch to later phases.
+        /// Bare-callee binding consumes the nearest overload set chosen by
+        /// `Scope.resolveFunctions(...)` and classifies only its symbol category.
         private void publishFunctionBinding(
                 @NotNull IdentifierExpression identifierExpression,
                 @NotNull List<FunctionDef> overloadSet,
