@@ -17,7 +17,7 @@ import java.util.List;
 /// - skeleton publication
 /// - lexical scope graph construction
 /// - callable-parameter and supported local-variable binding
-/// - top-binding publication skeleton for future symbol-category resolution
+/// - top-binding publication for current symbol-category resolution
 /// - diagnostics boundary refresh after each phase
 public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder;
@@ -123,9 +123,9 @@ public final class FrontendSemanticAnalyzer {
         variableAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
-        // Top-binding analysis currently publishes only the `symbolBindings()` phase boundary and
-        // traversal skeleton. Keeping it separate from variable analysis locks the future binder
-        // contract without mixing declaration inventory with use-site classification.
+        // Top-binding analysis classifies supported use-sites into stable symbol categories while
+        // still keeping member/call resolution out of scope. Keeping it separate from variable
+        // analysis preserves a clean hand-off between declaration inventory and use-site binding.
         topBindingAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return analysisData;

@@ -21,8 +21,10 @@ import dev.superice.gdcc.scope.ScopeValue;
 import dev.superice.gdcc.scope.ScopeValueKind;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
+import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
@@ -40,6 +42,7 @@ import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
@@ -56,12 +59,14 @@ import java.util.Objects;
 
 /// Frontend top-binding analyzer for the current MVP.
 ///
-/// Stage B2 freezes these responsibilities:
+/// The current MVP freezes these responsibilities:
 /// - require skeleton, diagnostics, and published top-level source scopes
 /// - rebuild `symbolBindings()` from scratch on every run
 /// - bind value-position identifiers through `FrontendVisibleValueResolver`
 /// - bind bare-callee identifiers through the function namespace
 /// - bind literals, `self`, and top-level class-like `TYPE_META` chain heads
+/// - recurse through explicit-receiver chain heads and step arguments only
+/// - report deferred subtree boundaries explicitly instead of silently skipping them
 /// - keep member/call-step resolution deferred for later phases
 ///
 /// The analyzer still does not publish member or call facts. Its only output in the current MVP is
@@ -171,6 +176,7 @@ public class FrontendTopBindingAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleFunctionDeclaration(
                 @NotNull FunctionDeclaration functionDeclaration
         ) {
+            reportDeferredParameterDefaults(functionDeclaration.parameters());
             walkCallableBody(
                     functionDeclaration,
                     functionDeclaration.body(),
@@ -186,6 +192,7 @@ public class FrontendTopBindingAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleConstructorDeclaration(
                 @NotNull ConstructorDeclaration constructorDeclaration
         ) {
+            reportDeferredParameterDefaults(constructorDeclaration.parameters());
             walkCallableBody(
                     constructorDeclaration,
                     constructorDeclaration.body(),
@@ -240,9 +247,14 @@ public class FrontendTopBindingAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleVariableDeclaration(
                 @NotNull VariableDeclaration variableDeclaration
         ) {
-            if (supportedExecutableBlockDepth <= 0
-                    || variableDeclaration.kind() != DeclarationKind.VAR
-                    || variableDeclaration.value() == null) {
+            if (supportedExecutableBlockDepth <= 0 || variableDeclaration.value() == null) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            if (variableDeclaration.kind() == DeclarationKind.CONST) {
+                reportDeferredSubtree(variableDeclaration.value(), FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE);
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            if (variableDeclaration.kind() != DeclarationKind.VAR) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             walkValueExpression(variableDeclaration.value());
@@ -287,6 +299,10 @@ public class FrontendTopBindingAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleForStatement(@NotNull ForStatement forStatement) {
+            if (supportedExecutableBlockDepth <= 0) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            reportDeferredSubtree(forStatement, FrontendVisibleValueDomain.FOR_SUBTREE);
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -296,6 +312,9 @@ public class FrontendTopBindingAnalyzer {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             walkValueExpression(matchStatement.value());
+            if (!matchStatement.sections().isEmpty()) {
+                reportDeferredSubtree(matchStatement, FrontendVisibleValueDomain.MATCH_SUBTREE);
+            }
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -371,19 +390,28 @@ public class FrontendTopBindingAnalyzer {
                 case AttributeExpression attributeExpression -> walkAttributeExpression(attributeExpression);
                 case SubscriptExpression subscriptExpression -> walkSubscriptExpression(subscriptExpression);
                 case CallExpression callExpression -> walkCallExpression(callExpression);
-                case LambdaExpression _ -> {
-                    // Lambda binding remains deferred in the current MVP. Keeping the subtree sealed
-                    // here ensures later stages must opt in explicitly instead of inheriting it by
-                    // accident from a generic expression walk.
-                }
+                case LambdaExpression lambdaExpression -> reportDeferredSubtree(
+                        lambdaExpression,
+                        FrontendVisibleValueDomain.LAMBDA_SUBTREE
+                );
                 default -> walkGenericExpressionChildren(expression);
             }
         }
 
         private void walkAttributeExpression(@NotNull AttributeExpression attributeExpression) {
-            // Current MVP only binds the outermost chain head. Tail property/call steps remain for
-            // later member/call phases, so the walker intentionally descends into the base only.
+            // Current MVP binds only the outermost chain head, but arguments nested inside
+            // attribute-call/subscript steps still belong to the executable expression tree and
+            // therefore must continue through normal binding analysis.
             walkChainHeadBaseExpression(attributeExpression.base());
+            for (var step : attributeExpression.steps()) {
+                switch (step) {
+                    case AttributeCallStep attributeCallStep -> walkExpressionList(attributeCallStep.arguments());
+                    case AttributeSubscriptStep attributeSubscriptStep ->
+                            walkExpressionList(attributeSubscriptStep.arguments());
+                    default -> {
+                    }
+                }
+            }
         }
 
         private void walkSubscriptExpression(@NotNull SubscriptExpression subscriptExpression) {
@@ -397,12 +425,10 @@ public class FrontendTopBindingAnalyzer {
             switch (callExpression.callee()) {
                 case IdentifierExpression identifierExpression ->
                         visitIdentifier(identifierExpression, ExpressionPosition.BARE_CALLEE);
-                case AttributeExpression attributeExpression -> walkChainHeadBaseExpression(attributeExpression.base());
+                case AttributeExpression attributeExpression -> walkAttributeExpression(attributeExpression);
                 default -> walkValueExpression(callExpression.callee());
             }
-            for (var argument : callExpression.arguments()) {
-                walkValueExpression(argument);
-            }
+            walkExpressionList(callExpression.arguments());
         }
 
         private void walkChainHeadBaseExpression(@NotNull Expression expression) {
@@ -417,9 +443,32 @@ public class FrontendTopBindingAnalyzer {
         }
 
         private void walkGenericExpressionChildren(@NotNull Expression expression) {
-            for (var child : expression.getChildren()) {
+            walkNestedExpressionChildren(expression);
+        }
+
+        private void walkExpressionList(@NotNull List<? extends Expression> expressions) {
+            for (var expression : expressions) {
+                walkValueExpression(expression);
+            }
+        }
+
+        /// Some expressions, such as `DictionaryExpression`, wrap their real expression payload in
+        /// intermediate non-expression nodes (`DictEntry`). Generic traversal therefore needs to
+        /// descend through those containers until it reaches nested expressions.
+        private void walkNestedExpressionChildren(@NotNull Node node) {
+            for (var child : node.getChildren()) {
                 if (child instanceof Expression childExpression) {
                     walkValueExpression(childExpression);
+                    continue;
+                }
+                walkNestedExpressionChildren(child);
+            }
+        }
+
+        private void reportDeferredParameterDefaults(@NotNull List<Parameter> parameters) {
+            for (var parameter : parameters) {
+                if (parameter.defaultValue() != null) {
+                    reportDeferredSubtree(parameter.defaultValue(), FrontendVisibleValueDomain.PARAMETER_DEFAULT);
                 }
             }
         }
@@ -680,6 +729,18 @@ public class FrontendTopBindingAnalyzer {
                     Objects.requireNonNull(message, "message must not be null"),
                     sourcePath,
                     FrontendRange.fromAstRange(useSite.range())
+            );
+        }
+
+        private void reportDeferredSubtree(
+                @NotNull Node subtreeRoot,
+                @NotNull FrontendVisibleValueDomain domain
+        ) {
+            diagnosticManager.warning(
+                    UNSUPPORTED_BINDING_SUBTREE_CATEGORY,
+                    "Binding analysis is deferred in " + formatDomain(domain),
+                    sourcePath,
+                    FrontendRange.fromAstRange(subtreeRoot.range())
             );
         }
 

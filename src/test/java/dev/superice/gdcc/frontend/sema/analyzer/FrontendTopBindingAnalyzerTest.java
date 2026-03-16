@@ -17,10 +17,14 @@ import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.scope.ScopeTypeMetaKind;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
@@ -449,6 +453,345 @@ class FrontendTopBindingAnalyzerTest {
     }
 
     @Test
+    void analyzeBindsOnlyChainHeadsAndStepArgumentsForExplicitReceiverChains() throws Exception {
+        var preparedInput = prepareBindingInput("explicit_receiver_chain_heads.gd", """
+                class_name ExplicitReceiverChainHeads
+                extends Node
+                
+                func get_player():
+                    pass
+                
+                func ping(player, i):
+                    player.hp
+                    self.hp
+                    get_player().hp
+                    player.move(i + 1)
+                    player.list[i + 2]
+                """);
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var playerUseSites = findNodes(
+                pingFunction.body(),
+                IdentifierExpression.class,
+                identifierExpression -> identifierExpression.name().equals("player")
+        );
+        assertEquals(3, playerUseSites.size());
+        for (var playerUseSite : playerUseSites) {
+            assertBinding(preparedInput.analysisData(), playerUseSite, FrontendBindingKind.PARAMETER);
+        }
+
+        var iteratorUseSites = findNodes(
+                pingFunction.body(),
+                IdentifierExpression.class,
+                identifierExpression -> identifierExpression.name().equals("i")
+        );
+        assertEquals(2, iteratorUseSites.size());
+        for (var iteratorUseSite : iteratorUseSites) {
+            assertBinding(preparedInput.analysisData(), iteratorUseSite, FrontendBindingKind.PARAMETER);
+        }
+
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "get_player"),
+                FrontendBindingKind.METHOD
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findSelfExpression(pingFunction.body()),
+                FrontendBindingKind.SELF
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findLiteralExpression(pingFunction.body(), "1"),
+                FrontendBindingKind.LITERAL
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findLiteralExpression(pingFunction.body(), "2"),
+                FrontendBindingKind.LITERAL
+        );
+        assertEquals(9, preparedInput.analysisData().symbolBindings().size());
+        assertTrue(preparedInput.analysisData().resolvedMembers().isEmpty());
+        assertTrue(preparedInput.analysisData().resolvedCalls().isEmpty());
+        assertTrue(preparedInput.diagnosticManager().snapshot().isEmpty());
+    }
+
+    @Test
+    void analyzeBindsSupportedPartsAcrossComplexExpressionsExceptChainTails() throws Exception {
+        var preparedInput = prepareBindingInput("complex_expression_bindings.gd", """
+                class_name ComplexExpressionBindings
+                extends Node
+                
+                func helper(value):
+                    return value
+                
+                func get_player():
+                    return null
+                
+                func ping(player, arr, key, cond, value, obj, matrix, row, col):
+                    print([value + 1, -(arr[key + 2]), helper(value + 3), player.move(value + 4)])
+                    print({value: arr[key + 5], "fallback": helper(value + 6)})
+                    print("yes" if cond and not false else get_player().hp)
+                    var awaited = await helper(value + 7)
+                    print(obj is Node)
+                    print(obj as Node)
+                    value = matrix[row][col + 8]
+                """);
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var helperFunction = findFunction(preparedInput.unit().ast(), "helper");
+        var getPlayerFunction = findFunction(preparedInput.unit().ast(), "get_player");
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "value",
+                FrontendBindingKind.PARAMETER,
+                7
+        );
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "helper",
+                FrontendBindingKind.METHOD,
+                3
+        );
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "arr",
+                FrontendBindingKind.PARAMETER,
+                2
+        );
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "key",
+                FrontendBindingKind.PARAMETER,
+                2
+        );
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "player",
+                FrontendBindingKind.PARAMETER,
+                1
+        );
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "cond",
+                FrontendBindingKind.PARAMETER,
+                1
+        );
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "get_player",
+                FrontendBindingKind.METHOD,
+                1
+        );
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "obj",
+                FrontendBindingKind.PARAMETER,
+                2
+        );
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "matrix",
+                FrontendBindingKind.PARAMETER,
+                1
+        );
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "row",
+                FrontendBindingKind.PARAMETER,
+                1
+        );
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "col",
+                FrontendBindingKind.PARAMETER,
+                1
+        );
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "print",
+                FrontendBindingKind.UTILITY_FUNCTION,
+                5
+        );
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                helperFunction.body(),
+                "value",
+                FrontendBindingKind.PARAMETER,
+                1
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findLiteralExpression(pingFunction.body(), "1"),
+                FrontendBindingKind.LITERAL
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findLiteralExpression(pingFunction.body(), "2"),
+                FrontendBindingKind.LITERAL
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findLiteralExpression(pingFunction.body(), "3"),
+                FrontendBindingKind.LITERAL
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findLiteralExpression(pingFunction.body(), "4"),
+                FrontendBindingKind.LITERAL
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findLiteralExpression(pingFunction.body(), "5"),
+                FrontendBindingKind.LITERAL
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findLiteralExpression(pingFunction.body(), "6"),
+                FrontendBindingKind.LITERAL
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findLiteralExpression(pingFunction.body(), "7"),
+                FrontendBindingKind.LITERAL
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findLiteralExpression(pingFunction.body(), "8"),
+                FrontendBindingKind.LITERAL
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findLiteralExpression(pingFunction.body(), "\"fallback\""),
+                FrontendBindingKind.LITERAL
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findLiteralExpression(pingFunction.body(), "\"yes\""),
+                FrontendBindingKind.LITERAL
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findLiteralExpression(pingFunction.body(), "false"),
+                FrontendBindingKind.LITERAL
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findLiteralExpression(getPlayerFunction.body(), "null"),
+                FrontendBindingKind.LITERAL
+        );
+
+        var publishedSymbolNames = preparedInput.analysisData().symbolBindings().values().stream()
+                .map(FrontendBinding::symbolName)
+                .toList();
+        assertFalse(publishedSymbolNames.contains("move"));
+        assertFalse(publishedSymbolNames.contains("hp"));
+        assertFalse(publishedSymbolNames.contains("Node"));
+        assertEquals(40, preparedInput.analysisData().symbolBindings().size());
+        assertTrue(preparedInput.analysisData().resolvedMembers().isEmpty());
+        assertTrue(preparedInput.analysisData().resolvedCalls().isEmpty());
+        assertTrue(bindingDiagnostics(preparedInput.diagnosticManager()).isEmpty());
+        assertTrue(unsupportedBindingDiagnostics(preparedInput.diagnosticManager()).isEmpty());
+    }
+
+    @Test
+    void analyzeReportsDeferredBindingSubtreesAtRootsWithoutPublishingInnerBindings() throws Exception {
+        var preparedInput = prepareBindingInput("deferred_binding_subtrees.gd", """
+                class_name DeferredBindingSubtrees
+                extends Node
+                
+                func helper():
+                    pass
+                
+                func ping(seed = helper()):
+                    var body_local = 0
+                    var f = func():
+                        return body_local
+                    const answer = body_local
+                    for item in [body_local]:
+                        assert(item)
+                    match body_local:
+                        var bound when bound > 0:
+                            assert(bound)
+                    return body_local
+                """);
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var defaultHelperUseSite = findIdentifierExpression(
+                pingFunction.parameters().getFirst().defaultValue(),
+                "helper"
+        );
+        assertNull(preparedInput.analysisData().symbolBindings().get(defaultHelperUseSite));
+
+        var lambdaExpression = findNode(pingFunction.body(), LambdaExpression.class, _ -> true);
+        var lambdaUseSite = findIdentifierExpression(lambdaExpression, "body_local");
+        assertNull(preparedInput.analysisData().symbolBindings().get(lambdaUseSite));
+
+        var constDeclaration = findVariable(pingFunction.body().statements(), "answer");
+        var constInitializerUseSite = findIdentifierExpression(constDeclaration.value(), "body_local");
+        assertNull(preparedInput.analysisData().symbolBindings().get(constInitializerUseSite));
+
+        var forStatement = findNode(pingFunction.body(), ForStatement.class, _ -> true);
+        var forIterableUseSite = findIdentifierExpression(forStatement.iterable(), "body_local");
+        var forBodyUseSite = findIdentifierExpression(forStatement.body(), "item");
+        assertNull(preparedInput.analysisData().symbolBindings().get(forIterableUseSite));
+        assertNull(preparedInput.analysisData().symbolBindings().get(forBodyUseSite));
+
+        var matchStatement = findNode(pingFunction.body(), MatchStatement.class, _ -> true);
+        var matchValueUseSite = findIdentifierExpression(matchStatement.value(), "body_local");
+        assertBinding(
+                preparedInput.analysisData(),
+                matchValueUseSite,
+                FrontendBindingKind.LOCAL_VAR
+        );
+        var boundUseSites = findNodes(
+                matchStatement,
+                IdentifierExpression.class,
+                identifierExpression -> identifierExpression.name().equals("bound")
+        );
+        for (var boundUseSite : boundUseSites) {
+            assertNull(preparedInput.analysisData().symbolBindings().get(boundUseSite));
+        }
+
+        var outerReturn = assertInstanceOf(ReturnStatement.class, pingFunction.body().statements().getLast());
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(outerReturn, "body_local"),
+                FrontendBindingKind.LOCAL_VAR
+        );
+
+        var unsupportedDiagnostics = unsupportedBindingDiagnostics(preparedInput.diagnosticManager());
+        assertEquals(5, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("parameter default")));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("lambda subtree")));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("block-local const initializer")));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("for subtree")));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("match subtree")));
+        assertTrue(bindingDiagnostics(preparedInput.diagnosticManager()).isEmpty());
+    }
+
+    @Test
     void analyzePublishesBlockedMembersAndSelfInStaticContextWithoutFallingBack() throws Exception {
         var preparedInput = prepareBindingInput("static_context_bindings.gd", """
                 class_name StaticContextBindings
@@ -520,6 +863,14 @@ class FrontendTopBindingAnalyzerTest {
                 .toList();
     }
 
+    private static @NotNull List<FrontendDiagnostic> unsupportedBindingDiagnostics(
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        return diagnosticManager.snapshot().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.unsupported_binding_subtree"))
+                .toList();
+    }
+
     private static @NotNull LirFunctionDef createFunctionDef(@NotNull String name, boolean isStatic) {
         var function = new LirFunctionDef(name);
         function.setReturnType(GdVariantType.VARIANT);
@@ -534,6 +885,24 @@ class FrontendTopBindingAnalyzerTest {
     ) {
         var binding = analysisData.symbolBindings().get(useSite);
         assertEquals(expectedKind, Objects.requireNonNull(binding, "binding must not be null").kind());
+    }
+
+    private static void assertBindingsForName(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull Node root,
+            @NotNull String symbolName,
+            @NotNull FrontendBindingKind expectedKind,
+            int expectedCount
+    ) {
+        var useSites = findNodes(
+                root,
+                IdentifierExpression.class,
+                identifierExpression -> identifierExpression.name().equals(symbolName)
+        );
+        assertEquals(expectedCount, useSites.size(), "Unexpected use-site count for " + symbolName);
+        for (var useSite : useSites) {
+            assertBinding(analysisData, useSite, expectedKind);
+        }
     }
 
     private static @NotNull PreparedBindingInput prepareBindingInput(
@@ -619,14 +988,22 @@ class FrontendTopBindingAnalyzerTest {
         return findNode(root, SelfExpression.class, _ -> true);
     }
 
-    private static <T extends Node> @NotNull T findNode(
+    private static <T extends Node> @NotNull List<T> findNodes(
             @NotNull Node root,
             @NotNull Class<T> nodeType,
             @NotNull Predicate<T> predicate
     ) {
         var matches = new ArrayList<T>();
         collectMatchingNodes(root, nodeType, predicate, matches);
-        return matches.stream()
+        return List.copyOf(matches);
+    }
+
+    private static <T extends Node> @NotNull T findNode(
+            @NotNull Node root,
+            @NotNull Class<T> nodeType,
+            @NotNull Predicate<T> predicate
+    ) {
+        return findNodes(root, nodeType, predicate).stream()
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Node not found: " + nodeType.getSimpleName()));
     }

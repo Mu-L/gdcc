@@ -18,12 +18,16 @@ import dev.superice.gdcc.gdextension.ExtensionSingleton;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ClassNameStatement;
-import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
+import dev.superice.gdparser.frontend.ast.ExpressionStatement;
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
+import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
@@ -38,7 +42,10 @@ import org.junit.jupiter.api.Test;
 import org.jetbrains.annotations.NotNull;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -154,6 +161,99 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertEquals(diagnostics.snapshot(), result.diagnostics());
         assertEquals(List.of("warning_ignore"), annotationNames(result.annotationsByAst().get(innerVariable)));
         assertNull(result.annotationsByAst().get(regionIgnoredVariable));
+    }
+
+    @Test
+    void analyzePublishesTopBindingsForChainHeadsWhileKeepingDeferredWarningsExplicit() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "framework_top_binding.gd"), """
+                class_name FrameworkTopBinding
+                extends Node
+                
+                func helper():
+                    pass
+                
+                func get_player():
+                    pass
+                
+                func ping(player, i, seed = helper()):
+                    player.hp
+                    player.move(i + 1)
+                    var f = func():
+                        return player
+                    return get_player().hp
+                """, diagnostics);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+
+        var pingFunction = findFunction(unit.ast().statements(), "ping");
+        var headRead = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var stepCall = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1));
+        var lambdaHolder = findVariable(pingFunction.body().statements(), "f");
+        var outerReturn = assertInstanceOf(ReturnStatement.class, pingFunction.body().statements().getLast());
+
+        assertEquals(
+                FrontendBindingKind.PARAMETER,
+                Objects.requireNonNull(
+                        result.symbolBindings().get(findNode(headRead, IdentifierExpression.class, id -> id.name().equals("player")))
+                ).kind()
+        );
+        assertEquals(
+                FrontendBindingKind.PARAMETER,
+                Objects.requireNonNull(
+                        result.symbolBindings().get(findNode(stepCall, IdentifierExpression.class, id -> id.name().equals("player")))
+                ).kind()
+        );
+        assertEquals(
+                FrontendBindingKind.PARAMETER,
+                Objects.requireNonNull(
+                        result.symbolBindings().get(findNode(stepCall, IdentifierExpression.class, id -> id.name().equals("i")))
+                ).kind()
+        );
+        assertEquals(
+                FrontendBindingKind.LITERAL,
+                Objects.requireNonNull(result.symbolBindings().get(findLiteral(stepCall, "1"))).kind()
+        );
+        assertEquals(
+                FrontendBindingKind.METHOD,
+                Objects.requireNonNull(
+                        result.symbolBindings().get(findNode(outerReturn, IdentifierExpression.class, id -> id.name().equals("get_player")))
+                ).kind()
+        );
+
+        var helperUseSite = findNode(
+                pingFunction.parameters().getLast().defaultValue(),
+                IdentifierExpression.class,
+                identifierExpression -> identifierExpression.name().equals("helper")
+        );
+        assertNull(result.symbolBindings().get(helperUseSite));
+
+        var lambdaPlayerUseSite = findNode(
+                lambdaHolder.value(),
+                IdentifierExpression.class,
+                identifierExpression -> identifierExpression.name().equals("player")
+        );
+        assertNull(result.symbolBindings().get(lambdaPlayerUseSite));
+
+        assertEquals(5, result.symbolBindings().size());
+        assertTrue(result.resolvedMembers().isEmpty());
+        assertTrue(result.resolvedCalls().isEmpty());
+        assertEquals(
+                2,
+                result.diagnostics().asList().stream()
+                        .filter(diagnostic -> diagnostic.category().equals("sema.unsupported_binding_subtree"))
+                        .count()
+        );
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_binding_subtree")
+                        && diagnostic.message().contains("parameter default")
+        ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_binding_subtree")
+                        && diagnostic.message().contains("lambda subtree")
+        ));
     }
 
     @Test
@@ -549,6 +649,51 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 .filter(propertyDef -> propertyDef.getName().equals(name))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Property not found: " + name));
+    }
+
+    private LiteralExpression findLiteral(Node root, String sourceText) {
+        return findNode(
+                root,
+                LiteralExpression.class,
+                literalExpression -> literalExpression.sourceText().equals(sourceText)
+        );
+    }
+
+    private <T extends Node> T findNode(
+            Node root,
+            Class<T> nodeType,
+            Predicate<T> predicate
+    ) {
+        return findNodes(root, nodeType, predicate).stream()
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Node not found: " + nodeType.getSimpleName()));
+    }
+
+    private <T extends Node> List<T> findNodes(
+            Node root,
+            Class<T> nodeType,
+            Predicate<T> predicate
+    ) {
+        var matches = new ArrayList<T>();
+        collectMatchingNodes(root, nodeType, predicate, matches);
+        return List.copyOf(matches);
+    }
+
+    private <T extends Node> void collectMatchingNodes(
+            Node node,
+            Class<T> nodeType,
+            Predicate<T> predicate,
+            List<T> matches
+    ) {
+        if (nodeType.isInstance(node)) {
+            var candidate = nodeType.cast(node);
+            if (predicate.test(candidate)) {
+                matches.add(candidate);
+            }
+        }
+        for (var child : node.getChildren()) {
+            collectMatchingNodes(child, nodeType, predicate, matches);
+        }
     }
 
     private List<String> annotationNames(List<FrontendGdAnnotation> annotations) {

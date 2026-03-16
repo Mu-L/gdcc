@@ -82,7 +82,8 @@
   - const-based type alias
   - local enum
   - 其他未来可能通过 `defineTypeMeta(...)` 接入、但当前 top-binding phase 尚未正式消费的来源
-- `a.xxx`、`a.foo()` 这类显式 receiver 形态中，本阶段只继续分析最前面的 `a` 子表达式，不解析尾部成员/调用步骤
+- `a.xxx`、`a.foo(arg)` 这类显式 receiver 形态中，本阶段只解析链头绑定，不解析尾部成员/调用步骤本身
+- 但 `a.foo(arg)`、`a[index]`、`a.list[index]` 中的 argument / index expression 仍属于当前 executable expression tree，必须继续递归进入 binding
 - `a[index]` 这类容器索引读取中，本阶段继续分析 `a` 和所有 index argument expression，但不为 subscript operation 本身写 binding
 - ordinary local `var` initializer expression subtree 属于当前 MVP 支持面，不能再被排除
 - parameter default、`for` iterator、`match` pattern、lambda capture 继续 deferred
@@ -450,6 +451,7 @@
 - `AttributeExpression`
   - 继续访问 base expression
   - 若 base expression 是 qualified static chain 最外层 bare identifier，则允许其绑定为 `TYPE_META`
+  - 继续访问 attribute-call / attribute-subscript step 中的 argument expression
   - 不为 member step 写 binding
 - `SubscriptExpression`
   - 继续访问 base expression
@@ -458,7 +460,7 @@
   - 不为 subscript operation 本身写 binding
 - `CallExpression`
   - 若 callee 是 bare `IdentifierExpression`，按 bare callee 规则绑定
-  - 若 callee 是 `AttributeExpression`，只继续分析其 base expression
+  - 若 callee 是 `AttributeExpression`，继续分析链头与其中 attribute-call / attribute-subscript step 的 argument expression
   - 因此 `ClassName.build()` 当前允许 `ClassName -> TYPE_META`
   - 不为 attribute call step 写 binding
 
@@ -476,6 +478,11 @@
 - `ClassName.build()`
   - `ClassName` 会绑定为 `TYPE_META`
   - `build` 不会绑定
+- `player.move(i + 1)`
+  - `player` 会绑定
+  - `i` 会绑定
+  - `1` 会绑定为 `LITERAL`
+  - `move` 不会绑定
 - `arr[i + 1]`
   - `arr` 会绑定
   - `i` 会绑定
@@ -502,6 +509,12 @@
   - `match` subtree
   - block-local `const` initializer subtree
   - missing-scope / skipped subtree
+
+当前 deferred warning 的发布口径冻结为：
+
+- 按 deferred subtree root 发 warning
+- 同一棵 deferred subtree 当前只发 1 条 `sema.unsupported_binding_subtree`
+- 不再对 deferred subtree 内每个 use-site 逐个降级成 `NOT_FOUND` 或逐个发 warning
 
 ### 5.2 blocked-hit 处理
 
@@ -706,8 +719,9 @@ ordinary local initializer 当前不属于 deferred 域。
   - `player.hp` 只绑定 `player`
   - `self.hp` 只绑定 `self`
   - `get_player().hp` 只绑定 `get_player`
+  - `player.move(i + 1)` 绑定 `player`、`i` 与 `1`，但不绑定 `move`
   - `arr[i + 1]` 绑定 `arr`、`i` 与 `1`，但不绑定 subscript operation
-3. 对 deferred subtree 统一发 `sema.unsupported_binding_subtree`
+3. 对 deferred subtree 统一按 root-level 发 `sema.unsupported_binding_subtree`
 4. 补齐 framework 与 analyzer 测试
 
 **推荐测试集合**：
@@ -721,10 +735,12 @@ ordinary local initializer 当前不属于 deferred 域。
   - initializer 自引用过滤
   - bare method / bare static function / global utility function
   - subscript index argument binding
+  - attribute-call / attribute-subscript step argument binding
+  - complex composite expression generic-child binding
   - static context blocked binding
   - unknown identifier / unknown bare callee
   - explicit receiver 只绑定前导子表达式
-  - deferred subtree warning
+  - deferred subtree root-level warning
 - `FrontendSemanticAnalyzerFrameworkTest`
   - 主链路更新为 `skeleton -> scope -> variable -> binding`
   - `symbolBindings()` 在 binding phase 后正式发布
@@ -732,11 +748,13 @@ ordinary local initializer 当前不属于 deferred 域。
 
 **验收清单**：
 
-- [ ] binding phase 新增测试已覆盖正向/负向/deferred 场景
-- [ ] `FrontendSemanticAnalyzerFrameworkTest` 已更新为四阶段主链路
-- [ ] `player.hp` / `self.hp` / `obj.foo()` 不会错误为尾部成员写 binding
-- [ ] `arr[i + 1]` 会绑定 `arr`、`i` 与 `1`，但不会为 subscript operation 写 binding
-- [ ] 现有 scope / resolver 行为没有被 binder 回写破坏
+- [x] binding phase 新增测试已覆盖正向/负向/deferred 场景
+- [x] `FrontendSemanticAnalyzerFrameworkTest` 已更新为四阶段主链路
+- [x] `player.hp` / `self.hp` / `obj.foo()` 不会错误为尾部成员写 binding
+- [x] `player.move(i + 1)`、`arr[i + 1]` 这类 step/index argument 会继续进入 binding，但 operation 本身不会写 binding
+- [x] array / dictionary / unary / binary / conditional / await / cast / type-test / assignment 等复杂表达式会继续递归绑定其受支持子表达式
+- [x] deferred subtree 当前统一按 root-level warning 发布 `sema.unsupported_binding_subtree`
+- [x] 现有 scope / resolver 行为没有被 binder 回写破坏
 
 ---
 
@@ -874,6 +892,16 @@ func ping(player):
 
 - `player` 绑定为 `PARAMETER`
 - `hp` 当前不绑定
+
+```gdscript
+func ping(player, i):
+    player.move(i + 1)
+```
+
+- `player` 绑定为 `PARAMETER`
+- `i` 绑定为 `PARAMETER`
+- `1` 绑定为 `LITERAL`
+- `move` 当前不绑定
 
 ```gdscript
 func ping(arr, i):
