@@ -221,7 +221,6 @@
 - `PARAMETER`
 - `PROPERTY`
 - `SIGNAL`
-- `CONSTANT`
 - `SINGLETON`
 - `GLOBAL_ENUM`
 - `TYPE_META`
@@ -232,6 +231,8 @@
 
 以下类别当前不作为 MVP 的正式验收项：
 
+- `CONSTANT`
+  - class-level `const` binding 已推迟到 MVP 之后，不作为当前阶段的正式支持面
 - `CAPTURE`
   - lambda capture 仍 deferred，本阶段通常不会正式产出
 
@@ -358,6 +359,11 @@
 - `CONSTANT` -> `CONSTANT`
 - `SINGLETON` -> `SINGLETON`
 - `GLOBAL_ENUM` -> `GLOBAL_ENUM`
+
+其中需要明确：
+
+- `CONSTANT` 这条映射仍保留为后续模型约定
+- 但 class-level `const` 的正式发布已推迟到 MVP 之后，当前文档不再把它作为 B2 验收项
 
 当前 `TYPE_META` 的消费边界冻结为：
 
@@ -640,16 +646,16 @@ ordinary local initializer 当前不属于 deferred 域。
 
 **验收清单**：
 
-- [ ] bare local / parameter / property / signal / constant / singleton / global enum 可发布 symbol binding
-- [ ] literal expression 可发布 `LITERAL`
-- [ ] `ClassName.build()` / `Inner.build()` 这类链头 `ClassName` / `Inner` 可发布 `TYPE_META`
-- [ ] top-level `TYPE_META` 只接受 registry-registered class-like 类型与 lexical 可见 inner class
-- [ ] preload alias / const alias / local enum 等其他 context-defined type-meta 不会被误发布为 `TYPE_META`
-- [ ] ordinary local initializer 内的 identifier 可正常绑定
-- [ ] `arr[i + 1]` 这类索引表达式中的 `i` 与 `1` 可正常进入 binding
-- [ ] `var x = x` 的 initializer 自引用行为与 resolver 合同一致
-- [ ] blocked property / signal 在 static context 下不会回退 outer/global
-- [ ] `self` 在 instance/static context 下的发布与诊断行为均已锚定
+- [x] bare local / parameter / property / signal / singleton / global enum 可发布 symbol binding
+- [x] literal expression 可发布 `LITERAL`
+- [x] `ClassName.build()` / `Inner.build()` 这类链头 `ClassName` / `Inner` 可发布 `TYPE_META`
+- [x] top-level `TYPE_META` 只接受 registry-registered class-like 类型与 lexical 可见 inner class
+- [x] preload alias / const alias / local enum 等其他 context-defined type-meta 不会被误发布为 `TYPE_META`
+- [x] ordinary local initializer 内的 identifier 可正常绑定
+- [x] `arr[i + 1]` 这类索引表达式中的 `i` 与 `1` 可正常进入 binding
+- [x] `var x = x` 的 initializer 自引用行为与 resolver 合同一致
+- [x] blocked property / signal 在 static context 下不会回退 outer/global
+- [x] `self` 在 instance/static context 下的发布与诊断行为均已锚定
 
 ### 6.4 阶段 B3：bare callee function binding
 

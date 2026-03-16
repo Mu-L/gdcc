@@ -1,9 +1,21 @@
 package dev.superice.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendBinding;
+import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
+import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDeferredBoundary;
+import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDomain;
+import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueResolveRequest;
+import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueResolver;
+import dev.superice.gdcc.scope.ResolveRestriction;
+import dev.superice.gdcc.scope.Scope;
+import dev.superice.gdcc.scope.ScopeTypeMeta;
+import dev.superice.gdcc.scope.ScopeTypeMetaKind;
+import dev.superice.gdcc.scope.ScopeValue;
+import dev.superice.gdcc.scope.ScopeValueKind;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
@@ -35,21 +47,26 @@ import dev.superice.gdparser.frontend.ast.WhileStatement;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 
-/// Frontend top-binding phase skeleton.
+/// Frontend top-binding analyzer for the current MVP.
 ///
-/// Stage B1 freezes only the phase boundary and traversal shape:
+/// Stage B2 freezes these responsibilities:
 /// - require skeleton, diagnostics, and published top-level source scopes
 /// - rebuild `symbolBindings()` from scratch on every run
-/// - traverse only the currently supported executable subtrees
-/// - keep parameter-default / lambda / `for` / `match` binding deferred
+/// - bind value-position identifiers through `FrontendVisibleValueResolver`
+/// - bind literals, `self`, and top-level class-like `TYPE_META` chain heads
+/// - keep bare callee/member/call-step resolution deferred for later phases
 ///
-/// Actual symbol-category resolution is intentionally deferred to later stages. The skeleton
-/// therefore publishes an empty binding table today while locking the AST-walk contract that later
-/// binding work will fill in.
+/// The analyzer still does not publish member or call facts. Its only output in the current MVP is
+/// `symbolBindings()`.
 public class FrontendTopBindingAnalyzer {
+    private static final @NotNull String BINDING_CATEGORY = "sema.binding";
+    private static final @NotNull String UNSUPPORTED_BINDING_SUBTREE_CATEGORY =
+            "sema.unsupported_binding_subtree";
+
     /// Runs the top-binding phase against the shared analysis carrier.
     public void analyze(
             @NotNull FrontendAnalysisData analysisData,
@@ -71,9 +88,16 @@ public class FrontendTopBindingAnalyzer {
             }
         }
 
+        var visibleValueResolver = new FrontendVisibleValueResolver(analysisData);
         var symbolBindings = new FrontendAstSideTable<FrontendBinding>();
         for (var sourceClassRelation : moduleSkeleton.sourceClassRelations()) {
-            new AstWalkerTopBindingSkeleton(scopesByAst).walk(sourceClassRelation.unit().ast());
+            new AstWalkerTopBindingBinder(
+                    sourceClassRelation.unit().path(),
+                    scopesByAst,
+                    symbolBindings,
+                    diagnosticManager,
+                    visibleValueResolver
+            ).walk(sourceClassRelation.unit().ast());
         }
         analysisData.updateSymbolBindings(symbolBindings);
     }
@@ -84,15 +108,34 @@ public class FrontendTopBindingAnalyzer {
         TOP_LEVEL_TYPE_META_CANDIDATE
     }
 
-    /// `ASTWalker` remains the typed dispatch engine, while this handler explicitly controls
-    /// which executable subtrees are accepted by the current MVP skeleton.
-    private static final class AstWalkerTopBindingSkeleton implements ASTNodeHandler {
-        private final @NotNull FrontendAstSideTable<?> scopesByAst;
+    /// `ASTWalker` remains the typed dispatch engine, while this handler keeps the current MVP's
+    /// subtree gating and namespace routing local to the binding phase.
+    private static final class AstWalkerTopBindingBinder implements ASTNodeHandler {
+        private final @NotNull Path sourcePath;
+        private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
+        private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
+        private final @NotNull DiagnosticManager diagnosticManager;
+        private final @NotNull FrontendVisibleValueResolver visibleValueResolver;
         private final @NotNull ASTWalker astWalker;
         private int supportedExecutableBlockDepth;
+        private @NotNull ResolveRestriction currentRestriction = ResolveRestriction.unrestricted();
+        private boolean currentStaticContext;
 
-        private AstWalkerTopBindingSkeleton(@NotNull FrontendAstSideTable<?> scopesByAst) {
+        private AstWalkerTopBindingBinder(
+                @NotNull Path sourcePath,
+                @NotNull FrontendAstSideTable<Scope> scopesByAst,
+                @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
+                @NotNull DiagnosticManager diagnosticManager,
+                @NotNull FrontendVisibleValueResolver visibleValueResolver
+        ) {
+            this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath must not be null");
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
+            this.symbolBindings = Objects.requireNonNull(symbolBindings, "symbolBindings must not be null");
+            this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
+            this.visibleValueResolver = Objects.requireNonNull(
+                    visibleValueResolver,
+                    "visibleValueResolver must not be null"
+            );
             astWalker = new ASTWalker(this);
         }
 
@@ -124,7 +167,14 @@ public class FrontendTopBindingAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleFunctionDeclaration(
                 @NotNull FunctionDeclaration functionDeclaration
         ) {
-            walkCallableBody(functionDeclaration, functionDeclaration.body());
+            walkCallableBody(
+                    functionDeclaration,
+                    functionDeclaration.body(),
+                    functionDeclaration.isStatic()
+                            ? ResolveRestriction.staticContext()
+                            : ResolveRestriction.instanceContext(),
+                    functionDeclaration.isStatic()
+            );
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -132,7 +182,12 @@ public class FrontendTopBindingAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleConstructorDeclaration(
                 @NotNull ConstructorDeclaration constructorDeclaration
         ) {
-            walkCallableBody(constructorDeclaration, constructorDeclaration.body());
+            walkCallableBody(
+                    constructorDeclaration,
+                    constructorDeclaration.body(),
+                    ResolveRestriction.instanceContext(),
+                    false
+            );
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -245,11 +300,25 @@ public class FrontendTopBindingAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
-        private void walkCallableBody(@NotNull Node callableOwner, @Nullable Block body) {
+        private void walkCallableBody(
+                @NotNull Node callableOwner,
+                @Nullable Block body,
+                @NotNull ResolveRestriction restriction,
+                boolean staticContext
+        ) {
             if (isNotPublished(callableOwner)) {
                 return;
             }
-            walkSupportedExecutableBlock(body);
+            var previousRestriction = currentRestriction;
+            var previousStaticContext = currentStaticContext;
+            currentRestriction = Objects.requireNonNull(restriction, "restriction must not be null");
+            currentStaticContext = staticContext;
+            try {
+                walkSupportedExecutableBlock(body);
+            } finally {
+                currentRestriction = previousRestriction;
+                currentStaticContext = previousStaticContext;
+            }
         }
 
         private void walkStatements(@NotNull List<Statement> statements) {
@@ -298,7 +367,7 @@ public class FrontendTopBindingAnalyzer {
                 case AttributeExpression attributeExpression -> walkAttributeExpression(attributeExpression);
                 case SubscriptExpression subscriptExpression -> walkSubscriptExpression(subscriptExpression);
                 case CallExpression callExpression -> walkCallExpression(callExpression);
-                case LambdaExpression lambdaExpression -> {
+                case LambdaExpression _ -> {
                     // Lambda binding remains deferred in the current MVP. Keeping the subtree sealed
                     // here ensures later stages must opt in explicitly instead of inheriting it by
                     // accident from a generic expression walk.
@@ -356,18 +425,187 @@ public class FrontendTopBindingAnalyzer {
                 @NotNull IdentifierExpression identifierExpression,
                 @NotNull ExpressionPosition position
         ) {
-            // Stage B1 intentionally publishes no binding facts yet. The future B2/B3
-            // implementation will resolve `identifierExpression` according to `position`.
             Objects.requireNonNull(identifierExpression, "identifierExpression must not be null");
-            Objects.requireNonNull(position, "position must not be null");
+            switch (Objects.requireNonNull(position, "position must not be null")) {
+                case VALUE -> bindValueIdentifier(identifierExpression);
+                case TOP_LEVEL_TYPE_META_CANDIDATE -> bindTopLevelTypeMetaCandidate(identifierExpression);
+                case BARE_CALLEE -> {
+                    // Bare-callee function binding is implemented in stage B3. Keeping the visit
+                    // shape here avoids reopening traversal once call-namespace binding lands.
+                }
+            }
         }
 
         private void visitSelf(@NotNull SelfExpression selfExpression) {
-            Objects.requireNonNull(selfExpression, "selfExpression must not be null");
+            publishBinding(selfExpression, "self", FrontendBindingKind.SELF, null);
+            if (currentStaticContext) {
+                reportBindingError(
+                        selfExpression,
+                        "Keyword 'self' is not available in static context"
+                );
+            }
         }
 
         private void visitLiteral(@NotNull LiteralExpression literalExpression) {
-            Objects.requireNonNull(literalExpression, "literalExpression must not be null");
+            publishBinding(
+                    literalExpression,
+                    literalExpression.sourceText(),
+                    FrontendBindingKind.LITERAL,
+                    null
+            );
+        }
+
+        private void bindValueIdentifier(@NotNull IdentifierExpression identifierExpression) {
+            var resolution = visibleValueResolver.resolve(new FrontendVisibleValueResolveRequest(
+                    identifierExpression.name(),
+                    identifierExpression,
+                    currentRestriction,
+                    FrontendVisibleValueDomain.EXECUTABLE_BODY
+            ));
+            switch (resolution.status()) {
+                case FOUND_ALLOWED -> publishScopeValueBinding(identifierExpression, resolution.visibleValue());
+                case FOUND_BLOCKED -> {
+                    publishScopeValueBinding(identifierExpression, resolution.visibleValue());
+                    reportBindingError(
+                            identifierExpression,
+                            "Binding '" + identifierExpression.name() + "' is not accessible in the current context"
+                    );
+                }
+                case NOT_FOUND -> {
+                    publishBinding(identifierExpression, identifierExpression.name(), FrontendBindingKind.UNKNOWN, null);
+                    reportBindingError(
+                            identifierExpression,
+                            "Unable to resolve value binding '" + identifierExpression.name() + "'"
+                    );
+                }
+                case DEFERRED_UNSUPPORTED -> reportDeferredUnsupported(
+                        identifierExpression,
+                        identifierExpression.name(),
+                        resolution.deferredBoundary()
+                );
+            }
+        }
+
+        private void bindTopLevelTypeMetaCandidate(@NotNull IdentifierExpression identifierExpression) {
+            var currentScope = scopesByAst.get(identifierExpression);
+            if (currentScope == null) {
+                reportDeferredUnsupported(
+                        identifierExpression,
+                        identifierExpression.name(),
+                        new FrontendVisibleValueDeferredBoundary(
+                                FrontendVisibleValueDomain.UNKNOWN_OR_SKIPPED_SUBTREE,
+                                dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDeferredReason
+                                        .MISSING_SCOPE_OR_SKIPPED_SUBTREE
+                        )
+                );
+                return;
+            }
+
+            var typeMetaResult = currentScope.resolveTypeMeta(identifierExpression.name(), currentRestriction);
+            if (typeMetaResult.isAllowed()) {
+                var typeMeta = typeMetaResult.requireValue();
+                if (supportsTopLevelTypeMeta(typeMeta)) {
+                    publishBinding(
+                            identifierExpression,
+                            identifierExpression.name(),
+                            FrontendBindingKind.TYPE_META,
+                            typeMeta.declaration()
+                    );
+                } else {
+                    reportBindingError(
+                            identifierExpression,
+                            "Top-level type-meta binding for '" + identifierExpression.name()
+                                    + "' currently supports only class-like registry types and lexical inner classes"
+                    );
+                }
+                return;
+            }
+
+            bindValueIdentifier(identifierExpression);
+        }
+
+        private void publishScopeValueBinding(
+                @NotNull IdentifierExpression identifierExpression,
+                @Nullable ScopeValue scopeValue
+        ) {
+            var resolvedValue = Objects.requireNonNull(scopeValue, "scopeValue must not be null");
+            publishBinding(
+                    identifierExpression,
+                    identifierExpression.name(),
+                    toBindingKind(resolvedValue.kind()),
+                    resolvedValue.declaration()
+            );
+        }
+
+        private boolean supportsTopLevelTypeMeta(@NotNull ScopeTypeMeta typeMeta) {
+            return !typeMeta.pseudoType()
+                    && (typeMeta.kind() == ScopeTypeMetaKind.GDCC_CLASS
+                    || typeMeta.kind() == ScopeTypeMetaKind.ENGINE_CLASS);
+        }
+
+        private @NotNull FrontendBindingKind toBindingKind(@NotNull ScopeValueKind scopeValueKind) {
+            return switch (Objects.requireNonNull(scopeValueKind, "scopeValueKind must not be null")) {
+                case LOCAL -> FrontendBindingKind.LOCAL_VAR;
+                case PARAMETER -> FrontendBindingKind.PARAMETER;
+                case CAPTURE -> FrontendBindingKind.CAPTURE;
+                case PROPERTY -> FrontendBindingKind.PROPERTY;
+                case SIGNAL -> FrontendBindingKind.SIGNAL;
+                case CONSTANT -> FrontendBindingKind.CONSTANT;
+                case SINGLETON -> FrontendBindingKind.SINGLETON;
+                case GLOBAL_ENUM -> FrontendBindingKind.GLOBAL_ENUM;
+                case TYPE_META -> FrontendBindingKind.TYPE_META;
+            };
+        }
+
+        private void publishBinding(
+                @NotNull Node useSite,
+                @NotNull String symbolName,
+                @NotNull FrontendBindingKind kind,
+                @Nullable Object declarationSite
+        ) {
+            symbolBindings.put(
+                    useSite,
+                    new FrontendBinding(
+                            Objects.requireNonNull(symbolName, "symbolName must not be null"),
+                            Objects.requireNonNull(kind, "kind must not be null"),
+                            declarationSite
+                    )
+            );
+        }
+
+        private void reportBindingError(@NotNull Node useSite, @NotNull String message) {
+            diagnosticManager.error(
+                    BINDING_CATEGORY,
+                    Objects.requireNonNull(message, "message must not be null"),
+                    sourcePath,
+                    FrontendRange.fromAstRange(useSite.range())
+            );
+        }
+
+        private void reportDeferredUnsupported(
+                @NotNull Node useSite,
+                @NotNull String symbolName,
+                @Nullable FrontendVisibleValueDeferredBoundary deferredBoundary
+        ) {
+            var boundary = Objects.requireNonNull(deferredBoundary, "deferredBoundary must not be null");
+            diagnosticManager.warning(
+                    UNSUPPORTED_BINDING_SUBTREE_CATEGORY,
+                    "Binding analysis for '" + symbolName + "' is deferred in " + formatDomain(boundary.domain()),
+                    sourcePath,
+                    FrontendRange.fromAstRange(useSite.range())
+            );
+        }
+
+        private @NotNull String formatDomain(@NotNull FrontendVisibleValueDomain domain) {
+            return switch (Objects.requireNonNull(domain, "domain must not be null")) {
+                case EXECUTABLE_BODY -> "executable body";
+                case PARAMETER_DEFAULT -> "parameter default";
+                case LAMBDA_SUBTREE -> "lambda subtree";
+                case BLOCK_LOCAL_CONST_SUBTREE -> "block-local const initializer";
+                case FOR_SUBTREE -> "for subtree";
+                case MATCH_SUBTREE -> "match subtree";
+                case UNKNOWN_OR_SKIPPED_SUBTREE -> "skipped subtree";
+            };
         }
 
         private boolean isNotPublished(@Nullable Node node) {

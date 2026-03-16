@@ -20,6 +20,7 @@ import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ClassNameStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
@@ -110,7 +111,15 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertNotNull(localBinding);
         assertEquals(GdVariantType.VARIANT, localBinding.type());
         assertEquals(ScopeValueKind.LOCAL, localBinding.kind());
-        assertTrue(result.symbolBindings().isEmpty());
+        var localInitializerUseSite = assertInstanceOf(
+                IdentifierExpression.class,
+                findVariable(pingFunction.body().statements(), "local").value()
+        );
+        var localInitializerBinding = result.symbolBindings().get(localInitializerUseSite);
+        assertNotNull(localInitializerBinding);
+        assertEquals(FrontendBindingKind.PARAMETER, localInitializerBinding.kind());
+        assertSame(pingFunction.parameters().getFirst(), localInitializerBinding.declarationSite());
+        assertFalse(result.symbolBindings().isEmpty());
         assertTrue(result.expressionTypes().isEmpty());
         assertTrue(result.resolvedMembers().isEmpty());
         assertTrue(result.resolvedCalls().isEmpty());
