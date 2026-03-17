@@ -601,7 +601,7 @@ body phase 里的 step status 需要同时回答三件事：
 
 **当前状态**：
 
-- [x] B0 输入输出冻结：已新增 `frontend.sema.resolver.FrontendChainReductionHelper`，先把 request/result、receiver state、step trace、upstream provenance、局部 note sink 等局部 contract 固定下来，继续保持“不写 `FrontendAnalysisData`、不直接承担 phase 发布”的边界。
+- [x] B0 输入输出冻结：已新增 `frontend.sema.analyzer.support.FrontendChainReductionHelper`，先把 request/result、receiver state、step trace、upstream provenance、局部 note sink 等局部 contract 固定下来，继续保持“不写 `FrontendAnalysisData`、不直接承担 phase 发布”的边界。
 - [x] B1 shared resolver 接线：已接上 instance property / signal、instance/static method，并把 constructor/static-load 先冻结成 frontend-only route 占位；instance-syntax 命中 static method 时同步产出 local note。
 - [x] B2 finalize-window 规则：call-step 参数类型现在支持一次有界 finalize-window 重试；若仍无法恢复，则当前 step 正式发布 `DEFERRED`，后续 suffix 只走 deferred-by-upstream trace，不再回溯重跑上游。
 - [x] B3 helper 合同测试：已新增 `FrontendChainReductionHelperTest`，纯 helper 级覆盖 resolved / blocked / deferred 恢复与停机 / dynamic / failed / unsupported / static route / repeatability，不依赖完整 `FrontendSemanticAnalyzer` wiring。
@@ -658,7 +658,7 @@ body phase 里的 step status 需要同时回答三件事：
 
 **当前验收记录**：
 
-- 新增 `FrontendChainReductionHelper` 作为 frontend 专用 reduction adapter，位置固定在 `frontend.sema.resolver`，与 shared `scope.resolver` 和后续 analyzer phase 保持清晰分层。
+- 新增 `FrontendChainReductionHelper` 作为 frontend 专用 reduction adapter，现位于 `frontend.sema.analyzer.support`，与 shared `scope.resolver` 和 analyzer-side support glue 保持清晰分层。
 - 新增 `FrontendChainReductionHelperTest`，使用手工 AST + fixture registry 做纯局部 reduction 测试，不依赖完整 `FrontendSemanticAnalyzer`。
 - 已跑通 targeted tests：
   - `FrontendChainReductionHelperTest`
@@ -869,6 +869,143 @@ MVP 优先覆盖：
 - 新增 `FrontendExprTypeAnalyzerTest`
 - `FrontendAnalysisDataTest`
 - `FrontendSemanticAnalyzerFrameworkTest`
+
+## 6.4.1 D/E 间重构收敛：抽出链头 receiver 与原子局部类型 support
+
+在 D 阶段功能已进入可发布状态后、E 阶段继续扩张表达式覆盖面前，建议先做一轮小范围结构收敛，优先消除
+`FrontendChainBindingAnalyzer` 与 `FrontendExprTypeAnalyzer` 中最容易再次造成语义漂移的重复 support 逻辑。
+
+第一步优先抽出“链头 receiver / 原子局部类型 support”，目标不是改变 published 语义，而是把两边几乎逐行重复的
+base expression 支撑逻辑收口到同一个 frontend helper。
+
+建议新增的 support helper 至少统一以下职责：
+
+- `resolveHeadReceiver(...)`
+- `resolveIdentifierHeadReceiver(...)`
+- `resolveTypeMetaReceiver(...)`
+- `resolveValueReceiver(...)`
+- `resolveSelfReceiver(...)`
+- `resolveLiteralType(...)`
+- `findEnclosingClassScope(...)`
+
+建议形态：
+
+- helper 位置保持在 frontend analyzer/support 层，而不是继续塞进 `FrontendChainReductionHelper`
+- helper 显式接收：
+  - `FrontendAnalysisData`
+  - `scopesByAst()`
+  - `ResolveRestriction`
+  - `staticContext`
+- 对 nested attribute base 的递归解析与 fallback expression receiver 解析，继续通过回调注入，而不是让 helper 直接依赖某个具体 analyzer
+
+原因与边界：
+
+- 这些逻辑本质上是 phase-agnostic 的 base lookup support，不是 step-by-step chain reduction 核心
+- 它们不应直接写 side table，也不应直接发 diagnostic
+- 抽出后可以减少 `BLOCKED` / `TYPE_META` / `self` / literal head 在两个 analyzer 之间出现语义漂移的概率
+
+验收标准：
+
+- `FrontendChainBindingAnalyzer` 与 `FrontendExprTypeAnalyzer` 中上述 support 方法被删除或收缩为薄转发
+- `self` 在 static context 下的 `BLOCKED` 语义保持不变
+- `TYPE_META`、普通 value、literal 作为 chain head 的行为保持不变
+- 现有 focused tests 无回归
+
+当前实施状态：
+
+- [x] 6.4.1.a 已新增 `FrontendChainHeadReceiverSupport`，统一承载 chain-head value / `TYPE_META` / `self` / literal receiver 支撑逻辑，并通过回调注入 nested attribute base 与 fallback expression receiver 解析。
+- [x] 6.4.1.b `FrontendChainBindingAnalyzer` 已删除本地重复的 head receiver / literal / enclosing class support 实现，改为收口到共享 helper。
+- [x] 6.4.1.c `FrontendExprTypeAnalyzer` 已删除本地重复的 head receiver / literal / enclosing class support 实现，改为收口到共享 helper。
+- [x] 6.4.1.d helper 单元测试、analyzer focused tests 与格式化校验已完成；新增 `FrontendChainHeadReceiverSupportTest`，并已跑通 `FrontendChainHeadReceiverSupportTest`、`FrontendChainReductionHelperTest`、`FrontendChainBindingAnalyzerTest`、`FrontendExprTypeAnalyzerTest`、`FrontendSemanticAnalyzerFrameworkTest`。
+
+## 6.4.2 D/E 间重构收敛：抽出状态对象转换桥
+
+第二步建议抽出“状态对象转换桥”，把 `ReceiverState`、`ExpressionTypeResult`、`FrontendExpressionType`、
+`FrontendResolvedMember`、`FrontendResolvedCall` 之间的转换协议固定到一处。
+
+当前最危险的重复不在 shared resolver，也不在 chain reduction 内核，而在 analyzer 两侧的 glue code：
+
+- `ReceiverState -> ExpressionTypeResult`
+- `ExpressionTypeResult -> ReceiverState`
+- `ReductionResult -> FrontendExpressionType`
+- `FrontendResolvedMember -> FrontendExpressionType`
+- `FrontendResolvedCall -> FrontendExpressionType`
+
+建议新增一个纯转换 helper，并冻结以下规则：
+
+- `DYNAMIC` 一律发布为 runtime-dynamic / `Variant`
+- `BLOCKED` 保留 winner type；若没有可发布 winner，则允许 `publishedType == null`
+- `FAILED` 才表示真实失败，不得再把 `BLOCKED` / `DYNAMIC` 压成 `FAILED`
+- `UPSTREAM_BLOCKED` 传播到 suffix 时，不得伪造当前层精确类型
+
+边界要求：
+
+- 该 helper 只负责对象转换与状态桥接
+- 不做 AST 遍历
+- 不做 side-table 发布
+- 不发 diagnostic
+
+验收标准：
+
+- 两个 analyzer 不再各自维护整套状态转换方法
+- `BLOCKED` / `DYNAMIC` / `UPSTREAM_BLOCKED` 的 published 行为由单一 helper 冻结
+- focused tests 继续覆盖：
+  - dynamic degradation
+  - blocked propagation
+  - exact `Variant` 与 dynamic `Variant` 区分
+
+## 6.4.3 D/E 间重构收敛：抽出带缓存的链 reduction 门面
+
+第三步建议抽出一个 analyzer-side 的“带缓存的 chain reduction 门面”，统一两边各自维护的
+`reducedChains` cache 与 `reduceAttributeExpression(...)` 样板。
+
+这个门面的职责应仅限于：
+
+- 维护 `AttributeExpression -> Optional<ReductionResult>` 的本地缓存
+- 统一 cache hit / miss 逻辑
+- 统一：
+  - head receiver 计算
+  - `FrontendChainReductionHelper.reduce(...)` 调用
+- 通过回调注入 expression dependency resolver
+
+这个门面**不应**负责：
+
+- 发布 `resolvedMembers()` / `resolvedCalls()`
+- 发布 `expressionTypes()`
+- 发 chain boundary diagnostic
+- 在内部偷偷持有 whole-module 级状态
+
+建议这样分层：
+
+- `FrontendChainReductionHelper` 继续只承担单条链 reduction 内核
+- 新门面承担 analyzer-side orchestration 与 cache
+- `FrontendChainBindingAnalyzer` 保留 `publishReduction(...)` 与 diagnostics 边界决策
+- `FrontendExprTypeAnalyzer` 保留：
+  - 优先消费 `resolvedMembers()` / `resolvedCalls()` 的 fast path
+  - reduction fallback 后的 expression type 发布
+
+验收标准：
+
+- 两个 analyzer 不再各自维护重复的 `reducedChains` 与 reduction 门面样板
+- nested attribute recursion 行为保持稳定
+- chain analyzer 仍只发布一次 diagnostics，不出现双重发布
+- expr analyzer 仍不会越权发布 member/call side table
+
+## 6.4.4 D/E 间收敛顺序建议
+
+建议按以下顺序推进，而不是同时做大范围重构：
+
+1. 先抽“链头 receiver / 原子局部类型 support”
+2. 再抽“状态对象转换桥”
+3. 最后抽“带缓存的链 reduction 门面”
+
+原因是：
+
+- 第一步收益最大、风险最低
+- 第二步最能降低语义状态再次漂移的风险
+- 第三步主要是结构清理，依赖前两步先把 support 与 conversion 收口
+
+这一轮重构完成后，再进入 E 阶段的 `:=` 回填与表达式覆盖扩张会更稳，不容易在 phase 边界重复堆积 glue code。
 
 ## 6.5 里程碑 E：变量类型回填与后续扩张
 

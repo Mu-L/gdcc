@@ -1,4 +1,4 @@
-package dev.superice.gdcc.frontend.sema.resolver;
+package dev.superice.gdcc.frontend.sema.analyzer.support;
 
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;

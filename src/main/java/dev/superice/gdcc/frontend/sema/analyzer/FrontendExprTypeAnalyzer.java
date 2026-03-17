@@ -6,20 +6,11 @@ import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
-import dev.superice.gdcc.frontend.scope.ClassScope;
-import dev.superice.gdcc.frontend.sema.resolver.FrontendChainReductionHelper;
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionHelper;
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainHeadReceiverSupport;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
-import dev.superice.gdcc.type.GdBoolType;
-import dev.superice.gdcc.type.GdFloatType;
-import dev.superice.gdcc.type.GdIntType;
-import dev.superice.gdcc.type.GdNilType;
-import dev.superice.gdcc.type.GdNodePathType;
-import dev.superice.gdcc.type.GdStringNameType;
-import dev.superice.gdcc.type.GdObjectType;
-import dev.superice.gdcc.type.GdStringType;
-import dev.superice.gdcc.type.GdType;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
@@ -340,17 +331,21 @@ public class FrontendExprTypeAnalyzer {
             }
         }
 
-        private @Nullable FrontendExpressionType publishExpressionType(@Nullable Expression expression) {
+        /// Ensures the expression type for `expression` has been published into `expressionTypes()`.
+        ///
+        /// Callers use this for its side effect only: populate the published side table before a
+        /// parent expression needs to consume nested facts. Returning the computed value provided no
+        /// additional signal because all current call sites intentionally ignore it.
+        private void publishExpressionType(@Nullable Expression expression) {
             if (expression == null) {
-                return null;
+                return;
             }
             var published = expressionTypes.get(expression);
             if (published != null) {
-                return published;
+                return;
             }
             var computed = resolveExpressionType(expression);
             expressionTypes.put(expression, computed);
-            return computed;
         }
 
         private @NotNull FrontendExpressionType resolveExpressionType(@NotNull Expression expression) {
@@ -369,7 +364,7 @@ public class FrontendExprTypeAnalyzer {
         private @NotNull FrontendExpressionType resolveLiteralExpressionType(
                 @NotNull LiteralExpression literalExpression
         ) {
-            var literalType = resolveLiteralType(literalExpression);
+            var literalType = headReceiverSupport().resolveLiteralType(literalExpression);
             if (literalType != null) {
                 return FrontendExpressionType.resolved(literalType);
             }
@@ -379,7 +374,7 @@ public class FrontendExprTypeAnalyzer {
         }
 
         private @NotNull FrontendExpressionType resolveSelfExpressionType(@NotNull Node selfNode) {
-            return toPublishedExpressionType(expressionTypeFromReceiver(resolveSelfReceiver(selfNode)));
+            return toPublishedExpressionType(expressionTypeFromReceiver(headReceiverSupport().resolveSelfReceiver(selfNode)));
         }
 
         private @NotNull FrontendExpressionType resolveIdentifierExpressionType(
@@ -520,7 +515,7 @@ public class FrontendExprTypeAnalyzer {
                 return cached.orElse(null);
             }
 
-            var headReceiver = resolveHeadReceiver(attributeExpression.base());
+            var headReceiver = headReceiverSupport().resolveHeadReceiver(attributeExpression.base());
             if (headReceiver == null) {
                 reducedChains.put(attributeExpression, Optional.empty());
                 return null;
@@ -539,135 +534,17 @@ public class FrontendExprTypeAnalyzer {
             return result;
         }
 
-        private @Nullable FrontendChainReductionHelper.ReceiverState resolveHeadReceiver(@NotNull Expression base) {
-            return switch (base) {
-                case IdentifierExpression identifierExpression -> resolveIdentifierHeadReceiver(identifierExpression);
-                case SelfExpression selfExpression -> resolveSelfReceiver(selfExpression);
-                case LiteralExpression literalExpression -> toResolvedLiteralReceiver(literalExpression);
-                case AttributeExpression attributeExpression -> {
-                    var nestedResult = reduceAttributeExpression(attributeExpression);
-                    yield nestedResult != null ? nestedResult.finalReceiver() : null;
-                }
-                default -> receiverFromExpressionType(resolveExpressionDependency(base, false));
-            };
-        }
-
-        private @Nullable FrontendChainReductionHelper.ReceiverState resolveIdentifierHeadReceiver(
-                @NotNull IdentifierExpression identifierExpression
-        ) {
-            var binding = analysisData.symbolBindings().get(identifierExpression);
-            if (binding == null) {
-                return null;
-            }
-            return switch (binding.kind()) {
-                case TYPE_META -> resolveTypeMetaReceiver(identifierExpression);
-                case SELF -> resolveSelfReceiver(identifierExpression);
-                case PARAMETER, LOCAL_VAR, CAPTURE, PROPERTY, SIGNAL, CONSTANT, SINGLETON, GLOBAL_ENUM ->
-                        resolveValueReceiver(identifierExpression);
-                case UNKNOWN -> null;
-                case LITERAL, METHOD, STATIC_METHOD, UTILITY_FUNCTION -> new FrontendChainReductionHelper.ReceiverState(
-                        FrontendChainReductionHelper.Status.FAILED,
-                        dev.superice.gdcc.frontend.sema.FrontendReceiverKind.UNKNOWN,
-                        null,
-                        null,
-                        "Chain head '" + identifierExpression.name() + "' does not publish a value receiver"
-                );
-            };
-        }
-
-        private @NotNull FrontendChainReductionHelper.ReceiverState resolveTypeMetaReceiver(
-                @NotNull IdentifierExpression identifierExpression
-        ) {
-            var currentScope = scopesByAst.get(identifierExpression);
-            if (currentScope == null) {
-                return new FrontendChainReductionHelper.ReceiverState(
-                        FrontendChainReductionHelper.Status.UNSUPPORTED,
-                        dev.superice.gdcc.frontend.sema.FrontendReceiverKind.UNKNOWN,
-                        null,
-                        null,
-                        "Type-meta receiver '" + identifierExpression.name() + "' is inside a skipped subtree"
-                );
-            }
-            var typeMetaResult = currentScope.resolveTypeMeta(identifierExpression.name(), currentRestriction);
-            if (!typeMetaResult.isAllowed()) {
-                return new FrontendChainReductionHelper.ReceiverState(
-                        FrontendChainReductionHelper.Status.FAILED,
-                        dev.superice.gdcc.frontend.sema.FrontendReceiverKind.UNKNOWN,
-                        null,
-                        null,
-                        "Published type-meta receiver '" + identifierExpression.name() + "' is no longer visible"
-                );
-            }
-            return FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(typeMetaResult.requireValue());
-        }
-
-        private @NotNull FrontendChainReductionHelper.ReceiverState resolveValueReceiver(
-                @NotNull IdentifierExpression identifierExpression
-        ) {
-            var currentScope = scopesByAst.get(identifierExpression);
-            if (currentScope == null) {
-                return new FrontendChainReductionHelper.ReceiverState(
-                        FrontendChainReductionHelper.Status.UNSUPPORTED,
-                        dev.superice.gdcc.frontend.sema.FrontendReceiverKind.UNKNOWN,
-                        null,
-                        null,
-                        "Value receiver '" + identifierExpression.name() + "' is inside a skipped subtree"
-                );
-            }
-            var valueResult = currentScope.resolveValue(identifierExpression.name(), currentRestriction);
-            if (valueResult.isAllowed()) {
-                return FrontendChainReductionHelper.ReceiverState.resolvedInstance(valueResult.requireValue().type());
-            }
-            if (valueResult.isBlocked()) {
-                return FrontendChainReductionHelper.ReceiverState.blockedFrom(
-                        FrontendChainReductionHelper.ReceiverState.resolvedInstance(valueResult.requireValue().type()),
-                        "Binding '" + identifierExpression.name() + "' is not accessible in the current context"
-                );
-            }
-            return new FrontendChainReductionHelper.ReceiverState(
-                    FrontendChainReductionHelper.Status.FAILED,
-                    dev.superice.gdcc.frontend.sema.FrontendReceiverKind.UNKNOWN,
-                    null,
-                    null,
-                    "Published value receiver '" + identifierExpression.name() + "' is no longer visible"
-            );
-        }
-
-        private @NotNull FrontendChainReductionHelper.ReceiverState resolveSelfReceiver(@NotNull Node selfNode) {
-            var classScope = findEnclosingClassScope(scopesByAst.get(selfNode));
-            if (classScope == null) {
-                return new FrontendChainReductionHelper.ReceiverState(
-                        FrontendChainReductionHelper.Status.UNSUPPORTED,
-                        dev.superice.gdcc.frontend.sema.FrontendReceiverKind.UNKNOWN,
-                        null,
-                        null,
-                        "Keyword 'self' is inside a skipped subtree"
-                );
-            }
-            var selfType = new GdObjectType(classScope.getCurrentClass().getName());
-            var resolvedSelf = FrontendChainReductionHelper.ReceiverState.resolvedInstance(selfType);
-            if (currentStaticContext) {
-                return FrontendChainReductionHelper.ReceiverState.blockedFrom(
-                        resolvedSelf,
-                        "Keyword 'self' is not available in static context"
-                );
-            }
-            return resolvedSelf;
-        }
-
-        private @NotNull FrontendChainReductionHelper.ReceiverState toResolvedLiteralReceiver(
-                @NotNull LiteralExpression literalExpression
-        ) {
-            var literalType = resolveLiteralType(literalExpression);
-            if (literalType != null) {
-                return FrontendChainReductionHelper.ReceiverState.resolvedInstance(literalType);
-            }
-            return new FrontendChainReductionHelper.ReceiverState(
-                    FrontendChainReductionHelper.Status.FAILED,
-                    dev.superice.gdcc.frontend.sema.FrontendReceiverKind.UNKNOWN,
-                    null,
-                    null,
-                    "Literal kind '" + literalExpression.kind() + "' does not yet have a local type rule"
+        private @NotNull FrontendChainHeadReceiverSupport headReceiverSupport() {
+            return new FrontendChainHeadReceiverSupport(
+                    analysisData,
+                    scopesByAst,
+                    currentRestriction,
+                    currentStaticContext,
+                    attributeExpression -> {
+                        var nestedResult = reduceAttributeExpression(attributeExpression);
+                        return nestedResult != null ? nestedResult.finalReceiver() : null;
+                    },
+                    expression -> receiverFromExpressionType(resolveExpressionDependency(expression, false))
             );
         }
 
@@ -680,12 +557,6 @@ public class FrontendExprTypeAnalyzer {
                 return FrontendChainReductionHelper.ExpressionTypeResult.fromPublished(published);
             }
             var computed = resolveExpressionType(expression);
-            if (computed == null) {
-                return FrontendChainReductionHelper.ExpressionTypeResult.unsupported(
-                        "Expression type for " + expression.getClass().getSimpleName()
-                                + " is inside an unsupported or skipped subtree"
-                );
-            }
             expressionTypes.put(expression, computed);
             return FrontendChainReductionHelper.ExpressionTypeResult.fromPublished(computed);
         }
@@ -760,33 +631,6 @@ public class FrontendExprTypeAnalyzer {
                         Objects.requireNonNull(typeResult.detailReason(), "detailReason must not be null")
                 );
             };
-        }
-
-        private @Nullable GdType resolveLiteralType(@NotNull LiteralExpression literalExpression) {
-            return switch (literalExpression.kind()) {
-                case "integer" -> GdIntType.INT;
-                case "float" -> GdFloatType.FLOAT;
-                case "string" -> GdStringType.STRING;
-                case "string_name" -> GdStringNameType.STRING_NAME;
-                case "true", "false" -> GdBoolType.BOOL;
-                case "null" -> GdNilType.NIL;
-                case "node_path" -> GdNodePathType.NODE_PATH;
-                case "number" -> literalExpression.sourceText().contains(".")
-                        ? GdFloatType.FLOAT
-                        : GdIntType.INT;
-                default -> null;
-            };
-        }
-
-        private @Nullable ClassScope findEnclosingClassScope(@Nullable Scope scope) {
-            var current = scope;
-            while (current != null) {
-                if (current instanceof ClassScope classScope) {
-                    return classScope;
-                }
-                current = current.getParentScope();
-            }
-            return null;
         }
 
         private static @NotNull FrontendExpressionType toPublishedExpressionType(
