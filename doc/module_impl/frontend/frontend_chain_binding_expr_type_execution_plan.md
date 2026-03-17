@@ -583,8 +583,17 @@ body phase 里的 step status 需要同时回答三件事：
   - resolved shape
   - blocked shape
   - deferred/dynamic/failed/unsupported shape
-  - defensive copy / null-contract / invariant failure
+- defensive copy / null-contract / invariant failure
 - 此时仍未引入真正的 chain/body 语义逻辑；A 的完成标准是“模型冻结”，不是“功能跑通”
+
+**当前状态（2026-03-17）**：
+
+- [x] 已完成结果模型扩展：`FrontendResolvedMember` / `FrontendResolvedCall` 已从 placeholder record 升级为正式 published result model，稳定承载状态、receiver kind、owner/type payload、declaration metadata 与 detail reason。
+- [x] 已完成辅助枚举落位：新增 `FrontendReceiverKind`、`FrontendMemberResolutionStatus`、`FrontendCallResolutionKind`、`FrontendCallResolutionStatus`，用于固定 body phase 的最小状态空间。
+- [x] 已完成模型不变量冻结：resolved/blocked/dynamic 等组合现在会在对象创建时校验关键字段约束，避免后续 analyzer 自由拼装非法状态。
+- [x] 已完成 `FrontendAnalysisData` 兼容性测试扩展：新增 `resolvedMembers()` / `resolvedCalls()` 的 stable-reference + stale-entry-clearing 测试，继续沿用现有 side-table publish 合同。
+- [x] 已完成 `FrontendResolvedMember` / `FrontendResolvedCall` focused tests：覆盖 happy path、非法状态组合、防御性复制与 detail-reason/null-contract。
+- [x] 已完成里程碑 A 的 targeted test 验证与文档收口：focused model tests 与 framework / top-binding / variable analyzer 回归测试均已通过。
 
 ## 6.2 里程碑 B：抽出局部链式 reduction helper
 

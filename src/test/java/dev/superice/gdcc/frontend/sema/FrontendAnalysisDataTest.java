@@ -5,6 +5,9 @@ import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.Scope;
+import dev.superice.gdcc.scope.ScopeOwnerKind;
+import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
@@ -97,6 +100,84 @@ class FrontendAnalysisDataTest {
         assertSame(originalSideTable, analysisData.symbolBindings());
         assertNull(analysisData.symbolBindings().get(staleNode));
         assertSame(publishedBinding, analysisData.symbolBindings().get(freshNode));
+    }
+
+    @Test
+    void updateResolvedMembersClearsStaleEntriesWithoutReplacingStableSideTableReference() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var originalSideTable = analysisData.resolvedMembers();
+        var staleNode = passNode();
+        var freshNode = passNode();
+        originalSideTable.put(
+                staleNode,
+                FrontendResolvedMember.failed(
+                        "hp",
+                        FrontendBindingKind.PROPERTY,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        new GdObjectType("Player"),
+                        "Player.hp",
+                        "stale failure"
+                )
+        );
+
+        var replacement = new FrontendAstSideTable<FrontendResolvedMember>();
+        var publishedMember = FrontendResolvedMember.resolved(
+                "hp",
+                FrontendBindingKind.PROPERTY,
+                FrontendReceiverKind.INSTANCE,
+                ScopeOwnerKind.GDCC,
+                new GdObjectType("Player"),
+                GdIntType.INT,
+                "Player.hp"
+        );
+        replacement.put(freshNode, publishedMember);
+
+        analysisData.updateResolvedMembers(replacement);
+
+        assertSame(originalSideTable, analysisData.resolvedMembers());
+        assertNull(analysisData.resolvedMembers().get(staleNode));
+        assertSame(publishedMember, analysisData.resolvedMembers().get(freshNode));
+    }
+
+    @Test
+    void updateResolvedCallsClearsStaleEntriesWithoutReplacingStableSideTableReference() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var originalSideTable = analysisData.resolvedCalls();
+        var staleNode = passNode();
+        var freshNode = passNode();
+        originalSideTable.put(
+                staleNode,
+                FrontendResolvedCall.failed(
+                        "move",
+                        FrontendCallResolutionKind.INSTANCE_METHOD,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        new GdObjectType("Player"),
+                        List.of(GdIntType.INT),
+                        "Player.move",
+                        "stale failure"
+                )
+        );
+
+        var replacement = new FrontendAstSideTable<FrontendResolvedCall>();
+        var publishedCall = FrontendResolvedCall.resolved(
+                "move",
+                FrontendCallResolutionKind.INSTANCE_METHOD,
+                FrontendReceiverKind.INSTANCE,
+                ScopeOwnerKind.GDCC,
+                new GdObjectType("Player"),
+                GdIntType.INT,
+                List.of(GdIntType.INT),
+                "Player.move"
+        );
+        replacement.put(freshNode, publishedCall);
+
+        analysisData.updateResolvedCalls(replacement);
+
+        assertSame(originalSideTable, analysisData.resolvedCalls());
+        assertNull(analysisData.resolvedCalls().get(staleNode));
+        assertSame(publishedCall, analysisData.resolvedCalls().get(freshNode));
     }
 
     private static PassStatement passNode() {
