@@ -485,18 +485,10 @@ public final class ScopeMethodResolver {
                                                                  @NotNull FunctionDef function,
                                                                  int ownerDistance) {
         var params = new ArrayList<ScopeMethodParameter>();
-        var startParamIndex = 0;
-        if (ownerKind == ScopeOwnerKind.GDCC && !function.isStatic()) {
-            var firstParam = function.getParameter(0);
-            if (firstParam == null || !firstParam.getName().equals("self")) {
-                throw new ScopeMethodResolutionException(
-                        FailureKind.MALFORMED_METADATA,
-                        "GDCC method '" + ownerClass.getName() + "." + function.getName() +
-                                "' must have 'self' as its first parameter"
-                );
-            }
-            startParamIndex = 1;
-        }
+        var ownerType = resolveOwnerType(ownerKind, ownerClass.getName());
+        var startParamIndex = ownerKind == ScopeOwnerKind.GDCC && !function.isStatic()
+                ? resolveGdccInstanceParameterStartIndex(ownerClass, function, ownerType)
+                : 0;
         for (var i = startParamIndex; i < function.getParameterCount(); i++) {
             var parameter = function.getParameter(i);
             if (parameter == null) {
@@ -522,8 +514,6 @@ public final class ScopeMethodResolver {
                     defaultFunctionName
             ));
         }
-
-        var ownerType = resolveOwnerType(ownerKind, ownerClass.getName());
         var returnType = resolveMethodReturnType(registry, ownerClass, function);
         return new ScopeResolvedMethod(
                 ownerKind,
@@ -534,6 +524,32 @@ public final class ScopeMethodResolver {
                 params,
                 ownerDistance
         );
+    }
+
+    /// GDCC currently has two stable metadata layouts for instance methods:
+    /// - lowered/shared LIR may materialize a synthetic leading `self` parameter
+    /// - frontend class skeleton publishes only user-visible parameters
+    /// Shared method lookup accepts both so frontend semantic phases can reuse the resolver without
+    /// forcing skeleton metadata to mimic backend lowering shape.
+    private static int resolveGdccInstanceParameterStartIndex(@NotNull ClassDef ownerClass,
+                                                              @NotNull FunctionDef function,
+                                                              @NotNull GdType ownerType) {
+        var firstParam = function.getParameter(0);
+        if (firstParam == null) {
+            return 0;
+        }
+        if (!firstParam.getName().equals("self")) {
+            return 0;
+        }
+        if (!firstParam.getType().getTypeName().equals(ownerType.getTypeName())) {
+            throw new ScopeMethodResolutionException(
+                    FailureKind.MALFORMED_METADATA,
+                    "GDCC method '" + ownerClass.getName() + "." + function.getName()
+                            + "' has synthetic self parameter of type '" + firstParam.getType().getTypeName()
+                            + "', expected '" + ownerType.getTypeName() + "'"
+            );
+        }
+        return 1;
     }
 
     private static @NotNull ScopeDefaultArgKind resolveDefaultArgKind(@NotNull ParameterDef parameter) {

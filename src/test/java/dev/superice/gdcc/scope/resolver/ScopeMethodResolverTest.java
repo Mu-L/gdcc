@@ -57,6 +57,54 @@ class ScopeMethodResolverTest {
     }
 
     @Test
+    @DisplayName("shared method resolver should accept frontend skeleton GDCC instance methods without synthetic self")
+    void resolveInstanceMethodShouldAcceptFrontendSkeletonGdccLayoutWithoutSyntheticSelf() {
+        var workerClass = newClass("Worker", "RefCounted");
+        var consume = newFunction("consume");
+        consume.addParameter(new LirParameterDef("value", GdVariantType.VARIANT, null, consume));
+        consume.setReturnType(GdIntType.INT);
+        entry(consume).instructions().add(new ReturnInsn(null));
+        workerClass.addFunction(consume);
+
+        var registry = newRegistry(emptyApi(), List.of(workerClass));
+        var result = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("Worker"),
+                "consume",
+                List.of(GdVariantType.VARIANT)
+        );
+
+        var resolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, result);
+        assertEquals("Worker", resolved.method().ownerClass().getName());
+        assertEquals(GdIntType.INT, resolved.method().returnType());
+        assertEquals(1, resolved.method().parameters().size());
+        assertEquals("value", resolved.method().parameters().getFirst().name());
+    }
+
+    @Test
+    @DisplayName("shared method resolver should reject malformed synthetic self metadata with wrong owner type")
+    void resolveInstanceMethodShouldRejectMalformedSyntheticSelfMetadata() {
+        var workerClass = newClass("Worker", "RefCounted");
+        var consume = newFunction("consume");
+        consume.addParameter(new LirParameterDef("self", new GdObjectType("Node"), null, consume));
+        consume.addParameter(new LirParameterDef("value", GdVariantType.VARIANT, null, consume));
+        entry(consume).instructions().add(new ReturnInsn(null));
+        workerClass.addFunction(consume);
+
+        var registry = newRegistry(emptyApi(), List.of(workerClass));
+        var result = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("Worker"),
+                "consume",
+                List.of(GdVariantType.VARIANT)
+        );
+
+        var failed = assertInstanceOf(ScopeMethodResolver.Failed.class, result);
+        assertEquals(ScopeMethodResolver.FailureKind.MALFORMED_METADATA, failed.kind());
+        assertTrue(failed.message().contains("synthetic self parameter"), failed.message());
+    }
+
+    @Test
     @DisplayName("shared method resolver should follow canonical inner-class superclass names")
     void resolveInstanceMethodShouldFollowCanonicalInnerSuperclassNames() {
         var parentClass = newClass("Outer$Shared", "RefCounted");

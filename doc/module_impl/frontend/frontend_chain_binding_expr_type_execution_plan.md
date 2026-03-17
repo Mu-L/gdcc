@@ -807,6 +807,8 @@ MVP 优先覆盖：
   - 新增 `FrontendExprTypeAnalyzer`
   - 明确输入依赖：`symbolBindings()`、`resolvedMembers()`、`resolvedCalls()`、必要的 class/type metadata
   - 明确 `expressionTypes()` 的缺项语义：未分析、无法发布、发布为 `Variant` 三者不能混淆
+  - 不新增新的表达式 side table；直接把 `expressionTypes()` 的元素类型从裸 `GdType` 升级为可承载状态、published type 与 detail reason 的富语义对象
+  - `expressionTypes()` 的富语义对象必须保留 `RESOLVED` / `BLOCKED` / `DEFERRED` / `DYNAMIC` / `FAILED` / `UNSUPPORTED` 区分，禁止再把 provenance 压回单个 `GdType`
 - D1：无争议原子表达式
   - literal
   - `self`
@@ -851,6 +853,16 @@ MVP 优先覆盖：
 - D5 完成后：
   - `:=` 回填所需 RHS typing 事实已经可消费
   - 但变量声明最终类型仍未在本阶段偷跑接线
+
+**当前状态（2026-03-17）**：
+
+- [x] D0.a 已冻结本轮修复边界：`expressionTypes()` 不新增新表，改为发布富语义 payload，用于同时承载状态、published type 与 detail reason。
+- [x] D0.b 已完成数据模型升级：新增 `FrontendExpressionType` / `FrontendExpressionTypeStatus`，并将 `FrontendAnalysisData.expressionTypes()` 升级为富语义 payload side table；兼容性测试同时锁定 stable-reference 与 stale-entry-clearing 合同。
+- [x] D0.c 已完成局部依赖协议修复：`FrontendChainReductionHelper.ExpressionTypeResult`、argument resolution 与 `FrontendChainBindingAnalyzer` 的 local typing glue 现在原生接受 `BLOCKED` / `DYNAMIC`，不再把这两类 provenance 压成 `FAILED`。
+- [x] D2/D3 已完成 published type 规则接线：`FrontendExprTypeAnalyzer` 已能按 `resolvedMembers()` / `resolvedCalls()` 的 status 逐类发布 property/signal/static load/constructor/method/static method 的 expression typing，而不是只在成功路径写精确类型。
+- [x] D4 已完成动态/阻断恢复合同：`DYNAMIC` 稳定降级发布为 `Variant`，`BLOCKED` 继续保留结构化依赖并向后缀传播，只有 `FAILED` 才表示真实失败；上游阻断传播到后缀时不再伪造当前层精确类型。
+- [x] D0-D4 已完成 shared resolver 兼容层补齐：`ScopeMethodResolver` 现同时接受“frontend skeleton 无 synthetic self”与“lowered/shared LIR 带 synthetic self”两种 GDCC 实例方法元数据布局；若命中错误类型的 synthetic `self`，仍稳定保留 `MALFORMED_METADATA`。
+- [x] D0-D4 已完成合同测试：focused tests 已覆盖 nested chain、argument dependency、dynamic degradation、blocked propagation、exact `Variant` 区分，以及 GDCC instance method metadata 双布局兼容与 malformed-self negative path。
 
 **推荐 targeted tests**：
 

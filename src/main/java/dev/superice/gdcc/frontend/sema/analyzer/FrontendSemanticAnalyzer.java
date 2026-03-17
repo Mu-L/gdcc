@@ -25,6 +25,7 @@ public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendVariableAnalyzer variableAnalyzer;
     private final @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer;
     private final @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer;
+    private final @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer;
 
     public FrontendSemanticAnalyzer() {
         this(
@@ -32,7 +33,8 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendScopeAnalyzer(),
                 new FrontendVariableAnalyzer(),
                 new FrontendTopBindingAnalyzer(),
-                new FrontendChainBindingAnalyzer()
+                new FrontendChainBindingAnalyzer(),
+                new FrontendExprTypeAnalyzer()
         );
     }
 
@@ -42,7 +44,8 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendScopeAnalyzer(),
                 new FrontendVariableAnalyzer(),
                 new FrontendTopBindingAnalyzer(),
-                new FrontendChainBindingAnalyzer()
+                new FrontendChainBindingAnalyzer(),
+                new FrontendExprTypeAnalyzer()
         );
     }
 
@@ -55,7 +58,8 @@ public final class FrontendSemanticAnalyzer {
                 scopeAnalyzer,
                 new FrontendVariableAnalyzer(),
                 new FrontendTopBindingAnalyzer(),
-                new FrontendChainBindingAnalyzer()
+                new FrontendChainBindingAnalyzer(),
+                new FrontendExprTypeAnalyzer()
         );
     }
 
@@ -69,7 +73,8 @@ public final class FrontendSemanticAnalyzer {
                 scopeAnalyzer,
                 variableAnalyzer,
                 new FrontendTopBindingAnalyzer(),
-                new FrontendChainBindingAnalyzer()
+                new FrontendChainBindingAnalyzer(),
+                new FrontendExprTypeAnalyzer()
         );
     }
 
@@ -84,7 +89,8 @@ public final class FrontendSemanticAnalyzer {
                 scopeAnalyzer,
                 variableAnalyzer,
                 topBindingAnalyzer,
-                new FrontendChainBindingAnalyzer()
+                new FrontendChainBindingAnalyzer(),
+                new FrontendExprTypeAnalyzer()
         );
     }
 
@@ -95,11 +101,30 @@ public final class FrontendSemanticAnalyzer {
             @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
             @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer
     ) {
+        this(
+                classSkeletonBuilder,
+                scopeAnalyzer,
+                variableAnalyzer,
+                topBindingAnalyzer,
+                chainBindingAnalyzer,
+                new FrontendExprTypeAnalyzer()
+        );
+    }
+
+    public FrontendSemanticAnalyzer(
+            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
+            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
+            @NotNull FrontendVariableAnalyzer variableAnalyzer,
+            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
+            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
+            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer
+    ) {
         this.classSkeletonBuilder = Objects.requireNonNull(classSkeletonBuilder, "classSkeletonBuilder must not be null");
         this.scopeAnalyzer = Objects.requireNonNull(scopeAnalyzer, "scopeAnalyzer must not be null");
         this.variableAnalyzer = Objects.requireNonNull(variableAnalyzer, "variableAnalyzer must not be null");
         this.topBindingAnalyzer = Objects.requireNonNull(topBindingAnalyzer, "topBindingAnalyzer must not be null");
         this.chainBindingAnalyzer = Objects.requireNonNull(chainBindingAnalyzer, "chainBindingAnalyzer must not be null");
+        this.exprTypeAnalyzer = Objects.requireNonNull(exprTypeAnalyzer, "exprTypeAnalyzer must not be null");
     }
 
     /// Runs the current frontend analyzer framework against one module using a shared
@@ -154,6 +179,11 @@ public final class FrontendSemanticAnalyzer {
         // Chain-binding analysis consumes published symbol/scope facts and emits the first stable
         // member/call side tables without opening whole-module expression typing yet.
         chainBindingAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+
+        // Expression typing consumes the published symbol/member/call facts and releases the final
+        // expression-type side table without reopening the earlier chain-binding phase.
+        exprTypeAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return analysisData;
     }

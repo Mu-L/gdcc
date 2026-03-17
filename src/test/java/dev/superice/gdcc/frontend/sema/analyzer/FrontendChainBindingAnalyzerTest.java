@@ -152,6 +152,42 @@ class FrontendChainBindingAnalyzerTest {
     }
 
     @Test
+    void analyzeUsesDynamicArgumentVariantToKeepOuterCallResolvable() throws Exception {
+        var analyzed = analyze(
+                "dynamic_argument_route.gd",
+                """
+                        class_name DynamicArgumentRoute
+                        extends RefCounted
+                        
+                        func consume(value) -> int:
+                            return 1
+                        
+                        func ping(worker):
+                            self.consume(worker.ping())
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var callStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var consumeStep = findNode(callStatement, AttributeCallStep.class, step -> step.name().equals("consume"));
+        var pingStep = findNode(callStatement, AttributeCallStep.class, step -> step.name().equals("ping"));
+
+        var innerDynamicCall = analyzed.analysisData().resolvedCalls().get(pingStep);
+        assertNotNull(innerDynamicCall);
+        assertEquals(FrontendCallResolutionStatus.DYNAMIC, innerDynamicCall.status());
+
+        var outerResolvedCall = analyzed.analysisData().resolvedCalls().get(consumeStep);
+        assertNotNull(outerResolvedCall);
+        assertEquals(
+                FrontendCallResolutionStatus.RESOLVED,
+                outerResolvedCall.status(),
+                String.valueOf(outerResolvedCall.detailReason())
+        );
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, outerResolvedCall.callKind());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
     void analyzePublishesStaticLoadFactsForGlobalEnumBuiltinAndEngineConstants() throws Exception {
         var analyzed = analyze(
                 "static_load_routes.gd",

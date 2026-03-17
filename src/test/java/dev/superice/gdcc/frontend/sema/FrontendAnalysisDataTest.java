@@ -8,6 +8,7 @@ import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeOwnerKind;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
@@ -138,6 +139,26 @@ class FrontendAnalysisDataTest {
         assertSame(originalSideTable, analysisData.resolvedMembers());
         assertNull(analysisData.resolvedMembers().get(staleNode));
         assertSame(publishedMember, analysisData.resolvedMembers().get(freshNode));
+    }
+
+    @Test
+    void updateExpressionTypesClearsStaleEntriesWithoutReplacingStableSideTableReference() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var originalSideTable = analysisData.expressionTypes();
+        var staleNode = passNode();
+        var freshNode = passNode();
+        originalSideTable.put(staleNode, FrontendExpressionType.failed("stale failure"));
+
+        var replacement = new FrontendAstSideTable<FrontendExpressionType>();
+        var publishedType = FrontendExpressionType.dynamic("runtime fallback");
+        replacement.put(freshNode, publishedType);
+
+        analysisData.updateExpressionTypes(replacement);
+
+        assertSame(originalSideTable, analysisData.expressionTypes());
+        assertNull(analysisData.expressionTypes().get(staleNode));
+        assertSame(publishedType, analysisData.expressionTypes().get(freshNode));
+        assertEquals(GdVariantType.VARIANT, analysisData.expressionTypes().get(freshNode).publishedType());
     }
 
     @Test

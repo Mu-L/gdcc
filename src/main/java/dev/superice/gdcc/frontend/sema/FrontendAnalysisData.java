@@ -2,7 +2,6 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.scope.Scope;
-import dev.superice.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -21,7 +20,7 @@ public final class FrontendAnalysisData {
     private final @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst;
     private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
     private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
-    private final @NotNull FrontendAstSideTable<GdType> expressionTypes;
+    private final @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes;
     private final @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers;
     private final @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls;
 
@@ -29,7 +28,7 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst,
             @NotNull FrontendAstSideTable<Scope> scopesByAst,
             @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
-            @NotNull FrontendAstSideTable<GdType> expressionTypes,
+            @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes,
             @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers,
             @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls
     ) {
@@ -73,7 +72,7 @@ public final class FrontendAnalysisData {
         replaceSideTableContents(this.symbolBindings, symbolBindings, "symbolBindings");
     }
 
-    public void updateExpressionTypes(@NotNull FrontendAstSideTable<GdType> expressionTypes) {
+    public void updateExpressionTypes(@NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes) {
         replaceSideTableContents(this.expressionTypes, expressionTypes, "expressionTypes");
     }
 
@@ -105,7 +104,7 @@ public final class FrontendAnalysisData {
         return symbolBindings;
     }
 
-    public @NotNull FrontendAstSideTable<GdType> expressionTypes() {
+    public @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes() {
         return expressionTypes;
     }
 

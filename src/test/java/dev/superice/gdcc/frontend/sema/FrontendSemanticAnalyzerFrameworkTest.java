@@ -128,7 +128,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertEquals(FrontendBindingKind.PARAMETER, localInitializerBinding.kind());
         assertSame(pingFunction.parameters().getFirst(), localInitializerBinding.declarationSite());
         assertFalse(result.symbolBindings().isEmpty());
-        assertTrue(result.expressionTypes().isEmpty());
+        var localInitializerType = result.expressionTypes().get(localInitializerUseSite);
+        assertNotNull(localInitializerType);
+        assertEquals("Variant", localInitializerType.publishedType().getTypeName());
         assertTrue(result.resolvedMembers().isEmpty());
         assertTrue(result.resolvedCalls().isEmpty());
         assertNotNull(result.diagnostics());

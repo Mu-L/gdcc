@@ -23,6 +23,7 @@ import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
@@ -183,6 +184,56 @@ class FrontendChainReductionHelperTest {
         assertEquals(FrontendChainReductionHelper.RouteKind.INSTANCE_METHOD, result.stepTraces().getFirst().routeKind());
         assertEquals(FrontendChainReductionHelper.Status.DYNAMIC, result.stepTraces().get(1).status());
         assertEquals(FrontendChainReductionHelper.RouteKind.UPSTREAM_DYNAMIC, result.stepTraces().get(1).routeKind());
+    }
+
+    @Test
+    void reduceUsesDynamicArgumentVariantToContinueExactCallResolution() {
+        var worker = newClass("Worker");
+        worker.addFunction(newMethod("consume", GdStringType.STRING, false, GdVariantType.VARIANT));
+        var registry = newRegistry(List.of(stringBuiltinWithLength()), List.of(worker));
+        var seed = identifier("seed");
+        var chain = chain(identifier("worker"), call("consume", seed), property("length"));
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedInstance(new GdObjectType("Worker")),
+                registry,
+                (expression, finalizeWindow) -> expression == seed
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.dynamic("seed routes through runtime-dynamic semantics")
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status());
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().get(1).status());
+        var consumeCall = result.stepTraces().getFirst().suggestedCall();
+        assertNotNull(consumeCall);
+        assertEquals(List.of(GdVariantType.VARIANT), consumeCall.argumentTypes());
+    }
+
+    @Test
+    void reducePreservesBlockedArgumentDependencyInsteadOfThrowing() {
+        var worker = newClass("Worker");
+        worker.addFunction(newMethod("consume", GdStringType.STRING, false, GdVariantType.VARIANT));
+        var registry = newRegistry(List.of(stringBuiltinWithLength()), List.of(worker));
+        var seed = identifier("seed");
+        var chain = chain(identifier("worker"), call("consume", seed), property("length"));
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedInstance(new GdObjectType("Worker")),
+                registry,
+                (expression, finalizeWindow) -> expression == seed
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.blocked(
+                        null,
+                        "seed is blocked by upstream restriction"
+                )
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.BLOCKED, result.stepTraces().getFirst().status());
+        assertNull(result.stepTraces().getFirst().suggestedCall());
+        assertEquals(FrontendChainReductionHelper.Status.BLOCKED, result.stepTraces().get(1).status());
+        assertEquals(FrontendChainReductionHelper.RouteKind.UPSTREAM_BLOCKED, result.stepTraces().get(1).routeKind());
     }
 
     @Test

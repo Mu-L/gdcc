@@ -3,6 +3,7 @@ package dev.superice.gdcc.frontend.sema.resolver;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
+import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
@@ -118,11 +119,13 @@ public final class FrontendChainReductionHelper {
                     throw new IllegalArgumentException("detailReason must be null for resolved expression type result");
                 }
             } else {
-                if (status == Status.BLOCKED || status == Status.DYNAMIC) {
-                    throw new IllegalArgumentException("expression type dependencies do not support " + status);
-                }
-                if (type != null) {
-                    throw new IllegalArgumentException("type must be null for non-resolved expression type result");
+                if (status == Status.DYNAMIC) {
+                    Objects.requireNonNull(type, "type must not be null for dynamic expression type result");
+                    if (!(type instanceof GdVariantType)) {
+                        throw new IllegalArgumentException("dynamic expression type result must publish Variant");
+                    }
+                } else if (status != Status.BLOCKED && type != null) {
+                    throw new IllegalArgumentException("type must be null for non-resolved/non-blocked expression type result");
                 }
                 requireNonBlank(detailReason, "detailReason");
             }
@@ -136,12 +139,36 @@ public final class FrontendChainReductionHelper {
             return new ExpressionTypeResult(Status.DEFERRED, null, detailReason);
         }
 
+        public static @NotNull ExpressionTypeResult blocked(
+                @Nullable GdType type,
+                @NotNull String detailReason
+        ) {
+            return new ExpressionTypeResult(Status.BLOCKED, type, detailReason);
+        }
+
+        public static @NotNull ExpressionTypeResult dynamic(@NotNull String detailReason) {
+            return new ExpressionTypeResult(Status.DYNAMIC, GdVariantType.VARIANT, detailReason);
+        }
+
         public static @NotNull ExpressionTypeResult failed(@NotNull String detailReason) {
             return new ExpressionTypeResult(Status.FAILED, null, detailReason);
         }
 
         public static @NotNull ExpressionTypeResult unsupported(@NotNull String detailReason) {
             return new ExpressionTypeResult(Status.UNSUPPORTED, null, detailReason);
+        }
+
+        public static @NotNull ExpressionTypeResult fromPublished(@NotNull FrontendExpressionType expressionType) {
+            var published = Objects.requireNonNull(expressionType, "expressionType must not be null");
+            return switch (published.status()) {
+                case RESOLVED ->
+                        resolved(Objects.requireNonNull(published.publishedType(), "publishedType must not be null"));
+                case BLOCKED -> blocked(published.publishedType(), Objects.requireNonNull(published.detailReason()));
+                case DEFERRED -> deferred(Objects.requireNonNull(published.detailReason()));
+                case DYNAMIC -> dynamic(Objects.requireNonNull(published.detailReason()));
+                case FAILED -> failed(Objects.requireNonNull(published.detailReason()));
+                case UNSUPPORTED -> unsupported(Objects.requireNonNull(published.detailReason()));
+            };
         }
     }
 
@@ -328,10 +355,10 @@ public final class FrontendChainReductionHelper {
         UpstreamCause upstreamCause = currentReceiver.status() == Status.RESOLVED
                 ? null
                 : new UpstreamCause(
-                        OptionalInt.empty(),
-                        currentReceiver.status(),
-                        requireNonBlank(currentReceiver.detailReason(), "currentReceiver.detailReason")
-                );
+                OptionalInt.empty(),
+                currentReceiver.status(),
+                requireNonBlank(currentReceiver.detailReason(), "currentReceiver.detailReason")
+        );
 
         for (var stepIndex = 0; stepIndex < input.chainExpression().steps().size(); stepIndex++) {
             var step = input.chainExpression().steps().get(stepIndex);
@@ -531,7 +558,8 @@ public final class FrontendChainReductionHelper {
         return switch (receiverTypeMeta.kind()) {
             case GLOBAL_ENUM -> reduceGlobalEnumStaticLoad(stepIndex, step, incomingReceiver, receiverTypeMeta);
             case BUILTIN -> reduceBuiltinStaticLoad(stepIndex, step, incomingReceiver, classRegistry, receiverTypeMeta);
-            case ENGINE_CLASS -> reduceEngineStaticLoad(stepIndex, step, incomingReceiver, classRegistry, receiverTypeMeta);
+            case ENGINE_CLASS ->
+                    reduceEngineStaticLoad(stepIndex, step, incomingReceiver, classRegistry, receiverTypeMeta);
             case GDCC_CLASS -> {
                 var detailReason = "Static load route on GDCC class '" + receiverTypeMeta.sourceName()
                         + "' is deferred until class constants are published";
@@ -1161,12 +1189,14 @@ public final class FrontendChainReductionHelper {
         var detailReason = Objects.requireNonNull(argumentResolution.detailReason(), "detailReason must not be null");
         var status = argumentResolution.status();
         var outgoingReceiver = switch (status) {
+            case BLOCKED -> new ReceiverState(Status.BLOCKED, FrontendReceiverKind.UNKNOWN, null, null, detailReason);
             case DEFERRED -> ReceiverState.deferredFrom(incomingReceiver, detailReason);
             case FAILED -> ReceiverState.failedFrom(incomingReceiver, detailReason);
             case UNSUPPORTED -> ReceiverState.unsupportedFrom(incomingReceiver, detailReason);
             default -> throw new IllegalStateException("unexpected argument status: " + status);
         };
         var call = switch (status) {
+            case BLOCKED -> null;
             case DEFERRED -> FrontendResolvedCall.deferred(
                     step.name(),
                     callKind,
@@ -1313,6 +1343,18 @@ public final class FrontendChainReductionHelper {
             var result = lookupExpressionType(request, expression, false);
             switch (result.status()) {
                 case RESOLVED -> resolvedTypes.add(Objects.requireNonNull(result.type()));
+                case DYNAMIC -> resolvedTypes.add(Objects.requireNonNull(result.type()));
+                case BLOCKED -> {
+                    if (result.type() != null) {
+                        resolvedTypes.add(result.type());
+                    }
+                    return new ArgumentResolution(
+                            Status.BLOCKED,
+                            resolvedArgumentPrefix(resolvedTypes),
+                            "Argument #" + (index + 1) + " is blocked: " + result.detailReason(),
+                            false
+                    );
+                }
                 case DEFERRED -> {
                     resolvedTypes.add(null);
                     deferredIndexes.add(index);
@@ -1325,8 +1367,6 @@ public final class FrontendChainReductionHelper {
                             false
                     );
                 }
-                case BLOCKED, DYNAMIC ->
-                        throw new IllegalStateException("unexpected dependency status: " + result.status());
             }
         }
 
@@ -1339,6 +1379,19 @@ public final class FrontendChainReductionHelper {
             var result = lookupExpressionType(request, expression, true);
             switch (result.status()) {
                 case RESOLVED -> resolvedTypes.set(deferredIndex, Objects.requireNonNull(result.type()));
+                case DYNAMIC -> resolvedTypes.set(deferredIndex, Objects.requireNonNull(result.type()));
+                case BLOCKED -> {
+                    if (result.type() != null) {
+                        resolvedTypes.set(deferredIndex, result.type());
+                    }
+                    return new ArgumentResolution(
+                            Status.BLOCKED,
+                            resolvedArgumentPrefix(resolvedTypes),
+                            "Argument #" + (deferredIndex + 1) + " is blocked during finalize-window retry: "
+                                    + result.detailReason(),
+                            true
+                    );
+                }
                 case DEFERRED -> {
                     return new ArgumentResolution(
                             Status.DEFERRED,
@@ -1357,8 +1410,6 @@ public final class FrontendChainReductionHelper {
                             true
                     );
                 }
-                case BLOCKED, DYNAMIC ->
-                        throw new IllegalStateException("unexpected dependency status: " + result.status());
             }
         }
         return new ArgumentResolution(Status.RESOLVED, List.copyOf(resolvedTypes), null, true);
@@ -1382,7 +1433,7 @@ public final class FrontendChainReductionHelper {
     ) {
         var publishedType = request.analysisData().expressionTypes().get(expression);
         if (publishedType != null) {
-            return ExpressionTypeResult.resolved(publishedType);
+            return ExpressionTypeResult.fromPublished(publishedType);
         }
         return request.expressionTypeResolver().resolve(expression, finalizeWindow);
     }
