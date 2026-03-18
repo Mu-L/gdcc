@@ -1353,7 +1353,230 @@ F 阶段完成后，frontend body phase 仍有一块与 GDScript 语义不对齐
   - method / static-method reference 作为 member value 的 `Callable` materialization
   - assignment / subscript / generic deferred expression 的 expr-owned diagnostics 与 root-level 去重
 
-## 6.8 阶段总体验收出口
+## 6.8 里程碑 H：共享表达式语义 support、subscript/container typing 与 assignment 语义收口
+
+G 里程碑完成后，frontend body phase 仍有三条会继续污染 published contract 的高风险空洞，需要在更大范围的 E2/E3 扩张之前先收口：
+
+- `FrontendChainBindingAnalyzer` 与 `FrontendExprTypeAnalyzer` 目前各自维护了一套局部表达式语义解析：
+  - identifier / bare callable materialization
+  - bare call overload 选择
+  - nested expression dependency typing
+  - direct-callable-invocation unsupported sealing
+  - 这些逻辑在 G 之后已经明显变长；若继续分别扩张 subscript / assignment / 更多 expression node，语义漂移风险会显著上升
+- `SubscriptExpression` 与 `AttributeSubscriptStep` 现在仍停留在“有诊断的 deferred / unsupported”：
+  - plain subscript 没有真正的 base/container typing 与 element/result typing
+  - attribute-subscript 没有 exact chain reduction route
+  - chain-local dependency typer 也没有把 subscript 视为一等 expression node
+- `AssignmentExpression` 当前仍只是 deferred 包装，但 GDScript 语义要求 assignment 是有副作用的语句节点，不是返回普通值的 expression：
+  - 不能继续停留在 generic deferred wrapper
+  - 也不能直接把 assignment 改成“普通 resolved value”，否则会与现有 discarded-expression policy 发生冲突
+
+这一里程碑的目标不是把 E2/E3 的更大表达式覆盖面整体提前做完，而是以最小但真实可消费的语义收口以下四件事：
+
+- 把 duplicated expression semantic logic 抽取为公共 support，冻结单一真源
+- 让 supported container family 上的 plain / attribute subscript 成为真正 typed semantics
+- 让 assignment 以符合 GDScript 语义的“成功但无值”合同转正
+- 明确缩小 generic deferred bucket，并补齐 callable 分支的 focused tests
+
+设计锚点与新增语义需要与当前已知规则保持一致：
+
+- `FrontendExpressionType.publishedType` 的语义是 downstream 可消费类型；`DEFERRED` / `FAILED` / `UNSUPPORTED` 不发布类型，因此 subscript / assignment 不能继续长期停留在 placeholder 状态。
+- 官方 GDScript 语义要求 assignment 不是 ordinary value expression；statement-position 的 `_a = 2` 不属于 `STANDALONE_EXPRESSION` warning 范畴。
+- 官方 warning 体系已经区分 `STANDALONE_EXPRESSION` 与 `RETURN_VALUE_DISCARDED`，因此 assignment 转正时不能误入 discarded-expression warning。
+- 现有类型系统与 backend 已经具备 container key/value type、index load/store 与 assignment target 基础设施；frontend 的缺口主要在 published contract 没有接通，而不是底层模型不存在。
+
+**新增语义与明确非目标**：
+
+- 新增语义：
+  - 共享 expression semantic support 成为 chain/expr 两个 analyzer 的唯一局部表达式语义真源；analyzer 自己只继续拥有 publication、diagnostic owner 与 statement policy。
+  - supported container family 上的 plain subscript / attribute-subscript 将发布真正的 typed result，而不是单纯 deferred/unsupported wrapper。
+  - assignment 成功态按 GDScript 语义发布 `RESOLVED(void)`，表达“语义成功且有副作用，但不产生 ordinary value”。
+  - `handleExpressionStatement(...)` 的 warning policy 需要显式区分 ordinary discarded value、void call、assignment-success root 三类语义。
+  - generic deferred bucket 需要从“默认兜底黑箱”收窄为“显式枚举的剩余延期节点集合”。
+- 明确非目标：
+  - 不在 H 里程碑一次性做完 full operator / ternary / array literal / dictionary literal / cast / await / preload / get_node typing。
+  - 不在 H 里程碑引入 whole-module fixpoint、新的顶层 analyzer phase 或新的全局 side table。
+  - 不在 H 里程碑扩张 destructuring / pattern assignment、flow-sensitive assignment refinement、arbitrary keyed builtin 的完整 subscript 语义。
+  - 不在 H 里程碑重塑 `FrontendBinding` 为 usage-aware 模型；assignment target 解析需要新增独立 support/model，而不是让 top binding 越权。
+
+**实施细则**：
+
+- H0：提取共享 expression semantic support
+  - 在 `frontend/sema/analyzer/support` 中新增公共 support，建议命名为 `FrontendExpressionSemanticSupport` 或语义等价名称。
+  - 该 support 必须是 pure semantic helper：
+    - 不直接写 side table
+    - 不直接发 diagnostic
+    - 不直接 walk AST statement tree
+  - analyzer 责任边界需要冻结为：
+    - shared support：identifier / bare callable / bare call / subscript / assignment / remaining explicit-deferred nodes 的局部语义解析
+    - `FrontendExprTypeAnalyzer`：publication、expr-owned diagnostics、statement warning、`:=` backfill
+    - `FrontendChainBindingAnalyzer`：chain/member/call route diagnostics、本地 dependency 消费、shared helper callback 接线
+  - `FrontendChainBindingAnalyzer.resolveExpressionType(...)` 与 `FrontendExprTypeAnalyzer.resolveExpressionType(...)` 不得再各自维持独立但语义重复的 call/callable/subscript/assignment 实现。
+  - shared support 的输出必须保持 analyzer-neutral：
+    - 推荐直接返回 `FrontendExpressionType` 或与其等价的 pure result model
+    - 若 chain analyzer 需要 `ExpressionTypeResult`，只能通过 bridge 转换，不得在两个 analyzer 内部复制一套状态映射
+  - 当前落地约束：
+    - `FrontendExpressionSemanticSupport` 已成为 literal / `self` / identifier / bare callable / bare call / assignment / subscript / explicit-deferred 的唯一局部语义真源。
+    - shared support 通过 `rootOwnsOutcome` 区分“当前 root 自己产生的结果”与“从子依赖上传播的结果”；只有 analyzer 自己可以据此决定是否发 expr-owned diagnostic。
+    - chain analyzer 继续保留 `finalizeWindow` 传递能力；shared support 只消费该窗口，不拥有 retry/publish policy。
+- H1：subscript/container typing 收口
+  - 新增共享 `FrontendSubscriptSemanticSupport`，或作为 H0 shared support 的子域实现：
+    - plain `SubscriptExpression`
+    - `AttributeSubscriptStep`
+    - chain-local dependency 中出现的 nested subscript
+  - 第一阶段仅正式支持 `GdContainerType` family：
+    - `Array[T]`
+    - `Dictionary[K, V]`
+    - packed array family
+  - 支持规则固定为：
+    - receiver 为 `GdContainerType`：
+      - key/index type 用 `ClassRegistry.checkAssignable(argumentType, container.getKeyType())` 校验
+      - 成功后结果类型为 `container.getValueType()`
+    - receiver 为 `Variant`：
+      - 发布 `DYNAMIC(Variant)`
+      - 不退化成 deferred
+    - receiver 不是 container：
+      - 发布明确 `FAILED`
+    - metadata 表明 receiver keyed，但 frontend 当前仍无稳定规则时：
+      - 显式 `UNSUPPORTED`
+      - 不退回 generic deferred
+  - `FrontendChainReductionHelper` 必须把 `AttributeSubscriptStep` 从 hardcoded unsupported 改成真实 reduction step，并复用现有 argument finalize/retry window。
+  - `FrontendChainBindingAnalyzer` 的本地 expression dependency typer 必须把 `SubscriptExpression` 纳入一等节点，否则 chain call argument 中的 `arr[i]` 仍会无谓拖成 `DEFERRED`。
+  - 当前阶段不新增独立的 subscript side table；先依赖 `expressionTypes()` 与 chain reduction trace/output receiver 完成最小闭环。
+- H2：assignment 语义与 statement policy 收口
+  - 新增独立 assignment semantic support，建议命名为 `FrontendAssignmentSemanticSupport` 或语义等价名称。
+  - 必须新增 assignment-target resolution model，而不是继续依赖 usage-agnostic `FrontendBinding` 反推左值语义。
+  - 第一阶段支持的 assignment target 建议保守冻结为：
+    - bare identifier
+    - attribute property
+    - plain subscript
+    - attribute-subscript
+  - 第一阶段明确不支持：
+    - destructuring / pattern assignment
+    - flow-sensitive narrowing / smart-cast-style refinement
+    - 更复杂的 multi-target assignment
+  - assignment 成功态 contract 必须明确为：
+    - 发布 `RESOLVED(void)`
+    - 表达“赋值语义成功，但不产生 ordinary value”
+    - 不得发布 RHS 类型为 assignment 的 published type
+  - 赋值校验至少要冻结以下行为：
+    - target 是否可写
+    - RHS 是否 assignable 到 target slot
+    - constant / method reference / `TYPE_META` / 不可写 signal 等非法左值要稳定 `FAILED`
+  - `handleExpressionStatement(...)` 需要同步重构为语义分类策略：
+    - resolved ordinary non-`void` value -> `sema.discarded_expression`
+    - resolved `void` bare/chain call -> 静默
+    - resolved assignment-success root -> 静默
+    - `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` / `DYNAMIC` -> 继续优先依赖 expr-owned / upstream diagnostic，不额外叠 discarded warning
+  - 若 assignment 出现在 value-required 位置，必须 fail-closed，而不是伪装成 ordinary resolved value。
+- H3：generic deferred bucket 收窄
+  - `FrontendExprTypeAnalyzer` 不能继续把大批节点统一压回 “generic deferred expression” 黑箱。
+  - 需要先把 remaining unsupported/deferred node kinds 显式列出并单独命名 reason，即使当前仍暂不转正。
+  - 本里程碑结束时至少应满足：
+    - `SubscriptExpression` 与 `AssignmentExpression` 不再属于 generic deferred bucket
+    - 其余仍延期节点变为“显式列举的 deferred set”，而不是默认分支黑箱
+  - 当前阶段不要求一并做完：
+    - full operator typing
+    - ternary typing
+    - array/dictionary literal typing
+    - await/preload/get_node/cast/type-test 的全面转正
+- H4：callable focused test matrix 补齐
+  - 补齐以下当前明显缺失的 focused tests：
+    - `.bind(...)`：
+      - `helper.bind(...)`
+      - `self.helper.bind(...)`
+      - `Worker.build.bind(...)`
+    - blocked bare call：
+      - expr path
+      - chain path
+    - direct-callable-invocation unsupported 变体：
+      - callable produced by `.bind(...)`
+      - callable chain head variant
+    - callable chain head 变体：
+      - `self.helper.call()`
+      - `Worker.build.call()`
+      - blocked / failed callable head receiver
+  - `ambiguous bare call` 与 `empty overload set` 当前更适合作 helper-level focused test：
+    - 可以通过提取 overload selection helper 做纯单元测试
+    - 不要求强依赖 end-to-end GDScript fixture 自然触发这些分支
+  - subscript 收口后，需要同步补 integration cases：
+    - `items[0].bind(...)`
+    - `dict["cb"].call()`
+    - `consume(items[0])`
+
+**验收标准**：
+
+- H0 完成后：
+  - chain/expr analyzer 的局部 expression semantic logic 已有单一 shared support 真源
+  - duplicated identifier/call/callable/subscript/assignment 语义实现不再分散在两个 analyzer 内部漂移
+  - shared support 本身不拥有 side-table publication 或 diagnostic owner
+- H1 完成后：
+  - supported container family 上的 plain subscript 稳定发布 `RESOLVED(element/value type)`
+  - `AttributeSubscriptStep` 不再 hardcoded unsupported，exact suffix 可继续 reduction
+  - `Variant` receiver subscript 稳定走 `DYNAMIC(Variant)`，而不是 generic deferred
+  - non-container receiver 与当前未正式支持的 keyed route 拥有明确 `FAILED` / `UNSUPPORTED` contract
+- H2 完成后：
+  - assignment 不再只是 deferred wrapper
+  - assignment-success root 稳定发布 `RESOLVED(void)`，且 statement-position 不发 discarded warning
+  - 非法左值与 assignability 失败拥有明确 error contract
+  - assignment 若被放到 value-required 位置，会 fail-closed，而不是伪装成 ordinary value
+- H3 完成后：
+  - generic deferred bucket 已从默认黑箱收窄为显式枚举集合
+  - `SubscriptExpression` / `AssignmentExpression` 不再属于 generic deferred catch-all
+  - 后续 E2/E3 若继续扩张 operator/ternary/其他 expression node，不需要再同时维护两个 analyzer 内部的漂移实现
+- H4 完成后：
+  - `.bind(...)`、blocked bare call、callable direct invocation variants、callable chain head variants 均有 focused tests
+  - ambiguous bare call 与 empty overload set 至少在 helper/unit 层被稳定锚定
+  - subscript + callable integration cases 具备正反两面 coverage
+
+**推荐 targeted tests**：
+
+- `FrontendExprTypeAnalyzerTest`
+- `FrontendChainBindingAnalyzerTest`
+- `FrontendChainReductionHelperTest`
+- `FrontendChainHeadReceiverSupportTest`
+- `FrontendSemanticAnalyzerFrameworkTest`
+- 若 overload selection helper 被提取：
+  - 新增 dedicated helper/unit test
+
+建议至少补齐以下 focused case matrix：
+
+- subscript/container：
+  - `items[0]`
+  - `typed_items[i]`
+  - `dict["name"]`
+  - `self.items[0].length`
+  - `consume(items[0])`
+  - bad key type / non-container receiver / keyed-but-unsupported route
+- assignment：
+  - `value = 1`
+  - `self.hp = 1`
+  - `items[0] = 1`
+  - constant / method reference / `TYPE_META` / signal 等非法左值
+  - assignment-success root 不发 discarded warning
+  - assignment 被放到 value-required 位置时 fail-closed
+- shared expression semantic support：
+  - expr analyzer 与 chain analyzer 对 bare callable / bare call / subscript / assignment 的 status contract 保持一致
+  - bridge 转换不引入第二套 status/publishedType 语义
+- callable focused hardening：
+  - `helper.bind(...)`
+  - `self.helper.bind(...)`
+  - `Worker.build.bind(...)`
+  - blocked bare call
+  - ambiguous bare call
+  - empty overload set
+  - callable produced by `.bind(...)` 后再 direct invoke
+  - `items[0].bind(...)` / `dict["cb"].call()`
+
+**当前实施状态（2026-03-18）**：
+
+- [x] H0 已完成（2026-03-18）：已提取 `FrontendExpressionSemanticSupport`，并接线到 `FrontendExprTypeAnalyzer` / `FrontendChainBindingAnalyzer`；两侧不再各自维护 bare callable / bare call / assignment / subscript / explicit-deferred 的重复局部语义实现。新增 `FrontendExpressionSemanticSupportTest`，并通过 `FrontendExpressionSemanticSupportTest, FrontendExprTypeAnalyzerTest, FrontendChainBindingAnalyzerTest, FrontendChainReductionHelperTest, FrontendChainStatusBridgeTest` 定向测试锚定合同。
+- [ ] H1 待实施：plain subscript 仍只发布 deferred，attribute-subscript 仍 hardcoded unsupported，chain-local dependency typer 也未把 subscript 视为一等节点。
+- [ ] H2 待实施：assignment 仍是 deferred wrapper，尚未建立 assignable target contract 与 `RESOLVED(void)` success semantics，也尚未重构 statement-position warning policy。
+- [ ] H3 待实施：generic deferred bucket 仍过宽；除本里程碑明确要收口的节点外，remaining deferred node set 尚未显式拆分。
+- [ ] H4 待实施：callable focused tests 仍缺 `.bind(...)`、blocked bare call、ambiguous bare call、empty overload set、callable direct invocation variants 与 subscript+callable integration cases。
+
+## 6.9 阶段总体验收出口
 
 第六部分整体完成时，应满足以下条件：
 
@@ -1361,12 +1584,17 @@ F 阶段完成后，frontend body phase 仍有一块与 GDScript 语义不对齐
 - constructor route、static method route、static load route 三条语义路径已结构化分流，不再依赖临时分支拼装
 - `BLOCKED` / `DEFERRED` / `DYNAMIC` / `FAILED` / `UNSUPPORTED` 的 published 语义、后缀传播和诊断数量都可测试、可预测
 - `:=` 已能消费稳定 RHS typing 完成变量真实类型落地
+- supported container family 上的 plain / attribute subscript 已具备稳定 typed semantics，可继续支撑 chain suffix 与 `:=` backfill
+- assignment 已按 GDScript 语义收口为“成功但无 ordinary value”的 `RESOLVED(void)` 语义，且 statement-position 不误发 discarded warning
 - bare `TYPE_META` 已按“static-route 头、非一等 value”合同收口，不再污染 ordinary value expression typing
 - bare `TYPE_META` ordinary-value misuse 已有精确用户可见 error，且在 statement root、nested dependency 与 `:=` initializer 中都能稳定保留 `FAILED` provenance
 - 链头 binding 未解析的 hard-fail 合同已统一：坏链头会发 error diagnostic，且在顶层、nested dependency 与 `:=` initializer 场景下都保持同向 provenance
 - bare function-like symbol 在 value position 上已稳定 materialize 为 `Callable`，不再误报 unknown value binding
 - expression statement 已有稳定的 discarded-result warning 合同：non-`void` resolved value 会告警，resolved `void` bare call 保持静默
+- shared expression semantic support 已成为 chain/expr analyzer 的共同真源，不再维持两套局部 expression semantic 解析实现
 - expression-only `FAILED` / `DEFERRED` / `UNSUPPORTED` 根节点不再只停留在 side table；它们要么拥有 expr-owned diagnostic，要么明确复用既有 upstream diagnostic provenance
+- generic deferred bucket 已收窄为显式枚举的剩余延期节点集合，而不是默认黑箱
+- callable 的高风险分支已有 focused tests 锚定：至少包含 `.bind(...)`、blocked bare call、direct-callable-invocation variants，以及 helper-level ambiguous/empty-overload coverage
 - 整体设计仍保持“整体分层、局部交替”，未退化成 whole-module fixpoint
 
 建议在整体出口前至少跑通以下 targeted tests 组合：
@@ -1460,6 +1688,7 @@ body phase 继续遵守 frontend 统一恢复合同：
 2. 局部在单条链内交替推进 binding 与类型。
 3. 先扩充 `FrontendResolvedMember` / `FrontendResolvedCall` 模型。
 4. 再做 chain reduction helper 与 `FrontendChainBindingAnalyzer` MVP。
-5. 最后让 `FrontendExprTypeAnalyzer` 在稳定的 member/call 结果之上发布 `expressionTypes()` 并接通 `:=`。
+5. 让 `FrontendExprTypeAnalyzer` 在稳定的 member/call 结果之上发布 `expressionTypes()`，并先完成 G 里程碑的 callable/type-meta/expr-owned diagnostics 收口。
+6. 在继续扩张更多 expression node 之前，提取 shared expression semantic support，收口 H 里程碑中的 subscript/container typing、assignment 语义与 callable focused test matrix。
 
 这条路线既与当前仓库的 side-table / resolver 合同一致，也与 Godot 当前“整体分阶段、局部 reduction” 的组织方式保持同向。

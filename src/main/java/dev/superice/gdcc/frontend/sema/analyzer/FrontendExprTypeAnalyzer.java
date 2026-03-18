@@ -11,15 +11,11 @@ import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionHelper;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainStatusBridge;
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendExpressionSemanticSupport;
 import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.scope.ClassRegistry;
-import dev.superice.gdcc.scope.FunctionDef;
-import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
-import dev.superice.gdcc.type.GdCallableType;
-import dev.superice.gdcc.type.GdType;
-import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
@@ -56,7 +52,6 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
@@ -119,6 +114,7 @@ public class FrontendExprTypeAnalyzer {
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
         private final @NotNull FrontendChainReductionFacade chainReduction;
+        private final @NotNull FrontendExpressionSemanticSupport expressionSemanticSupport;
         private final @NotNull IdentityHashMap<Node, Node> parentByNode = new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<Node, Boolean> reportedExpressionRoots = new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<Node, Boolean> reportedDeferredRoots = new IdentityHashMap<>();
@@ -150,6 +146,13 @@ public class FrontendExprTypeAnalyzer {
                     () -> currentStaticContext,
                     classRegistry,
                     this::resolveExpressionDependency
+            );
+            expressionSemanticSupport = new FrontendExpressionSemanticSupport(
+                    analysisData.symbolBindings(),
+                    scopesByAst,
+                    () -> currentRestriction,
+                    classRegistry,
+                    chainReduction::headReceiverSupport
             );
         }
 
@@ -463,108 +466,59 @@ public class FrontendExprTypeAnalyzer {
 
         private @NotNull FrontendExpressionType resolveExpressionType(@NotNull Expression expression) {
             return switch (expression) {
-                case LiteralExpression literalExpression -> resolveLiteralExpressionType(literalExpression);
-                case SelfExpression selfExpression -> resolveSelfExpressionType(selfExpression);
-                case IdentifierExpression identifierExpression -> resolveIdentifierExpressionType(identifierExpression);
+                case LiteralExpression literalExpression ->
+                        expressionSemanticSupport.resolveLiteralExpressionType(literalExpression).expressionType();
+                case SelfExpression selfExpression ->
+                        expressionSemanticSupport.resolveSelfExpressionType(selfExpression).expressionType();
+                case IdentifierExpression identifierExpression ->
+                        expressionSemanticSupport.resolveIdentifierExpressionType(identifierExpression).expressionType();
                 case AttributeExpression attributeExpression -> resolveAttributeExpressionType(attributeExpression);
-                case AssignmentExpression assignmentExpression -> resolveAssignmentExpressionType(assignmentExpression);
-                case CallExpression callExpression -> resolveCallExpressionType(callExpression);
-                case SubscriptExpression subscriptExpression -> resolveSubscriptExpressionType(subscriptExpression);
-                case LambdaExpression lambdaExpression -> deferredExpression(
+                case AssignmentExpression assignmentExpression -> finishDeferredResolution(
+                        assignmentExpression,
+                        expressionSemanticSupport.resolveAssignmentExpressionType(
+                                assignmentExpression,
+                                this::resolveExpressionDependencyType,
+                                false
+                        )
+                );
+                case CallExpression callExpression -> finishCallResolution(
+                        callExpression,
+                        expressionSemanticSupport.resolveCallExpressionType(
+                                callExpression,
+                                this::resolveExpressionDependencyType,
+                                true,
+                                false
+                        )
+                );
+                case SubscriptExpression subscriptExpression -> finishDeferredResolution(
+                        subscriptExpression,
+                        expressionSemanticSupport.resolveSubscriptExpressionType(
+                                subscriptExpression,
+                                this::resolveExpressionDependencyType,
+                                false
+                        )
+                );
+                case LambdaExpression lambdaExpression -> finishDeferredResolution(
                         lambdaExpression,
-                        "Lambda expression typing is deferred until lambda semantics are implemented"
+                        expressionSemanticSupport.resolveLambdaExpressionType(
+                                lambdaExpression,
+                                this::resolveExpressionDependencyType,
+                                false,
+                                false
+                        )
                 );
-                default -> resolveGenericDeferredExpressionType(expression);
-            };
-        }
-
-        private @NotNull FrontendExpressionType resolveLiteralExpressionType(
-                @NotNull LiteralExpression literalExpression
-        ) {
-            var literalType = chainReduction.headReceiverSupport().resolveLiteralType(literalExpression);
-            if (literalType != null) {
-                return FrontendExpressionType.resolved(literalType);
-            }
-            return FrontendExpressionType.failed(
-                    "Literal kind '" + literalExpression.kind() + "' does not yet have a local type rule"
-            );
-        }
-
-        private @NotNull FrontendExpressionType resolveSelfExpressionType(@NotNull Node selfNode) {
-            return FrontendChainStatusBridge.toPublishedExpressionType(
-                    chainReduction.headReceiverSupport().resolveSelfReceiver(selfNode)
-            );
-        }
-
-        private @NotNull FrontendExpressionType resolveIdentifierExpressionType(
-                @NotNull IdentifierExpression identifierExpression
-        ) {
-            var binding = analysisData.symbolBindings().get(identifierExpression);
-            if (binding == null) {
-                return FrontendExpressionType.failed(
-                        "No published binding fact is available for identifier '" + identifierExpression.name() + "'"
-                );
-            }
-            return switch (binding.kind()) {
-                case SELF -> resolveSelfExpressionType(identifierExpression);
-                case PARAMETER, LOCAL_VAR, CAPTURE, PROPERTY, SIGNAL, CONSTANT, SINGLETON, GLOBAL_ENUM -> {
-                    var currentScope = scopesByAst.get(identifierExpression);
-                    if (currentScope == null) {
-                        yield FrontendExpressionType.unsupported(
-                                "Identifier '" + identifierExpression.name() + "' is inside a skipped subtree"
-                        );
-                    }
-                    var valueResult = currentScope.resolveValue(identifierExpression.name(), currentRestriction);
-                    if (valueResult.isAllowed()) {
-                        yield FrontendExpressionType.resolved(valueResult.requireValue().type());
-                    }
-                    if (valueResult.isBlocked()) {
-                        yield FrontendExpressionType.blocked(
-                                valueResult.requireValue().type(),
-                                "Binding '" + identifierExpression.name() + "' is not accessible in the current context"
-                        );
-                    }
-                    yield FrontendExpressionType.failed(
-                            "Published value binding '" + identifierExpression.name() + "' is no longer visible"
-                    );
-                }
-                case TYPE_META -> FrontendExpressionType.failed(
-                        "Type-meta identifier '" + identifierExpression.name()
-                                + "' cannot be consumed as an ordinary value; use a static route such as '"
-                                + identifierExpression.name() + ".build(...)', '" + identifierExpression.name()
-                                + ".new()', or a static constant access"
-                );
-                case METHOD, STATIC_METHOD, UTILITY_FUNCTION ->
-                        resolveCallableIdentifierExpressionType(identifierExpression);
-                case UNKNOWN, LITERAL -> FrontendExpressionType.failed(
-                        "Identifier '" + identifierExpression.name() + "' does not resolve to a typed value"
+                default -> finishDeferredResolution(
+                        expression,
+                        expressionSemanticSupport.resolveExplicitDeferredExpressionType(
+                                expression,
+                                this::resolveExpressionDependencyType,
+                                true,
+                                "Expression type for " + expression.getClass().getSimpleName()
+                                        + " is deferred until milestone-G coverage reaches this node kind",
+                                false
+                        )
                 );
             };
-        }
-
-        private @NotNull FrontendExpressionType resolveCallableIdentifierExpressionType(
-                @NotNull IdentifierExpression identifierExpression
-        ) {
-            var currentScope = scopesByAst.get(identifierExpression);
-            if (currentScope == null) {
-                return FrontendExpressionType.unsupported(
-                        "Callable expression '" + identifierExpression.name() + "' is inside a skipped subtree"
-                );
-            }
-            var functionResult = currentScope.resolveFunctions(identifierExpression.name(), currentRestriction);
-            var callableType = new GdCallableType();
-            if (functionResult.isAllowed()) {
-                return FrontendExpressionType.resolved(callableType);
-            }
-            if (functionResult.isBlocked()) {
-                return FrontendExpressionType.blocked(
-                        callableType,
-                        "Binding '" + identifierExpression.name() + "' is not accessible in the current context"
-                );
-            }
-            return FrontendExpressionType.failed(
-                    "Published callable binding '" + identifierExpression.name() + "' is no longer visible"
-            );
         }
 
         /// Published final-step facts cover the exact fast path.
@@ -607,100 +561,47 @@ public class FrontendExprTypeAnalyzer {
             return FrontendChainStatusBridge.toPublishedExpressionType(reduced);
         }
 
-        private @NotNull FrontendExpressionType resolveAssignmentExpressionType(
-                @NotNull AssignmentExpression assignmentExpression
-        ) {
-            var leftType = publishExpressionType(assignmentExpression.left());
-            var rightType = publishExpressionType(assignmentExpression.right());
-            var dependencyIssue = firstNonResolvedDependency(leftType, rightType);
-            return Objects.requireNonNullElseGet(dependencyIssue, () -> deferredExpression(
-                    assignmentExpression,
-                    "Assignment expression typing is deferred until assignment semantics are implemented"
-            ));
-        }
-
-        private @NotNull FrontendExpressionType resolveCallExpressionType(@NotNull CallExpression callExpression) {
-            if (callExpression.callee() instanceof IdentifierExpression bareCallee) {
-                var calleeType = publishExpressionType(bareCallee);
-                if (calleeType != null && calleeType.status() != FrontendExpressionTypeStatus.RESOLVED) {
-                    return calleeType;
-                }
-                var argumentResolution = resolveCallArgumentTypes(
-                        bareCallee.name(),
-                        callExpression.arguments()
-                );
-                if (argumentResolution.issue() != null) {
-                    return argumentResolution.issue();
-                }
-                return resolveBareIdentifierCallExpression(
-                        callExpression,
-                        bareCallee,
-                        argumentResolution.argumentTypes()
-                );
-            }
-
-            var calleeType = publishExpressionType(callExpression.callee());
-            var argumentResolution = resolveCallArgumentTypes(
-                    callExpression.callee().getClass().getSimpleName(),
-                    callExpression.arguments()
-            );
-            if (argumentResolution.issue() != null) {
-                return argumentResolution.issue();
-            }
-            if (calleeType == null) {
-                return unsupportedExpression(
-                        callExpression,
-                        "Call expression is inside a skipped subtree"
-                );
-            }
-            return switch (calleeType.status()) {
-                case RESOLVED -> calleeType.publishedType() instanceof GdCallableType
-                        ? unsupportedExpression(
-                        callExpression,
-                        "Direct invocation of callable values is not implemented yet unless the callee is a bare identifier"
-                )
-                        : failedExpression(
-                        callExpression,
-                        "Call target does not resolve to a callable value"
-                );
-                case BLOCKED, DEFERRED, FAILED, UNSUPPORTED, DYNAMIC -> calleeType;
-            };
-        }
-
-        private @NotNull FrontendExpressionType resolveSubscriptExpressionType(
-                @NotNull SubscriptExpression subscriptExpression
-        ) {
-            var baseType = publishExpressionType(subscriptExpression.base());
-            var dependencyIssue = firstNonResolvedDependency(baseType);
-            if (dependencyIssue != null) {
-                return dependencyIssue;
-            }
-            var argumentResolution = resolveCallArgumentTypes(
-                    "subscript",
-                    subscriptExpression.arguments()
-            );
-            if (argumentResolution.issue() != null) {
-                return argumentResolution.issue();
-            }
-            return deferredExpression(
-                    subscriptExpression,
-                    "Subscript expression typing is deferred until subscript semantics are implemented"
-            );
-        }
-
-        private @NotNull FrontendExpressionType resolveGenericDeferredExpressionType(@NotNull Expression expression) {
-            var dependencyIssue = publishNestedExpressionChildren(expression);
-            return Objects.requireNonNullElseGet(dependencyIssue, () -> deferredExpression(
-                    expression,
-                    "Expression type for " + expression.getClass().getSimpleName()
-                            + " is deferred until milestone-G coverage reaches this node kind"
-            ));
-        }
-
         private @Nullable FrontendChainReductionHelper.ReductionResult reduceAttributeExpression(
                 @NotNull AttributeExpression attributeExpression
         ) {
             return chainReduction.reduce(attributeExpression).result();
+        }
+
+        private @NotNull FrontendExpressionType resolveExpressionDependencyType(
+                @NotNull Expression expression,
+                boolean finalizeWindow
+        ) {
+            return Objects.requireNonNull(
+                    publishExpressionType(expression),
+                    "publishExpressionType must not return null for non-null expressions"
+            );
+        }
+
+        private @NotNull FrontendExpressionType finishCallResolution(
+                @NotNull Node root,
+                @NotNull FrontendExpressionSemanticSupport.ExpressionSemanticResult resolution
+        ) {
+            var expressionType = resolution.expressionType();
+            if (resolution.rootOwnsOutcome()) {
+                switch (expressionType.status()) {
+                    case FAILED -> reportExpressionError(root, requireDetailReason(expressionType));
+                    case UNSUPPORTED -> reportUnsupportedExpression(root, requireDetailReason(expressionType));
+                    case RESOLVED, BLOCKED, DEFERRED, DYNAMIC -> {
+                    }
+                }
+            }
+            return expressionType;
+        }
+
+        private @NotNull FrontendExpressionType finishDeferredResolution(
+                @NotNull Node root,
+                @NotNull FrontendExpressionSemanticSupport.ExpressionSemanticResult resolution
+        ) {
+            var expressionType = resolution.expressionType();
+            if (resolution.rootOwnsOutcome() && expressionType.status() == FrontendExpressionTypeStatus.DEFERRED) {
+                reportDeferredExpression(root, requireDetailReason(expressionType));
+            }
+            return expressionType;
         }
 
         private @NotNull FrontendChainReductionHelper.ExpressionTypeResult resolveExpressionDependency(
@@ -714,131 +615,6 @@ public class FrontendExprTypeAnalyzer {
             var computed = resolveExpressionType(expression);
             publishResolvedExpressionType(expression, computed);
             return FrontendChainStatusBridge.toExpressionTypeResult(computed);
-        }
-
-        /// Bare-call typing deliberately mirrors chain-call argument handling: resolved types flow
-        /// through unchanged, dynamic arguments widen to `Variant`, and the first blocked/deferred/
-        /// failed/unsupported argument stops the bare call without adding a duplicate root diagnostic.
-        private @NotNull CallArgumentResolution resolveCallArgumentTypes(
-                @NotNull String calleeDisplayName,
-                @NotNull List<? extends Expression> arguments
-        ) {
-            var argumentTypes = new ArrayList<GdType>(arguments.size());
-            for (var index = 0; index < arguments.size(); index++) {
-                var argumentType = publishExpressionType(arguments.get(index));
-                if (argumentType == null) {
-                    return new CallArgumentResolution(
-                            List.of(),
-                            unsupportedExpression(
-                                    arguments.get(index),
-                                    "Argument #" + (index + 1) + " of '" + calleeDisplayName
-                                            + "' is inside a skipped subtree"
-                            )
-                    );
-                }
-                switch (argumentType.status()) {
-                    case RESOLVED, DYNAMIC -> argumentTypes.add(argumentType.publishedType());
-                    case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> {
-                        return new CallArgumentResolution(List.of(), argumentType);
-                    }
-                }
-            }
-            return new CallArgumentResolution(List.copyOf(argumentTypes), null);
-        }
-
-        private @NotNull FrontendExpressionType resolveBareIdentifierCallExpression(
-                @NotNull CallExpression callExpression,
-                @NotNull IdentifierExpression bareCallee,
-                @NotNull List<GdType> argumentTypes
-        ) {
-            var currentScope = scopesByAst.get(bareCallee);
-            if (currentScope == null) {
-                return unsupportedExpression(
-                        callExpression,
-                        "Bare call '" + bareCallee.name() + "(...)' is inside a skipped subtree"
-                );
-            }
-            var functionResult = currentScope.resolveFunctions(bareCallee.name(), currentRestriction);
-            if (functionResult.isAllowed()) {
-                var overloadSelection = selectCallableOverload(functionResult.requireValue(), argumentTypes);
-                if (overloadSelection.selected() != null) {
-                    return FrontendExpressionType.resolved(overloadSelection.selected().getReturnType());
-                }
-                return failedExpression(
-                        callExpression,
-                        Objects.requireNonNull(overloadSelection.detailReason(), "detailReason must not be null")
-                );
-            }
-            if (functionResult.isBlocked()) {
-                var overloadSelection = selectCallableOverload(functionResult.requireValue(), argumentTypes);
-                var blockedReturnType = overloadSelection.selected() != null
-                        ? overloadSelection.selected().getReturnType()
-                        : null;
-                return FrontendExpressionType.blocked(
-                        blockedReturnType,
-                        "Binding '" + bareCallee.name() + "' is not accessible in the current context"
-                );
-            }
-            return FrontendExpressionType.failed(
-                    "Published bare callee binding '" + bareCallee.name() + "' is no longer visible"
-            );
-        }
-
-        private @Nullable FrontendExpressionType firstNonResolvedDependency(
-                @Nullable FrontendExpressionType... dependencies
-        ) {
-            for (var dependency : dependencies) {
-                if (dependency == null || dependency.status() == FrontendExpressionTypeStatus.RESOLVED) {
-                    continue;
-                }
-                if (dependency.status() == FrontendExpressionTypeStatus.DYNAMIC) {
-                    continue;
-                }
-                return dependency;
-            }
-            return null;
-        }
-
-        private @Nullable FrontendExpressionType publishNestedExpressionChildren(@NotNull Node node) {
-            for (var child : node.getChildren()) {
-                if (child instanceof Expression childExpression) {
-                    var publishedChild = publishExpressionType(childExpression);
-                    var dependencyIssue = firstNonResolvedDependency(publishedChild);
-                    if (dependencyIssue != null) {
-                        return dependencyIssue;
-                    }
-                    continue;
-                }
-                var nestedIssue = publishNestedExpressionChildren(child);
-                if (nestedIssue != null) {
-                    return nestedIssue;
-                }
-            }
-            return null;
-        }
-
-        private @NotNull FrontendExpressionType failedExpression(
-                @NotNull Node root,
-                @NotNull String detailReason
-        ) {
-            reportExpressionError(root, detailReason);
-            return FrontendExpressionType.failed(detailReason);
-        }
-
-        private @NotNull FrontendExpressionType deferredExpression(
-                @NotNull Node root,
-                @NotNull String detailReason
-        ) {
-            reportDeferredExpression(root, detailReason);
-            return FrontendExpressionType.deferred(detailReason);
-        }
-
-        private @NotNull FrontendExpressionType unsupportedExpression(
-                @NotNull Node root,
-                @NotNull String detailReason
-        ) {
-            reportUnsupportedExpression(root, detailReason);
-            return FrontendExpressionType.unsupported(detailReason);
         }
 
         private void reportExpressionError(@NotNull Node root, @NotNull String detailReason) {
@@ -877,6 +653,10 @@ public class FrontendExprTypeAnalyzer {
             );
         }
 
+        private @NotNull String requireDetailReason(@NotNull FrontendExpressionType expressionType) {
+            return Objects.requireNonNull(expressionType.detailReason(), "detailReason must not be null");
+        }
+
         private void reportDiscardedExpressionWarning(
                 @NotNull Expression expression,
                 @Nullable FrontendExpressionType expressionType
@@ -899,157 +679,12 @@ public class FrontendExprTypeAnalyzer {
             );
         }
 
-        private @NotNull CallableOverloadSelection selectCallableOverload(
-                @NotNull List<? extends FunctionDef> overloadSet,
-                @NotNull List<GdType> argumentTypes
-        ) {
-            var applicable = overloadSet.stream()
-                    .filter(callable -> matchesCallableArguments(callable, argumentTypes))
-                    .toList();
-            if (applicable.size() == 1) {
-                return new CallableOverloadSelection(applicable.getFirst(), null);
-            }
-            if (applicable.size() > 1) {
-                return new CallableOverloadSelection(
-                        null,
-                        "Ambiguous bare call overload: " + renderCallableSignatures(applicable)
-                );
-            }
-            var detailReason = overloadSet.isEmpty()
-                    ? "Bare call resolves to an empty overload set"
-                    : "No applicable overload for bare call: "
-                    + buildCallableMismatchReason(overloadSet.getFirst(), argumentTypes)
-                    + ". candidates: " + renderCallableSignatures(overloadSet);
-            return new CallableOverloadSelection(null, detailReason);
-        }
-
-        private boolean matchesCallableArguments(
-                @NotNull FunctionDef callable,
-                @NotNull List<GdType> argumentTypes
-        ) {
-            var parameters = List.copyOf(callable.getParameters());
-            var fixedCount = parameters.size();
-            var providedCount = argumentTypes.size();
-            if (providedCount < fixedCount && !canOmitTrailingParameters(parameters, providedCount)) {
-                return false;
-            }
-            if (!callable.isVararg() && providedCount > fixedCount) {
-                return false;
-            }
-            var fixedPrefixCount = Math.min(providedCount, fixedCount);
-            for (var index = 0; index < fixedPrefixCount; index++) {
-                if (!classRegistry.checkAssignable(argumentTypes.get(index), parameters.get(index).getType())) {
-                    return false;
-                }
-            }
-            if (!callable.isVararg()) {
-                return true;
-            }
-            for (var index = fixedCount; index < providedCount; index++) {
-                if (!classRegistry.checkAssignable(argumentTypes.get(index), GdVariantType.VARIANT)) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        private @NotNull String buildCallableMismatchReason(
-                @NotNull FunctionDef callable,
-                @NotNull List<GdType> argumentTypes
-        ) {
-            var parameters = List.copyOf(callable.getParameters());
-            var fixedCount = parameters.size();
-            var providedCount = argumentTypes.size();
-            if (providedCount < fixedCount && !canOmitTrailingParameters(parameters, providedCount)) {
-                var missingParameterIndex = firstMissingRequiredParameter(parameters, providedCount);
-                return "missing required parameter #" + (missingParameterIndex + 1) + " ('"
-                        + parameters.get(missingParameterIndex).getName() + "')";
-            }
-            if (!callable.isVararg() && providedCount > fixedCount) {
-                return "expected " + fixedCount + " arguments, got " + providedCount;
-            }
-            var fixedPrefixCount = Math.min(providedCount, fixedCount);
-            for (var index = 0; index < fixedPrefixCount; index++) {
-                var argumentType = argumentTypes.get(index);
-                var parameter = parameters.get(index);
-                if (!classRegistry.checkAssignable(argumentType, parameter.getType())) {
-                    return "argument #" + (index + 1) + " of type '" + argumentType.getTypeName()
-                            + "' is not assignable to parameter '" + parameter.getName()
-                            + "' of type '" + parameter.getType().getTypeName() + "'";
-                }
-            }
-            if (callable.isVararg()) {
-                for (var index = fixedCount; index < providedCount; index++) {
-                    var argumentType = argumentTypes.get(index);
-                    if (!classRegistry.checkAssignable(argumentType, GdVariantType.VARIANT)) {
-                        return "vararg argument #" + (index + 1) + " must be Variant, got '"
-                                + argumentType.getTypeName() + "'";
-                    }
-                }
-            }
-            return "no compatible signature found";
-        }
-
-        private boolean canOmitTrailingParameters(
-                @NotNull List<? extends ParameterDef> parameters,
-                int providedCount
-        ) {
-            for (var index = providedCount; index < parameters.size(); index++) {
-                if (parameters.get(index).getDefaultValueFunc() == null) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        private int firstMissingRequiredParameter(
-                @NotNull List<? extends ParameterDef> parameters,
-                int providedCount
-        ) {
-            for (var index = providedCount; index < parameters.size(); index++) {
-                if (parameters.get(index).getDefaultValueFunc() == null) {
-                    return index;
-                }
-            }
-            return providedCount;
-        }
-
-        private @NotNull String renderCallableSignatures(@NotNull List<? extends FunctionDef> callables) {
-            var signatures = new ArrayList<String>(callables.size());
-            for (var callable : callables) {
-                var args = new ArrayList<String>();
-                for (var parameter : callable.getParameters()) {
-                    args.add(parameter.getType().getTypeName());
-                }
-                if (callable.isVararg()) {
-                    args.add("...");
-                }
-                signatures.add(callable.getName() + "(" + String.join(", ", args) + ")");
-            }
-            return String.join("; ", signatures);
-        }
-
         private boolean isNotPublished(@Nullable Node astNode) {
             return astNode == null || !scopesByAst.containsKey(astNode);
         }
 
         public @NotNull ClassRegistry getClassRegistry() {
             return classRegistry;
-        }
-
-        private record CallArgumentResolution(
-                @NotNull List<GdType> argumentTypes,
-                @Nullable FrontendExpressionType issue
-        ) {
-            private CallArgumentResolution {
-                argumentTypes = List.copyOf(argumentTypes);
-            }
-        }
-
-        private record CallableOverloadSelection(
-                @Nullable FunctionDef selected,
-                @Nullable String detailReason
-        ) {
         }
     }
 }
