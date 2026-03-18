@@ -91,6 +91,8 @@ public final class BlockScope extends AbstractFrontendScope {
     /// - missing, mismatched, or non-local names remain a quiet no-op because earlier phases may
     ///   already have rejected the declaration with a source diagnostic, and the expression-typing
     ///   phase must stay fail-closed instead of mutating some other surviving binding
+    /// - preserving the original declaration object keeps later use-site bindings pointing at the
+    ///   same `VariableDeclaration`, so initializer provenance remains recoverable after backfill
     public void resetLocalType(
             @NotNull String name,
             @NotNull Object declaration,

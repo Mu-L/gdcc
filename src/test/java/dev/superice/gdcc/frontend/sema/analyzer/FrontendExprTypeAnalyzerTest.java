@@ -3,6 +3,8 @@ package dev.superice.gdcc.frontend.sema.analyzer;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.scope.BlockScope;
+import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
+import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
@@ -27,6 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendExprTypeAnalyzerTest {
@@ -387,6 +390,15 @@ class FrontendExprTypeAnalyzerTest {
         assertNotNull(initializerType);
         assertEquals(FrontendExpressionTypeStatus.FAILED, initializerType.status());
         assertTrue(initializerType.detailReason().contains("chain head"));
+        assertSame(
+                initializerType,
+                assertInitializerProvenanceReachableFromLocalUse(
+                        analyzed,
+                        brokenUse,
+                        brokenDeclaration,
+                        FrontendExpressionTypeStatus.FAILED
+                )
+        );
 
         assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("broken").type());
 
@@ -441,6 +453,24 @@ class FrontendExprTypeAnalyzerTest {
         assertNotNull(dynamicInitializerType);
         assertEquals(FrontendExpressionTypeStatus.DYNAMIC, dynamicInitializerType.status());
         assertEquals(GdVariantType.VARIANT, dynamicInitializerType.publishedType());
+        assertSame(
+                resolvedInitializerType,
+                assertInitializerProvenanceReachableFromLocalUse(
+                        analyzed,
+                        resolvedUse,
+                        resolvedDeclaration,
+                        FrontendExpressionTypeStatus.RESOLVED
+                )
+        );
+        assertSame(
+                dynamicInitializerType,
+                assertInitializerProvenanceReachableFromLocalUse(
+                        analyzed,
+                        dynamicUse,
+                        dynamicDeclaration,
+                        FrontendExpressionTypeStatus.DYNAMIC
+                )
+        );
 
         assertEquals("int", bodyScope.resolveValue("resolved").type().getTypeName());
         assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("dynamic_value").type());
@@ -516,6 +546,33 @@ class FrontendExprTypeAnalyzerTest {
         assertNotNull(blockedInitializerType);
         assertEquals(FrontendExpressionTypeStatus.BLOCKED, blockedInitializerType.status());
         assertNull(blockedInitializerType.publishedType());
+        assertSame(
+                deferredInitializerType,
+                assertInitializerProvenanceReachableFromLocalUse(
+                        analyzed,
+                        deferredUse,
+                        deferredDeclaration,
+                        FrontendExpressionTypeStatus.DEFERRED
+                )
+        );
+        assertSame(
+                unsupportedInitializerType,
+                assertInitializerProvenanceReachableFromLocalUse(
+                        analyzed,
+                        unsupportedUse,
+                        unsupportedDeclaration,
+                        FrontendExpressionTypeStatus.UNSUPPORTED
+                )
+        );
+        assertSame(
+                blockedInitializerType,
+                assertInitializerProvenanceReachableFromLocalUse(
+                        analyzed,
+                        blockedUse,
+                        blockedDeclaration,
+                        FrontendExpressionTypeStatus.BLOCKED
+                )
+        );
 
         assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("deferred_value").type());
         assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("unsupported_value").type());
@@ -655,6 +712,25 @@ class FrontendExprTypeAnalyzerTest {
                 .filter(variable -> variable.name().equals(name))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Variable not found: " + name));
+    }
+
+    private static @NotNull FrontendExpressionType assertInitializerProvenanceReachableFromLocalUse(
+            @NotNull AnalyzedScript analyzed,
+            @NotNull IdentifierExpression localUse,
+            @NotNull VariableDeclaration expectedDeclaration,
+            @NotNull FrontendExpressionTypeStatus expectedInitializerStatus
+    ) {
+        var localBinding = analyzed.analysisData().symbolBindings().get(localUse);
+        assertNotNull(localBinding);
+        assertEquals(FrontendBindingKind.LOCAL_VAR, localBinding.kind());
+        var declarationSite = assertInstanceOf(VariableDeclaration.class, localBinding.declarationSite());
+        assertSame(expectedDeclaration, declarationSite);
+        var initializer = declarationSite.value();
+        assertNotNull(initializer);
+        var initializerType = analyzed.analysisData().expressionTypes().get(initializer);
+        assertNotNull(initializerType);
+        assertEquals(expectedInitializerStatus, initializerType.status());
+        return initializerType;
     }
 
     private static <T extends Node> @NotNull T findNode(

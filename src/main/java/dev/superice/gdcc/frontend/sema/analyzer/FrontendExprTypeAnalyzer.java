@@ -383,6 +383,11 @@ public class FrontendExprTypeAnalyzer {
         /// Supported local `:=` declarations are still inventoried as `Variant` during variable
         /// analysis. Once the RHS expression type is published here, rewrite the block-local slot
         /// only when that published result is stable enough to become the local's value type.
+        ///
+        /// This backfill intentionally updates only the block-scope inventory slot. It does not
+        /// rewrite `expressionTypes()` or `symbolBindings()`, so later consumers can still recover
+        /// initializer provenance through the local use-site's `declarationSite()` plus the
+        /// initializer expression's own published type and diagnostics.
         private void backfillInferredLocalType(@NotNull VariableDeclaration variableDeclaration) {
             if (!FrontendDeclaredTypeSupport.isInferredTypeRef(variableDeclaration.type())
                     || variableDeclaration.value() == null) {
