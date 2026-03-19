@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施计划兼事实维护（T0-T3 已完成并验收，T4-T7 尚未落地）
+- 状态：实施计划兼事实维护（T0-T6 已完成并验收，T7 尚待全量文档同步）
 - 更新时间：2026-03-19
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -557,6 +557,8 @@ property initializer 的 restriction 固定按 property staticness 选择：
 
 ### 5.6 阶段 T4：return compatibility
 
+- 状态：已完成并验收（2026-03-19）
+
 **目标**
 
 补齐 callable return slot 与 `return` / `return expr` 的兼容性检查。
@@ -581,6 +583,8 @@ property initializer 的 restriction 固定按 property staticness 选择：
 - 本阶段仍不做 all-path return completeness 分析
 
 ### 5.7 阶段 T5：condition bool contract
+
+- 状态：已完成并验收（2026-03-19）
 
 **目标**
 
@@ -608,6 +612,8 @@ property initializer 的 restriction 固定按 property staticness 选择：
   - type check phase 不补第二条错误
 
 ### 5.8 阶段 T6：`@onready` 用法验证
+
+- 状态：已完成并验收（2026-03-19）
 
 **目标**
 
@@ -783,9 +789,11 @@ warning 的职责是提醒用户手动补显式类型，而不是暗中修改 pr
 
 ### 9.1 phase 位置与输入事实
 
-- `FrontendTypeCheckAnalyzer` 当前固定插入在 `FrontendExprTypeAnalyzer` 之后。
+- `FrontendAnnotationUsageAnalyzer` 当前固定插入在 `FrontendExprTypeAnalyzer` 之后、`FrontendTypeCheckAnalyzer` 之前。
+- `FrontendTypeCheckAnalyzer` 当前固定插入在 `FrontendAnnotationUsageAnalyzer` 之后。
 - 该 phase 是 diagnostics-only analyzer，不引入新的 `FrontendAnalysisData` side table。
 - 当前只消费已发布事实：
+  - `annotationsByAst()`
   - `moduleSkeleton()`
   - `scopesByAst()`
   - `symbolBindings()`
@@ -839,8 +847,45 @@ warning 的职责是提醒用户手动补显式类型，而不是暗中修改 pr
   - 不发 `sema.type_hint`
   - 保持 upstream owner
 
+#### 9.3.4 callable return compatibility
+
+- callable return slot 固定来自 skeleton 已发布 metadata，而不是重新解析 return type 文本。
+- 普通 `FunctionDeclaration` 使用已发布 `FunctionDef.getReturnType()`。
+- `ConstructorDeclaration` 与名字为 `_init` 的函数统一收口为 `void`。
+- `return expr`：
+  - target 为 `void` 时发 `sema.type_check`
+  - target 非 `void` 时，只对 `RESOLVED` / `DYNAMIC` 的已发布 expression type 执行 `checkAssignmentCompatible(...)`
+- bare `return`：
+  - target 为 `void` 时合法
+  - target 非 `void` 时按 synthetic `Nil` value 执行 compatibility check
+- `return expr` 的 root expression type 若缺失发布事实，会按 phase boundary 破坏 fail-fast 抛异常。
+
+#### 9.3.5 condition bool contract
+
+- 当前固定检查：
+  - `AssertStatement.condition`
+  - `IfStatement.condition`
+  - `ElifClause.condition`
+  - `WhileStatement.condition`
+- condition target slot 固定为 `bool`，统一复用 `checkAssignmentCompatible(GdBoolType.BOOL, conditionType)`。
+- `Variant` / `DYNAMIC(Variant)` condition 当前不会被 truthy/falsy 放宽，仍发 `sema.type_check`。
+- condition root 若为 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`，当前 phase 直接跳过，保持 upstream owner。
+- condition root expression type 若缺失发布事实，会按 phase boundary 破坏 fail-fast 抛异常。
+
+#### 9.3.6 `@onready` usage validation
+
+- `FrontendAnnotationUsageAnalyzer` 当前是独立 diagnostics-only phase，不与 type-check owner 混用。
+- 当前固定只校验最小 usage contract：
+  - `@onready` 只能用于 class property `var`
+  - owner class 必须继承 `Node`
+  - `@onready` 不可用于 `static` property
+- 相关非法用法统一发 `sema.annotation_usage` error。
+- `@onready` 的 retention 事实与 property skeleton annotation 不会被该 phase 改写或回收。
+
 ### 9.4 当前诊断 owner 边界
 
+- `FrontendAnnotationUsageAnalyzer` 当前只拥有：
+  - `sema.annotation_usage`
 - `FrontendTypeCheckAnalyzer` 当前只拥有：
   - `sema.type_check`
   - `sema.type_hint`
@@ -855,18 +900,21 @@ warning 的职责是提醒用户手动补显式类型，而不是暗中修改 pr
 
 ### 9.5 当前明确未做的事
 
-- 尚未落地 return compatibility。
-- 尚未落地 condition bool contract。
-- 尚未落地 `@onready` usage validation。
 - 尚未做 missing-return / all-path return completeness 分析。
 - 尚未让 property `:=` 变成 property-side inference/backfill。
+- 尚未完成 T7 的全量文档同步与长期事实源整理。
 
 ### 9.6 当前测试锚点
 
 - `FrontendSemanticAnalyzerFrameworkTest`
-  - 锁 phase 顺序、注入行为、diagnostics snapshot 刷新边界。
+  - 锁 phase 顺序、annotation-usage/type-check 注入行为、diagnostics snapshot 刷新边界。
 - `FrontendTypeCheckAnalyzerTest`
   - 锁 T1 walker/context contract。
   - 锁 T2 local explicit compatibility 行为。
   - 锁 T3 property explicit compatibility 与 `sema.type_hint` 行为。
+  - 锁 T4 return compatibility、bare `return` Nil 合同、以及 return/condition 的 fail-fast boundary。
+  - 锁 T5 strict bool condition contract 与 upstream-owner skip 行为。
   - 锁 property metadata 在 `:=` / missing type 下仍保持 `Variant`。
+- `FrontendAnnotationUsageAnalyzerTest`
+  - 锁 T6 `@onready` 的 Node-only / non-static / class-property-only usage contract。
+  - 锁 `sema.annotation_usage` 与 `sema.unsupported_annotation` 的 owner 边界。

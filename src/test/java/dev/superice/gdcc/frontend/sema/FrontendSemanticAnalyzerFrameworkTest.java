@@ -7,6 +7,7 @@ import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendChainBindingAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendExprTypeAnalyzer;
+import dev.superice.gdcc.frontend.sema.analyzer.FrontendAnnotationUsageAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendTopBindingAnalyzer;
@@ -300,10 +301,10 @@ class FrontendSemanticAnalyzerFrameworkTest {
                         return 1
                 
                 class Worker:
-                    var handle: Handle
+                    var handle: Handle = Handle.new()
                 
                     static func build() -> Worker:
-                        return null
+                        return Worker.new()
                 
                 var ready_value := Worker.build().handle.read()
                 const Alias = Worker.build()
@@ -438,6 +439,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var probeTopBindingAnalyzer = new RecordingTopBindingAnalyzer();
         var probeChainBindingAnalyzer = new RecordingChainBindingAnalyzer();
         var probeExprTypeAnalyzer = new RecordingExprTypeAnalyzer();
+        var probeAnnotationUsageAnalyzer = new RecordingAnnotationUsageAnalyzer();
         var probeTypeCheckAnalyzer = new RecordingTypeCheckAnalyzer();
         var analyzer = new FrontendSemanticAnalyzer(
                 new FrontendClassSkeletonBuilder(),
@@ -446,6 +448,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 probeTopBindingAnalyzer,
                 probeChainBindingAnalyzer,
                 probeExprTypeAnalyzer,
+                probeAnnotationUsageAnalyzer,
                 probeTypeCheckAnalyzer
         );
 
@@ -474,8 +477,12 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(probeExprTypeAnalyzer.preExprTypeDiagnosticsMatchedManager);
         assertTrue(probeExprTypeAnalyzer.stableExpressionTypesReferencePreserved);
         assertTrue(probeExprTypeAnalyzer.expressionTypePublicationClearedProbeEntry);
+        assertTrue(probeAnnotationUsageAnalyzer.invoked);
+        assertTrue(probeAnnotationUsageAnalyzer.exprTypeBoundaryPublished);
+        assertTrue(probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnosticsMatchedManager);
+        assertTrue(probeAnnotationUsageAnalyzer.stableAnnotationsReferencePreserved);
         assertTrue(probeTypeCheckAnalyzer.invoked);
-        assertTrue(probeTypeCheckAnalyzer.exprTypeBoundaryPublished);
+        assertTrue(probeTypeCheckAnalyzer.annotationUsageBoundaryPublished);
         assertTrue(probeTypeCheckAnalyzer.preTypeCheckDiagnosticsMatchedManager);
         assertTrue(probeTypeCheckAnalyzer.stableExpressionTypesReferencePreserved);
         assertTrue(probeTypeCheckAnalyzer.expressionTypesRemainPublishedAfterTypeCheck);
@@ -506,10 +513,17 @@ class FrontendSemanticAnalyzerFrameworkTest {
         ));
         assertEquals(
                 probeExprTypeAnalyzer.preExprTypeDiagnostics.size() + 1,
+                probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnostics.size()
+        );
+        assertTrue(probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnostics.asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.expr_type_phase_probe")
+        ));
+        assertEquals(
+                probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnostics.size() + 1,
                 probeTypeCheckAnalyzer.preTypeCheckDiagnostics.size()
         );
         assertTrue(probeTypeCheckAnalyzer.preTypeCheckDiagnostics.asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.expr_type_phase_probe")
+                diagnostic.category().equals("sema.annotation_usage_phase_probe")
         ));
         assertEquals(probeTypeCheckAnalyzer.preTypeCheckDiagnostics.size() + 1, result.diagnostics().size());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
@@ -526,6 +540,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
         ));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.expr_type_phase_probe")
+        ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.annotation_usage_phase_probe")
         ));
         assertEquals("sema.type_check_phase_probe", result.diagnostics().getLast().category());
         assertEquals(probeScopeAnalyzer.preScopeDiagnostics, result.moduleSkeleton().diagnostics());
@@ -1085,9 +1102,46 @@ class FrontendSemanticAnalyzerFrameworkTest {
         }
     }
 
-    private static final class RecordingTypeCheckAnalyzer extends FrontendTypeCheckAnalyzer {
+    private static final class RecordingAnnotationUsageAnalyzer extends FrontendAnnotationUsageAnalyzer {
         private boolean invoked;
         private boolean exprTypeBoundaryPublished;
+        private boolean preAnnotationUsageDiagnosticsMatchedManager;
+        private boolean stableAnnotationsReferencePreserved;
+        private DiagnosticSnapshot preAnnotationUsageDiagnostics;
+
+        @Override
+        public void analyze(
+                @NotNull ClassRegistry classRegistry,
+                @NotNull FrontendAnalysisData analysisData,
+                @NotNull DiagnosticManager diagnosticManager
+        ) {
+            invoked = true;
+            preAnnotationUsageDiagnostics = analysisData.diagnostics();
+            preAnnotationUsageDiagnosticsMatchedManager =
+                    preAnnotationUsageDiagnostics.equals(diagnosticManager.snapshot());
+            exprTypeBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+                    .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
+                    && analysisData.symbolBindings().isEmpty()
+                    && analysisData.resolvedMembers().isEmpty()
+                    && analysisData.resolvedCalls().isEmpty()
+                    && analysisData.expressionTypes().isEmpty();
+            var publishedAnnotations = analysisData.annotationsByAst();
+
+            super.analyze(classRegistry, analysisData, diagnosticManager);
+
+            stableAnnotationsReferencePreserved = publishedAnnotations == analysisData.annotationsByAst();
+            diagnosticManager.warning(
+                    "sema.annotation_usage_phase_probe",
+                    "annotation-usage phase probe diagnostic",
+                    null,
+                    null
+            );
+        }
+    }
+
+    private static final class RecordingTypeCheckAnalyzer extends FrontendTypeCheckAnalyzer {
+        private boolean invoked;
+        private boolean annotationUsageBoundaryPublished;
         private boolean preTypeCheckDiagnosticsMatchedManager;
         private boolean stableExpressionTypesReferencePreserved;
         private boolean expressionTypesRemainPublishedAfterTypeCheck;
@@ -1102,7 +1156,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
             invoked = true;
             preTypeCheckDiagnostics = analysisData.diagnostics();
             preTypeCheckDiagnosticsMatchedManager = preTypeCheckDiagnostics.equals(diagnosticManager.snapshot());
-            exprTypeBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+            annotationUsageBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
                     .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
                     && analysisData.symbolBindings().isEmpty()
                     && analysisData.resolvedMembers().isEmpty()

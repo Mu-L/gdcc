@@ -18,7 +18,9 @@ import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeValue;
+import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
@@ -185,6 +187,44 @@ public class FrontendTypeCheckAnalyzer {
             @NotNull TypeCheckAccess access,
             @NotNull ReturnStatement returnStatement
     ) {
+        Objects.requireNonNull(access, "access must not be null");
+        Objects.requireNonNull(returnStatement, "returnStatement must not be null");
+        var returnSlot = Objects.requireNonNull(
+                access.context().currentCallableReturnSlot(),
+                "currentCallableReturnSlot must not be null while checking return statements"
+        );
+        var returnValue = returnStatement.value();
+        if (returnValue == null) {
+            if (returnSlot instanceof GdVoidType) {
+                return;
+            }
+            if (access.checkAssignmentCompatible(returnSlot, GdNilType.NIL)) {
+                return;
+            }
+            reportReturnTypeMismatch(access, returnStatement, returnSlot, GdNilType.NIL);
+            return;
+        }
+        if (returnSlot instanceof GdVoidType) {
+            reportValuedReturnNotAllowed(access, returnStatement);
+            return;
+        }
+
+        var publishedReturnType = stableExpressionTypeOrNull(
+                access.analysisData(),
+                returnValue,
+                "Return value for " + describeCallableOwner(access)
+        );
+        if (publishedReturnType == null) {
+            return;
+        }
+        var valueType = Objects.requireNonNull(
+                publishedReturnType.publishedType(),
+                "publishedType must not be null for stable return value"
+        );
+        if (access.checkAssignmentCompatible(returnSlot, valueType)) {
+            return;
+        }
+        reportReturnTypeMismatch(access, returnStatement, returnSlot, valueType);
     }
 
     protected void visitConditionExpression(
@@ -192,6 +232,26 @@ public class FrontendTypeCheckAnalyzer {
             @NotNull Expression condition,
             @NotNull Node owner
     ) {
+        Objects.requireNonNull(access, "access must not be null");
+        Objects.requireNonNull(condition, "condition must not be null");
+        Objects.requireNonNull(owner, "owner must not be null");
+
+        var publishedConditionType = stableExpressionTypeOrNull(
+                access.analysisData(),
+                condition,
+                owner.getClass().getSimpleName() + " condition"
+        );
+        if (publishedConditionType == null) {
+            return;
+        }
+        var valueType = Objects.requireNonNull(
+                publishedConditionType.publishedType(),
+                "publishedType must not be null for stable condition expression"
+        );
+        if (access.checkAssignmentCompatible(GdBoolType.BOOL, valueType)) {
+            return;
+        }
+        reportConditionTypeMismatch(access, owner, valueType);
     }
 
     protected record TypeCheckAccess(
@@ -346,6 +406,71 @@ public class FrontendTypeCheckAnalyzer {
                 access.sourcePath(),
                 FrontendRange.fromAstRange(variableDeclaration.range())
         );
+    }
+
+    private static void reportValuedReturnNotAllowed(
+            @NotNull TypeCheckAccess access,
+            @NotNull ReturnStatement returnStatement
+    ) {
+        Objects.requireNonNull(access, "access must not be null");
+        Objects.requireNonNull(returnStatement, "returnStatement must not be null");
+        access.diagnosticManager().error(
+                TYPE_CHECK_CATEGORY,
+                describeCallableOwner(access) + " returns 'void' and does not accept 'return expr'",
+                access.sourcePath(),
+                FrontendRange.fromAstRange(returnStatement.range())
+        );
+    }
+
+    private static void reportReturnTypeMismatch(
+            @NotNull TypeCheckAccess access,
+            @NotNull ReturnStatement returnStatement,
+            @NotNull GdType slotType,
+            @NotNull GdType valueType
+    ) {
+        Objects.requireNonNull(access, "access must not be null");
+        Objects.requireNonNull(returnStatement, "returnStatement must not be null");
+        Objects.requireNonNull(slotType, "slotType must not be null");
+        Objects.requireNonNull(valueType, "valueType must not be null");
+        access.diagnosticManager().error(
+                TYPE_CHECK_CATEGORY,
+                "Return value type '" + valueType.getTypeName()
+                        + "' is not assignable to callable return slot type '" + slotType.getTypeName() + "'",
+                access.sourcePath(),
+                FrontendRange.fromAstRange(returnStatement.range())
+        );
+    }
+
+    private static void reportConditionTypeMismatch(
+            @NotNull TypeCheckAccess access,
+            @NotNull Node owner,
+            @NotNull GdType valueType
+    ) {
+        Objects.requireNonNull(access, "access must not be null");
+        Objects.requireNonNull(owner, "owner must not be null");
+        Objects.requireNonNull(valueType, "valueType must not be null");
+        access.diagnosticManager().error(
+                TYPE_CHECK_CATEGORY,
+                owner.getClass().getSimpleName() + " condition type '" + valueType.getTypeName()
+                        + "' is not assignable to required bool slot 'bool'",
+                access.sourcePath(),
+                FrontendRange.fromAstRange(owner.range())
+        );
+    }
+
+    private static @NotNull String describeCallableOwner(@NotNull TypeCheckAccess access) {
+        Objects.requireNonNull(access, "access must not be null");
+        var currentClass = access.context().currentClass();
+        var currentReturnSlot = Objects.requireNonNull(
+                access.context().currentCallableReturnSlot(),
+                "currentCallableReturnSlot must not be null while describing callable owner"
+        );
+        if (currentReturnSlot instanceof GdVoidType) {
+            return currentClass == null ? "Callable" : "Callable on class '" + currentClass.getName() + "'";
+        }
+        return currentClass == null
+                ? "Callable"
+                : "Callable on class '" + currentClass.getName() + "'";
     }
 
     private final class AstWalkerTypeCheckVisitor implements ASTNodeHandler {

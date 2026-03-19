@@ -12,7 +12,7 @@ import java.util.List;
 
 /// Basic frontend semantic-analyzer framework.
 ///
-/// The current framework wires seven stable frontend phases into one shared
+/// The current framework wires eight stable frontend phases into one shared
 /// `FrontendAnalysisData` carrier:
 /// - skeleton publication
 /// - lexical scope graph construction
@@ -20,6 +20,7 @@ import java.util.List;
 /// - top-binding publication for symbol-category resolution
 /// - chain member/call publication
 /// - expression-type publication
+/// - annotation-usage validation
 /// - diagnostics-only type-check traversal
 /// - diagnostics boundary refresh after each phase
 public final class FrontendSemanticAnalyzer {
@@ -29,6 +30,7 @@ public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer;
     private final @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer;
     private final @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer;
+    private final @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer;
     private final @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer;
 
     public FrontendSemanticAnalyzer() {
@@ -39,6 +41,7 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendTopBindingAnalyzer(),
                 new FrontendChainBindingAnalyzer(),
                 new FrontendExprTypeAnalyzer(),
+                new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer()
         );
     }
@@ -51,6 +54,7 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendTopBindingAnalyzer(),
                 new FrontendChainBindingAnalyzer(),
                 new FrontendExprTypeAnalyzer(),
+                new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer()
         );
     }
@@ -82,6 +86,7 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendTopBindingAnalyzer(),
                 new FrontendChainBindingAnalyzer(),
                 new FrontendExprTypeAnalyzer(),
+                new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer()
         );
     }
@@ -99,6 +104,7 @@ public final class FrontendSemanticAnalyzer {
                 topBindingAnalyzer,
                 new FrontendChainBindingAnalyzer(),
                 new FrontendExprTypeAnalyzer(),
+                new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer()
         );
     }
@@ -117,6 +123,7 @@ public final class FrontendSemanticAnalyzer {
                 topBindingAnalyzer,
                 chainBindingAnalyzer,
                 new FrontendExprTypeAnalyzer(),
+                new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer()
         );
     }
@@ -136,6 +143,7 @@ public final class FrontendSemanticAnalyzer {
                 topBindingAnalyzer,
                 chainBindingAnalyzer,
                 exprTypeAnalyzer,
+                new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer()
         );
     }
@@ -149,12 +157,38 @@ public final class FrontendSemanticAnalyzer {
             @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
             @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer
     ) {
+        this(
+                classSkeletonBuilder,
+                scopeAnalyzer,
+                variableAnalyzer,
+                topBindingAnalyzer,
+                chainBindingAnalyzer,
+                exprTypeAnalyzer,
+                new FrontendAnnotationUsageAnalyzer(),
+                typeCheckAnalyzer
+        );
+    }
+
+    public FrontendSemanticAnalyzer(
+            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
+            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
+            @NotNull FrontendVariableAnalyzer variableAnalyzer,
+            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
+            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
+            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
+            @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer,
+            @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer
+    ) {
         this.classSkeletonBuilder = Objects.requireNonNull(classSkeletonBuilder, "classSkeletonBuilder must not be null");
         this.scopeAnalyzer = Objects.requireNonNull(scopeAnalyzer, "scopeAnalyzer must not be null");
         this.variableAnalyzer = Objects.requireNonNull(variableAnalyzer, "variableAnalyzer must not be null");
         this.topBindingAnalyzer = Objects.requireNonNull(topBindingAnalyzer, "topBindingAnalyzer must not be null");
         this.chainBindingAnalyzer = Objects.requireNonNull(chainBindingAnalyzer, "chainBindingAnalyzer must not be null");
         this.exprTypeAnalyzer = Objects.requireNonNull(exprTypeAnalyzer, "exprTypeAnalyzer must not be null");
+        this.annotationUsageAnalyzer = Objects.requireNonNull(
+                annotationUsageAnalyzer,
+                "annotationUsageAnalyzer must not be null"
+        );
         this.typeCheckAnalyzer = Objects.requireNonNull(typeCheckAnalyzer, "typeCheckAnalyzer must not be null");
     }
 
@@ -215,6 +249,11 @@ public final class FrontendSemanticAnalyzer {
         // Expression typing consumes the published symbol/member/call facts and releases the final
         // expression-type side table without reopening the earlier chain-binding phase.
         exprTypeAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+
+        // Annotation-usage validation consumes retained annotations plus the published class/scope
+        // facts, but still stays diagnostics-only and does not mutate semantic side tables.
+        annotationUsageAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
         // Type checking is diagnostics-only for now: it consumes the published frontend facts but

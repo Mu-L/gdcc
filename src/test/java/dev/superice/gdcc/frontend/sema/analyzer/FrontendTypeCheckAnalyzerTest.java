@@ -147,6 +147,66 @@ class FrontendTypeCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeRejectsMissingPublishedReturnExpressionType() throws Exception {
+        var preparedInput = prepareTypeCheckInput("missing_type_check_return_value_type.gd", """
+                class_name MissingTypeCheckReturnValueType
+                extends RefCounted
+
+                func ping() -> int:
+                    return 1
+                """);
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var returnStatement = findNode(
+                pingFunction,
+                dev.superice.gdparser.frontend.ast.ReturnStatement.class,
+                ignored -> true
+        );
+        preparedInput.analysisData().expressionTypes().remove(returnStatement.value());
+
+        var thrown = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendTypeCheckAnalyzer().analyze(
+                        preparedInput.classRegistry(),
+                        preparedInput.analysisData(),
+                        preparedInput.diagnosticManager()
+                )
+        );
+
+        assertTrue(thrown.getMessage().contains("Return value for Callable on class 'MissingTypeCheckReturnValueType'"));
+        assertTrue(thrown.getMessage().contains("expression type has not been published"));
+    }
+
+    @Test
+    void analyzeRejectsMissingPublishedConditionExpressionType() throws Exception {
+        var preparedInput = prepareTypeCheckInput("missing_type_check_condition_type.gd", """
+                class_name MissingTypeCheckConditionType
+                extends RefCounted
+
+                func ping():
+                    if true:
+                        pass
+                """);
+        var ifStatement = findNode(
+                preparedInput.unit().ast(),
+                dev.superice.gdparser.frontend.ast.IfStatement.class,
+                ignored -> true
+        );
+        preparedInput.analysisData().expressionTypes().remove(ifStatement.condition());
+
+        var thrown = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendTypeCheckAnalyzer().analyze(
+                        preparedInput.classRegistry(),
+                        preparedInput.analysisData(),
+                        preparedInput.diagnosticManager()
+                )
+        );
+
+        assertTrue(thrown.getMessage().contains("IfStatement condition"));
+        assertTrue(thrown.getMessage().contains("expression type has not been published"));
+    }
+
+    @Test
     void analyzeWalksTypedRootsWithExpectedContextWithoutMutatingPublishedFacts() throws Exception {
         var preparedInput = prepareTypeCheckInput("type_check_context_probe.gd", """
                 class_name TypeCheckContextProbe
@@ -492,6 +552,152 @@ class FrontendTypeCheckAnalyzerTest {
         assertEquals(GdVariantType.VARIANT, findPropertyDef(topLevelClass, "skipped_deferred_hint").getType());
     }
 
+    @Test
+    void analyzeChecksReturnCompatibilityAgainstPublishedCallableSlotsAndSkipsUnstableReturnValues()
+            throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_return_compatibility.gd", """
+                class_name TypeCheckReturnCompatibility
+                extends RefCounted
+
+                class Worker:
+                    pass
+
+                func accepts_variant_expr() -> Variant:
+                    return 1
+
+                func accepts_variant_bare() -> Variant:
+                    return
+
+                func rejects_bare() -> int:
+                    return
+
+                func rejects_type() -> int:
+                    return "x"
+
+                func skips_failed() -> int:
+                    return Worker
+
+                func skips_deferred() -> int:
+                    return 1 + 2
+
+                func _init():
+                    return 1
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = preparedInput.diagnosticManager().snapshot();
+        var typeCheckDiagnostics = diagnosticsByCategory(diagnostics, "sema.type_check");
+        assertEquals(3, typeCheckDiagnostics.size());
+        assertTrue(typeCheckDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && Path.of("tmp", "type_check_return_compatibility.gd").equals(diagnostic.sourcePath())
+                        && diagnostic.range() != null
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Return value type 'Nil'")
+                        && diagnostic.message().contains("int")
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Return value type 'String'")
+                        && diagnostic.message().contains("int")
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("returns 'void'")
+                        && diagnostic.message().contains("return expr")
+        ));
+
+        assertEquals(
+                FrontendExpressionTypeStatus.FAILED,
+                Objects.requireNonNull(
+                        preparedInput.analysisData().expressionTypes().get(
+                                findNode(findFunction(preparedInput.unit().ast(), "skips_failed"),
+                                        dev.superice.gdparser.frontend.ast.ReturnStatement.class,
+                                        ignored -> true).value()
+                        )
+                ).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.DEFERRED,
+                Objects.requireNonNull(
+                        preparedInput.analysisData().expressionTypes().get(
+                                findNode(findFunction(preparedInput.unit().ast(), "skips_deferred"),
+                                        dev.superice.gdparser.frontend.ast.ReturnStatement.class,
+                                        ignored -> true).value()
+                        )
+                ).status()
+        );
+    }
+
+    @Test
+    void analyzeChecksConditionExpressionsAgainstStrictBoolSlotAndSkipsUnstableConditions()
+            throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_condition_contract.gd", """
+                class_name TypeCheckConditionContract
+                extends RefCounted
+
+                class Worker:
+                    pass
+
+                func ping(flag: bool, payload):
+                    assert(flag, payload)
+                    if 1:
+                        pass
+                    elif payload:
+                        pass
+                    while false:
+                        pass
+                    if 1 + 2:
+                        pass
+                    if Worker:
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = preparedInput.diagnosticManager().snapshot();
+        var typeCheckDiagnostics = diagnosticsByCategory(diagnostics, "sema.type_check");
+        assertEquals(2, typeCheckDiagnostics.size());
+        assertTrue(typeCheckDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && Path.of("tmp", "type_check_condition_contract.gd").equals(diagnostic.sourcePath())
+                        && diagnostic.range() != null
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("IfStatement")
+                        && diagnostic.message().contains("int")
+                        && diagnostic.message().contains("bool")
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("ElifClause")
+                        && diagnostic.message().contains("Variant")
+                        && diagnostic.message().contains("bool")
+        ));
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var ifStatements = findNodes(
+                pingFunction,
+                dev.superice.gdparser.frontend.ast.IfStatement.class,
+                ignored -> true
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.DEFERRED,
+                Objects.requireNonNull(preparedInput.analysisData().expressionTypes().get(ifStatements.get(1).condition())).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.FAILED,
+                Objects.requireNonNull(preparedInput.analysisData().expressionTypes().get(ifStatements.get(2).condition())).status()
+        );
+    }
+
     private static void assertEvent(
             @NotNull ProbeEvent event,
             @NotNull String expectedKind,
@@ -622,6 +828,36 @@ class FrontendTypeCheckAnalyzerTest {
             }
         }
         throw new AssertionError("Node not found: " + nodeType.getSimpleName());
+    }
+
+    private static <T extends Node> @NotNull List<T> findNodes(
+            @NotNull Node root,
+            @NotNull Class<T> nodeType,
+            @NotNull Predicate<T> predicate
+    ) {
+        var matches = new ArrayList<T>();
+        collectNodes(root, nodeType, predicate, matches);
+        if (matches.isEmpty()) {
+            throw new AssertionError("Node not found: " + nodeType.getSimpleName());
+        }
+        return List.copyOf(matches);
+    }
+
+    private static <T extends Node> void collectNodes(
+            @NotNull Node root,
+            @NotNull Class<T> nodeType,
+            @NotNull Predicate<T> predicate,
+            @NotNull List<T> matches
+    ) {
+        if (nodeType.isInstance(root)) {
+            var candidate = nodeType.cast(root);
+            if (predicate.test(candidate)) {
+                matches.add(candidate);
+            }
+        }
+        for (var child : root.getChildren()) {
+            collectNodes(child, nodeType, predicate, matches);
+        }
     }
 
     private static @NotNull PropertyDef findPropertyDef(
