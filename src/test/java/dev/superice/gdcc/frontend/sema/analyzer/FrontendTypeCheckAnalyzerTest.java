@@ -1,13 +1,24 @@
 package dev.superice.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
+import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.scope.ResolveRestriction;
+import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Statement;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -16,8 +27,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -81,6 +94,56 @@ class FrontendTypeCheckAnalyzerTest {
         );
 
         assertTrue(thrown.getMessage().contains(preparedInput.unit().path().toString()));
+    }
+
+    @Test
+    void analyzeRejectsMissingPublishedLocalInitializerExpressionType() throws Exception {
+        var preparedInput = prepareTypeCheckInput("missing_type_check_local_initializer_type.gd", """
+                class_name MissingTypeCheckLocalInitializerType
+                extends RefCounted
+
+                func ping():
+                    var local: int = 1
+                """);
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var localDeclaration = findVariable(pingFunction.body().statements(), "local");
+        preparedInput.analysisData().expressionTypes().remove(localDeclaration.value());
+
+        var thrown = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendTypeCheckAnalyzer().analyze(
+                        preparedInput.classRegistry(),
+                        preparedInput.analysisData(),
+                        preparedInput.diagnosticManager()
+                )
+        );
+
+        assertTrue(thrown.getMessage().contains("Local initializer for 'local'"));
+        assertTrue(thrown.getMessage().contains("expression type has not been published"));
+    }
+
+    @Test
+    void analyzeRejectsMissingPublishedPropertyInitializerExpressionType() throws Exception {
+        var preparedInput = prepareTypeCheckInput("missing_type_check_property_initializer_type.gd", """
+                class_name MissingTypeCheckPropertyInitializerType
+                extends RefCounted
+
+                var field: int = 1
+                """);
+        var fieldDeclaration = findVariable(preparedInput.unit().ast(), "field");
+        preparedInput.analysisData().expressionTypes().remove(fieldDeclaration.value());
+
+        var thrown = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendTypeCheckAnalyzer().analyze(
+                        preparedInput.classRegistry(),
+                        preparedInput.analysisData(),
+                        preparedInput.diagnosticManager()
+                )
+        );
+
+        assertTrue(thrown.getMessage().contains("Property initializer for 'field'"));
+        assertTrue(thrown.getMessage().contains("expression type has not been published"));
     }
 
     @Test
@@ -259,6 +322,176 @@ class FrontendTypeCheckAnalyzerTest {
         );
     }
 
+    @Test
+    void analyzeChecksOnlyExplicitOrdinaryLocalDeclaredSlotsAndSkipsUnstableInitializerFacts() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_local_compatibility.gd", """
+                class_name TypeCheckLocalCompatibility
+                extends RefCounted
+
+                class Worker:
+                    pass
+
+                var payload: int = 1
+
+                static func ping(worker):
+                    var accepts_variant: Variant = 1
+                    var strict_float: float = 1
+                    var dynamic_variant: Variant = worker.ping().length
+                    var inferred := 1
+                    var skipped_blocked: int = self.payload
+                    var skipped_deferred: int = 1 + 2
+                    var skipped_failed: int = Worker
+                    var skipped_unsupported: int = func(offset: int):
+                        return offset
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertEquals(
+                FrontendExpressionTypeStatus.DYNAMIC,
+                requireInitializerType(pingFunction.body().statements(), "dynamic_variant", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.BLOCKED,
+                requireInitializerType(pingFunction.body().statements(), "skipped_blocked", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.DEFERRED,
+                requireInitializerType(pingFunction.body().statements(), "skipped_deferred", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.FAILED,
+                requireInitializerType(pingFunction.body().statements(), "skipped_failed", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.UNSUPPORTED,
+                requireInitializerType(pingFunction.body().statements(), "skipped_unsupported", preparedInput).status()
+        );
+
+        var typeCheckDiagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        );
+        assertEquals(1, typeCheckDiagnostics.size());
+        var typeCheckDiagnostic = typeCheckDiagnostics.getFirst();
+        assertEquals(FrontendDiagnosticSeverity.ERROR, typeCheckDiagnostic.severity());
+        assertTrue(typeCheckDiagnostic.message().contains("strict_float"));
+        assertTrue(typeCheckDiagnostic.message().contains("int"));
+        assertTrue(typeCheckDiagnostic.message().contains("float"));
+        assertEquals(Path.of("tmp", "type_check_local_compatibility.gd"), typeCheckDiagnostic.sourcePath());
+        assertNotNull(typeCheckDiagnostic.range());
+
+        assertTrue(diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_hint"
+        ).isEmpty());
+    }
+
+    @Test
+    void analyzeChecksPropertyInitializersAgainstPublishedSkeletonSlotsAndWarnsForMissingExplicitTypes()
+            throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_property_compatibility.gd", """
+                class_name TypeCheckPropertyCompatibility
+                extends RefCounted
+
+                class Worker:
+                    static func make():
+                        return "value"
+
+                var accepts_variant: Variant = 1
+                var wrong_type: int = "x"
+                var inferred_int := 1
+                var missing_type = 1
+                var inferred_dynamic := Worker.make().length
+                var skipped_blocked := self.payload
+                var skipped_deferred: int = 1 + 2
+                var skipped_failed: int = Worker
+                var skipped_failed_hint = Worker
+                var skipped_deferred_hint := 1 + 2
+                var skipped_unsupported: int = Worker.VALUE
+                static var blocked_field: int = self.payload
+                var payload: int = 1
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        assertEquals(
+                FrontendExpressionTypeStatus.BLOCKED,
+                requireInitializerType(preparedInput.unit().ast(), "skipped_blocked", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.DEFERRED,
+                requireInitializerType(preparedInput.unit().ast(), "skipped_deferred", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.FAILED,
+                requireInitializerType(preparedInput.unit().ast(), "skipped_failed", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.FAILED,
+                requireInitializerType(preparedInput.unit().ast(), "skipped_failed_hint", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.DEFERRED,
+                requireInitializerType(preparedInput.unit().ast(), "skipped_deferred_hint", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.UNSUPPORTED,
+                requireInitializerType(preparedInput.unit().ast(), "skipped_unsupported", preparedInput).status()
+        );
+
+        var diagnostics = preparedInput.diagnosticManager().snapshot();
+        var typeCheckDiagnostics = diagnosticsByCategory(diagnostics, "sema.type_check");
+        assertEquals(1, typeCheckDiagnostics.size());
+        var typeCheckDiagnostic = typeCheckDiagnostics.getFirst();
+        assertEquals(FrontendDiagnosticSeverity.ERROR, typeCheckDiagnostic.severity());
+        assertTrue(typeCheckDiagnostic.message().contains("wrong_type"));
+        assertTrue(typeCheckDiagnostic.message().contains("String"));
+        assertTrue(typeCheckDiagnostic.message().contains("int"));
+        assertEquals(Path.of("tmp", "type_check_property_compatibility.gd"), typeCheckDiagnostic.sourcePath());
+        assertNotNull(typeCheckDiagnostic.range());
+
+        var typeHintDiagnostics = diagnosticsByCategory(diagnostics, "sema.type_hint");
+        assertEquals(3, typeHintDiagnostics.size());
+        assertTrue(typeHintDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.WARNING
+                        && Path.of("tmp", "type_check_property_compatibility.gd").equals(diagnostic.sourcePath())
+                        && diagnostic.range() != null
+        ));
+        assertTrue(typeHintDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("inferred_int")
+                        && diagnostic.message().contains("':='")
+                        && diagnostic.message().contains(": int")
+        ));
+        assertTrue(typeHintDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("missing_type")
+                        && diagnostic.message().contains("no explicit type")
+                        && diagnostic.message().contains(": int")
+        ));
+        assertTrue(typeHintDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("inferred_dynamic")
+                        && diagnostic.message().contains("':='")
+                        && diagnostic.message().contains(": Variant")
+        ));
+
+        var topLevelClass = preparedInput.analysisData().moduleSkeleton().sourceClassRelations().getFirst().classDef();
+        assertEquals(GdVariantType.VARIANT, findPropertyDef(topLevelClass, "inferred_int").getType());
+        assertEquals(GdVariantType.VARIANT, findPropertyDef(topLevelClass, "missing_type").getType());
+        assertEquals(GdVariantType.VARIANT, findPropertyDef(topLevelClass, "inferred_dynamic").getType());
+        assertEquals(GdVariantType.VARIANT, findPropertyDef(topLevelClass, "skipped_blocked").getType());
+        assertEquals(GdVariantType.VARIANT, findPropertyDef(topLevelClass, "skipped_failed_hint").getType());
+        assertEquals(GdVariantType.VARIANT, findPropertyDef(topLevelClass, "skipped_deferred_hint").getType());
+    }
+
     private static void assertEvent(
             @NotNull ProbeEvent event,
             @NotNull String expectedKind,
@@ -311,6 +544,94 @@ class FrontendTypeCheckAnalyzerTest {
         new FrontendExprTypeAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return new PreparedTypeCheckInput(unit, analysisData, diagnosticManager, classRegistry);
+    }
+
+    private static @NotNull List<FrontendDiagnostic> diagnosticsByCategory(
+            @NotNull DiagnosticSnapshot diagnostics,
+            @NotNull String category
+    ) {
+        return diagnostics.asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals(category))
+                .toList();
+    }
+
+    private static @NotNull dev.superice.gdcc.frontend.sema.FrontendExpressionType requireInitializerType(
+            @NotNull List<Statement> statements,
+            @NotNull String variableName,
+            @NotNull PreparedTypeCheckInput preparedInput
+    ) {
+        return requireInitializerType(findVariable(statements, variableName), preparedInput);
+    }
+
+    private static @NotNull dev.superice.gdcc.frontend.sema.FrontendExpressionType requireInitializerType(
+            @NotNull Node root,
+            @NotNull String variableName,
+            @NotNull PreparedTypeCheckInput preparedInput
+    ) {
+        return requireInitializerType(findVariable(root, variableName), preparedInput);
+    }
+
+    private static @NotNull dev.superice.gdcc.frontend.sema.FrontendExpressionType requireInitializerType(
+            @NotNull VariableDeclaration variableDeclaration,
+            @NotNull PreparedTypeCheckInput preparedInput
+    ) {
+        var initializer = Objects.requireNonNull(variableDeclaration.value(), "initializer must not be null");
+        var publishedType = preparedInput.analysisData().expressionTypes().get(initializer);
+        return Objects.requireNonNull(
+                publishedType,
+                () -> "Initializer type not published for variable '" + variableDeclaration.name() + "'"
+        );
+    }
+
+    private static @NotNull FunctionDeclaration findFunction(@NotNull Node root, @NotNull String functionName) {
+        return findNode(root, FunctionDeclaration.class, function -> function.name().equals(functionName));
+    }
+
+    private static @NotNull VariableDeclaration findVariable(
+            @NotNull List<Statement> statements,
+            @NotNull String variableName
+    ) {
+        return statements.stream()
+                .filter(VariableDeclaration.class::isInstance)
+                .map(VariableDeclaration.class::cast)
+                .filter(variable -> variable.name().equals(variableName))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Variable not found: " + variableName));
+    }
+
+    private static @NotNull VariableDeclaration findVariable(@NotNull Node root, @NotNull String variableName) {
+        return findNode(root, VariableDeclaration.class, variable -> variable.name().equals(variableName));
+    }
+
+    private static <T extends Node> @NotNull T findNode(
+            @NotNull Node root,
+            @NotNull Class<T> nodeType,
+            @NotNull Predicate<T> predicate
+    ) {
+        if (nodeType.isInstance(root)) {
+            var candidate = nodeType.cast(root);
+            if (predicate.test(candidate)) {
+                return candidate;
+            }
+        }
+        for (var child : root.getChildren()) {
+            try {
+                return findNode(child, nodeType, predicate);
+            } catch (AssertionError ignored) {
+                // Continue searching remaining subtrees.
+            }
+        }
+        throw new AssertionError("Node not found: " + nodeType.getSimpleName());
+    }
+
+    private static @NotNull PropertyDef findPropertyDef(
+            @NotNull ClassDef classDef,
+            @NotNull String propertyName
+    ) {
+        return classDef.getProperties().stream()
+                .filter(property -> property.getName().equals(propertyName))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Property not found: " + propertyName));
     }
 
     private record PreparedTypeCheckInput(

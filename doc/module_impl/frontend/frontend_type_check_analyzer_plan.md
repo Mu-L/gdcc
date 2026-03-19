@@ -1,10 +1,10 @@
-# FrontendTypeCheckAnalyzer 实施计划
+# FrontendTypeCheckAnalyzer 实施计划与实现现状
 
-> 本文档给出 `FrontendTypeCheckAnalyzer` 及其相邻补洞工作的冻结实施计划，目标是在进入最终 lowering 之前补齐 frontend 最后一层 typed semantic gate，并补上 `@onready` 的最小用法验证。typed gate 仍主要覆盖 local 显式 declared initializer compatibility、class property initializer compatibility、return compatibility，以及 condition bool contract。本文档只保留当前代码库校对后的设计结论、分步骤实施与验收细则，不记录执行流水账。
+> 本文档给出 `FrontendTypeCheckAnalyzer` 及其相邻补洞工作的冻结实施计划，目标是在进入最终 lowering 之前补齐 frontend 最后一层 typed semantic gate，并补上 `@onready` 的最小用法验证。typed gate 仍主要覆盖 local 显式 declared initializer compatibility、class property initializer compatibility、return compatibility，以及 condition bool contract。本文档已合并原 `frontend_type_check_analyzer_implementation.md`，既保留当前代码库校对后的设计结论、分步骤实施与验收细则，也维护 T1-T3 已落地的稳定实现事实，不记录执行流水账。
 
 ## 文档状态
 
-- 状态：实施计划（T0-T1 已完成并验收，T2-T7 尚未落地）
+- 状态：实施计划兼事实维护（T0-T3 已完成并验收，T4-T7 尚未落地）
 - 更新时间：2026-03-19
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -342,7 +342,7 @@ property initializer 的 restriction 固定按 property staticness 选择：
 - `doc/module_impl/frontend/diagnostic_manager.md`
 - `doc/module_impl/frontend/frontend_chain_binding_expr_type_implementation.md`
 - 新的长期事实源文档 `doc/module_impl/frontend/frontend_annotation_usage_analyzer_implementation.md`
-- 新的长期事实源文档 `doc/module_impl/frontend/frontend_type_check_analyzer_implementation.md`
+- 本文档中的“当前已落地实现现状”章节，继续维护 `FrontendTypeCheckAnalyzer` 的长期事实源
 
 ---
 
@@ -491,6 +491,13 @@ property initializer 的 restriction 固定按 property staticness 选择：
   - `RESOLVED` / `DYNAMIC` -> 调 `checkAssignmentCompatible(slotType, rhsType)`
   - 其余 status -> 跳过，保持 upstream owner
 
+**实施状态**
+
+- `T2.1` ordinary local 显式声明类型 compatibility gate：已完成
+- `T2.2` `Variant` / strict numeric / unstable-upstream 行为回归测试：已完成
+- 当前已通过的 targeted tests：
+  - `FrontendTypeCheckAnalyzerTest`
+
 **验收标准**
 
 - `var x: Variant = expr` 对任意已解析 RHS 不报 compatibility error
@@ -522,6 +529,21 @@ property initializer 的 restriction 固定按 property staticness 选择：
   - MVP 当前不支持 property `:=` 类型推导
   - 或当前 property 缺少显式类型
   - 推荐的显式声明写法是什么
+
+**实施状态**
+
+- `T3.1` property initializer 显式声明类型 compatibility gate：已完成
+- `T3.2` property `:=` / missing-type `sema.type_hint` 提示：已完成
+- `T3.3` property metadata `Variant` 冻结合同与 unstable-upstream 跳过测试：已完成
+- 当前已通过的 targeted tests：
+  - `FrontendTypeCheckAnalyzerTest`
+  - `FrontendSemanticAnalyzerFrameworkTest`
+  - `FrontendExprTypeAnalyzerTest`
+  - `FrontendTopBindingAnalyzerTest`
+  - `FrontendChainBindingAnalyzerTest`
+  - `FrontendAnalysisDataTest`
+  - `FrontendAssignmentSemanticSupportTest`
+  - `FrontendDeclaredTypeSupportTest`
 
 **验收标准**
 
@@ -641,7 +663,7 @@ property initializer 的 restriction 固定按 property staticness 选择：
   - 标明 MVP 下同 class 非静态依赖将被收口为 explicit unsupported boundary
   - 标明 expr typing 之后会依次接上 annotation-usage / type-check phase
 - 新增长期事实源 `frontend_annotation_usage_analyzer_implementation.md`
-- 新增长期事实源 `frontend_type_check_analyzer_implementation.md`
+- 将 `FrontendTypeCheckAnalyzer` 的已落地事实继续维护在本文档“当前已落地实现现状”章节
 
 **验收标准**
 
@@ -752,3 +774,99 @@ warning 的职责是提醒用户手动补显式类型，而不是暗中修改 pr
 7. `FrontendTypeCheckAnalyzer` 会对 property `:=` / 未声明显式类型 property 发出 `sema.type_hint` warning，明确告诉用户应手动补上的显式类型。
 8. 新增 diagnostic owner/category 与现有 frontend 文档、注释、测试保持一致。
 9. targeted frontend tests 通过，且不回归当前 unsupported/deferred 边界。
+
+---
+
+## 9. 当前已落地实现现状
+
+> 本节合并自原 `frontend_type_check_analyzer_implementation.md`，只记录截至 2026-03-19 已落地且稳定的实现事实。
+
+### 9.1 phase 位置与输入事实
+
+- `FrontendTypeCheckAnalyzer` 当前固定插入在 `FrontendExprTypeAnalyzer` 之后。
+- 该 phase 是 diagnostics-only analyzer，不引入新的 `FrontendAnalysisData` side table。
+- 当前只消费已发布事实：
+  - `moduleSkeleton()`
+  - `scopesByAst()`
+  - `symbolBindings()`
+  - `resolvedMembers()`
+  - `resolvedCalls()`
+  - `expressionTypes()`
+- phase 完成后仍只通过 `analysisData.updateDiagnostics(...)` 刷新阶段边界快照。
+
+### 9.2 当前 walker 与上下文
+
+- walker 当前只进入后续 typed contract 真正需要的根：
+  - ordinary local initializer
+  - class property initializer
+  - `return`
+  - `assert` / `if` / `elif` / `while` condition
+- 当前维护的最小上下文包括：
+  - 当前 class metadata
+  - 当前 callable return slot
+  - 当前 restriction / static-context
+  - executable-body depth
+  - property initializer context
+- property initializer 继续复用 T0/T0.5 已冻结的支持岛，只处理 `VariableDeclaration(kind == VAR && value != null)`。
+
+### 9.3 当前已落地的 typed contract
+
+#### 9.3.1 ordinary local 显式 declared initializer compatibility
+
+- 当前只检查 ordinary local `var`。
+- 当前只对带显式 declared type 的 local 声明产生 `sema.type_check`。
+- target slot 必须来自已发布的 `BlockScope` local inventory，而不是重新解析 AST `typeRef`。
+- RHS 只有在 `expressionTypes()` 已发布为 `RESOLVED` 或 `DYNAMIC` 时才参与 compatibility check。
+- RHS 为 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 时直接跳过，保持 upstream diagnostic owner。
+
+#### 9.3.2 class property initializer compatibility
+
+- property target type 必须来自当前 class skeleton/property metadata。
+- 带显式 declared type 的 property initializer 不兼容时发 `sema.type_check`。
+- instance/static property initializer 继续沿用 property 自身 staticness 对应的 restriction。
+- property initializer 仍统一复用 `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)`，不在 analyzer 内手写 `Variant` 特判。
+
+#### 9.3.3 property `:=` / missing-type hint
+
+- `var field := expr` 与 `var field = expr` 当前不会回写 property metadata。
+- skeleton/property metadata 对这两类 property 仍冻结为 exact `Variant`。
+- 当 RHS 已发布为 `RESOLVED(T)` 或 `DYNAMIC(Variant)` 时：
+  - analyzer 发 `sema.type_hint` warning
+  - warning 会明确说明当前需要手动补显式类型
+  - `RESOLVED(T)` 推荐 `: T`
+  - `DYNAMIC(Variant)` 推荐 `: Variant`
+- 当 RHS 为 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 时：
+  - 不发 `sema.type_hint`
+  - 保持 upstream owner
+
+### 9.4 当前诊断 owner 边界
+
+- `FrontendTypeCheckAnalyzer` 当前只拥有：
+  - `sema.type_check`
+  - `sema.type_hint`
+- 当前 phase 不翻译或重发以下上游 category：
+  - `sema.binding`
+  - `sema.member_resolution`
+  - `sema.call_resolution`
+  - `sema.expression_resolution`
+  - `sema.unsupported_*`
+  - `sema.deferred_*`
+- 当前 phase 也不把 property hint 伪装成真正的 property 类型推导。
+
+### 9.5 当前明确未做的事
+
+- 尚未落地 return compatibility。
+- 尚未落地 condition bool contract。
+- 尚未落地 `@onready` usage validation。
+- 尚未做 missing-return / all-path return completeness 分析。
+- 尚未让 property `:=` 变成 property-side inference/backfill。
+
+### 9.6 当前测试锚点
+
+- `FrontendSemanticAnalyzerFrameworkTest`
+  - 锁 phase 顺序、注入行为、diagnostics snapshot 刷新边界。
+- `FrontendTypeCheckAnalyzerTest`
+  - 锁 T1 walker/context contract。
+  - 锁 T2 local explicit compatibility 行为。
+  - 锁 T3 property explicit compatibility 与 `sema.type_hint` 行为。
+  - 锁 property metadata 在 `:=` / missing type 下仍保持 `Variant`。

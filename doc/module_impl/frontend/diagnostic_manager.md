@@ -5,8 +5,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / expr-typing / exception 诊断链路已落地）
-- 更新时间：2026-03-18
+- 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / expr-typing / type-check / exception 诊断链路已落地）
+- 更新时间：2026-03-19
 - 适用范围：
     - `src/main/java/dev/superice/gdcc/frontend/diagnostic/**`
     - `src/main/java/dev/superice/gdcc/frontend/parse/**`
@@ -188,6 +188,8 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.deferred_expression_resolution`
 - `sema.unsupported_expression_route`
 - `sema.discarded_expression`
+- `sema.type_check`
+- `sema.type_hint`
 - `sema.unsupported_annotation`
 
 其中 body/binding phase 新增 category 的语义固定为：
@@ -215,6 +217,11 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - expr analyzer 对当前明确不支持的 direct-callable-invocation 等 expression route 的 error
 - `sema.discarded_expression`
   - expr analyzer 对 bare expression statement 中被丢弃的非 `void` 结果发出的 warning
+- `sema.type_check`
+  - type-check analyzer 对 ordinary local / class property typed contract 不兼容发出的 error
+- `sema.type_hint`
+  - type-check analyzer 对 property `:=` / 未声明显式类型 property 发出的手动显式类型提醒 warning
+  - 该 warning 只提示建议的显式类型，不表示 property metadata 已被推导或回写
 
 其中 `FrontendClassSkeletonBuilder` 当前对 property annotation 的行为已经冻结为：
 
@@ -238,7 +245,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `@onready` 的合法用法验证不属于 skeleton phase
 - 后续独立的 annotation-usage phase 将消费 retained annotation + class metadata，并使用 `sema.annotation_usage` 报告 static / non-Node misuse
 
-与 `FrontendTypeCheckAnalyzer` 相关的后续合同也已冻结为：
+与 `FrontendTypeCheckAnalyzer` 相关的当前合同已冻结为：
 
 - `sema.type_check`
   - 用于 typed contract 的真实不兼容错误
@@ -279,6 +286,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - 调用 `FrontendTopBindingAnalyzer.analyze(...)` 发布 `symbolBindings`
     - 调用 `FrontendChainBindingAnalyzer.analyze(...)` 发布 `resolvedMembers()` / `resolvedCalls()`
     - 调用 `FrontendExprTypeAnalyzer.analyze(...)` 发布 `expressionTypes()` 并补齐 expression-only diagnostics / discarded-expression warning
+    - 调用 `FrontendTypeCheckAnalyzer.analyze(...)` 对 ordinary local / class property typed contract 发出 `sema.type_check` / `sema.type_hint`
     - 每个 phase 结束后都再次 `updateDiagnostics(...)`，把阶段边界快照刷新到最新 shared manager 状态
 
 ### 3.4 exception

@@ -138,8 +138,20 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(result.resolvedMembers().isEmpty());
         assertTrue(result.resolvedCalls().isEmpty());
         assertNotNull(result.diagnostics());
+        var typeHintDiagnostics = result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.type_hint"))
+                .toList();
         assertEquals(diagnostics.snapshot(), result.diagnostics());
-        assertEquals(result.moduleSkeleton().diagnostics(), result.diagnostics());
+        assertTrue(result.moduleSkeleton().diagnostics().isEmpty());
+        assertEquals(2, typeHintDiagnostics.size());
+        assertTrue(typeHintDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("tmp")
+                        && diagnostic.message().contains(": int")
+        ));
+        assertTrue(typeHintDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("keep")
+                        && diagnostic.message().contains(": int")
+        ));
     }
 
     @Test
@@ -342,7 +354,15 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertNull(result.symbolBindings().get(aliasWorkerHead));
         assertNull(result.resolvedCalls().get(aliasBuildStep));
         assertNull(result.expressionTypes().get(aliasInitializer));
-        assertTrue(result.diagnostics().isEmpty());
+        var typeHintDiagnostics = result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.type_hint"))
+                .toList();
+        assertEquals(1, typeHintDiagnostics.size());
+        assertTrue(typeHintDiagnostics.getFirst().message().contains("ready_value"));
+        assertTrue(typeHintDiagnostics.getFirst().message().contains(": int"));
+        assertTrue(result.diagnostics().asList().stream().noneMatch(diagnostic ->
+                diagnostic.category().equals("sema.type_check")
+        ));
     }
 
     @Test
