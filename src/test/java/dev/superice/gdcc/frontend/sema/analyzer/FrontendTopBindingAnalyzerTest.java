@@ -213,6 +213,72 @@ class FrontendTopBindingAnalyzerTest {
     }
 
     @Test
+    void analyzePublishesPropertyInitializerBindingsWithoutOpeningWholeClassBody() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "property_initializer_bindings.gd",
+                """
+                        class_name PropertyInitializerBindings
+                        extends RefCounted
+                        
+                        var payload: int = 1
+                        
+                        class Worker:
+                            static func build():
+                                return 1
+                        
+                        func read() -> int:
+                            return 1
+                        
+                        var mirror := payload
+                        var built := Worker.build()
+                        static var blocked_value := payload
+                        static var blocked_call := read()
+                        const Alias = payload
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var sourceFile = preparedInput.unit().ast();
+        var mirrorDeclaration = findVariable(sourceFile.statements(), "mirror");
+        var builtDeclaration = findVariable(sourceFile.statements(), "built");
+        var blockedValueDeclaration = findVariable(sourceFile.statements(), "blocked_value");
+        var blockedCallDeclaration = findVariable(sourceFile.statements(), "blocked_call");
+        var aliasDeclaration = findVariable(sourceFile.statements(), "Alias");
+
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(mirrorDeclaration.value(), "payload"),
+                FrontendBindingKind.PROPERTY
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(builtDeclaration.value(), "Worker"),
+                FrontendBindingKind.TYPE_META
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(blockedValueDeclaration.value(), "payload"),
+                FrontendBindingKind.PROPERTY
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(blockedCallDeclaration.value(), "read"),
+                FrontendBindingKind.METHOD
+        );
+        assertNull(preparedInput.analysisData().symbolBindings().get(findIdentifierExpression(aliasDeclaration.value(), "payload")));
+
+        var bindingDiagnostics = bindingDiagnostics(preparedInput.diagnosticManager());
+        assertEquals(2, bindingDiagnostics.size());
+        assertTrue(bindingDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+        ));
+        assertTrue(bindingDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("payload")));
+        assertTrue(bindingDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("read")));
+    }
+
+    @Test
     void analyzeBindsTopLevelTypeMetaChainHeadsForEngineBuiltinGlobalEnumAndLexicalInnerClasses() throws Exception {
         var api = ExtensionApiLoader.loadDefault();
         assertFalse(api.globalEnums().isEmpty());

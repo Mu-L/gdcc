@@ -224,6 +224,30 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - 发出 `sema.unsupported_annotation` error
     - 同时保留 annotation 事实在 `FrontendAnalysisData.annotationsByAst()`
 
+与 `@onready` 相关的后续合同也已冻结为：
+
+- `sema.unsupported_annotation`
+  - 只用于“annotation 已识别，但当前 frontend 尚未实现该 annotation”
+- `sema.annotation_usage`
+  - 预留给“annotation 本身已支持，但挂载位置/owner class/staticness 非法”的用法验证错误
+  - `@onready` 的 Node-only / non-static 约束属于这一类，而不是 `sema.unsupported_annotation`
+
+这里还需要保持一条 owner 边界：
+
+- skeleton phase 只负责 annotation retention 与 unsupported-annotation boundary
+- `@onready` 的合法用法验证不属于 skeleton phase
+- 后续独立的 annotation-usage phase 将消费 retained annotation + class metadata，并使用 `sema.annotation_usage` 报告 static / non-Node misuse
+
+与 `FrontendTypeCheckAnalyzer` 相关的后续合同也已冻结为：
+
+- `sema.type_check`
+  - 用于 typed contract 的真实不兼容错误
+  - severity 固定为 `error`
+- `sema.type_hint`
+  - 用于 property `:=` / 未声明显式类型 property 的手动显式类型提醒
+  - severity 固定为 `warning`
+  - 该 warning 不表示 frontend 已完成 property 类型推导；它只提示用户手动补写推荐的显式类型
+
 ---
 
 ## 3. 当前已落地状态
@@ -282,7 +306,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - duplicate / cycle diagnostics 会跳过坏 subtree，但不打断同一 module 的其余 skeleton
     - registry 注入和 snapshot 边界稳定
 - `FrontendClassSkeletonAnnotationTest`
-    - `export` / `onready` 语义稳定
+    - `export` / `onready` retention 语义稳定
     - unsupported property annotation 会发 error，且仍保留 side-table 事实
 - `FrontendSemanticAnalyzerFrameworkTest`
     - analyzer 返回共享 `FrontendAnalysisData`

@@ -6,6 +6,7 @@ import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendBinding;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDeferredBoundary;
 import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDeferredReason;
 import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDomain;
@@ -123,6 +124,7 @@ public class FrontendTopBindingAnalyzer {
         private final @NotNull ASTWalker astWalker;
         private final @NotNull IdentityHashMap<Node, Boolean> reportedUnsupportedRoots = new IdentityHashMap<>();
         private int supportedExecutableBlockDepth;
+        private int supportedPropertyInitializerDepth;
         private @NotNull ResolveRestriction currentRestriction = ResolveRestriction.unrestricted();
         private boolean currentStaticContext;
 
@@ -256,17 +258,24 @@ public class FrontendTopBindingAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleVariableDeclaration(
                 @NotNull VariableDeclaration variableDeclaration
         ) {
-            if (supportedExecutableBlockDepth <= 0 || variableDeclaration.value() == null) {
+            if (supportedExecutableBlockDepth > 0) {
+                if (variableDeclaration.value() == null) {
+                    return FrontendASTTraversalDirective.SKIP_CHILDREN;
+                }
+                if (variableDeclaration.kind() == DeclarationKind.CONST) {
+                    reportDeferredSubtree(variableDeclaration.value(), FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE);
+                    return FrontendASTTraversalDirective.SKIP_CHILDREN;
+                }
+                if (variableDeclaration.kind() != DeclarationKind.VAR) {
+                    return FrontendASTTraversalDirective.SKIP_CHILDREN;
+                }
+                walkValueExpression(variableDeclaration.value());
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
-            if (variableDeclaration.kind() == DeclarationKind.CONST) {
-                reportDeferredSubtree(variableDeclaration.value(), FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE);
+            if (!FrontendPropertyInitializerSupport.isSupportedPropertyInitializer(scopesByAst, variableDeclaration)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
-            if (variableDeclaration.kind() != DeclarationKind.VAR) {
-                return FrontendASTTraversalDirective.SKIP_CHILDREN;
-            }
-            walkValueExpression(variableDeclaration.value());
+            walkPropertyInitializer(variableDeclaration);
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -404,6 +413,28 @@ public class FrontendTopBindingAnalyzer {
                 astWalker.walk(block);
             } finally {
                 supportedExecutableBlockDepth--;
+            }
+        }
+
+        /// Property initializers need the class member lookup contract and static restriction of the
+        /// declaring property, but they still must not widen the whole class body into an executable
+        /// region.
+        private void walkPropertyInitializer(@NotNull VariableDeclaration variableDeclaration) {
+            var initializer = Objects.requireNonNull(
+                    variableDeclaration.value(),
+                    "property initializer value must not be null"
+            );
+            var previousRestriction = currentRestriction;
+            var previousStaticContext = currentStaticContext;
+            currentRestriction = FrontendPropertyInitializerSupport.restrictionFor(variableDeclaration);
+            currentStaticContext = variableDeclaration.isStatic();
+            supportedPropertyInitializerDepth++;
+            try {
+                walkValueExpression(initializer);
+            } finally {
+                supportedPropertyInitializerDepth--;
+                currentRestriction = previousRestriction;
+                currentStaticContext = previousStaticContext;
             }
         }
 
@@ -607,12 +638,40 @@ public class FrontendTopBindingAnalyzer {
         private @NotNull FrontendVisibleValueResolution resolveVisibleValue(
                 @NotNull IdentifierExpression identifierExpression
         ) {
+            if (supportedPropertyInitializerDepth > 0) {
+                return resolvePropertyInitializerValue(identifierExpression);
+            }
             return visibleValueResolver.resolve(new FrontendVisibleValueResolveRequest(
                     identifierExpression.name(),
                     identifierExpression,
                     currentRestriction,
                     FrontendVisibleValueDomain.EXECUTABLE_BODY
             ));
+        }
+
+        /// Property initializer lookup deliberately bypasses `FrontendVisibleValueResolver`: class
+        /// member initializers do not have callable-local declaration-order or local inventory rules,
+        /// so they should consume the shared scope/class/global contract directly.
+        private @NotNull FrontendVisibleValueResolution resolvePropertyInitializerValue(
+                @NotNull IdentifierExpression identifierExpression
+        ) {
+            var currentScope = findCurrentScope(identifierExpression);
+            if (currentScope == null) {
+                return FrontendVisibleValueResolution.deferredUnsupported(
+                        new FrontendVisibleValueDeferredBoundary(
+                                FrontendVisibleValueDomain.UNKNOWN_OR_SKIPPED_SUBTREE,
+                                FrontendVisibleValueDeferredReason.MISSING_SCOPE_OR_SKIPPED_SUBTREE
+                        )
+                );
+            }
+            var valueResult = currentScope.resolveValue(identifierExpression.name(), currentRestriction);
+            return switch (valueResult.status()) {
+                case FOUND_ALLOWED ->
+                        FrontendVisibleValueResolution.foundAllowed(valueResult.requireValue(), List.of());
+                case FOUND_BLOCKED ->
+                        FrontendVisibleValueResolution.foundBlocked(valueResult.requireValue(), List.of());
+                case NOT_FOUND -> FrontendVisibleValueResolution.notFound(List.of());
+            };
         }
 
         private void publishValueResolution(
@@ -958,6 +1017,7 @@ public class FrontendTopBindingAnalyzer {
             );
         }
 
+        @SuppressWarnings("SwitchStatementWithTooFewBranches")
         private void reportBindingBoundary(
                 @NotNull Node anchor,
                 @NotNull FrontendVisibleValueDomain domain,

@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（`symbolBindings()` 重建、builtin / global enum / class-like top-level `TYPE_META` 规则、value-position bare callable / bare `TYPE_META` ordinary-value misuse 合同、root-level skipped-subtree 恢复合同、usage-agnostic binding 模型与核心单元测试已落地）
-- 更新时间：2026-03-18
+- 状态：事实源维护中（`symbolBindings()` 重建、builtin / global enum / class-like top-level `TYPE_META` 规则、value-position bare callable / bare `TYPE_META` ordinary-value misuse 合同、class property initializer support island、root-level skipped-subtree 恢复合同、usage-agnostic binding 模型与核心单元测试已落地）
+- 更新时间：2026-03-19
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
@@ -62,7 +62,7 @@
 
 - 从 `FrontendModuleSkeleton.sourceClassRelations()` 中 accepted 的 source file 出发遍历 AST
 - 每次运行都从零重建一张新的 `FrontendAstSideTable<FrontendBinding>`
-- 为 supported executable subtree 中的 bare value identifier 发布 symbol category binding
+- 为 supported executable subtree 与 class property `var` initializer support island 中的 bare value identifier 发布 symbol category binding
 - 为 bare callee identifier 通过 function namespace 发布 symbol category binding
 - 为 qualified static access / call chain 的最外层 chain head 发布 ordinary value 或 `TYPE_META` binding
 - 为 `SelfExpression` 与 `LiteralExpression` 直接发布 binding
@@ -164,9 +164,16 @@
 
 对 bare value-position `IdentifierExpression`：
 
-- 必须通过 `FrontendVisibleValueResolver` 做解析
-- 当前 request 固定使用 `FrontendVisibleValueDomain.EXECUTABLE_BODY`
-- ordinary local initializer 右侧 use-site 也必须复用这条路径
+- ordinary local / executable-body use-site
+  - 必须通过 `FrontendVisibleValueResolver` 做解析
+  - 当前 request 固定使用 `FrontendVisibleValueDomain.EXECUTABLE_BODY`
+  - ordinary local initializer 右侧 use-site 也必须复用这条路径
+- class property initializer use-site
+  - 不直接复用 `FrontendVisibleValueResolver`
+  - 必须直接走 shared `Scope.resolveValue(...)` / `resolveFunctions(...)` / `resolveTypeMeta(...)` 的 class/global contract
+  - restriction 固定按 property staticness 选择：instance property -> `ResolveRestriction.instanceContext()`，static property -> `ResolveRestriction.staticContext()`
+  - 但这条 shared lookup 只负责候选查找；稳定的 MVP 合同明确不支持 property initializer 直接消费同 class 下的 non-static property / method / signal / `self`
+  - 命中上述 same-class non-static 候选时，后续实现必须由首个 owner 显式封口，而不是继续把它当成 ordinary supported binding
 
 `FrontendVisibleValueResolution` 的消费合同固定为：
 
@@ -213,7 +220,9 @@
 
 对 qualified static access / call chain 最外层的 bare `IdentifierExpression`：
 
-- 必须先按 ordinary value use-site 调用 `FrontendVisibleValueResolver`
+- 必须先按当前语法位置对应的 ordinary value use-site 规则做 value lookup：
+  - ordinary local / executable-body use-site -> `FrontendVisibleValueResolver`
+  - class property initializer use-site -> shared `Scope.resolveValue(...)`
 - 只有在 value resolution 返回 `NOT_FOUND` 时，才允许尝试 `Scope.resolveTypeMeta(...)`
 
 这是当前已经冻结的优先级规则：
@@ -340,11 +349,14 @@
 - `else` body
 - `while` body
 - ordinary local `var` initializer expression subtree
+- class property `var` initializer expression subtree
 
 需要明确：
 
 - class body 仍会继续遍历 callable / inner class 声明
-- 但 class body 本身不是 value-binding executable region
+- class body 本身仍不是 value-binding executable region
+- property initializer 是 class body 内唯一额外开放的最小支持岛；这不改变整个 class body 的 executable 语义
+- 该支持岛的稳定含义仅限于“允许发布 subtree facts”，不等价于“已经拥有完整的 class-member initializer declaration-order / default-state / cycle-aware 语义”
 - ordinary local initializer 已经是正式支持面，不得再视为 deferred 子树
 
 ### 4.2 当前显式封口的 subtree
@@ -488,8 +500,13 @@
 
 `FrontendTopBindingAnalyzer` 与 `FrontendVisibleValueResolver` 的稳定分工为：
 
-- analyzer 负责语法位置分流、binding 发布与 diagnostics
-- resolver 负责 bare value 名称可见性、declaration-order、自引用过滤与 deferred boundary
+- ordinary local / executable-body use-site：
+  - analyzer 负责语法位置分流、binding 发布与 diagnostics
+  - resolver 负责 bare value 名称可见性、declaration-order、自引用过滤与 deferred boundary
+- class property initializer use-site：
+  - analyzer 不复用 resolver
+  - analyzer 直接消费 shared `Scope.resolveValue(...)` / `resolveFunctions(...)` / `resolveTypeMeta(...)` 的 class/global contract
+  - 但 stable MVP contract 会在这层之上收口同 class 非静态依赖；shared lookup 结果本身不能自动视为“该依赖被 property initializer 正式支持”
 
 因此 analyzer 不得：
 
@@ -512,9 +529,16 @@
 
 当前 analyzer 对 shared `Scope` 的消费边界固定为：
 
-- ordinary value -> `FrontendVisibleValueResolver`
+- ordinary executable-body value -> `FrontendVisibleValueResolver`
+- class property initializer value -> `Scope.resolveValue(...)`
 - bare callee -> `Scope.resolveFunctions(...)`
 - top-level chain-head type-meta fallback -> `Scope.resolveTypeMeta(...)`
+
+其中 property initializer 的长期约束是：
+
+- 这些 shared scope API 只负责候选查找与 namespace fallback
+- 它们不承诺 property initializer 对同 class non-static property / method / signal / `self` 的合法消费语义
+- 在 frontend 拥有独立的 member-initializer semantic domain 之前，这类依赖必须保持 fail-closed
 
 其他能力仍不在本 analyzer 的消费边界内：
 

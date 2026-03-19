@@ -8,6 +8,7 @@ import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionHelper;
@@ -272,14 +273,21 @@ public class FrontendExprTypeAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleVariableDeclaration(
                 @NotNull VariableDeclaration variableDeclaration
         ) {
-            if (supportedExecutableBlockDepth <= 0 || variableDeclaration.value() == null) {
+            if (supportedExecutableBlockDepth > 0) {
+                if (variableDeclaration.value() == null) {
+                    return FrontendASTTraversalDirective.SKIP_CHILDREN;
+                }
+                if (variableDeclaration.kind() != DeclarationKind.VAR) {
+                    return FrontendASTTraversalDirective.SKIP_CHILDREN;
+                }
+                publishExpressionType(variableDeclaration.value());
+                backfillInferredLocalType(variableDeclaration);
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
-            if (variableDeclaration.kind() != DeclarationKind.VAR) {
+            if (!FrontendPropertyInitializerSupport.isSupportedPropertyInitializer(scopesByAst, variableDeclaration)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
-            publishExpressionType(variableDeclaration.value());
-            backfillInferredLocalType(variableDeclaration);
+            publishPropertyInitializerExpressionType(variableDeclaration);
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -383,6 +391,25 @@ public class FrontendExprTypeAnalyzer {
                 astWalker.walk(block);
             } finally {
                 supportedExecutableBlockDepth--;
+            }
+        }
+
+        /// Property initializers reuse ordinary expression typing, but the temporary restriction must
+        /// come from the declaring property rather than from an executable-body context.
+        private void publishPropertyInitializerExpressionType(@NotNull VariableDeclaration variableDeclaration) {
+            var initializer = Objects.requireNonNull(
+                    variableDeclaration.value(),
+                    "property initializer value must not be null"
+            );
+            var previousRestriction = currentRestriction;
+            var previousStaticContext = currentStaticContext;
+            currentRestriction = FrontendPropertyInitializerSupport.restrictionFor(variableDeclaration);
+            currentStaticContext = variableDeclaration.isStatic();
+            try {
+                publishExpressionType(initializer);
+            } finally {
+                currentRestriction = previousRestriction;
+                currentStaticContext = previousStaticContext;
             }
         }
 

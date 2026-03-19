@@ -105,6 +105,124 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
+    void analyzePublishesPropertyInitializerExpressionTypesWithoutOpeningClassConstInitializers() throws Exception {
+        var analyzed = analyze(
+                "expr_type_property_initializers.gd",
+                """
+                        class_name ExprTypePropertyInitializers
+                        extends RefCounted
+
+                        var payload: int = 1
+
+                        class Handle:
+                            func read() -> int:
+                                return 1
+
+                        class Worker:
+                            var handle: Handle
+
+                            static func build() -> Worker:
+                                return null
+
+                        var mirror := payload
+                        var ready_value := Worker.build().handle.read()
+                        const Alias = Worker.build()
+                        """
+        );
+
+        var payloadDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("payload")
+        );
+        var mirrorDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("mirror")
+        );
+        var readyValueDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("ready_value")
+        );
+        var aliasDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("Alias")
+        );
+        var mirrorIdentifier = assertInstanceOf(IdentifierExpression.class, mirrorDeclaration.value());
+        var readyInitializer = assertInstanceOf(AttributeExpression.class, readyValueDeclaration.value());
+        var workerHead = findNode(readyInitializer, IdentifierExpression.class, identifier -> identifier.name().equals("Worker"));
+
+        var payloadInitializerType = analyzed.analysisData().expressionTypes().get(payloadDeclaration.value());
+        assertNotNull(payloadInitializerType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, payloadInitializerType.status());
+        assertEquals("int", payloadInitializerType.publishedType().getTypeName());
+
+        var mirrorType = analyzed.analysisData().expressionTypes().get(mirrorIdentifier);
+        assertNotNull(mirrorType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, mirrorType.status());
+        assertEquals("int", mirrorType.publishedType().getTypeName());
+
+        var readyValueType = analyzed.analysisData().expressionTypes().get(readyInitializer);
+        assertNotNull(readyValueType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, readyValueType.status());
+        assertEquals("int", readyValueType.publishedType().getTypeName());
+
+        assertNull(analyzed.analysisData().expressionTypes().get(workerHead));
+        assertNull(analyzed.analysisData().expressionTypes().get(aliasDeclaration.value()));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
+    }
+
+    @Test
+    void analyzePublishesBlockedPropertyInitializerTypesWithoutExprOwnedDuplicateErrors() throws Exception {
+        var analyzed = analyze(
+                "expr_type_blocked_property_initializer.gd",
+                """
+                        class_name ExprTypeBlockedPropertyInitializer
+                        extends RefCounted
+
+                        var payload: int = 1
+
+                        func read() -> int:
+                            return 1
+
+                        static var blocked_value := payload
+                        static var blocked_chain := self.read()
+                        """
+        );
+
+        var blockedValueDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("blocked_value")
+        );
+        var blockedChainDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("blocked_chain")
+        );
+        var blockedValueIdentifier = assertInstanceOf(IdentifierExpression.class, blockedValueDeclaration.value());
+        var blockedChain = assertInstanceOf(AttributeExpression.class, blockedChainDeclaration.value());
+
+        var blockedValueType = analyzed.analysisData().expressionTypes().get(blockedValueIdentifier);
+        assertNotNull(blockedValueType);
+        assertEquals(FrontendExpressionTypeStatus.BLOCKED, blockedValueType.status());
+        assertEquals("int", blockedValueType.publishedType().getTypeName());
+
+        var blockedChainType = analyzed.analysisData().expressionTypes().get(blockedChain);
+        assertNotNull(blockedChainType);
+        assertEquals(FrontendExpressionTypeStatus.BLOCKED, blockedChainType.status());
+        assertNotNull(blockedChainType.detailReason());
+        assertTrue(blockedChainType.detailReason().contains("static context"));
+
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+    }
+
+    @Test
     void analyzePublishesArgumentAndFinalTypeForResolvedStaticRouteChain() throws Exception {
         var analyzed = analyze(
                 "expr_type_static_route_chain.gd",
@@ -574,7 +692,7 @@ class FrontendExprTypeAnalyzerTest {
                         var hp: int = 0
                         
                         class Holder:
-                            var values: Array[int] = []
+                            var values: Array[int]
                         
                         func ping(values: Array[int], holder: Holder):
                             hp = 1
@@ -1045,7 +1163,7 @@ class FrontendExprTypeAnalyzerTest {
         var blockedReadType = analyzed.analysisData().expressionTypes().get(blockedRead);
         assertNotNull(blockedReadType);
         assertEquals(FrontendExpressionTypeStatus.BLOCKED, blockedReadType.status());
-        assertNull(blockedReadType.publishedType());
+        assertEquals("int", blockedReadType.publishedType().getTypeName());
 
         var blockedCallType = analyzed.analysisData().expressionTypes().get(blockedCall);
         assertNotNull(blockedCallType);
@@ -1266,7 +1384,7 @@ class FrontendExprTypeAnalyzerTest {
         var blockedInitializerType = analyzed.analysisData().expressionTypes().get(blockedDeclaration.value());
         assertNotNull(blockedInitializerType);
         assertEquals(FrontendExpressionTypeStatus.BLOCKED, blockedInitializerType.status());
-        assertNull(blockedInitializerType.publishedType());
+        assertEquals("int", blockedInitializerType.publishedType().getTypeName());
         assertSame(
                 deferredInitializerType,
                 assertInitializerProvenanceReachableFromLocalUse(

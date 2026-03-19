@@ -17,6 +17,8 @@
   - top binding 负责 bare `TYPE_META` ordinary-value misuse 的首条 `sema.binding`
   - chain binding 负责 `sema.member_resolution` / `sema.call_resolution` / chain deferred/unsupported boundary
   - expr analyzer 负责 `sema.expression_resolution` / `sema.deferred_expression_resolution` / `sema.unsupported_expression_route` / `sema.discarded_expression`
+  - type-check analyzer 负责 `sema.type_check` / `sema.type_hint`
+  - annotation-usage analyzer 负责 `sema.annotation_usage`
   - 若同一根源错误已经有 upstream diagnostic，下游 analyzer 只能保留 side-table status，不得再补第二条同级错误
 
 ## 测试约定
@@ -43,3 +45,11 @@
 - 若后续 frontend 需要记录完整用法，必须扩展 `FrontendBinding` 模型，不要依赖当前 binding kind 反推读写调用语义。
 - `ScopeValue.writable` 当前只表达 bare identifier direct-write contract；不要把它误当成完整的 member/container/property mutation 语义模型。
 - property writable 判定必须统一复用共享 helper，而不是在 scope publication、assignment analyzer、其他 frontend 路径里各自硬编码 engine/builtin property metadata 分支。
+- property initializer 的 MVP 支持面是“published subtree facts”，不是“完整 class-member initializer 语义”。
+- MVP 不支持 property initializer 访问同 class 下的 non-static property / method / signal / `self`；这类访问必须 fail-closed，而不是假装已经拥有 declaration-order / default-state / cycle-aware 语义。
+- property initializer 若确实需要静态 helper，优先通过 global name、type-meta route 或其他不依赖当前类实例状态的路径进入；不要把当前类 direct member namespace 当成实例初始化期可见性模型。
+- property `:=` 在 MVP 中不支持类型推导，也不会因为 RHS 稳定类型而回写 class property metadata。
+- property `:=` 与未声明显式类型 property 在 type-check 中仍按普通 initializer expression 处理；若 RHS 已稳定，type-check analyzer 需要发 `sema.type_hint` warning，提示用户手动补写建议的显式类型。
+- `sema.type_hint` 的职责是提醒用户手动添加显式类型，而不是暗中把 property 当成已经推导完成的 typed slot。
+- `@onready` 的 MVP 合同当前是“annotation retention + usage validation”，不是完整 ready-time 执行模型。
+- `@onready` 的最小合法性规则固定为：只能用于 Node 派生类中的 non-static class property；相关非法用法由独立的 `sema.annotation_usage` owner 负责，不应混入 `sema.unsupported_annotation` 或 `sema.type_check`。

@@ -5,6 +5,7 @@ import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
@@ -274,17 +275,27 @@ public class FrontendChainBindingAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleVariableDeclaration(
                 @NotNull VariableDeclaration variableDeclaration
         ) {
-            if (supportedExecutableBlockDepth <= 0 || variableDeclaration.value() == null) {
+            if (supportedExecutableBlockDepth > 0) {
+                if (variableDeclaration.value() == null) {
+                    return FrontendASTTraversalDirective.SKIP_CHILDREN;
+                }
+                if (variableDeclaration.kind() == DeclarationKind.CONST) {
+                    reportDeferredSubtree(
+                            variableDeclaration.value(),
+                            FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE
+                    );
+                    return FrontendASTTraversalDirective.SKIP_CHILDREN;
+                }
+                if (variableDeclaration.kind() != DeclarationKind.VAR) {
+                    return FrontendASTTraversalDirective.SKIP_CHILDREN;
+                }
+                walkValueExpression(variableDeclaration.value());
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
-            if (variableDeclaration.kind() == DeclarationKind.CONST) {
-                reportDeferredSubtree(variableDeclaration.value(), FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE);
+            if (!FrontendPropertyInitializerSupport.isSupportedPropertyInitializer(scopesByAst, variableDeclaration)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
-            if (variableDeclaration.kind() != DeclarationKind.VAR) {
-                return FrontendASTTraversalDirective.SKIP_CHILDREN;
-            }
-            walkValueExpression(variableDeclaration.value());
+            walkPropertyInitializer(variableDeclaration);
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -422,6 +433,25 @@ public class FrontendChainBindingAnalyzer {
                 astWalker.walk(block);
             } finally {
                 supportedExecutableBlockDepth--;
+            }
+        }
+
+        /// Property initializers share chain/member/call publication with executable expressions,
+        /// but they must keep class-body traversal sealed everywhere except the initializer subtree.
+        private void walkPropertyInitializer(@NotNull VariableDeclaration variableDeclaration) {
+            var initializer = Objects.requireNonNull(
+                    variableDeclaration.value(),
+                    "property initializer value must not be null"
+            );
+            var previousRestriction = currentRestriction;
+            var previousStaticContext = currentStaticContext;
+            currentRestriction = FrontendPropertyInitializerSupport.restrictionFor(variableDeclaration);
+            currentStaticContext = variableDeclaration.isStatic();
+            try {
+                walkValueExpression(initializer);
+            } finally {
+                currentRestriction = previousRestriction;
+                currentStaticContext = previousStaticContext;
             }
         }
 

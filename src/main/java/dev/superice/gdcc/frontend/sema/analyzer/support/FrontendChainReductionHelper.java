@@ -356,9 +356,25 @@ public final class FrontendChainReductionHelper {
 
         for (var stepIndex = 0; stepIndex < input.chainExpression().steps().size(); stepIndex++) {
             var step = input.chainExpression().steps().get(stepIndex);
-            StepTrace trace = currentReceiver.status() == Status.RESOLVED
-                    ? reduceStep(stepIndex, step, currentReceiver, input, notes)
-                    : propagateStep(stepIndex, step, currentReceiver, Objects.requireNonNull(upstreamCause));
+            StepTrace trace;
+            if (currentReceiver.status() == Status.RESOLVED) {
+                trace = reduceStep(stepIndex, step, currentReceiver, input, notes);
+            } else if (shouldResolveFirstBlockedStepExactly(
+                    stepIndex,
+                    currentReceiver,
+                    Objects.requireNonNull(upstreamCause)
+            )) {
+                trace = reduceFirstBlockedStepExactly(
+                        stepIndex,
+                        step,
+                        currentReceiver,
+                        input,
+                        notes,
+                        upstreamCause
+                );
+            } else {
+                trace = propagateStep(stepIndex, step, currentReceiver, Objects.requireNonNull(upstreamCause));
+            }
             traces.add(trace);
             currentReceiver = trace.outgoingReceiver();
             if (recoveryRoot == null && trace.status() != Status.RESOLVED) {
@@ -374,6 +390,61 @@ public final class FrontendChainReductionHelper {
         }
 
         return new ReductionResult(traces, currentReceiver, recoveryRoot, notes);
+    }
+
+    /// A blocked chain head may still carry enough concrete receiver metadata to resolve the first
+    /// member/call exactly and publish it as `BLOCKED`. This is required for contracts such as
+    /// static property initializers, where `self.payload` must not degrade into an empty side-table
+    /// publication just because `self` itself is blocked in static context.
+    private static boolean shouldResolveFirstBlockedStepExactly(
+            int stepIndex,
+            @NotNull ReceiverState currentReceiver,
+            @NotNull UpstreamCause upstreamCause
+    ) {
+        return stepIndex == 0
+                && currentReceiver.status() == Status.BLOCKED
+                && upstreamCause.status() == Status.BLOCKED
+                && upstreamCause.sourceStepIndex().isEmpty()
+                && currentReceiver.receiverKind() != FrontendReceiverKind.UNKNOWN
+                && currentReceiver.receiverKind() != FrontendReceiverKind.DYNAMIC
+                && currentReceiver.receiverType() != null;
+    }
+
+    private static @NotNull StepTrace reduceFirstBlockedStepExactly(
+            int stepIndex,
+            @NotNull AttributeStep step,
+            @NotNull ReceiverState blockedReceiver,
+            @NotNull ReductionRequest request,
+            @NotNull List<ReductionNote> notes,
+            @NotNull UpstreamCause upstreamCause
+    ) {
+        var exactIncomingReceiver = new ReceiverState(
+                Status.RESOLVED,
+                blockedReceiver.receiverKind(),
+                blockedReceiver.receiverType(),
+                blockedReceiver.receiverTypeMeta(),
+                null
+        );
+        var exactTrace = reduceStep(stepIndex, step, exactIncomingReceiver, request, notes);
+        if (exactTrace.status() != Status.RESOLVED) {
+            return propagateStep(stepIndex, step, blockedReceiver, upstreamCause);
+        }
+
+        var detailReason = renderUpstreamReason(upstreamCause);
+        return new StepTrace(
+                stepIndex,
+                step,
+                exactTrace.stepKind(),
+                exactTrace.routeKind(),
+                blockedReceiver,
+                Status.BLOCKED,
+                ReceiverState.blockedFrom(exactTrace.outgoingReceiver(), detailReason),
+                upstreamCause,
+                toBlockedSuggestedMember(exactTrace.suggestedMember(), detailReason),
+                toBlockedSuggestedCall(exactTrace.suggestedCall(), detailReason),
+                exactTrace.finalizeRetryUsed(),
+                detailReason
+        );
     }
 
     private static @NotNull StepTrace reduceStep(
@@ -1459,6 +1530,45 @@ public final class FrontendChainReductionHelper {
                 suggestedMember,
                 suggestedCall,
                 false,
+                detailReason
+        );
+    }
+
+    private static @Nullable FrontendResolvedMember toBlockedSuggestedMember(
+            @Nullable FrontendResolvedMember resolvedMember,
+            @NotNull String detailReason
+    ) {
+        if (resolvedMember == null) {
+            return null;
+        }
+        return FrontendResolvedMember.blocked(
+                resolvedMember.memberName(),
+                resolvedMember.bindingKind(),
+                resolvedMember.receiverKind(),
+                resolvedMember.ownerKind(),
+                resolvedMember.receiverType(),
+                Objects.requireNonNull(resolvedMember.resultType(), "resultType must not be null"),
+                resolvedMember.declarationSite(),
+                detailReason
+        );
+    }
+
+    private static @Nullable FrontendResolvedCall toBlockedSuggestedCall(
+            @Nullable FrontendResolvedCall resolvedCall,
+            @NotNull String detailReason
+    ) {
+        if (resolvedCall == null) {
+            return null;
+        }
+        return FrontendResolvedCall.blocked(
+                resolvedCall.callableName(),
+                resolvedCall.callKind(),
+                resolvedCall.receiverKind(),
+                resolvedCall.ownerKind(),
+                resolvedCall.receiverType(),
+                Objects.requireNonNull(resolvedCall.returnType(), "returnType must not be null"),
+                resolvedCall.argumentTypes(),
+                resolvedCall.declarationSite(),
                 detailReason
         );
     }

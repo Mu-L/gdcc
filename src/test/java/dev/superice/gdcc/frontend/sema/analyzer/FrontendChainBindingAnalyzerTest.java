@@ -27,6 +27,7 @@ import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
@@ -84,6 +85,103 @@ class FrontendChainBindingAnalyzerTest {
         assertEquals(1, analyzed.analysisData().resolvedMembers().size());
         assertEquals(1, analyzed.analysisData().resolvedCalls().size());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzePublishesPropertyInitializerChainFactsWithoutOpeningClassConstInitializers() throws Exception {
+        var analyzed = analyze(
+                "property_initializer_routes.gd",
+                """
+                        class_name PropertyInitializerRoutes
+                        extends RefCounted
+
+                        class Handle:
+                            func read() -> int:
+                                return 1
+
+                        class Worker:
+                            var handle: Handle
+
+                            static func build() -> Worker:
+                                return null
+
+                        var ready_value := Worker.build().handle.read()
+                        const Alias = Worker.build()
+                        """
+        );
+
+        var readyValue = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("ready_value")
+        );
+        var alias = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("Alias")
+        );
+        var readyInitializer = assertInstanceOf(AttributeExpression.class, readyValue.value());
+        var buildStep = findNode(readyInitializer, AttributeCallStep.class, step -> step.name().equals("build"));
+        var handleStep = findNode(readyInitializer, AttributePropertyStep.class, step -> step.name().equals("handle"));
+        var readStep = findNode(readyInitializer, AttributeCallStep.class, step -> step.name().equals("read"));
+        var aliasBuildStep = findNode(alias.value(), AttributeCallStep.class, step -> step.name().equals("build"));
+
+        var resolvedBuild = analyzed.analysisData().resolvedCalls().get(buildStep);
+        assertNotNull(resolvedBuild);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedBuild.status());
+        assertEquals(FrontendCallResolutionKind.STATIC_METHOD, resolvedBuild.callKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, resolvedBuild.receiverKind());
+
+        var resolvedHandle = analyzed.analysisData().resolvedMembers().get(handleStep);
+        assertNotNull(resolvedHandle);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedHandle.status());
+        assertEquals(FrontendBindingKind.PROPERTY, resolvedHandle.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedHandle.receiverKind());
+
+        var resolvedRead = analyzed.analysisData().resolvedCalls().get(readStep);
+        assertNotNull(resolvedRead);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedRead.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedRead.callKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedRead.receiverKind());
+
+        assertTrue(analyzed.analysisData().resolvedCalls().get(aliasBuildStep) == null);
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
+    }
+
+    @Test
+    void analyzePublishesPropertyInitializerCallFailuresWithoutOpeningWholeClassBody() throws Exception {
+        var analyzed = analyze(
+                "property_initializer_failed_call.gd",
+                """
+                        class_name PropertyInitializerFailedCall
+                        extends RefCounted
+
+                        class Worker:
+                            func read() -> int:
+                                return 1
+
+                        static var failed_call := Worker.read()
+                        """
+        );
+
+        var failedCallDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("failed_call")
+        );
+        var readStep = findNode(failedCallDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("read"));
+
+        var failedRead = analyzed.analysisData().resolvedCalls().get(readStep);
+        assertNotNull(failedRead);
+        assertEquals(FrontendCallResolutionStatus.FAILED, failedRead.status());
+        assertEquals(FrontendCallResolutionKind.STATIC_METHOD, failedRead.callKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, failedRead.receiverKind());
+
+        var callDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution");
+        assertEquals(1, callDiagnostics.size());
+        assertTrue(callDiagnostics.getFirst().message().contains("Static method lookup for 'read'"));
     }
 
     @Test

@@ -94,21 +94,36 @@ class FrontendChainReductionHelperTest {
 
     @Test
     void reducePropagatesBlockedHeadAcrossEntireSuffix() {
-        var chain = chain(identifier("hero"), property("hp"), property("name"));
+        var hero = newClass("Hero");
+        hero.addProperty(new LirPropertyDef("hp", GdStringType.STRING));
+        var chain = chain(identifier("hero"), property("hp"), property("length"));
         var head = FrontendChainReductionHelper.ReceiverState.blockedFrom(
                 FrontendChainReductionHelper.ReceiverState.resolvedInstance(new GdObjectType("Hero")),
                 "chain head is blocked in current context"
         );
 
-        var result = FrontendChainReductionHelper.reduce(request(chain, head, newRegistry(List.of(), List.of()), noExpressionTypes()));
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                head,
+                newRegistry(List.of(stringBuiltinWithLength()), List.of(hero)),
+                noExpressionTypes()
+        ));
 
         assertEquals(FrontendChainReductionHelper.Status.BLOCKED, result.stepTraces().getFirst().status());
-        assertEquals(FrontendChainReductionHelper.RouteKind.UPSTREAM_BLOCKED, result.stepTraces().getFirst().routeKind());
+        assertEquals(FrontendChainReductionHelper.RouteKind.INSTANCE_PROPERTY, result.stepTraces().getFirst().routeKind());
+        var blockedMember = result.stepTraces().getFirst().suggestedMember();
+        assertNotNull(blockedMember);
+        assertEquals(FrontendBindingKind.PROPERTY, blockedMember.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, blockedMember.receiverKind());
+        var blockedMemberType = blockedMember.resultType();
+        assertNotNull(blockedMemberType);
+        assertEquals("String", blockedMemberType.getTypeName());
         var firstUpstreamCause = result.stepTraces().getFirst().upstreamCause();
         assertNotNull(firstUpstreamCause);
         assertTrue(firstUpstreamCause.sourceStepIndex().isEmpty());
 
         assertEquals(FrontendChainReductionHelper.Status.BLOCKED, result.stepTraces().get(1).status());
+        assertEquals(FrontendChainReductionHelper.RouteKind.UPSTREAM_BLOCKED, result.stepTraces().get(1).routeKind());
         var secondUpstreamCause = result.stepTraces().get(1).upstreamCause();
         assertNotNull(secondUpstreamCause);
         assertTrue(secondUpstreamCause.sourceStepIndex().isPresent());

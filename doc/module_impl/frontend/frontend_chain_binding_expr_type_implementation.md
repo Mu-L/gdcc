@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、shared expression semantic support、subscript / assignment typed contract、`:=` 最小回填与 expr-owned diagnostics 已落地）
+- 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、shared expression semantic support、class property initializer support island、subscript / assignment typed contract、`:=` 最小回填与 expr-owned diagnostics 已落地）
 - 更新时间：2026-03-19
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -150,6 +150,8 @@
 - `FrontendChainBindingAnalyzer` 不写 `expressionTypes()`
 - `FrontendExprTypeAnalyzer` 不改写 `resolvedMembers()` / `resolvedCalls()`
 - `FrontendTopBindingAnalyzer` 继续不解析尾部成员、尾部调用或 assignment target
+- class property `var` initializer subtree 已进入这三张表的正式 published support surface；class constant initializer 仍不属于该支持面
+- 但这张 published support surface 的稳定含义只保证 subtree facts 可发布，不自动承诺同 class 非静态依赖已属于 MVP 正式语义面
 
 `FrontendResolvedMember` 当前至少稳定承载以下维度：
 
@@ -256,11 +258,21 @@
   - `foo.bind(...)`
   - `Type.func.bind(...)`
 
+这些 route 当前不仅可出现在 executable body，也可出现在 class property `var` initializer subtree；该支持岛会继承 property 自身的 static/instance restriction，但不会把整个 class body 打开成 executable region。
+
+需要补充的稳定 MVP 合同是：
+
+- property initializer subtree 的 published support 主要服务于可发布事实，而不是宣称“当前类实例成员初始化语义已完成”
+- 同 class non-static property / method / signal / `self` 依赖不属于当前 MVP 的正式支持面
+- 后续 T0.5 必须把这类依赖收口为 explicit unsupported boundary，而不是继续按 ordinary instance route 扩张支持面
+
 静态访问与构造器的分流原则已经冻结为：
 
 - static method、constructor、static load 是三条独立 route
 - 不能把它们伪装成普通 instance property / instance method lookup
 - instance receiver 命中 static method 时，必须保留 resolved call，并单独发调用方式 diagnostic
+- property initializer 若在 static restriction 下命中 instance-only member / method，首个依赖 step 仍需发布带精确 receiver metadata 的 `BLOCKED` member/call；只有更后面的 suffix 才降级为 upstream-blocked 传播
+- 对 instance property initializer 中“命中当前 class 非静态成员”的情况，不应把上述 static restriction 规则误读成合法支持面的对称扩张；该路径在 MVP 中需要单独 fail-closed
 
 ### 4.2 表达式类型
 
@@ -274,6 +286,25 @@
 - plain subscript
 - attribute-subscript
 - assignment
+
+上述表达式类型当前同时覆盖：
+
+- executable body 中的正式支持 subtree
+- class property `var` initializer subtree
+
+但 property initializer subtree 的稳定边界补充为：
+
+- published `expressionTypes()` 只说明该表达式树被访问并获得了可下游消费的状态
+- 它不代表同 class 非静态依赖已经被认定为合法的 member-initializer expression contract
+- property `:=` 也不会因为这里能发布 RHS type，就自动获得 property-side inference/backfill
+
+同时保持以下边界不变：
+
+- class constant initializer 仍不进入正式 body-phase 支持面
+- property initializer 只开放表达式子树，不引入 class-body `:=` backfill 或新的 executable scope
+- 同 class 非静态依赖在 MVP 中仍需显式封口；不要把 property initializer 的 published subtree support 误写成完整实例初始化语义
+- 这里的 published support surface 只表示 side-table 可发布；它不自动承诺同 class non-static property / method / signal / `self` 已在 property initializer 中具备稳定语义
+- MVP 将在后续 T0.5 显式收口：property initializer 不支持访问同 class 下的 non-static 内容；这类路径必须 fail-closed，而不是继续假装存在 declaration-order / default-state / cycle-aware 语义
 
 当前 expression-only 恢复出口也已冻结：
 
@@ -347,6 +378,12 @@ writable / compatibility 规则为：
 - `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 不会回填声明类型
 - backfill 只消费已发布的 RHS typing，不回头修改 earlier phase 的规则
 
+同时明确：
+
+- 这条 `:=` 回填合同当前只覆盖 block-local slot
+- class property metadata 不会因为 expr-typing 而变成 inferred property type
+- 因此任何后续 property compatibility phase 若直接消费 skeleton/property metadata，都必须先收口到 explicit declared property；否则 inferred property 会因为 target 仍是 exact `Variant` 而让 typed gate 退化成空操作
+
 ### 4.6 显式 deferred / unsupported 边界
 
 当前仍显式封口的 body-phase 边界包括：
@@ -392,6 +429,7 @@ writable / compatibility 规则为：
 
 - `BLOCKED`
   - 保留 winner，并由 owner 发 restriction diagnostic
+  - 若 blocked head 仍保留 exact receiver metadata，首个受影响 step 必须继续发布 concrete blocked member/call，而不是立刻压扁成 generic upstream miss
 - `DEFERRED`
   - 优先锚定到第一个无法继续 exact 解析的 suffix root
   - 同一条 deferred suffix 当前只发 1 条恢复 warning

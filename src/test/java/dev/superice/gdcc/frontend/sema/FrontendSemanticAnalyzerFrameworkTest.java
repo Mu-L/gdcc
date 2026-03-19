@@ -18,6 +18,7 @@ import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.gdextension.ExtensionHeader;
 import dev.superice.gdcc.gdextension.ExtensionSingleton;
 import dev.superice.gdcc.lir.LirClassDef;
+import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ClassNameStatement;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
@@ -270,6 +271,76 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 diagnostic.category().equals("sema.deferred_chain_resolution")
                         && diagnostic.message().contains("Argument #1 type is still deferred")
         ));
+    }
+
+    @Test
+    void analyzePublishesStablePropertyInitializerFactsAcrossBodyPhases() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "framework_property_initializer_facts.gd"), """
+                class_name FrameworkPropertyInitializerFacts
+                extends RefCounted
+
+                class Handle:
+                    func read() -> int:
+                        return 1
+
+                class Worker:
+                    var handle: Handle
+
+                    static func build() -> Worker:
+                        return null
+
+                var ready_value := Worker.build().handle.read()
+                const Alias = Worker.build()
+                """, diagnostics);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+
+        var readyValue = findVariable(unit.ast().statements(), "ready_value");
+        var readyInitializer = assertInstanceOf(AttributeExpression.class, readyValue.value());
+        var readyWorkerHead = findNode(
+                readyInitializer,
+                IdentifierExpression.class,
+                identifierExpression -> identifierExpression.name().equals("Worker")
+        );
+        var handleStep = findNode(
+                readyInitializer,
+                dev.superice.gdparser.frontend.ast.AttributePropertyStep.class,
+                step -> step.name().equals("handle")
+        );
+        var readStep = findNode(
+                readyInitializer,
+                dev.superice.gdparser.frontend.ast.AttributeCallStep.class,
+                step -> step.name().equals("read")
+        );
+        var aliasDeclaration = findVariable(unit.ast().statements(), "Alias");
+        var aliasInitializer = assertInstanceOf(AttributeExpression.class, aliasDeclaration.value());
+        var aliasWorkerHead = findNode(
+                aliasInitializer,
+                IdentifierExpression.class,
+                identifierExpression -> identifierExpression.name().equals("Worker")
+        );
+        var aliasBuildStep = findNode(
+                aliasInitializer,
+                dev.superice.gdparser.frontend.ast.AttributeCallStep.class,
+                step -> step.name().equals("build")
+        );
+
+        assertEquals(FrontendBindingKind.TYPE_META, Objects.requireNonNull(result.symbolBindings().get(readyWorkerHead)).kind());
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, Objects.requireNonNull(result.resolvedMembers().get(handleStep)).status());
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, Objects.requireNonNull(result.resolvedCalls().get(readStep)).status());
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                Objects.requireNonNull(result.expressionTypes().get(readyInitializer)).status()
+        );
+        assertEquals("int", result.expressionTypes().get(readyInitializer).publishedType().getTypeName());
+
+        assertNull(result.symbolBindings().get(aliasWorkerHead));
+        assertNull(result.resolvedCalls().get(aliasBuildStep));
+        assertNull(result.expressionTypes().get(aliasInitializer));
+        assertTrue(result.diagnostics().isEmpty());
     }
 
     @Test
