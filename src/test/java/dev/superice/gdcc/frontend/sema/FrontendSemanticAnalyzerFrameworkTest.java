@@ -6,6 +6,7 @@ import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendChainBindingAnalyzer;
+import dev.superice.gdcc.frontend.sema.analyzer.FrontendCompileCheckAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendExprTypeAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendAnnotationUsageAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
@@ -554,6 +555,65 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
+    void analyzeForCompileRunsCompileGateAfterTypeCheckWhileAnalyzeStaysCompileCheckFree() throws Exception {
+        var parserService = new GdScriptParserService();
+        var unit = parserService.parseUnit(Path.of("tmp", "compile_check_phase_probe.gd"), """
+                class_name CompileCheckPhaseProbe
+                extends Node
+                
+                func ping():
+                    pass
+                """, new DiagnosticManager());
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        var sharedDiagnostics = new DiagnosticManager();
+        var sharedProbe = new RecordingCompileCheckAnalyzer();
+        var sharedAnalyzer = new FrontendSemanticAnalyzer(
+                new FrontendClassSkeletonBuilder(),
+                new FrontendScopeAnalyzer(),
+                new FrontendVariableAnalyzer(),
+                new FrontendTopBindingAnalyzer(),
+                new FrontendChainBindingAnalyzer(),
+                new FrontendExprTypeAnalyzer(),
+                new FrontendAnnotationUsageAnalyzer(),
+                new FrontendTypeCheckAnalyzer(),
+                sharedProbe
+        );
+        var sharedResult = sharedAnalyzer.analyze("test_module", List.of(unit), registry, sharedDiagnostics);
+
+        assertFalse(sharedProbe.invoked);
+        assertTrue(diagnosticsByCategory(sharedResult.diagnostics(), "sema.compile_check_phase_probe").isEmpty());
+        assertEquals(sharedDiagnostics.snapshot(), sharedResult.diagnostics());
+
+        var compileDiagnostics = new DiagnosticManager();
+        var compileProbe = new RecordingCompileCheckAnalyzer();
+        var compileAnalyzer = new FrontendSemanticAnalyzer(
+                new FrontendClassSkeletonBuilder(),
+                new FrontendScopeAnalyzer(),
+                new FrontendVariableAnalyzer(),
+                new FrontendTopBindingAnalyzer(),
+                new FrontendChainBindingAnalyzer(),
+                new FrontendExprTypeAnalyzer(),
+                new FrontendAnnotationUsageAnalyzer(),
+                new FrontendTypeCheckAnalyzer(),
+                compileProbe
+        );
+        var compileResult = compileAnalyzer.analyzeForCompile(
+                "test_module",
+                List.of(unit),
+                registry,
+                compileDiagnostics
+        );
+
+        assertTrue(compileProbe.invoked);
+        assertTrue(compileProbe.preCompileCheckDiagnosticsMatchedManager);
+        assertTrue(compileProbe.typeCheckBoundaryPublished);
+        assertEquals("sema.compile_check_phase_probe", compileResult.diagnostics().getLast().category());
+        assertEquals(1, diagnosticsByCategory(compileResult.diagnostics(), "sema.compile_check_phase_probe").size());
+        assertEquals(compileDiagnostics.snapshot(), compileResult.diagnostics());
+    }
+
+    @Test
     void analyzeKeepsPipelineAliveWhenSkeletonReportsRecoverableDiagnostics() throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
@@ -881,6 +941,15 @@ class FrontendSemanticAnalyzerFrameworkTest {
         return annotations.stream().map(FrontendGdAnnotation::name).toList();
     }
 
+    private List<dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic> diagnosticsByCategory(
+            DiagnosticSnapshot diagnostics,
+            String category
+    ) {
+        return diagnostics.asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals(category))
+                .toList();
+    }
+
     private ClassRegistry createRegistryWithSingleton(String singletonName) {
         return new ClassRegistry(new ExtensionAPI(
                 new ExtensionHeader(4, 4, 0, "stable", "test", "test", "single"),
@@ -1171,6 +1240,35 @@ class FrontendSemanticAnalyzerFrameworkTest {
             diagnosticManager.warning(
                     "sema.type_check_phase_probe",
                     "type-check phase probe diagnostic",
+                    null,
+                    null
+            );
+        }
+    }
+
+    private static final class RecordingCompileCheckAnalyzer extends FrontendCompileCheckAnalyzer {
+        private boolean invoked;
+        private boolean typeCheckBoundaryPublished;
+        private boolean preCompileCheckDiagnosticsMatchedManager;
+
+        @Override
+        public void analyze(
+                @NotNull FrontendAnalysisData analysisData,
+                @NotNull DiagnosticManager diagnosticManager
+        ) {
+            invoked = true;
+            var preCompileCheckDiagnostics = analysisData.diagnostics();
+            preCompileCheckDiagnosticsMatchedManager = preCompileCheckDiagnostics.equals(diagnosticManager.snapshot());
+            typeCheckBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+                    .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
+                    && analysisData.symbolBindings().isEmpty()
+                    && analysisData.resolvedMembers().isEmpty()
+                    && analysisData.resolvedCalls().isEmpty()
+                    && analysisData.expressionTypes().isEmpty();
+            super.analyze(analysisData, diagnosticManager);
+            diagnosticManager.warning(
+                    "sema.compile_check_phase_probe",
+                    "compile-check phase probe diagnostic",
                     null,
                     null
             );

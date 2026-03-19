@@ -95,6 +95,7 @@ frontend 当前已经冻结的诊断承载方式如下：
 - `GdScriptParserService.parseUnit(...)` 必须显式接收 `DiagnosticManager`
 - `FrontendClassSkeletonBuilder.build(...)` 必须显式接收 `DiagnosticManager`
 - `FrontendSemanticAnalyzer.analyze(...)` 必须显式接收 `DiagnosticManager`
+- `FrontendSemanticAnalyzer.analyzeForCompile(...)` 必须继续复用同一 `DiagnosticManager`
 - 不保留无 manager 的兼容方法
 
 同一条 shared pipeline 中，parse diagnostics 只允许导入一次。具体规则是：
@@ -191,6 +192,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.type_check`
 - `sema.type_hint`
 - `sema.unsupported_annotation`
+- `sema.compile_check`
 
 其中 body/binding phase 新增 category 的语义固定为：
 
@@ -222,6 +224,10 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.type_hint`
   - type-check analyzer 对 property `:=` / 未声明显式类型 property 发出的手动显式类型提醒 warning
   - 该 warning 只提示建议的显式类型，不表示 property metadata 已被推导或回写
+- `sema.compile_check`
+  - compile-only `FrontendCompileCheckAnalyzer` 对进入 lowering 前仍不可编译的 surface 发出的最终 error
+  - 当前首批显式封口包括 `assert`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression`
+  - 该 category 只属于 compile-only 入口，不属于默认共享语义 / inspection / 未来 LSP 入口
 
 其中 `FrontendClassSkeletonBuilder` 当前对 property annotation 的行为已经冻结为：
 
@@ -289,6 +295,9 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - 调用 `FrontendExprTypeAnalyzer.analyze(...)` 发布 `expressionTypes()` 并补齐 expression-only diagnostics / discarded-expression warning
     - 调用 `FrontendTypeCheckAnalyzer.analyze(...)` 对 ordinary local / class property / return typed contract 发出 `sema.type_check`，并对 property hint 发出 `sema.type_hint`
     - 每个 phase 结束后都再次 `updateDiagnostics(...)`，把阶段边界快照刷新到最新 shared manager 状态
+- `analyzeForCompile(...)` 在共享 8 phase 之后追加：
+    - 调用 `FrontendCompileCheckAnalyzer.analyze(...)`
+    - 再次 `updateDiagnostics(...)`，把 compile-only final gate 的诊断写回最终边界快照
 
 ### 3.4 exception
 

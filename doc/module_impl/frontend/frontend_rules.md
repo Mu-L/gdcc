@@ -19,7 +19,10 @@
   - expr analyzer 负责 `sema.expression_resolution` / `sema.deferred_expression_resolution` / `sema.unsupported_expression_route` / `sema.discarded_expression`
   - type-check analyzer 负责 `sema.type_check` / `sema.type_hint`
   - annotation-usage analyzer 负责 `sema.annotation_usage`
+  - compile-only `FrontendCompileCheckAnalyzer` 负责 `sema.compile_check`
   - 若同一根源错误已经有 upstream diagnostic，下游 analyzer 只能保留 side-table status，不得再补第二条同级错误
+- `FrontendCompileCheckAnalyzer` 只能挂在 compile-only 入口上；默认共享 `FrontendSemanticAnalyzer.analyze(...)`、inspection 与未来 LSP 入口不得隐式附带 compile-only gate。
+- compile-only gate 只允许扫描未来 lowering 会消费的 compile surface：supported executable body 与 supported property initializer island；不得重新深入 parameter default、lambda、`for`、`match`、block-local `const` 或 skipped subtree。
 
 ## 测试约定
 
