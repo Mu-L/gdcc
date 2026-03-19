@@ -540,12 +540,10 @@ public class FrontendExprTypeAnalyzer {
                 );
                 default -> finishSemanticResolution(
                         expression,
-                        expressionSemanticSupport.resolveExplicitDeferredExpressionType(
+                        expressionSemanticSupport.resolveRemainingExplicitExpressionType(
                                 expression,
                                 this::resolveExpressionDependencyType,
                                 true,
-                                "Expression type for " + expression.getClass().getSimpleName()
-                                        + " is deferred until milestone-G coverage reaches this node kind",
                                 false
                         )
                 );

@@ -200,6 +200,40 @@ class FrontendChainHeadReceiverSupportTest {
         assertNull(receiver.detailReason());
     }
 
+    @Test
+    void resolveHeadReceiverShouldPreserveBlockedAndFailedCallableReceivers() throws Exception {
+        var context = newTestContext();
+        var blockedHelper = identifier("helper");
+        var missingHelper = identifier("missing");
+        var helperFunction = new LirFunctionDef("helper");
+        helperFunction.setReturnType(GdIntType.INT);
+        context.classScope().defineFunction(helperFunction);
+        context.analysisData().symbolBindings().put(
+                blockedHelper,
+                new FrontendBinding("helper", FrontendBindingKind.METHOD, null)
+        );
+        context.analysisData().symbolBindings().put(
+                missingHelper,
+                new FrontendBinding("missing", FrontendBindingKind.METHOD, null)
+        );
+        context.analysisData().scopesByAst().put(blockedHelper, context.bodyScope());
+        context.analysisData().scopesByAst().put(missingHelper, context.bodyScope());
+
+        var blockedReceiver = newSupport(context, ResolveRestriction.staticContext(), true).resolveHeadReceiver(blockedHelper);
+        var failedReceiver = newSupport(context, ResolveRestriction.unrestricted(), false).resolveHeadReceiver(missingHelper);
+
+        assertNotNull(blockedReceiver);
+        assertEquals(FrontendChainReductionHelper.Status.BLOCKED, blockedReceiver.status());
+        assertEquals(FrontendReceiverKind.INSTANCE, blockedReceiver.receiverKind());
+        assertEquals(new GdCallableType(), blockedReceiver.receiverType());
+        assertTrue(blockedReceiver.detailReason().contains("not accessible"));
+
+        assertNotNull(failedReceiver);
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, failedReceiver.status());
+        assertNull(failedReceiver.receiverType());
+        assertTrue(failedReceiver.detailReason().contains("no longer visible"));
+    }
+
     private static @NotNull FrontendChainHeadReceiverSupport newSupport(
             @NotNull TestContext context,
             @NotNull ResolveRestriction restriction,

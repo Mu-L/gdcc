@@ -8,6 +8,7 @@ import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
 import dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus;
+import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import dev.superice.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
@@ -15,11 +16,15 @@ import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdCallableType;
+import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
+import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -211,6 +216,7 @@ class FrontendChainBindingAnalyzerTest {
         var deferredDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution");
         assertEquals(1, deferredDiagnostics.size());
         assertTrue(deferredDiagnostics.getFirst().message().contains("Argument #1 type is still deferred"));
+        assertTrue(deferredDiagnostics.getFirst().message().contains("Binary operator typing is deferred"));
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
     }
@@ -301,16 +307,16 @@ class FrontendChainBindingAnalyzerTest {
 
         var deferredCall = analyzed.analysisData().resolvedCalls().get(consumeStep);
         assertNotNull(deferredCall);
-        assertEquals(FrontendCallResolutionStatus.DEFERRED, deferredCall.status());
+        assertEquals(FrontendCallResolutionStatus.UNSUPPORTED, deferredCall.status());
         assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, deferredCall.callKind());
         assertNotNull(deferredCall.detailReason());
         assertTrue(!deferredCall.detailReason().isBlank());
 
-        var deferredDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution");
-        assertEquals(1, deferredDiagnostics.size());
-        assertTrue(!deferredDiagnostics.getFirst().message().isBlank());
+        var unsupportedDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route");
+        assertEquals(1, unsupportedDiagnostics.size());
+        assertTrue(!unsupportedDiagnostics.getFirst().message().isBlank());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
-        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution").isEmpty());
     }
 
     void analyzeKeepsExactSuffixAfterAttributeSubscriptStep() throws Exception {
@@ -456,6 +462,144 @@ class FrontendChainBindingAnalyzerTest {
         assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedCall.callKind());
         assertEquals(FrontendReceiverKind.INSTANCE, resolvedCall.receiverKind());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeResolvesCallableBindAndCallableHeadVariants() throws Exception {
+        var analyzed = analyze(
+                "callable_bind_and_head_variants.gd",
+                """
+                        class_name CallableBindAndHeadVariants
+                        extends RefCounted
+                        
+                        class Worker:
+                            static func build(value: int) -> int:
+                                return value
+                        
+                        func helper(value: int) -> int:
+                            return value
+                        
+                        func ping(items: Array[Callable], dict: Dictionary[String, Callable]):
+                            helper.bind(1)
+                            self.helper.bind(1)
+                            Worker.build.bind(1)
+                            self.helper.call()
+                            Worker.build.call()
+                            items[0].bind(1)
+                            dict["cb"].call()
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var statements = pingFunction.body().statements();
+        var bareBindStep = findNode(
+                assertInstanceOf(ExpressionStatement.class, statements.get(0)),
+                AttributeCallStep.class,
+                step -> step.name().equals("bind")
+        );
+        var selfBindStep = findNode(
+                assertInstanceOf(ExpressionStatement.class, statements.get(1)),
+                AttributeCallStep.class,
+                step -> step.name().equals("bind")
+        );
+        var staticBindStep = findNode(
+                assertInstanceOf(ExpressionStatement.class, statements.get(2)),
+                AttributeCallStep.class,
+                step -> step.name().equals("bind")
+        );
+        var selfCallStep = findNode(
+                assertInstanceOf(ExpressionStatement.class, statements.get(3)),
+                AttributeCallStep.class,
+                step -> step.name().equals("call")
+        );
+        var staticCallStep = findNode(
+                assertInstanceOf(ExpressionStatement.class, statements.get(4)),
+                AttributeCallStep.class,
+                step -> step.name().equals("call")
+        );
+        var subscriptBindStep = findNode(
+                assertInstanceOf(ExpressionStatement.class, statements.get(5)),
+                AttributeCallStep.class,
+                step -> step.name().equals("bind")
+        );
+        var dictCallStep = findNode(
+                assertInstanceOf(ExpressionStatement.class, statements.get(6)),
+                AttributeCallStep.class,
+                step -> step.name().equals("call")
+        );
+
+        for (var bindStep : List.of(bareBindStep, selfBindStep, staticBindStep, subscriptBindStep)) {
+            var resolvedBind = analyzed.analysisData().resolvedCalls().get(bindStep);
+            assertNotNull(resolvedBind);
+            assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedBind.status());
+            assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedBind.callKind());
+            assertEquals(FrontendReceiverKind.INSTANCE, resolvedBind.receiverKind());
+            assertEquals("Callable", resolvedBind.returnType().getTypeName());
+        }
+
+        for (var callStep : List.of(selfCallStep, staticCallStep, dictCallStep)) {
+            var resolvedCall = analyzed.analysisData().resolvedCalls().get(callStep);
+            assertNotNull(resolvedCall);
+            assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status());
+            assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedCall.callKind());
+            assertEquals(FrontendReceiverKind.INSTANCE, resolvedCall.receiverKind());
+            assertEquals(GdVariantType.VARIANT, resolvedCall.returnType());
+        }
+
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
+    }
+
+    @Test
+    void analyzePropagatesBlockedBareCallArgumentsThroughChainPath() throws Exception {
+        var analyzed = analyze(
+                "blocked_bare_call_chain_path.gd",
+                """
+                        class_name BlockedBareCallChainPath
+                        extends RefCounted
+                        
+                        class Target:
+                            func consume(value: int) -> int:
+                                return value
+                        
+                        func helper(value: int) -> int:
+                            return value
+                        
+                        static func ping_static(target: Target, value: int):
+                            target.consume(helper(value))
+                        """
+        );
+
+        var pingStaticFunction = findFunction(analyzed.unit().ast(), "ping_static");
+        var chainExpression = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingStaticFunction.body().statements().getFirst()).expression()
+        );
+        var consumeStep = findNode(chainExpression, AttributeCallStep.class, step -> step.name().equals("consume"));
+        var blockedBareCall = findNode(
+                chainExpression,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("helper")
+        );
+
+        var blockedBareCallType = analyzed.analysisData().expressionTypes().get(blockedBareCall);
+        assertNotNull(blockedBareCallType);
+        assertEquals(FrontendExpressionTypeStatus.BLOCKED, blockedBareCallType.status());
+        assertNotNull(blockedBareCallType.publishedType());
+        assertEquals("int", blockedBareCallType.publishedType().getTypeName());
+
+        var outerChainType = analyzed.analysisData().expressionTypes().get(chainExpression);
+        assertNotNull(outerChainType);
+        assertEquals(FrontendExpressionTypeStatus.BLOCKED, outerChainType.status());
+        assertTrue(outerChainType.publishedType() == null);
+        assertTrue(outerChainType.detailReason().contains("Argument #1 is blocked"));
+
+        assertTrue(analyzed.analysisData().resolvedCalls().get(consumeStep) == null);
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
     }
 
     @Test

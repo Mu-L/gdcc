@@ -1901,11 +1901,7 @@ public final class FrontendChainReductionHelper {
         if (!callable.isVararg()) {
             return true;
         }
-        for (var index = fixedCount; index < providedCount; index++) {
-            if (!classRegistry.checkAssignable(argumentTypes.get(index), GdVariantType.VARIANT)) {
-                return false;
-            }
-        }
+        // Constructor vararg tails follow the same Variant-packing rule as ordinary calls.
         return true;
     }
 
@@ -1933,15 +1929,6 @@ public final class FrontendChainReductionHelper {
                 return "argument #" + (index + 1) + " of type '" + argumentType.getTypeName()
                         + "' is not assignable to parameter '" + parameter.getName()
                         + "' of type '" + parameter.getType().getTypeName() + "'";
-            }
-        }
-        if (callable.isVararg()) {
-            for (var index = fixedCount; index < providedCount; index++) {
-                var argumentType = argumentTypes.get(index);
-                if (!classRegistry.checkAssignable(argumentType, GdVariantType.VARIANT)) {
-                    return "vararg argument #" + (index + 1) + " must be Variant, got '"
-                            + argumentType.getTypeName() + "'";
-                }
             }
         }
         return "no compatible signature found";

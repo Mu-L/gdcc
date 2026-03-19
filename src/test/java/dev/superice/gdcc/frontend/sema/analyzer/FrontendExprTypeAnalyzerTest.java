@@ -346,6 +346,74 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
+    void analyzeResolvesCallableBindAndSubscriptRoutesAndRejectsDirectCallableInvocationVariants() throws Exception {
+        var analyzed = analyze(
+                "expr_type_callable_bind_routes.gd",
+                """
+                        class_name ExprTypeCallableBindRoutes
+                        extends RefCounted
+                        
+                        class Worker:
+                            static func build(value: int) -> int:
+                                return value
+                        
+                        func helper(value: int) -> int:
+                            return value
+                        
+                        func consume(cb: Callable) -> Callable:
+                            return cb
+                        
+                        func ping(items: Array[Callable], dict: Dictionary[String, Callable]):
+                            helper.bind(1)
+                            self.helper.bind(1)
+                            Worker.build.bind(1)
+                            items[0].bind(1)
+                            dict["cb"].call()
+                            consume(items[0])
+                            helper.bind(1)()
+                            self.helper.bind(1)()
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var statements = pingFunction.body().statements();
+        var bareBind = assertInstanceOf(AttributeExpression.class, assertInstanceOf(ExpressionStatement.class, statements.get(0)).expression());
+        var selfBind = assertInstanceOf(AttributeExpression.class, assertInstanceOf(ExpressionStatement.class, statements.get(1)).expression());
+        var staticBind = assertInstanceOf(AttributeExpression.class, assertInstanceOf(ExpressionStatement.class, statements.get(2)).expression());
+        var subscriptBind = assertInstanceOf(AttributeExpression.class, assertInstanceOf(ExpressionStatement.class, statements.get(3)).expression());
+        var callableCall = assertInstanceOf(AttributeExpression.class, assertInstanceOf(ExpressionStatement.class, statements.get(4)).expression());
+        var consumeCall = assertInstanceOf(CallExpression.class, assertInstanceOf(ExpressionStatement.class, statements.get(5)).expression());
+        var bareBindInvoke = assertInstanceOf(CallExpression.class, assertInstanceOf(ExpressionStatement.class, statements.get(6)).expression());
+        var selfBindInvoke = assertInstanceOf(CallExpression.class, assertInstanceOf(ExpressionStatement.class, statements.get(7)).expression());
+
+        for (var callableExpression : List.of(bareBind, selfBind, staticBind, subscriptBind, consumeCall)) {
+            var expressionType = analyzed.analysisData().expressionTypes().get(callableExpression);
+            assertNotNull(expressionType);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, expressionType.status());
+            assertInstanceOf(GdCallableType.class, expressionType.publishedType());
+        }
+
+        var callableCallType = analyzed.analysisData().expressionTypes().get(callableCall);
+        assertNotNull(callableCallType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, callableCallType.status());
+        assertEquals(GdVariantType.VARIANT, callableCallType.publishedType());
+
+        for (var unsupportedInvoke : List.of(bareBindInvoke, selfBindInvoke)) {
+            var expressionType = analyzed.analysisData().expressionTypes().get(unsupportedInvoke);
+            assertNotNull(expressionType);
+            assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, expressionType.status());
+            assertTrue(expressionType.detailReason().contains("Direct invocation of callable values"));
+        }
+
+        var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
+        assertEquals(2, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.stream().allMatch(
+                diagnostic -> diagnostic.message().contains("Direct invocation of callable values")
+        ));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+    }
+
+    @Test
     void analyzeWarnsForDiscardedNonVoidBareCallButNotVoidCall() throws Exception {
         var analyzed = analyze(
                 "expr_type_discarded_calls.gd",
@@ -457,24 +525,38 @@ class FrontendExprTypeAnalyzerTest {
                         class_name ExprTypeDeferredGaps
                         extends RefCounted
                         
-                        func ping():
+                        func ping(flag):
                             1 + 2
+                            1 if flag else 2
+                            [1, 2]
                         """
         );
 
         var pingFunction = findFunction(analyzed.ast(), "ping");
-        var genericDeferred = assertInstanceOf(
-                ExpressionStatement.class,
-                pingFunction.body().statements().getFirst()
-        ).expression();
-
-        assertEquals(
-                FrontendExpressionTypeStatus.DEFERRED,
-                analyzed.analysisData().expressionTypes().get(genericDeferred).status()
+        var deferredRoots = List.of(
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(0)).expression(),
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression(),
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
         );
+        for (var deferredRoot : deferredRoots) {
+            assertEquals(
+                    FrontendExpressionTypeStatus.DEFERRED,
+                    analyzed.analysisData().expressionTypes().get(deferredRoot).status()
+            );
+        }
 
         var deferredDiagnostics = diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution");
-        assertEquals(1, deferredDiagnostics.size());
+        assertEquals(3, deferredDiagnostics.size());
+        assertTrue(deferredDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains(
+                "Binary operator typing is deferred"
+        )));
+        assertTrue(deferredDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains(
+                "Conditional expression typing is deferred"
+        )));
+        assertTrue(deferredDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains(
+                "Array literal typing is deferred"
+        )));
+        assertTrue(deferredDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("milestone-G")));
     }
 
     @Test

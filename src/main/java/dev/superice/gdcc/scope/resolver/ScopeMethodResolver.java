@@ -370,16 +370,6 @@ public final class ScopeMethodResolver {
                         "') of type '" + param.type().getTypeName() + "'";
             }
         }
-        if (candidate.isVararg()) {
-            for (var i = fixedCount; i < providedCount; i++) {
-                var argType = argTypes.get(i);
-                if (!registry.checkAssignable(argType, GdVariantType.VARIANT)) {
-                    return "Vararg argument #" + (i + 1) + " of method '" +
-                            candidate.ownerClass().getName() + "." + candidate.methodName() +
-                            "' must be Variant, got '" + argType.getTypeName() + "'";
-                }
-            }
-        }
         return "no compatible signature found";
     }
 
@@ -426,11 +416,8 @@ public final class ScopeMethodResolver {
         if (!candidate.isVararg()) {
             return true;
         }
-        for (var i = fixedCount; i < provided; i++) {
-            if (!registry.checkAssignable(argTypes.get(i), GdVariantType.VARIANT)) {
-                return false;
-            }
-        }
+        // Godot varargs are carried through Variant packing, so typed callers should not be forced
+        // to prove a strict `T -> Variant` conversion for the tail.
         return true;
     }
 

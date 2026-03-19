@@ -3,20 +3,41 @@ package dev.superice.gdcc.frontend.sema.analyzer.support;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
+import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.lir.LirFunctionDef;
+import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.type.GdCallableType;
+import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdparser.frontend.ast.ArrayExpression;
+import dev.superice.gdparser.frontend.ast.AwaitExpression;
+import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.CastExpression;
+import dev.superice.gdparser.frontend.ast.ConditionalExpression;
+import dev.superice.gdparser.frontend.ast.DictEntry;
+import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.GetNodeExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
+import dev.superice.gdparser.frontend.ast.Point;
+import dev.superice.gdparser.frontend.ast.PreloadExpression;
+import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
+import dev.superice.gdparser.frontend.ast.TypeRef;
+import dev.superice.gdparser.frontend.ast.TypeTestExpression;
+import dev.superice.gdparser.frontend.ast.UnaryExpression;
+import dev.superice.gdparser.frontend.ast.UnknownExpression;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
@@ -33,6 +54,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendExpressionSemanticSupportTest {
+    private static final @NotNull Range TINY = new Range(0, 1, new Point(0, 0), new Point(0, 1));
+
     @Test
     void resolveIdentifierExpressionTypeMaterializesCallableValuesAndRejectsBareTypeMeta() throws Exception {
         var analyzed = analyze(
@@ -218,6 +241,96 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
+    void resolveRemainingExplicitExpressionRoutesEnumerateDeferredKindsAndRejectParserRecoveryNodes() throws Exception {
+        var support = newBareSupport();
+        var nestedResolver = resolvedVariantResolver();
+        var typeRef = new TypeRef("String", TINY);
+        var literal = integerLiteral("1");
+        var cases = List.of(
+                new RemainingExpressionCase(
+                        new BinaryExpression("+", literal, integerLiteral("2"), TINY),
+                        FrontendExpressionTypeStatus.DEFERRED,
+                        "Binary operator typing is deferred"
+                ),
+                new RemainingExpressionCase(
+                        new UnaryExpression("-", literal, TINY),
+                        FrontendExpressionTypeStatus.DEFERRED,
+                        "Unary operator typing is deferred"
+                ),
+                new RemainingExpressionCase(
+                        new ConditionalExpression(identifier("flag"), integerLiteral("1"), integerLiteral("2"), TINY),
+                        FrontendExpressionTypeStatus.DEFERRED,
+                        "Conditional expression typing is deferred"
+                ),
+                new RemainingExpressionCase(
+                        new ArrayExpression(List.of(integerLiteral("1")), false, TINY),
+                        FrontendExpressionTypeStatus.DEFERRED,
+                        "Array literal typing is deferred"
+                ),
+                new RemainingExpressionCase(
+                        new DictionaryExpression(
+                                List.of(new DictEntry(stringLiteral("\"hp\""), integerLiteral("1"), TINY)),
+                                false,
+                                TINY
+                        ),
+                        FrontendExpressionTypeStatus.DEFERRED,
+                        "Dictionary literal typing is deferred"
+                ),
+                new RemainingExpressionCase(
+                        new AwaitExpression(identifier("signal_name"), TINY),
+                        FrontendExpressionTypeStatus.DEFERRED,
+                        "Await expression typing is deferred"
+                ),
+                new RemainingExpressionCase(
+                        new PreloadExpression(stringLiteral("\"res://icon.svg\""), TINY),
+                        FrontendExpressionTypeStatus.DEFERRED,
+                        "Preload expression typing is deferred"
+                ),
+                new RemainingExpressionCase(
+                        new GetNodeExpression("$Camera3D", TINY),
+                        FrontendExpressionTypeStatus.DEFERRED,
+                        "Get-node expression typing is deferred"
+                ),
+                new RemainingExpressionCase(
+                        new CastExpression(identifier("value"), typeRef, TINY),
+                        FrontendExpressionTypeStatus.DEFERRED,
+                        "Cast expression typing is deferred"
+                ),
+                new RemainingExpressionCase(
+                        new TypeTestExpression(identifier("value"), typeRef, false, TINY),
+                        FrontendExpressionTypeStatus.DEFERRED,
+                        "Type-test expression typing is deferred"
+                ),
+                new RemainingExpressionCase(
+                        new PatternBindingExpression("captured", TINY),
+                        FrontendExpressionTypeStatus.DEFERRED,
+                        "Pattern binding expression typing is deferred"
+                ),
+                new RemainingExpressionCase(
+                        new UnknownExpression("recovery_node", "??", TINY),
+                        FrontendExpressionTypeStatus.UNSUPPORTED,
+                        "Parser recovery expression 'recovery_node'"
+                )
+        );
+
+        for (var testCase : cases) {
+            var result = support.resolveRemainingExplicitExpressionType(
+                    testCase.expression(),
+                    nestedResolver,
+                    true,
+                    false
+            );
+            assertTrue(result.rootOwnsOutcome(), () -> "expected root-owned outcome for " + testCase.expression());
+            assertEquals(testCase.status(), result.expressionType().status());
+            assertTrue(
+                    result.expressionType().detailReason().contains(testCase.reasonFragment()),
+                    () -> "expected detail reason to contain '" + testCase.reasonFragment() + "' but got '"
+                            + result.expressionType().detailReason() + "'"
+            );
+        }
+    }
+
+    @Test
     void resolveDeferredRoutesKeepDependencyProvenance() throws Exception {
         var analyzed = analyze(
                 "expression_semantic_support_deferred.gd",
@@ -239,16 +352,32 @@ class FrontendExpressionSemanticSupportTest {
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getLast()).expression()
         );
 
-        var genericResult = support.resolveExplicitDeferredExpressionType(
+        var genericResult = support.resolveRemainingExplicitExpressionType(
                 genericDeferred,
                 publishedResolver,
                 true,
-                "generic deferred fallback",
                 false
         );
         assertFalse(genericResult.rootOwnsOutcome());
         assertEquals(FrontendExpressionTypeStatus.FAILED, genericResult.expressionType().status());
         assertTrue(genericResult.expressionType().detailReason().contains("chain head"));
+    }
+
+    @Test
+    void selectCallableOverloadReportsAmbiguousAndEmptyOverloadSets() throws Exception {
+        var support = newBareSupport();
+        var ambiguous = List.of(
+                newCallable("helper", GdIntType.INT, GdIntType.INT),
+                newCallable("helper", GdStringType.STRING, GdIntType.INT)
+        );
+
+        var ambiguousSelection = support.selectCallableOverload(ambiguous, List.of(GdIntType.INT));
+        assertTrue(ambiguousSelection.selected() == null);
+        assertTrue(ambiguousSelection.detailReason().contains("Ambiguous bare call overload"));
+
+        var emptySelection = support.selectCallableOverload(List.of(), List.of(GdIntType.INT));
+        assertTrue(emptySelection.selected() == null);
+        assertEquals("Bare call resolves to an empty overload set", emptySelection.detailReason());
     }
 
     private @NotNull FrontendExpressionSemanticSupport createSupport(
@@ -272,6 +401,25 @@ class FrontendExpressionSemanticSupportTest {
         );
     }
 
+    private static @NotNull FrontendExpressionSemanticSupport newBareSupport() throws Exception {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        return new FrontendExpressionSemanticSupport(
+                analysisData.symbolBindings(),
+                analysisData.scopesByAst(),
+                ResolveRestriction::instanceContext,
+                classRegistry,
+                () -> new FrontendChainHeadReceiverSupport(
+                        analysisData,
+                        analysisData.scopesByAst(),
+                        ResolveRestriction.instanceContext(),
+                        false,
+                        _ -> null,
+                        _ -> null
+                )
+        );
+    }
+
     private static @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver publishedExpressionResolver(
             @NotNull AnalyzedScript analyzed
     ) {
@@ -282,6 +430,10 @@ class FrontendExpressionSemanticSupportTest {
                     "Expected published expression type for " + expression.getClass().getSimpleName()
             );
         };
+    }
+
+    private static @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver resolvedVariantResolver() {
+        return (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdVariantType.VARIANT);
     }
 
     private static @NotNull AnalyzedScript analyze(
@@ -299,6 +451,35 @@ class FrontendExpressionSemanticSupportTest {
                 diagnostics
         );
         return new AnalyzedScript(unit.ast(), analysisData, classRegistry);
+    }
+
+    private static @NotNull IdentifierExpression identifier(@NotNull String name) {
+        return new IdentifierExpression(name, TINY);
+    }
+
+    private static @NotNull dev.superice.gdparser.frontend.ast.LiteralExpression integerLiteral(
+            @NotNull String sourceText
+    ) {
+        return new dev.superice.gdparser.frontend.ast.LiteralExpression("integer", sourceText, TINY);
+    }
+
+    private static @NotNull dev.superice.gdparser.frontend.ast.LiteralExpression stringLiteral(
+            @NotNull String sourceText
+    ) {
+        return new dev.superice.gdparser.frontend.ast.LiteralExpression("string", sourceText, TINY);
+    }
+
+    private static @NotNull LirFunctionDef newCallable(
+            @NotNull String name,
+            @NotNull dev.superice.gdcc.type.GdType returnType,
+            @NotNull dev.superice.gdcc.type.GdType... parameterTypes
+    ) {
+        var function = new LirFunctionDef(name);
+        function.setReturnType(returnType);
+        for (var index = 0; index < parameterTypes.length; index++) {
+            function.addParameter(new LirParameterDef("arg" + index, parameterTypes[index], null, function));
+        }
+        return function;
     }
 
     private static @NotNull FunctionDeclaration findFunction(@NotNull Node root, @NotNull String name) {
@@ -344,6 +525,13 @@ class FrontendExpressionSemanticSupportTest {
             @NotNull Node ast,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull ClassRegistry classRegistry
+    ) {
+    }
+
+    private record RemainingExpressionCase(
+            @NotNull Expression expression,
+            @NotNull FrontendExpressionTypeStatus status,
+            @NotNull String reasonFragment
     ) {
     }
 }

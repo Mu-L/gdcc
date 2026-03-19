@@ -11,14 +11,28 @@ import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdcc.type.GdType;
-import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdparser.frontend.ast.ArrayExpression;
+import dev.superice.gdparser.frontend.ast.AssignmentExpression;
+import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.AwaitExpression;
+import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.CastExpression;
+import dev.superice.gdparser.frontend.ast.ConditionalExpression;
+import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
+import dev.superice.gdparser.frontend.ast.GetNodeExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
+import dev.superice.gdparser.frontend.ast.PreloadExpression;
+import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
+import dev.superice.gdparser.frontend.ast.TypeTestExpression;
+import dev.superice.gdparser.frontend.ast.UnaryExpression;
+import dev.superice.gdparser.frontend.ast.UnknownExpression;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -233,6 +247,113 @@ public final class FrontendExpressionSemanticSupport {
         );
     }
 
+    /// Exhaustive routing for the remaining MVP-deferred expression kinds.
+    ///
+    /// The analyzers intentionally keep dedicated entry points for the green paths such as
+    /// identifiers, calls, subscript, assignment, and lambda. Everything still outside that set is
+    /// enumerated here so we no longer hide future work behind a generic fallback bucket.
+    public @NotNull ExpressionSemanticResult resolveRemainingExplicitExpressionType(
+            @NotNull Expression expression,
+            @NotNull NestedExpressionResolver nestedResolver,
+            boolean resolveNestedChildren,
+            boolean finalizeWindow
+    ) {
+        return switch (Objects.requireNonNull(expression, "expression must not be null")) {
+            case BinaryExpression binaryExpression -> resolveExplicitDeferredExpressionType(
+                    binaryExpression,
+                    nestedResolver,
+                    resolveNestedChildren,
+                    "Binary operator typing is deferred until operator semantics are implemented",
+                    finalizeWindow
+            );
+            case UnaryExpression unaryExpression -> resolveExplicitDeferredExpressionType(
+                    unaryExpression,
+                    nestedResolver,
+                    resolveNestedChildren,
+                    "Unary operator typing is deferred until operator semantics are implemented",
+                    finalizeWindow
+            );
+            case ConditionalExpression conditionalExpression -> resolveExplicitDeferredExpressionType(
+                    conditionalExpression,
+                    nestedResolver,
+                    resolveNestedChildren,
+                    "Conditional expression typing is deferred until ternary semantics are implemented",
+                    finalizeWindow
+            );
+            case ArrayExpression arrayExpression -> resolveExplicitDeferredExpressionType(
+                    arrayExpression,
+                    nestedResolver,
+                    resolveNestedChildren,
+                    "Array literal typing is deferred until collection literal semantics are implemented",
+                    finalizeWindow
+            );
+            case DictionaryExpression dictionaryExpression -> resolveExplicitDeferredExpressionType(
+                    dictionaryExpression,
+                    nestedResolver,
+                    resolveNestedChildren,
+                    "Dictionary literal typing is deferred until collection literal semantics are implemented",
+                    finalizeWindow
+            );
+            case AwaitExpression awaitExpression -> resolveExplicitDeferredExpressionType(
+                    awaitExpression,
+                    nestedResolver,
+                    resolveNestedChildren,
+                    "Await expression typing is deferred until coroutine semantics are implemented",
+                    finalizeWindow
+            );
+            case PreloadExpression preloadExpression -> resolveExplicitDeferredExpressionType(
+                    preloadExpression,
+                    nestedResolver,
+                    resolveNestedChildren,
+                    "Preload expression typing is deferred until resource preload semantics are implemented",
+                    finalizeWindow
+            );
+            case GetNodeExpression getNodeExpression -> resolveExplicitDeferredExpressionType(
+                    getNodeExpression,
+                    nestedResolver,
+                    resolveNestedChildren,
+                    "Get-node expression typing is deferred until node-path lookup semantics are implemented",
+                    finalizeWindow
+            );
+            case CastExpression castExpression -> resolveExplicitDeferredExpressionType(
+                    castExpression,
+                    nestedResolver,
+                    resolveNestedChildren,
+                    "Cast expression typing is deferred until cast semantics are implemented",
+                    finalizeWindow
+            );
+            case TypeTestExpression typeTestExpression -> resolveExplicitDeferredExpressionType(
+                    typeTestExpression,
+                    nestedResolver,
+                    resolveNestedChildren,
+                    "Type-test expression typing is deferred until type-test semantics are implemented",
+                    finalizeWindow
+            );
+            case PatternBindingExpression patternBindingExpression -> resolveExplicitDeferredExpressionType(
+                    patternBindingExpression,
+                    nestedResolver,
+                    resolveNestedChildren,
+                    "Pattern binding expression typing is deferred until match-pattern semantics are implemented",
+                    finalizeWindow
+            );
+            case UnknownExpression unknownExpression -> rootOutcome(FrontendExpressionType.unsupported(
+                    "Parser recovery expression '" + unknownExpression.nodeType()
+                            + "' cannot participate in expression typing"
+            ));
+            case LiteralExpression _,
+                 SelfExpression _,
+                 IdentifierExpression _,
+                 AttributeExpression _,
+                 AssignmentExpression _,
+                 CallExpression _,
+                 SubscriptExpression _,
+                 LambdaExpression _ -> throw new IllegalArgumentException(
+                    "Expression kind '" + expression.getClass().getSimpleName()
+                            + "' must use its dedicated semantic resolver"
+            );
+        };
+    }
+
     /// Shared explicit-deferred path for recognized-but-not-yet-typed expressions.
     public @NotNull ExpressionSemanticResult resolveExplicitDeferredExpressionType(
             @NotNull Expression expression,
@@ -402,11 +523,8 @@ public final class FrontendExpressionSemanticSupport {
         if (!callable.isVararg()) {
             return true;
         }
-        for (var index = fixedCount; index < providedCount; index++) {
-            if (!classRegistry.checkAssignable(argumentTypes.get(index), GdVariantType.VARIANT)) {
-                return false;
-            }
-        }
+        // GDScript vararg tails are packaged as Variant at the call boundary, so any already-typed
+        // runtime value may flow into the tail without proving a strict `T -> Variant` conversion.
         return true;
     }
 
@@ -433,15 +551,6 @@ public final class FrontendExpressionSemanticSupport {
                 return "argument #" + (index + 1) + " of type '" + argumentType.getTypeName()
                         + "' is not assignable to parameter '" + parameter.getName()
                         + "' of type '" + parameter.getType().getTypeName() + "'";
-            }
-        }
-        if (callable.isVararg()) {
-            for (var index = fixedCount; index < providedCount; index++) {
-                var argumentType = argumentTypes.get(index);
-                if (!classRegistry.checkAssignable(argumentType, GdVariantType.VARIANT)) {
-                    return "vararg argument #" + (index + 1) + " must be Variant, got '"
-                            + argumentType.getTypeName() + "'";
-                }
             }
         }
         return "no compatible signature found";

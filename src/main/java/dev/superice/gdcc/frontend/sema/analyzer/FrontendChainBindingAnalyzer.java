@@ -591,12 +591,10 @@ public class FrontendChainBindingAnalyzer {
                         )
                 );
                 default -> bridgeExpressionResolution(
-                        expressionSemanticSupport.resolveExplicitDeferredExpressionType(
+                        expressionSemanticSupport.resolveRemainingExplicitExpressionType(
                                 expression,
                                 this::resolveExpressionDependencyType,
                                 false,
-                                "Expression type for " + expression.getClass().getSimpleName()
-                                        + " is deferred until local chain dependency typing covers this node kind",
                                 finalizeWindow
                         )
                 );
