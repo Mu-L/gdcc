@@ -18,6 +18,7 @@
   - `frontend_rules.md`
   - `diagnostic_manager.md`
   - `frontend_chain_binding_expr_type_implementation.md`
+  - `frontend_unary_binary_expr_semantic_implementation.md`
   - `frontend_type_check_analyzer_implementation.md`
   - `frontend_analysis_inspection_tool_implementation.md`
   - `doc/gdcc_low_ir.md`

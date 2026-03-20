@@ -19,6 +19,7 @@
   - `frontend_top_binding_analyzer_implementation.md`
   - `frontend_variable_analyzer_implementation.md`
   - `frontend_visible_value_resolver_implementation.md`
+  - `frontend_unary_binary_expr_semantic_implementation.md`
   - `scope_analyzer_implementation.md`
   - `scope_type_resolver_implementation.md`
   - `doc/analysis/frontend_semantic_analyzer_research_report.md`

@@ -20,6 +20,7 @@
   - `diagnostic_manager.md`
   - `frontend_top_binding_analyzer_implementation.md`
   - `frontend_chain_binding_expr_type_implementation.md`
+  - `frontend_unary_binary_expr_semantic_implementation.md`
   - `frontend_variable_analyzer_implementation.md`
   - `frontend_visible_value_resolver_implementation.md`
   - `scope_analyzer_implementation.md`
