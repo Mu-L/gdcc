@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、shared expression semantic support、class property initializer support island、subscript / assignment typed contract、`:=` 最小回填与 expr-owned diagnostics 已落地）
-- 更新时间：2026-03-19
+- 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、shared expression semantic support、unary/binary expression semantics、class property initializer support island、subscript / assignment typed contract、`:=` 最小回填与 expr-owned diagnostics 已落地）
+- 更新时间：2026-03-20
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
@@ -285,6 +285,8 @@
 - identifier
 - bare call
 - attribute chain
+- unary expression
+- binary expression
 - plain subscript
 - attribute-subscript
 - assignment
@@ -307,6 +309,7 @@
 - 同 class 非静态依赖在 MVP 中仍需显式封口；不要把 property initializer 的 published subtree support 误写成完整实例初始化语义
 - 这里的 published support surface 只表示 side-table 可发布；它不自动承诺同 class non-static property / method / signal / `self` 已在 property initializer 中具备稳定语义
 - 当前 MVP 已通过 T0.5 显式收口：property initializer 不支持访问同 class 下的 non-static 内容；这些路径必须 fail-closed，而不是继续假装存在 declaration-order / default-state / cycle-aware 语义
+- `BinaryExpression` 当前已转正，但源码运算符 `not in` 仍不在当前版本支持面内；frontend 会显式发布 `UNSUPPORTED`，而不是把它静默当成 `in`
 
 当前 expression-only 恢复出口也已冻结：
 
@@ -400,8 +403,6 @@ writable / compatibility 规则为：
 
 当前 remaining explicit-deferred expression set 固定为：
 
-- `BinaryExpression`
-- `UnaryExpression`
 - `ConditionalExpression`
 - `ArrayExpression`
 - `DictionaryExpression`
@@ -416,6 +417,7 @@ writable / compatibility 规则为：
 
 - 每类 remaining deferred node 都必须带单独命名的 deferred reason
 - `UnknownExpression` 当前显式视为 parser-recovery `UNSUPPORTED`，不再伪装成 generic deferred fallback
+- `not in` 虽然属于 `BinaryExpression` 的源码 grammar，但当前版本不支持；它不属于 remaining deferred，而是独立的显式 `UNSUPPORTED` 边界
 
 ---
 

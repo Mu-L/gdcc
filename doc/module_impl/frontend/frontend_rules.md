@@ -64,3 +64,4 @@
 - `sema.type_hint` 的职责是提醒用户手动添加显式类型，而不是暗中把 property 当成已经推导完成的 typed slot。
 - `@onready` 的 MVP 合同当前是“annotation retention + usage validation”，不是完整 ready-time 执行模型。
 - `@onready` 的最小合法性规则固定为：只能用于 Node 派生类中的 non-static class property；相关非法用法由独立的 `sema.annotation_usage` owner 负责，不应混入 `sema.unsupported_annotation` 或 `sema.type_check`。
+- `not in`运算符语法糖在MVP版本中不支持。
