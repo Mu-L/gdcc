@@ -619,7 +619,7 @@ class FrontendChainBindingAnalyzerTest {
     }
 
     @Test
-    void analyzePublishesDeferredBoundaryWithoutCascadingSuffixMisses() throws Exception {
+    void analyzePublishesBinaryArgumentFactsWithoutCascadingSuffixMisses() throws Exception {
         var analyzed = analyze(
                 "deferred_suffix.gd",
                 """
@@ -639,6 +639,42 @@ class FrontendChainBindingAnalyzerTest {
         var buildStep = findNode(chainStatement, AttributeCallStep.class, step -> step.name().equals("build"));
         var lengthStep = findNode(chainStatement, AttributePropertyStep.class, step -> step.name().equals("length"));
 
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(buildStep);
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedCall.callKind());
+        var resolvedLength = analyzed.analysisData().resolvedMembers().get(lengthStep);
+        assertNotNull(resolvedLength);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedLength.status());
+        assertEquals(FrontendBindingKind.METHOD, resolvedLength.bindingKind());
+        assertEquals(1, analyzed.analysisData().resolvedMembers().size());
+        assertEquals(1, analyzed.analysisData().resolvedCalls().size());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeKeepsDeferredArgumentBoundaryForRemainingUnsupportedExpressionKinds() throws Exception {
+        var analyzed = analyze(
+                "deferred_suffix_remaining_gap.gd",
+                """
+                        class_name DeferredSuffixRemainingGap
+                        extends RefCounted
+                        
+                        func build(value: int) -> String:
+                            return ""
+                        
+                        func ping(flag):
+                            self.build(1 if flag else 2).length
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var chainStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var buildStep = findNode(chainStatement, AttributeCallStep.class, step -> step.name().equals("build"));
+        var lengthStep = findNode(chainStatement, AttributePropertyStep.class, step -> step.name().equals("length"));
+
         var deferredCall = analyzed.analysisData().resolvedCalls().get(buildStep);
         assertNotNull(deferredCall);
         assertEquals(FrontendCallResolutionStatus.DEFERRED, deferredCall.status());
@@ -650,7 +686,7 @@ class FrontendChainBindingAnalyzerTest {
         var deferredDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution");
         assertEquals(1, deferredDiagnostics.size());
         assertTrue(deferredDiagnostics.getFirst().message().contains("Argument #1 type is still deferred"));
-        assertTrue(deferredDiagnostics.getFirst().message().contains("Binary operator typing is deferred"));
+        assertTrue(deferredDiagnostics.getFirst().message().contains("Conditional expression typing is deferred"));
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
     }

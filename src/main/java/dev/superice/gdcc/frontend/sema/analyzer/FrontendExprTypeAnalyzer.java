@@ -27,6 +27,7 @@ import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
+import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
@@ -579,6 +580,14 @@ public class FrontendExprTypeAnalyzer {
                         unaryExpression,
                         expressionSemanticSupport.resolveUnaryExpressionType(
                                 unaryExpression,
+                                this::resolveExpressionDependencyType,
+                                false
+                        )
+                );
+                case BinaryExpression binaryExpression -> finishSemanticResolution(
+                        binaryExpression,
+                        expressionSemanticSupport.resolveBinaryExpressionType(
+                                binaryExpression,
                                 this::resolveExpressionDependencyType,
                                 false
                         )

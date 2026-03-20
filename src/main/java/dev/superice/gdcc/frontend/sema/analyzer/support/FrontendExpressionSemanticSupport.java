@@ -12,6 +12,7 @@ import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdType;
@@ -340,10 +341,85 @@ public final class FrontendExpressionSemanticSupport {
         ));
     }
 
+    /// Binary operators split into two layers:
+    /// - source-level special rules (`and/or`, typed `Array[T] + Array[T]`, explicit `not in` boundary)
+    /// - ordinary builtin metadata lookup for the remaining exact pairs
+    public @NotNull ExpressionSemanticResult resolveBinaryExpressionType(
+            @NotNull BinaryExpression binaryExpression,
+            @NotNull NestedExpressionResolver nestedResolver,
+            boolean finalizeWindow
+    ) {
+        var leftOperandType = nestedResolver.resolve(binaryExpression.left(), finalizeWindow);
+        var leftDependencyIssue = firstNonResolvedDependency(leftOperandType);
+        if (leftDependencyIssue != null) {
+            return propagated(leftDependencyIssue);
+        }
+
+        var rightOperandType = nestedResolver.resolve(binaryExpression.right(), finalizeWindow);
+        var rightDependencyIssue = firstNonResolvedDependency(rightOperandType);
+        if (rightDependencyIssue != null) {
+            return propagated(rightDependencyIssue);
+        }
+
+        var publishedLeftType = Objects.requireNonNull(
+                leftOperandType.publishedType(),
+                "publishedType must not be null for stable binary left operand"
+        );
+        var publishedRightType = Objects.requireNonNull(
+                rightOperandType.publishedType(),
+                "publishedType must not be null for stable binary right operand"
+        );
+
+        if ("not in".equals(binaryExpression.operator())) {
+            return rootOutcome(FrontendExpressionType.unsupported(
+                    "Binary operator 'not in' is recognized but still uses an explicit unsupported boundary; "
+                            + "it must not be silently normalized to 'in'"
+            ));
+        }
+
+        final GodotOperator operator;
+        try {
+            operator = GodotOperator.fromSourceLexeme(
+                    binaryExpression.operator(),
+                    GodotOperator.OperatorArity.BINARY
+            );
+        } catch (IllegalArgumentException ex) {
+            return rootOutcome(FrontendExpressionType.failed(ex.getMessage()));
+        }
+
+        var specialReturnType = resolveBinarySpecialReturnType(
+                operator,
+                publishedLeftType,
+                publishedRightType
+        );
+        if (specialReturnType != null) {
+            return rootOutcome(FrontendExpressionType.resolved(specialReturnType));
+        }
+
+        if (isRuntimeOpenOperatorOperand(leftOperandType, publishedLeftType)
+                || isRuntimeOpenOperatorOperand(rightOperandType, publishedRightType)) {
+            return rootOutcome(FrontendExpressionType.dynamic(
+                    "Runtime-open operand routes binary operator '" + binaryExpression.operator()
+                            + "' through Variant semantics"
+            ));
+        }
+
+        var exactReturnType = resolveBinaryExactReturnType(operator, publishedLeftType, publishedRightType);
+        if (exactReturnType != null) {
+            return rootOutcome(FrontendExpressionType.resolved(exactReturnType));
+        }
+        return rootOutcome(FrontendExpressionType.failed(
+                "Binary operator '" + binaryExpression.operator()
+                        + "' is not defined for operand types '" + publishedLeftType.getTypeName()
+                        + "' and '" + publishedRightType.getTypeName() + "'"
+        ));
+    }
+
     /// Exhaustive routing for the remaining explicitly deferred expression kinds.
     ///
     /// The analyzers intentionally keep dedicated entry points for the green paths such as
-    /// identifiers, calls, subscript, assignment, lambda, and unary operators. Everything still
+    /// identifiers, calls, subscript, assignment, lambda, unary operators, and binary operators.
+    /// Everything still
     /// outside that set is enumerated here so we no longer hide unsupported/deferred domains behind
     /// a generic fallback bucket.
     public @NotNull ExpressionSemanticResult resolveRemainingExplicitExpressionType(
@@ -353,13 +429,6 @@ public final class FrontendExpressionSemanticSupport {
             boolean finalizeWindow
     ) {
         return switch (Objects.requireNonNull(expression, "expression must not be null")) {
-            case BinaryExpression binaryExpression -> resolveExplicitDeferredExpressionType(
-                    binaryExpression,
-                    nestedResolver,
-                    resolveNestedChildren,
-                    "Binary operator typing is deferred by the current frontend expression-typing contract",
-                    finalizeWindow
-            );
             case ConditionalExpression conditionalExpression -> resolveExplicitDeferredExpressionType(
                     conditionalExpression,
                     nestedResolver,
@@ -435,7 +504,8 @@ public final class FrontendExpressionSemanticSupport {
                  CallExpression _,
                  SubscriptExpression _,
                  LambdaExpression _,
-                 UnaryExpression _ -> throw new IllegalArgumentException(
+                 UnaryExpression _,
+                 BinaryExpression _ -> throw new IllegalArgumentException(
                     "Expression kind '" + expression.getClass().getSimpleName()
                             + "' must use its dedicated semantic resolver"
             );
@@ -648,13 +718,13 @@ public final class FrontendExpressionSemanticSupport {
         return propertyInitializerContextSupplier.get();
     }
 
-    /// Typed containers keep richer source-level names such as `Array[int]`, but unary metadata is
-    /// still owned by the raw builtin classes.
+    /// Typed containers keep richer source-level names such as `Array[int]`, but operator metadata
+    /// is still owned by the raw builtin classes and uses raw operand names for matching.
     private @Nullable GdType resolveUnaryExactReturnType(
             @NotNull GodotOperator operator,
             @NotNull GdType operandType
     ) {
-        var builtinClass = findUnaryOperatorOwnerClass(operandType);
+        var builtinClass = findOperatorOwnerClass(operandType);
         if (builtinClass == null) {
             return null;
         }
@@ -673,18 +743,70 @@ public final class FrontendExpressionSemanticSupport {
         return null;
     }
 
-    private @Nullable ExtensionBuiltinClass findUnaryOperatorOwnerClass(@NotNull GdType operandType) {
-        var directBuiltinClass = classRegistry.findBuiltinClass(operandType.getTypeName());
-        if (directBuiltinClass != null) {
-            return directBuiltinClass;
+    private @Nullable GdType resolveBinarySpecialReturnType(
+            @NotNull GodotOperator operator,
+            @NotNull GdType publishedLeftType,
+            @NotNull GdType publishedRightType
+    ) {
+        if (operator == GodotOperator.AND || operator == GodotOperator.OR) {
+            return GdBoolType.BOOL;
         }
-        if (operandType instanceof GdArrayType) {
-            return classRegistry.findBuiltinClass("Array");
-        }
-        if (operandType instanceof GdDictionaryType) {
-            return classRegistry.findBuiltinClass("Dictionary");
+        if (operator == GodotOperator.ADD
+                && publishedLeftType instanceof GdArrayType leftArrayType
+                && publishedRightType instanceof GdArrayType rightArrayType
+                && !(leftArrayType.getValueType() instanceof GdVariantType)
+                && leftArrayType.getValueType().equals(rightArrayType.getValueType())) {
+            return leftArrayType;
         }
         return null;
+    }
+
+    private boolean isRuntimeOpenOperatorOperand(
+            @NotNull FrontendExpressionType operandType,
+            @NotNull GdType publishedOperandType
+    ) {
+        return operandType.status() == FrontendExpressionTypeStatus.DYNAMIC
+                || publishedOperandType instanceof GdVariantType;
+    }
+
+    private @Nullable GdType resolveBinaryExactReturnType(
+            @NotNull GodotOperator operator,
+            @NotNull GdType leftType,
+            @NotNull GdType rightType
+    ) {
+        var builtinClass = findOperatorOwnerClass(leftType);
+        if (builtinClass == null) {
+            return null;
+        }
+        var normalizedRightType = normalizeTypeName(operatorOperandTypeName(rightType));
+        for (var classOperator : builtinClass.operators()) {
+            if (classOperator == null || classOperator.operator() != operator) {
+                continue;
+            }
+            var metadataRightType = normalizeTypeName(classOperator.rightType());
+            if (metadataRightType.isEmpty() || !metadataRightType.equals(normalizedRightType)) {
+                continue;
+            }
+            var returnType = parseOperatorReturnType(classOperator);
+            if (returnType != null) {
+                return returnType;
+            }
+        }
+        return null;
+    }
+
+    private @Nullable ExtensionBuiltinClass findOperatorOwnerClass(@NotNull GdType operandType) {
+        return classRegistry.findBuiltinClass(operatorOperandTypeName(operandType));
+    }
+
+    private @NotNull String operatorOperandTypeName(@NotNull GdType operandType) {
+        if (operandType instanceof GdArrayType) {
+            return "Array";
+        }
+        if (operandType instanceof GdDictionaryType) {
+            return "Dictionary";
+        }
+        return operandType.getTypeName();
     }
 
     private @Nullable GdType parseOperatorReturnType(@NotNull ExtensionBuiltinClass.ClassOperator classOperator) {

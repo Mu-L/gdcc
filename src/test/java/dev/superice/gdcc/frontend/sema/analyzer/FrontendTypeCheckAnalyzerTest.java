@@ -422,7 +422,7 @@ class FrontendTypeCheckAnalyzerTest {
                 requireInitializerType(pingFunction.body().statements(), "skipped_blocked", preparedInput).status()
         );
         assertEquals(
-                FrontendExpressionTypeStatus.DEFERRED,
+                FrontendExpressionTypeStatus.RESOLVED,
                 requireInitializerType(pingFunction.body().statements(), "skipped_deferred", preparedInput).status()
         );
         assertEquals(
@@ -490,7 +490,7 @@ class FrontendTypeCheckAnalyzerTest {
                 requireInitializerType(preparedInput.unit().ast(), "skipped_blocked", preparedInput).status()
         );
         assertEquals(
-                FrontendExpressionTypeStatus.DEFERRED,
+                FrontendExpressionTypeStatus.RESOLVED,
                 requireInitializerType(preparedInput.unit().ast(), "skipped_deferred", preparedInput).status()
         );
         assertEquals(
@@ -502,7 +502,7 @@ class FrontendTypeCheckAnalyzerTest {
                 requireInitializerType(preparedInput.unit().ast(), "skipped_failed_hint", preparedInput).status()
         );
         assertEquals(
-                FrontendExpressionTypeStatus.DEFERRED,
+                FrontendExpressionTypeStatus.RESOLVED,
                 requireInitializerType(preparedInput.unit().ast(), "skipped_deferred_hint", preparedInput).status()
         );
         assertEquals(
@@ -522,7 +522,7 @@ class FrontendTypeCheckAnalyzerTest {
         assertNotNull(typeCheckDiagnostic.range());
 
         var typeHintDiagnostics = diagnosticsByCategory(diagnostics, "sema.type_hint");
-        assertEquals(3, typeHintDiagnostics.size());
+        assertEquals(4, typeHintDiagnostics.size());
         assertTrue(typeHintDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.WARNING
                         && Path.of("tmp", "type_check_property_compatibility.gd").equals(diagnostic.sourcePath())
@@ -542,6 +542,11 @@ class FrontendTypeCheckAnalyzerTest {
                 diagnostic.message().contains("inferred_dynamic")
                         && diagnostic.message().contains("':='")
                         && diagnostic.message().contains(": Variant")
+        ));
+        assertTrue(typeHintDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("skipped_deferred_hint")
+                        && diagnostic.message().contains("':='")
+                        && diagnostic.message().contains(": int")
         ));
 
         var topLevelClass = preparedInput.analysisData().moduleSkeleton().sourceClassRelations().getFirst().classDef();
@@ -669,7 +674,7 @@ class FrontendTypeCheckAnalyzerTest {
                 ).status()
         );
         assertEquals(
-                FrontendExpressionTypeStatus.DEFERRED,
+                FrontendExpressionTypeStatus.RESOLVED,
                 Objects.requireNonNull(
                         preparedInput.analysisData().expressionTypes().get(
                                 findNode(findFunction(preparedInput.unit().ast(), "skips_deferred"),
@@ -736,6 +741,10 @@ class FrontendTypeCheckAnalyzerTest {
                         pass
                     if 1 + 2:
                         pass
+                    if payload and 1:
+                        pass
+                    if payload or 0:
+                        pass
                     if Worker:
                         pass
                 """);
@@ -777,12 +786,20 @@ class FrontendTypeCheckAnalyzerTest {
                 Objects.requireNonNull(preparedInput.analysisData().expressionTypes().get(whileStatement.condition())).status()
         );
         assertEquals(
-                FrontendExpressionTypeStatus.DEFERRED,
+                FrontendExpressionTypeStatus.RESOLVED,
                 Objects.requireNonNull(preparedInput.analysisData().expressionTypes().get(ifStatements.get(1).condition())).status()
         );
         assertEquals(
-                FrontendExpressionTypeStatus.FAILED,
+                FrontendExpressionTypeStatus.RESOLVED,
                 Objects.requireNonNull(preparedInput.analysisData().expressionTypes().get(ifStatements.get(2).condition())).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                Objects.requireNonNull(preparedInput.analysisData().expressionTypes().get(ifStatements.get(3).condition())).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.FAILED,
+                Objects.requireNonNull(preparedInput.analysisData().expressionTypes().get(ifStatements.get(4).condition())).status()
         );
     }
 

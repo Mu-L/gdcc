@@ -355,6 +355,176 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
+    void resolveBinaryExpressionTypePublishesMetadataDynamicSpecialAndUnsupportedOutcomes() throws Exception {
+        var analyzed = analyze(
+                "expression_semantic_support_binary.gd",
+                """
+                        class_name ExpressionSemanticSupportBinary
+                        extends RefCounted
+                        
+                        func ping(
+                            ints_a: Array[int],
+                            ints_b: Array[int],
+                            names: Array[String],
+                            raw_array: Array,
+                            dynamic_value,
+                            typed_variant: Variant
+                        ):
+                            1 + 2
+                            1 - 2
+                            1 * 2
+                            1 == 2
+                            1 < 2
+                            1 & 2
+                            1 in ints_a
+                            dynamic_value + 1
+                            typed_variant + 1
+                            1 and 2
+                            dynamic_value or 0
+                            ints_a + ints_b
+                            ints_a + names
+                            ints_a + raw_array
+                            1 not in ints_a
+                            "hello" & 1
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var expressions = findFunction(analyzed.ast(), "ping").body().statements().stream()
+                .map(ExpressionStatement.class::cast)
+                .map(ExpressionStatement::expression)
+                .map(BinaryExpression.class::cast)
+                .toList();
+
+        for (var index : List.of(0, 1, 2)) {
+            var result = support.resolveBinaryExpressionType(expressions.get(index), publishedResolver, false);
+            assertTrue(result.rootOwnsOutcome());
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, result.expressionType().status());
+            assertEquals("int", result.expressionType().publishedType().getTypeName());
+        }
+        var bitAndResult = support.resolveBinaryExpressionType(expressions.get(5), publishedResolver, false);
+        assertTrue(bitAndResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, bitAndResult.expressionType().status());
+        assertEquals("int", bitAndResult.expressionType().publishedType().getTypeName());
+
+        for (var index : List.of(3, 4, 6, 9, 10)) {
+            var result = support.resolveBinaryExpressionType(expressions.get(index), publishedResolver, false);
+            assertTrue(result.rootOwnsOutcome());
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, result.expressionType().status());
+            assertEquals("bool", result.expressionType().publishedType().getTypeName());
+        }
+
+        var dynamicAddResult = support.resolveBinaryExpressionType(expressions.get(7), publishedResolver, false);
+        assertTrue(dynamicAddResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, dynamicAddResult.expressionType().status());
+        assertEquals(GdVariantType.VARIANT, dynamicAddResult.expressionType().publishedType());
+
+        var variantAddResult = support.resolveBinaryExpressionType(expressions.get(8), publishedResolver, false);
+        assertTrue(variantAddResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, variantAddResult.expressionType().status());
+        assertEquals(GdVariantType.VARIANT, variantAddResult.expressionType().publishedType());
+
+        var typedArrayPreserveResult = support.resolveBinaryExpressionType(expressions.get(11), publishedResolver, false);
+        assertTrue(typedArrayPreserveResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, typedArrayPreserveResult.expressionType().status());
+        assertEquals("Array[int]", typedArrayPreserveResult.expressionType().publishedType().getTypeName());
+
+        var mismatchedTypedArrayResult = support.resolveBinaryExpressionType(expressions.get(12), publishedResolver, false);
+        assertTrue(mismatchedTypedArrayResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, mismatchedTypedArrayResult.expressionType().status());
+        assertEquals("Array", mismatchedTypedArrayResult.expressionType().publishedType().getTypeName());
+
+        var typedUntypedArrayResult = support.resolveBinaryExpressionType(expressions.get(13), publishedResolver, false);
+        assertTrue(typedUntypedArrayResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, typedUntypedArrayResult.expressionType().status());
+        assertEquals("Array", typedUntypedArrayResult.expressionType().publishedType().getTypeName());
+
+        var notInResult = support.resolveBinaryExpressionType(expressions.get(14), publishedResolver, false);
+        assertTrue(notInResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, notInResult.expressionType().status());
+        assertTrue(notInResult.expressionType().detailReason().contains("must not be silently normalized to 'in'"));
+
+        var invalidResult = support.resolveBinaryExpressionType(expressions.get(15), publishedResolver, false);
+        assertTrue(invalidResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, invalidResult.expressionType().status());
+        assertTrue(invalidResult.expressionType().detailReason().contains("not defined for operand types 'String' and 'int'"));
+    }
+
+    @Test
+    void resolveBinaryExpressionTypePreservesOperandOrderAndDependencyProvenance() throws Exception {
+        var analyzed = analyze(
+                "expression_semantic_support_binary_order.gd",
+                """
+                        class_name ExpressionSemanticSupportBinaryOrder
+                        extends RefCounted
+                        
+                        func ping(items: Array[int]):
+                            1 in items
+                            items in 1
+                            1 + missing.payload
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var expressions = findFunction(analyzed.ast(), "ping").body().statements().stream()
+                .map(ExpressionStatement.class::cast)
+                .map(ExpressionStatement::expression)
+                .map(BinaryExpression.class::cast)
+                .toList();
+
+        var resolvedInResult = support.resolveBinaryExpressionType(expressions.get(0), publishedResolver, false);
+        assertTrue(resolvedInResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, resolvedInResult.expressionType().status());
+        assertEquals("bool", resolvedInResult.expressionType().publishedType().getTypeName());
+
+        var reversedInResult = support.resolveBinaryExpressionType(expressions.get(1), publishedResolver, false);
+        assertTrue(reversedInResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, reversedInResult.expressionType().status());
+        assertTrue(reversedInResult.expressionType().detailReason().contains("operand types 'Array[int]' and 'int'"));
+
+        var propagatedResult = support.resolveBinaryExpressionType(expressions.get(2), publishedResolver, false);
+        assertFalse(propagatedResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, propagatedResult.expressionType().status());
+        assertTrue(propagatedResult.expressionType().detailReason().contains("chain head"));
+
+        var unknownOperatorResult = newBareSupport().resolveBinaryExpressionType(
+                new BinaryExpression("??", integerLiteral("1"), integerLiteral("2"), TINY),
+                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdIntType.INT),
+                false
+        );
+        assertTrue(unknownOperatorResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, unknownOperatorResult.expressionType().status());
+        assertTrue(unknownOperatorResult.expressionType().detailReason().contains("Unknown binary source operator"));
+    }
+
+    @Test
+    void resolveBinaryExpressionTypeAcceptsLogicalSourceAliases() throws Exception {
+        var support = newBareSupport();
+
+        var logicalAndResult = support.resolveBinaryExpressionType(
+                new BinaryExpression("&&", integerLiteral("1"), integerLiteral("2"), TINY),
+                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdIntType.INT),
+                false
+        );
+        assertTrue(logicalAndResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, logicalAndResult.expressionType().status());
+        assertEquals("bool", logicalAndResult.expressionType().publishedType().getTypeName());
+
+        var logicalOrResult = support.resolveBinaryExpressionType(
+                new BinaryExpression("||", identifier("payload"), integerLiteral("0"), TINY),
+                (expression, finalizeWindow) -> expression instanceof IdentifierExpression
+                        ? FrontendExpressionType.dynamic("synthetic runtime-open payload")
+                        : FrontendExpressionType.resolved(GdIntType.INT),
+                false
+        );
+        assertTrue(logicalOrResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, logicalOrResult.expressionType().status());
+        assertEquals("bool", logicalOrResult.expressionType().publishedType().getTypeName());
+    }
+
+    @Test
     void resolveRemainingExplicitExpressionRoutesEnumerateRemainingDeferredKindsAndRejectParserRecoveryNodes()
             throws Exception {
         var support = newBareSupport();
@@ -362,11 +532,6 @@ class FrontendExpressionSemanticSupportTest {
         var typeRef = new TypeRef("String", TINY);
         var literal = integerLiteral("1");
         var cases = List.of(
-                new RemainingExpressionCase(
-                        new BinaryExpression("+", literal, integerLiteral("2"), TINY),
-                        FrontendExpressionTypeStatus.DEFERRED,
-                        "Binary operator typing is deferred"
-                ),
                 new RemainingExpressionCase(
                         new ConditionalExpression(identifier("flag"), integerLiteral("1"), integerLiteral("2"), TINY),
                         FrontendExpressionTypeStatus.DEFERRED,
@@ -462,10 +627,9 @@ class FrontendExpressionSemanticSupportTest {
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getLast()).expression()
         );
 
-        var genericResult = support.resolveRemainingExplicitExpressionType(
-                genericDeferred,
+        var genericResult = support.resolveBinaryExpressionType(
+                assertInstanceOf(BinaryExpression.class, genericDeferred),
                 publishedResolver,
-                true,
                 false
         );
         assertFalse(genericResult.rootOwnsOutcome());

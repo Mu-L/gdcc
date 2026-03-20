@@ -948,7 +948,7 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
-    void analyzeReportsExprOwnedDeferredDiagnosticsForCurrentGenericMvpGaps() throws Exception {
+    void analyzeReportsExprOwnedDeferredDiagnosticsForRemainingGenericMvpGaps() throws Exception {
         var analyzed = analyze(
                 "expr_type_deferred_gaps.gd",
                 """
@@ -956,7 +956,6 @@ class FrontendExprTypeAnalyzerTest {
                         extends RefCounted
                         
                         func ping(flag):
-                            1 + 2
                             1 if flag else 2
                             [1, 2]
                         """
@@ -965,8 +964,7 @@ class FrontendExprTypeAnalyzerTest {
         var pingFunction = findFunction(analyzed.ast(), "ping");
         var deferredRoots = List.of(
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(0)).expression(),
-                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression(),
-                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
         );
         for (var deferredRoot : deferredRoots) {
             assertEquals(
@@ -976,10 +974,7 @@ class FrontendExprTypeAnalyzerTest {
         }
 
         var deferredDiagnostics = diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution");
-        assertEquals(3, deferredDiagnostics.size());
-        assertTrue(deferredDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains(
-                "Binary operator typing is deferred"
-        )));
+        assertEquals(2, deferredDiagnostics.size());
         assertTrue(deferredDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains(
                 "Conditional expression typing is deferred"
         )));
@@ -1051,6 +1046,102 @@ class FrontendExprTypeAnalyzerTest {
         ));
         assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
+    }
+
+    @Test
+    void analyzePublishesBinaryExpressionTypesWithoutDeferredDiagnostics() throws Exception {
+        var analyzed = analyze(
+                "expr_type_binary_semantics.gd",
+                """
+                        class_name ExprTypeBinarySemantics
+                        extends RefCounted
+                        
+                        func ping(
+                            ints_a: Array[int],
+                            ints_b: Array[int],
+                            names: Array[String],
+                            raw_array: Array,
+                            dynamic_value,
+                            typed_variant: Variant
+                        ):
+                            var add: int = 1 + 2
+                            var compare: bool = 1 == 2
+                            var membership: bool = 1 in ints_a
+                            var dynamic_sum := dynamic_value + 1
+                            var dynamic_variant_sum := typed_variant + 1
+                            var logic_and: bool = dynamic_value and 0
+                            var logic_or: bool = typed_variant or 0
+                            var preserved := ints_a + ints_b
+                            var widened := ints_a + names
+                            var raw_widened := ints_a + raw_array
+                            var invalid: int = "hello" & 1
+                            var unsupported = 1 not in ints_a
+                        """
+        );
+
+        var statements = findFunction(analyzed.ast(), "ping").body().statements();
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(findVariable(statements, "add").value()).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(findVariable(statements, "compare").value()).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(findVariable(statements, "membership").value()).status()
+        );
+
+        var dynamicSum = analyzed.analysisData().expressionTypes().get(findVariable(statements, "dynamic_sum").value());
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, dynamicSum.status());
+        assertEquals(GdVariantType.VARIANT, dynamicSum.publishedType());
+
+        var dynamicVariantSum = analyzed.analysisData().expressionTypes().get(
+                findVariable(statements, "dynamic_variant_sum").value()
+        );
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, dynamicVariantSum.status());
+        assertEquals(GdVariantType.VARIANT, dynamicVariantSum.publishedType());
+
+        var logicAnd = analyzed.analysisData().expressionTypes().get(findVariable(statements, "logic_and").value());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, logicAnd.status());
+        assertEquals("bool", logicAnd.publishedType().getTypeName());
+
+        var logicOr = analyzed.analysisData().expressionTypes().get(findVariable(statements, "logic_or").value());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, logicOr.status());
+        assertEquals("bool", logicOr.publishedType().getTypeName());
+
+        var preserved = analyzed.analysisData().expressionTypes().get(findVariable(statements, "preserved").value());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, preserved.status());
+        assertEquals("Array[int]", preserved.publishedType().getTypeName());
+
+        var widened = analyzed.analysisData().expressionTypes().get(findVariable(statements, "widened").value());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, widened.status());
+        assertEquals("Array", widened.publishedType().getTypeName());
+
+        var rawWidened = analyzed.analysisData().expressionTypes().get(findVariable(statements, "raw_widened").value());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, rawWidened.status());
+        assertEquals("Array", rawWidened.publishedType().getTypeName());
+
+        var invalid = analyzed.analysisData().expressionTypes().get(findVariable(statements, "invalid").value());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, invalid.status());
+
+        var unsupported = analyzed.analysisData().expressionTypes().get(findVariable(statements, "unsupported").value());
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, unsupported.status());
+        assertTrue(unsupported.detailReason().contains("must not be silently normalized to 'in'"));
+
+        var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
+        assertEquals(1, expressionDiagnostics.size());
+        assertTrue(expressionDiagnostics.getFirst().message().contains(
+                "Binary operator '&' is not defined for operand types 'String' and 'int'"
+        ));
+
+        var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
+        assertEquals(1, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.getFirst().message().contains("not in"));
+
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
     }
 

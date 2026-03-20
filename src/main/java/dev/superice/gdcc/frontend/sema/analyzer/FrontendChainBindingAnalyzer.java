@@ -22,6 +22,7 @@ import dev.superice.gdparser.frontend.ast.ASTWalker;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
@@ -636,6 +637,13 @@ public class FrontendChainBindingAnalyzer {
                 case UnaryExpression unaryExpression -> bridgeExpressionResolution(
                         expressionSemanticSupport.resolveUnaryExpressionType(
                                 unaryExpression,
+                                this::resolveExpressionDependencyType,
+                                finalizeWindow
+                        )
+                );
+                case BinaryExpression binaryExpression -> bridgeExpressionResolution(
+                        expressionSemanticSupport.resolveBinaryExpressionType(
+                                binaryExpression,
                                 this::resolveExpressionDependencyType,
                                 finalizeWindow
                         )

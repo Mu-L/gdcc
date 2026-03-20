@@ -142,6 +142,36 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeForCompileLeavesResolvedBinaryExpressionsOutOfCompileBlocks() throws Exception {
+        var source = """
+                class_name CompileCheckBinaryResolved
+                extends RefCounted
+                
+                func ping(
+                    items_a: Array[int],
+                    items_b: Array[int],
+                    payload,
+                    typed_variant: Variant
+                ):
+                    var sum: int = 1 + 2
+                    var truthy: bool = payload and 0
+                    var typed_merge := items_a + items_b
+                    var dynamic_sum := typed_variant + 1
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_binary_resolved.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.deferred_chain_resolution").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_binary_resolved.gd", source);
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.deferred_chain_resolution").isEmpty());
+    }
+
+    @Test
     void analyzeForCompileSkipsExplicitCompileBlocksOutsideCompileSurface() throws Exception {
         var source = """
                 class_name CompileCheckSkippedSurface
@@ -534,8 +564,8 @@ class FrontendCompileCheckAnalyzerTest {
                 func build(value: int) -> String:
                     return ""
                 
-                func ping():
-                    self.build(1 + 2).length
+                func ping(flag):
+                    self.build(1 if flag else 2).length
                 """;
 
         var shared = analyzeShared("deferred_compile_check.gd", source);
@@ -550,7 +580,10 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(compiled.diagnostics().hasErrors());
         assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && diagnostic.message().contains("remains deferred")
+        ));
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("remains deferred")
+                        || diagnostic.message().contains("Conditional expression")
         ));
     }
 
