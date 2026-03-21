@@ -34,3 +34,7 @@ At the moment, functionality is only available through the API. Developers are w
 - `gdcc.lir`: a linear intermediate representation that uniformly models all operations and control flow expressible in GDScript
 - `gdcc.backend.c.gen`: a generator that translates LIR into C code
 - `gdcc.backend.c.build`: a build toolchain that cross-compiles GDExtension modules for PC, mobile, and web targets
+
+# Community
+
+- QQ Group: 1082512847
