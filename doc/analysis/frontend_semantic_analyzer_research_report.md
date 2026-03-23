@@ -374,14 +374,14 @@
 
 ## 5. 当前仍然缺失的关键语义能力
 
-尽管基础设施比旧报告描述得更成熟，但真正的 body/interface semantic analysis 仍未落地。当前缺口主要有：
+尽管当前 frontend 已经落地 skeleton、scope、variable、top binding、chain binding、expr type、annotation usage、type check 与 compile-only gate，但仍有关键语义缺口：
 
-1. **没有独立的 frontend interface phase。** 当前只有 skeleton builder，还没有统一的 declaration/interface analysis 结果层。
-2. **没有 frontend body phase。** 当前没有 AST 级 binder、表达式类型推断、assignable analyzer、return/suite merge、lambda capture 分析器。
-3. **虽然已有统一的 `FrontendAnalysisData`，但真正的 body/interface 分析产物仍未落地。** 当前 side-table 容器已经存在，并稳定承载 annotation / scope / binding / type / resolved member / resolved call 的统一拓扑；其中 annotation、diagnostics 与 lexical `scopesByAst` 已经 live，binding / type / resolved member / resolved call 仍主要等待后续 binder/body phase 正式填充。
-4. **没有 frontend binder 对现有 scope/resolver 的正式接线。** `FrontendBindingKind`、`ClassScope`、`ResolveRestriction`、shared resolver 仍主要停留在基础设施层。
-5. **没有 AST body -> LIR lowering。** 当前 `FrontendClassSkeletonBuilder` 只产生 `LirClassDef` 的声明骨架，并不生成函数体 LIR。
-6. **没有前端级 feature boundary 诊断框架。** 对 `await`、更完整 annotation 语义、base-call/self/cast/type-test 等节点，以及 constructor 的更细粒度语义错误，还没有统一的“recognized but unsupported / deferred” 诊断策略。
+1. **没有 frontend -> LIR lowering。** 当前语义主链仍止步于 side table、diagnostics 与 class skeleton；函数体不会继续产生 LIR。
+2. **compile-ready 与 shared semantic 仍然分离。** `FrontendCompileCheckAnalyzer` 已经提供 compile-only final gate，但 `ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression` 与 `assert` 仍需要在进入 lowering 前被显式封口。
+3. **若干 executable-body 域仍保持 deferred / unsupported。** 参数默认值、lambda capture、`for` iterator binding、`match` pattern binding、block-local `const` 等尚未进入当前正式支持面。
+4. **`self` 核心语义已经接通，但 signal use-site 与 coroutine 语义仍未闭环。** 当前代码已经支持 `self` 的 top binding 发布、static context fail-closed、property initializer fail-closed，以及将 `self` 解析为当前类实例 receiver；仍未形成稳定 frontend 合同的是 `.emit(...)`、`await signal` 等 signal/coroutine use-site，以及更完整的 context-sensitive diagnostics。
+5. **property initializer 仍不是完整实例初始化模型。** 当前支持面是“published subtree facts”，而不是 declaration-order / default-state / cycle-aware 的 class-member initializer 语义。
+6. **header superclass 的支持面仍受 MVP 限制。** path-based `extends`、autoload superclass、global-script-class superclass 与跨多个 gdcc module 的 superclass 绑定依然没有接通。
 
 ---
 

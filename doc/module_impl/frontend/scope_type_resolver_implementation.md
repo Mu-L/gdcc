@@ -21,7 +21,7 @@
   - `diagnostic_manager.md`
 - 明确非目标：
   - 不在此处实现完整 frontend binder/body
-  - 不改变 `FrontendSemanticAnalyzer` 当前 `skeleton -> scope analyzer` 的阶段顺序
+  - 不改变 `FrontendSemanticAnalyzer` 已发布的 phase 顺序，尤其不要打乱 skeleton 先于 scope analyzer 的边界
   - 不把 `DiagnosticManager` 注入 `ScopeTypeResolver`、`Scope` 或其他 shared resolver
   - 不放宽当前 strict declared type 的容器规则
   - 不让 `ClassRegistry#resolveTypeMetaHere(...)` 反向依赖 `ScopeTypeResolver`

@@ -10,7 +10,7 @@
 ## 诊断约定
 
 - parser 必须保持 tolerant：`gdparser` lowering diagnostics 映射为 `parse.lowering`，parser/runtime 失败映射为 `parse.internal`，不要把运行时异常直接抛给调用方。
-- skeleton / analyzer / 后续 binder-body phase 对可恢复错误必须采用“diagnostic + skip subtree”策略；不要因为单个坏节点打断整条 frontend pipeline。
+- skeleton / 当前 analyzers / 后续新增 frontend phase 对可恢复错误都必须采用“diagnostic + skip subtree”策略；不要因为单个坏节点打断整条 frontend pipeline。
 - 新增 frontend 诊断或恢复路径时，必须同步更新 `diagnostic_manager.md`、相关实现注释和受影响的模块文档，避免代码与文档冲突。
 - 当前合同中“已识别但明确不支持”的 feature boundary 统一发 error；只有真正的 deferred/暂缓恢复路径才保留 warning。
 - body phase 的 diagnostic owner 必须保持单一：
@@ -36,11 +36,12 @@
 
 ## MVP 支持约定 
 
-- `lambda`, `match`, `for`不在最小可行产品范围内。
-- 协程和信号上的协程不在最小可行产品范围内。
+- 下述 MVP 约定描述的是当前 frontend 共享语义、body analyzer 与 compile surface 的正式支持面；它们不否认 parser 与 scope phase 对部分语法结构已经能识别或建图。
+- `lambda`、`match`、`for` 当前不在 frontend body semantic MVP 正式支持面；相关子树仍按 deferred / unsupported boundary fail-closed。
+- 协程与 signal-based coroutine 当前不在 frontend semantic MVP 范围内；`await` / `.emit(...)` 等 use-site 语义仍未闭环。
 - path-based `extends`、autoload superclass、global-script-class superclass 绑定不实施。
 - 多 gdcc module 的 header superclass 绑定不在最小可行产品范围内。
-- 函数参数默认值不在最小可行产品范围内。
+- 函数参数默认值当前不在 frontend body semantic MVP 范围内；相关可见性与求值顺序继续按 deferred boundary 处理。
 - class constant 的收集、注册、继承可见性与绑定不在 MVP 范围内，整体延后到 MVP 之后再实施。
 - callable scope / block scope 中手动声明或发布的类型别名不在 MVP 范围内；frontend body phase 必须对这类 scope-local `type-meta` 采用 fail-closed 的 deferred / unsupported 处理，而不是把它们当成普通 class-like `TYPE_META` 消费。
 - H1 subscript MVP 只正式支持 container family 的最小 typed contract：`Array[T]`、`Dictionary[K, V]`、packed array family。
