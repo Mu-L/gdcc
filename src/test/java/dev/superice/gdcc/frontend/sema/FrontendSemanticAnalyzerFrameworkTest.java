@@ -185,7 +185,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void analyzePublishesTopBindingsForChainHeadsWhileKeepingDeferredWarningsExplicit() throws Exception {
+    void analyzePublishesTopBindingsForChainHeadsWhileKeepingUnsupportedBoundariesExplicit() throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "framework_top_binding.gd"), """
@@ -268,9 +268,21 @@ class FrontendSemanticAnalyzerFrameworkTest {
                         .count()
         );
         assertEquals(
-                1,
+                0,
                 result.diagnostics().asList().stream()
                         .filter(diagnostic -> diagnostic.category().equals("sema.deferred_chain_resolution"))
+                        .count()
+        );
+        assertEquals(
+                2,
+                result.diagnostics().asList().stream()
+                        .filter(diagnostic -> diagnostic.category().equals("sema.unsupported_chain_route"))
+                        .count()
+        );
+        assertEquals(
+                1,
+                result.diagnostics().asList().stream()
+                        .filter(diagnostic -> diagnostic.category().equals("sema.unsupported_expression_route"))
                         .count()
         );
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
@@ -284,8 +296,19 @@ class FrontendSemanticAnalyzerFrameworkTest {
                         && diagnostic.message().contains("lambda subtree")
         ));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.deferred_chain_resolution")
-                        && diagnostic.message().contains("Argument #1 type is still deferred")
+                diagnostic.category().equals("sema.unsupported_chain_route")
+                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && diagnostic.message().contains("parameter default")
+        ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_chain_route")
+                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && diagnostic.message().contains("lambda subtree")
+        ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_expression_route")
+                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && diagnostic.message().contains("Lambda expression typing is not supported")
         ));
     }
 
