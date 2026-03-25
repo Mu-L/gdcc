@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 性质：长期事实源
-- 最后校对：2026-03-14
+- 最后校对：2026-03-25
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/scope/**`
@@ -230,6 +230,8 @@ inner class boundary 当前必须建立在 `FrontendModuleSkeleton.sourceClassRe
 - `FrontendInnerClassRelation` 持有 inner class 的 `lexicalOwner`、`sourceName`、`canonicalName`、`FrontendSuperClassRef` 与 canonical `classDef`
 - scope analyzer 与 skeleton builder 共用这套 relation 事实
 
+若后续 scope 相关诊断或 inspection 需要统一展示类名，应消费由 `canonicalName` 派生的展示视图，而不是把持久化 `runtimeName` 再引回 scope graph。
+
 ### 5.2 immediate inner type-meta 发布规则
 
 当前顶层 `ClassScope` 和每个 inner `ClassScope` 都只发布 direct inner classes 的 type-meta，不平铺全部后代。
@@ -333,3 +335,4 @@ inner class boundary 当前必须建立在 `FrontendModuleSkeleton.sourceClassRe
 - inner class relation / immediate-inner type-meta 发布规则
 - deferred binding 边界
 - outer type-meta 与 outer value/function 的可见性差异
+- frontend 统一展示名若进入 scope/debug 路径，必须继续建立在 `sourceName + canonicalName` 双名合同之上

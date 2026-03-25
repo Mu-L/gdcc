@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（shared resolver、skeleton 接入、真实 scope graph 接入、compatibility mapper 已落地）
-- 更新时间：2026-03-14
+- 更新时间：2026-03-25
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/scope/**`
@@ -93,6 +93,8 @@
 - registry 只按 `canonicalName` 注册 gdcc class
 - `gdccClassSourceNameByCanonicalName` 只记录 inner class 的 source-facing `sourceName`
 - global namespace 不为 inner class 建立 `sourceName` alias
+
+若后续 resolver 的消费方需要统一展示类名，应从 `canonicalName` 派生 display 视图；resolver 本身不承担持久化 `runtimeName` 的职责。
 
 ### 2.3 Frontend skeleton
 
@@ -224,6 +226,8 @@ GDCC 当前的 type-meta 解析仍主要建立在 lexical parent chain 上。结
 - `$` canonical raw text、path-based `extends`、autoload superclass、global-script-class superclass 以及其他 unresolved raw text 现在都会在 skeleton/header phase 发显式 `sema.class_skeleton` diagnostic，并拒绝进入 accepted canonical contract
 
 后续若要让 header inheritance 与 shared resolver 严格对齐，需要单独设计 super path 的 canonical 绑定产物，而不是默认复用当前字符串字段。
+
+同理，若后续要统一 frontend 中映射类的展示文案，也应建立在 `sourceName + canonicalName` 合同之上，通过 `canonicalName` 派生展示名，而不是把第三层持久化名字重新引入 resolver。
 
 ### 5.3 deferred / unsupported source 目前必须显式诊断
 

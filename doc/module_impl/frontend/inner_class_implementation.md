@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（inner class 双名模型、mapped top-level canonical header/shell、module header discovery、两阶段 shell publish、strict declared type 接入、scope/type-meta 发布规则已落地）
-- 更新时间：2026-03-24
+- 更新时间：2026-03-25
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/scope/**`
@@ -145,6 +145,8 @@ relation 层的长期约束：
   - 可选的底层声明对象
 - `pseudoType`
   - 是否为 synthetic / non-class-like type symbol
+
+若后续 frontend 需要统一 inner class 的用户可见展示名，应由 `canonicalName` 派生；不要为此再引入持久化 `runtimeName` 层。
 
 inner class 在 scope 中的长期规则：
 
@@ -306,6 +308,7 @@ inner class 相关恢复规则当前已经冻结为：
 - backend 在新工具链或平台约束下对 canonical `$` 的兼容策略
 - source-facing 诊断在缺失 relation 时的降级协议
 - 若后续 frontend 语义工作需要持久化更多 inner class provenance，应扩展 relation 或 side-table，而不是反向污染 `ClassDef`
+- 若后续需要统一展示 inner class 名字，应从 `canonicalName` 派生 display 视图，而不是新增持久化 `runtimeName`
 
 任何扩展都必须同步更新本文档、相关实现注释和正反两类测试锚点。
 
