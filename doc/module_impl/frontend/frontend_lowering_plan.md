@@ -1,0 +1,207 @@
+# Frontend Lowering 后续计划
+
+> 本文档记录 frontend lowering 在当前 pre-pass 实现之后的后续工程路线图。当前已落地事实以 `frontend_lowering_pre_pass_implementation.md` 为准；本文档只保留尚未实现或尚未冻结的计划内容。
+
+## 文档状态
+
+- 状态：计划维护中（当前起点为 pre-pass lowering 已落地，下一阶段从 per-function lowering scaffold 开始）
+- 更新时间：2026-03-25
+- 当前事实源：
+  - `frontend_lowering_pre_pass_implementation.md`
+  - `frontend_rules.md`
+  - `frontend_compile_check_analyzer_implementation.md`
+  - `runtime_name_mapping_implementation.md`
+  - `superclass_canonical_name_contract.md`
+  - `doc/gdcc_low_ir.md`
+
+---
+
+## 1. 当前起点
+
+当前仓库已经具备的 lowering 起点：
+
+- public lowering 输入固定为 `FrontendModule`
+- lowering 内部统一走 `FrontendSemanticAnalyzer.analyzeForCompile(...)`
+- default pipeline 已稳定产出 `LirModule(class skeleton only)`
+- compile-only gate 仍负责拦截当前未打通 lowering/backend 的 surface
+
+后续工程应在这条稳定链路之上继续推进，不要回退到“先手工做一份分析结果再喂 lowering”的分叉入口。
+
+---
+
+## 2. 后续实施顺序
+
+建议按以下顺序推进，并保持每一步都是可运行、可回归、可单独提交的状态：
+
+1. function preparation
+2. minimal CFG
+3. MVP statement / expression lowering
+4. compile gate blocker 按顺序解除
+5. post-MVP backlog 单独立项
+
+---
+
+## 3. 第一步：建立 per-function lowering scaffold
+
+目标：
+
+- 在不生成真实 CFG 的前提下，为每个 `LirFunctionDef` 建立 body lowering 工作入口
+- 引入 function-local lowering context/work item，但保持结构简单，不制造多余抽象
+
+建议实施内容：
+
+- 增加 `FrontendLoweringFunctionPreparationPass`
+- 为每个 compile-ready function 收集：
+  - owning class
+  - source AST declaration
+  - 已发布的 scope / binding / member / call / expression-type facts
+- 建立 function-level worklist，作为后续 CFG/body lowering 的统一入口
+
+验收细则：
+
+- happy path：
+  - 所有 top-level / inner class function 都可进入 worklist
+  - `_init`、普通 instance function、static function 都能被区分
+- negative path：
+  - compile gate 已挡下的 subtree 不进入 function lowering worklist
+  - 对缺失的 published fact 采用 invariant fail-fast，而不是 silent skip
+
+---
+
+## 4. 第二步：实现最小 CFG lowering
+
+目标：
+
+- 为当前 MVP 已支持的 executable body 建立最小 basic block / CFG
+
+第一批建议只支持：
+
+- 空函数
+- `pass`
+- 直线型 `return`
+- `if / elif / else`
+- `while`
+
+当前明确不纳入：
+
+- `for`
+- `match`
+- `lambda`
+- `assert`
+- `ConditionalExpression`
+
+建议实施内容：
+
+- 引入 `FrontendLoweringCfgPass`
+- 为 function 创建：
+  - `entry` block
+  - branch / merge / loop blocks（需要时）
+- 生成 `GotoInsn` / `GoIfInsn` / `ReturnInsn`
+- 在首次写入 basic block 时同步设置 `entryBlockId`
+
+验收细则：
+
+- happy path：
+  - 空函数至少拥有合法 entry / return 结构
+  - `if / elif / else` 与 `while` 的 block shape 可预测且有回归测试锚定
+- negative path：
+  - 未实现结构不被 silent drop
+  - compile gate 尚未解除时，对应脚本仍在 analysis pass 被挡下
+
+---
+
+## 5. 第三步：实现 MVP 支持面的 statement / expression lowering
+
+目标：
+
+- 打通当前 frontend 已稳定发布事实的 MVP surface
+
+建议优先顺序：
+
+1. identifier / literal / unary / binary
+2. bare/global call
+3. member call / property access
+4. assignment
+5. supported property initializer island
+
+建议实施内容：
+
+- 引入 `FrontendLoweringBodyInsnPass`
+- 严格消费已发布的：
+  - `symbolBindings`
+  - `resolvedMembers`
+  - `resolvedCalls`
+  - `expressionTypes`
+- 不在 lowering 中重新推导语义
+
+验收细则：
+
+- happy path：
+  - lowering 只依赖 frontend 已发布 facts，不再做第二套 binder
+  - 输出 instruction 的类型与 owner 路径和 frontend 已发布事实一致
+- negative path：
+  - 对缺失或冲突的 published fact 采用 invariant fail-fast
+  - 不因为 backend 已有某条指令就跳过 frontend 事实校验
+
+---
+
+## 6. 第四步：按实现进度解除 compile gate blocker
+
+只有在以下三个条件同时满足后，才允许从 compile-only gate 中移除某一类 blocker：
+
+1. lowering 已稳定产生产物
+2. backend 已能消费该产物
+3. 文档与正反测试都已同步更新
+
+建议解除顺序：
+
+1. `ConditionalExpression`
+2. `assert`
+3. `ArrayExpression` / `DictionaryExpression`
+4. `CastExpression` / `TypeTestExpression`
+5. `GetNodeExpression` / `PreloadExpression`
+6. 脚本类 `static var`
+
+说明：
+
+- `ConditionalExpression` 依赖 CFG 合同先稳定
+- `assert` 依赖 lowering/backend 的 statement 语义
+- container / cast / runtime integration / static field 相关 blocker 均应在对应 lowering/backend 设计闭环后再解除
+
+---
+
+## 7. Post-MVP Backlog
+
+以下内容即使 body lowering 初步落地，也继续保持 post-MVP，不应混入已有 lowering pass 的局部放行：
+
+- `for`
+- `match`
+- `lambda`
+- 参数默认值
+- block-local `const`
+- signal coroutine use-site（`await` / `.emit(...)`）
+- property initializer 中依赖实例状态的完整初始化时序语义
+
+这些内容需要单独立项，并附带专门的文档、测试与回归边界。
+
+---
+
+## 8. 测试规则
+
+后续 lowering 路线图实施时，应继续遵守以下规则：
+
+- 每个新 pass 至少覆盖 happy path 与 negative path
+- negative path 至少锚定：
+  - diagnostics category
+  - pipeline 是否 stop
+  - 是否禁止继续产生产物
+- 一旦开始生成 basic block，必须同时测试：
+  - `entryBlockId`
+  - terminator 完整性
+  - serializer / parser round-trip
+- 凡是解除 compile gate blocker 的提交，都必须同步更新：
+  - `frontend_rules.md`
+  - `frontend_compile_check_analyzer_implementation.md`
+  - `frontend_lowering_pre_pass_implementation.md`
+  - 本文档
+  - 对应 lowering / backend 测试

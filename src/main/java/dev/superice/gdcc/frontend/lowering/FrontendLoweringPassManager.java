@@ -14,9 +14,8 @@ import java.util.Objects;
 
 /// Public frontend lowering entrypoint that executes the fixed lowering pass pipeline.
 ///
-/// The v1 pipeline consumes a `FrontendModule`, runs compile-ready semantic analysis, and emits a
-/// skeleton-only `LirModule`. Later lowering stages should extend this same internal pipeline
-/// instead of adding parallel public entrypoints.
+/// The current pipeline consumes a `FrontendModule`, runs compile-ready semantic analysis, and
+/// emits a skeleton-only `LirModule`.
 public final class FrontendLoweringPassManager {
     private final @NotNull List<FrontendLoweringPass> passes;
 

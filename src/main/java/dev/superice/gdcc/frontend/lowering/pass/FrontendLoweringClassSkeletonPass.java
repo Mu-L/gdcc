@@ -8,9 +8,8 @@ import org.jetbrains.annotations.NotNull;
 /// Lowering pass that emits the backend-facing module shell directly from published frontend
 /// class skeletons.
 ///
-/// v1 lowering deliberately reuses the already-built `LirClassDef` objects from
-/// `FrontendModuleSkeleton` instead of rebuilding or cloning them. Later passes are expected to
-/// continue mutating the same skeleton objects in place when function bodies and CFGs are attached.
+/// The pass reuses the already-built `LirClassDef` objects from `FrontendModuleSkeleton` instead
+/// of rebuilding or cloning them.
 public final class FrontendLoweringClassSkeletonPass implements FrontendLoweringPass {
     @Override
     public void run(@NotNull FrontendLoweringContext context) {
