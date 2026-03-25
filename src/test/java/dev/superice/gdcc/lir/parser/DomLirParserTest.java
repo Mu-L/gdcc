@@ -165,4 +165,24 @@ public class DomLirParserTest {
         assertEquals("Outer$Leaf", cls.getName());
         assertEquals("Outer$Shared", cls.getSuperName());
     }
+
+    @Test
+    public void parse_preservesMappedTopLevelCanonicalClassIdentity() throws Exception {
+        var xml = """
+                <ir>
+                  <class_def name="RuntimeOuter" super="RuntimeBase" is_abstract="false" is_tool="false">
+                    <functions/>
+                  </class_def>
+                </ir>
+                """;
+
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        var mod = parser.parse(new StringReader(xml));
+        var cls = mod.getClassDefs().getFirst();
+
+        assertEquals("RuntimeOuter", cls.getName());
+        assertEquals("RuntimeBase", cls.getSuperName());
+        assertNotEquals("MappedOuter", cls.getName());
+        assertNotEquals("BaseBySource", cls.getSuperName());
+    }
 }

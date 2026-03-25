@@ -26,12 +26,14 @@ import org.junit.jupiter.api.Test;
 import java.util.Arrays;
 import java.lang.reflect.Modifier;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -1047,16 +1049,34 @@ class FrontendScopeAnalyzerTest {
     }
 
     private AnalyzedUnit analyze(@NotNull String source) throws Exception {
+        return analyze(source, Map.of());
+    }
+
+    private AnalyzedUnit analyze(
+            @NotNull String source,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(java.nio.file.Path.of("tmp", "frontend_scope_analyzer_test.gd"), source, diagnostics);
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
-        var analysisData = analyzer.analyze(new FrontendModule("test_module", List.of(unit)), registry, diagnostics);
+        var analysisData = analyzer.analyze(
+                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
+                registry,
+                diagnostics
+        );
         return new AnalyzedUnit(unit, analysisData);
     }
 
     private AnalyzedUnit analyzeScopeOnly(@NotNull String source) throws Exception {
+        return analyzeScopeOnly(source, Map.of());
+    }
+
+    private AnalyzedUnit analyzeScopeOnly(
+            @NotNull String source,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(
@@ -1068,7 +1088,7 @@ class FrontendScopeAnalyzerTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = FrontendAnalysisData.bootstrap();
         var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
-                new FrontendModule("test_module", List.of(unit)),
+                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
                 registry,
                 diagnostics,
                 analysisData

@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Predicate;
@@ -690,6 +691,14 @@ class FrontendCompileCheckAnalyzerTest {
             @NotNull String fileName,
             @NotNull String source
     ) throws Exception {
+        return analyzeShared(fileName, source, Map.of());
+    }
+
+    private static @NotNull AnalyzedScript analyzeShared(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) throws Exception {
         var parserService = new GdScriptParserService();
         var parseDiagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, parseDiagnostics);
@@ -697,7 +706,7 @@ class FrontendCompileCheckAnalyzerTest {
 
         var diagnosticManager = new DiagnosticManager();
         var analysisData = new FrontendSemanticAnalyzer().analyze(
-                new FrontendModule("test_module", List.of(unit)),
+                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
                 diagnosticManager
         );
@@ -708,6 +717,14 @@ class FrontendCompileCheckAnalyzerTest {
             @NotNull String fileName,
             @NotNull String source
     ) throws Exception {
+        return analyzeForCompile(fileName, source, Map.of());
+    }
+
+    private static @NotNull AnalyzedScript analyzeForCompile(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) throws Exception {
         var parserService = new GdScriptParserService();
         var parseDiagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, parseDiagnostics);
@@ -715,7 +732,7 @@ class FrontendCompileCheckAnalyzerTest {
 
         var diagnosticManager = new DiagnosticManager();
         var analysisData = new FrontendSemanticAnalyzer().analyzeForCompile(
-                new FrontendModule("test_module", List.of(unit)),
+                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
                 diagnosticManager
         );

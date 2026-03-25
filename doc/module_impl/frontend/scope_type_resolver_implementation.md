@@ -265,11 +265,13 @@ GDCC 当前的 type-meta 解析仍主要建立在 lexical parent chain 上。结
 当前测试已经把以下行为固定下来：
 
 - shared resolver 能在 lexical scope 中解析 inner class `sourceName`
+- shared resolver 与 frontend lexical scope 都继续按 mapped top-level `sourceName` 命中，再发布 canonical-derived `displayName()`
 - malformed structured text 不会触发 compatibility mapper
 - skeleton 与 analyzer 对 immediate inner class type-meta 的发布规则保持一致
 - deferred type-meta 来源会产生显式 diagnostic，而不是静默忽略
 - `findType(...)` / `tryParseTextType(...)` 仍然有活跃的兼容消费面
 - base-vs-outer precedence 差异与 canonical header-super 合同都已有显式回归测试
+- DOM/LIR parser/serializer 与 backend adapter 继续证明 downstream canonical-only contract 没被破坏
 
 后续工程若要改变这些行为，必须同步更新：
 

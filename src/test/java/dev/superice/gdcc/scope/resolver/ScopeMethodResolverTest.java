@@ -130,6 +130,36 @@ class ScopeMethodResolverTest {
     }
 
     @Test
+    @DisplayName("shared method resolver should follow mapped canonical inner-class superclass names")
+    void resolveInstanceMethodShouldFollowMappedCanonicalInnerSuperclassNames() {
+        var parentClass = newClass("RuntimeOuter$Shared", "RefCounted");
+        var parentPing = newFunction("ping");
+        parentPing.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter$Shared"), null, parentPing));
+        entry(parentPing).instructions().add(new ReturnInsn(null));
+        parentClass.addFunction(parentPing);
+
+        var childClass = newClass("RuntimeOuter$Leaf", "RuntimeOuter$Shared");
+        var registry = newRegistry(
+                emptyApi(),
+                List.of(parentClass, childClass),
+                Map.of(
+                        "RuntimeOuter$Shared", "Shared",
+                        "RuntimeOuter$Leaf", "Leaf"
+                )
+        );
+        var result = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("RuntimeOuter$Leaf"),
+                "ping",
+                List.of()
+        );
+
+        var resolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, result);
+        assertEquals("RuntimeOuter$Shared", resolved.method().ownerClass().getName());
+        assertEquals(1, resolved.method().ownerDistance());
+    }
+
+    @Test
     @DisplayName("shared method resolver should surface stale source-styled inner superclass names as method-missing fallback")
     void resolveInstanceMethodShouldExposeSourceStyledInnerSuperclassRegression() {
         var parentClass = newClass("Outer$Shared", "RefCounted");
@@ -143,6 +173,36 @@ class ScopeMethodResolverTest {
         var result = ScopeMethodResolver.resolveInstanceMethod(
                 registry,
                 new GdObjectType("Outer$Leaf"),
+                "ping",
+                List.of()
+        );
+
+        var fallback = assertInstanceOf(ScopeMethodResolver.DynamicFallback.class, result);
+        assertEquals(ScopeMethodResolver.DynamicKind.OBJECT_DYNAMIC, fallback.dynamicKind());
+        assertEquals(ScopeMethodResolver.DynamicFallbackReason.METHOD_MISSING, fallback.reason());
+    }
+
+    @Test
+    @DisplayName("shared method resolver should surface stale source-styled mapped inner superclass names as method-missing fallback")
+    void resolveInstanceMethodShouldExposeSourceStyledMappedInnerSuperclassRegression() {
+        var parentClass = newClass("RuntimeOuter$Shared", "RefCounted");
+        var parentPing = newFunction("ping");
+        parentPing.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter$Shared"), null, parentPing));
+        entry(parentPing).instructions().add(new ReturnInsn(null));
+        parentClass.addFunction(parentPing);
+
+        var childClass = newClass("RuntimeOuter$Leaf", "Shared");
+        var registry = newRegistry(
+                emptyApi(),
+                List.of(parentClass, childClass),
+                Map.of(
+                        "RuntimeOuter$Shared", "Shared",
+                        "RuntimeOuter$Leaf", "Leaf"
+                )
+        );
+        var result = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("RuntimeOuter$Leaf"),
                 "ping",
                 List.of()
         );
@@ -453,9 +513,17 @@ class ScopeMethodResolverTest {
     }
 
     private static ClassRegistry newRegistry(ExtensionAPI api, List<LirClassDef> gdccClasses) {
+        return newRegistry(api, gdccClasses, Map.of());
+    }
+
+    private static ClassRegistry newRegistry(
+            ExtensionAPI api,
+            List<LirClassDef> gdccClasses,
+            Map<String, String> sourceNameOverrides
+    ) {
         var registry = new ClassRegistry(api);
         for (var gdccClass : gdccClasses) {
-            registry.addGdccClass(gdccClass);
+            registry.addGdccClass(gdccClass, sourceNameOverrides.get(gdccClass.getName()));
         }
         return registry;
     }

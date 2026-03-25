@@ -144,10 +144,53 @@ class PropertyResolverParityTest {
         assertTrue(ex.getMessage().contains("ChildClass"));
     }
 
+    @Test
+    @DisplayName("backend object-property adapter should preserve mapped canonical GDCC owner names")
+    void objectPropertyAdapterShouldPreserveMappedCanonicalGdccOwnerNames() {
+        var parentClass = new LirClassDef("RuntimeOuter$Shared", "", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING));
+
+        var childClass = new LirClassDef("RuntimeOuter$Leaf", "RuntimeOuter$Shared", false, false, Map.of(), List.of(), List.of(), List.of());
+        var bodyBuilder = newBodyBuilder(
+                emptyApi(),
+                List.of(parentClass, childClass),
+                Map.of(
+                        "RuntimeOuter$Shared", "Shared",
+                        "RuntimeOuter$Leaf", "Leaf"
+                )
+        );
+        var shared = ScopePropertyResolver.resolveObjectProperty(
+                bodyBuilder.classRegistry(),
+                new GdObjectType("RuntimeOuter$Leaf"),
+                "value"
+        );
+        var sharedResolved = assertInstanceOf(ScopePropertyResolver.Resolved.class, shared);
+
+        var backendLookup = BackendPropertyAccessResolver.resolveObjectProperty(
+                bodyBuilder,
+                new GdObjectType("RuntimeOuter$Leaf"),
+                "value",
+                "LOAD_PROPERTY"
+        );
+
+        assertNotNull(backendLookup);
+        assertEquals("RuntimeOuter$Shared", sharedResolved.property().ownerClass().getName());
+        assertEquals(sharedResolved.property().ownerClass().getName(), backendLookup.ownerClass().getName());
+        assertEquals(BackendPropertyAccessResolver.PropertyOwnerDispatchMode.GDCC, backendLookup.ownerDispatchMode());
+    }
+
     private static CBodyBuilder newBodyBuilder(ExtensionAPI api, List<LirClassDef> gdccClasses) {
+        return newBodyBuilder(api, gdccClasses, Map.of());
+    }
+
+    private static CBodyBuilder newBodyBuilder(
+            ExtensionAPI api,
+            List<LirClassDef> gdccClasses,
+            Map<String, String> sourceNameOverrides
+    ) {
         var classRegistry = new ClassRegistry(api);
         for (var gdccClass : gdccClasses) {
-            classRegistry.addGdccClass(gdccClass);
+            classRegistry.addGdccClass(gdccClass, sourceNameOverrides.get(gdccClass.getName()));
         }
 
         ProjectInfo projectInfo = new ProjectInfo("TestProject", GodotVersion.V451, Path.of(".")) {

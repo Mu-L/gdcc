@@ -100,6 +100,30 @@ public class ClassRegistryGdccTest {
     }
 
     @Test
+    void canonicalMappedTopLevelSuperclassNamesDriveAssignabilityAndRefCountedStatus() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var registry = new ClassRegistry(api);
+        var parentClass = new LirClassDef("RuntimeBase", "RefCounted");
+        var childClass = new LirClassDef("RuntimeLeaf", "RuntimeBase");
+        var brokenChildClass = new LirClassDef("RuntimeBrokenLeaf", "BaseBySource");
+
+        registry.addGdccClass(parentClass, "BaseBySource");
+        registry.addGdccClass(childClass, "LeafBySource");
+        registry.addGdccClass(brokenChildClass, "BrokenLeafBySource");
+
+        assertTrue(registry.checkAssignable(
+                new GdObjectType("RuntimeLeaf"),
+                new GdObjectType("RuntimeBase")
+        ));
+        assertFalse(registry.checkAssignable(
+                new GdObjectType("RuntimeBrokenLeaf"),
+                new GdObjectType("RuntimeBase")
+        ));
+        assertEquals(RefCountedStatus.YES, registry.getRefCountedStatus(new GdObjectType("RuntimeLeaf")));
+        assertEquals(RefCountedStatus.NO, registry.getRefCountedStatus(new GdObjectType("RuntimeBrokenLeaf")));
+    }
+
+    @Test
     void addMappedTopLevelGdccClassKeepsSourceNameOverrideSideTableInSync() throws IOException {
         var api = ExtensionApiLoader.loadDefault();
         var registry = new ClassRegistry(api);

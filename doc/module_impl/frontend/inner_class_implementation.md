@@ -326,8 +326,10 @@ inner class 相关恢复规则当前已经冻结为：
 - member filling 开始前，accepted top-level / inner class 已可从 `ClassRegistry` 查询
 - mapped top-level source/canonical split 至少要在 relation 与 skeleton shell 上有直接断言
 - registry 对 inner class 返回 `canonicalName != sourceName`
+- `displayName()` 对 inner class 与 mapped top-level gdcc class 都继续派生自 canonical name
 - lexical type namespace 只暴露 direct inner classes，不平铺全部后代
 - inner class 可解析 self / outer / lexical 可见 sibling-inner 的 declared type
+- DOM/LIR parser/serializer 与 backend adapter 对 inner/mapped class 继续只消费 canonical name
 - duplicate inner class、bad subtree、unknown declared type 都有 negative-path 断言
 - negative path 必须继续验证：
   - diagnostic category

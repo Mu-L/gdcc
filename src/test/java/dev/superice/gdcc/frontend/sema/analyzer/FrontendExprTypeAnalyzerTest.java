@@ -33,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -2001,11 +2002,20 @@ class FrontendExprTypeAnalyzerTest {
             @NotNull String source,
             @NotNull ClassRegistry registry
     ) throws Exception {
+        return analyze(fileName, source, registry, Map.of());
+    }
+
+    private static @NotNull AnalyzedScript analyze(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull ClassRegistry registry,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) throws Exception {
         var diagnostics = new DiagnosticManager();
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
         var analysisData = new FrontendSemanticAnalyzer().analyze(
-                new FrontendModule("test_module", List.of(unit)),
+                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
                 registry,
                 diagnostics
         );

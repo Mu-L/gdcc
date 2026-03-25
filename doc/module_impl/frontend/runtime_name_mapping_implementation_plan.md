@@ -542,7 +542,10 @@
 - [x] 8.1 canonical-only 继承链主逻辑保持不变
   - 本轮未重写 `ClassScope` / registry 的 canonical walk 逻辑，只回归确认映射后的 canonical 身份继续可用。
 - [x] 8.2 mapped top-level / inner class 的 canonical 合同已由回归测试继续锚定
-  - 继承、方法解析、构造调用与 source-override 恢复的 targeted tests 已覆盖该边界。
+  - 既有 targeted tests 已覆盖 relation/skeleton、构造调用与 source-override 恢复。
+  - 本轮补充 `ClassRegistryGdccTest`，显式锚定 mapped top-level canonical superclass 对 `checkAssignable(...)` / `getRefCountedStatus(...)` 的正反行为。
+  - 本轮补充 `ScopeMethodResolverTest`、`ScopePropertyResolverTest`，显式锚定 mapped canonical inner superclass 在 shared resolver 中的正反回归。
+  - 本轮补充 `MethodResolverParityTest`、`PropertyResolverParityTest`，显式锚定 backend adapter 继续只消费 canonical owner name，而不会被 source override 重新带偏。
 
 ### 第 9 步：补齐测试和文档更新
 
@@ -592,6 +595,13 @@
   - `ClassRegistryTypeMetaTest`、`ClassRegistryGdccTest`、`FrontendClassSkeletonTest` 等已新增 `displayName()` 与 mapped top-level source override 断言。
 - [x] 9.2 已补充展示消息回归
   - `ScopeMethodResolverTest` 与 `FrontendChainReductionHelperTest` 现覆盖 mapped gdcc type-meta 在失败消息中展示 canonical 派生名。
+- [ ] 9.3 analyzer 与 compile-only gate 的 mapped-module source-facing 回归仍待 caller-side remap 方案落地
+  - 当前实现已回退“source-file `ClassScope` 直接发布 mapped top-level 自身 source-facing type-meta”的试探性做法。
+  - `FrontendTopBindingAnalyzerTest`、`FrontendChainBindingAnalyzerTest`、`FrontendExprTypeAnalyzerTest`、`FrontendCompileCheckAnalyzerTest` 的 source-facing mapped top-level 正向回归已一并撤回，避免把未实现语义写成既成事实。
+- [x] 9.4 已补充 LIR/backend canonical-only 回归并同步事实源文档
+  - `DomLirSerializerTest`、`DomLirParserTest` 已显式锚定 mapped top-level canonical `name/super` 的 parser/serializer 合同。
+  - `CCodegenTest` 已显式锚定 C 模板生成继续直接使用 canonical `classDef.name`，不会重新回显 source alias。
+  - `inner_class_implementation.md`、`scope_analyzer_implementation.md`、`scope_type_resolver_implementation.md`、`superclass_canonical_name_contract.md`、`doc/analysis/frontend_semantic_analyzer_research_report.md` 已同步到当前双名模型与 canonical-only downstream 事实。
 
 ---
 

@@ -71,6 +71,28 @@ class ScopePropertyResolverTest {
     }
 
     @Test
+    @DisplayName("shared object property resolver should follow mapped canonical inner-class superclass names")
+    void resolveObjectPropertyShouldFollowMappedCanonicalInnerSuperclassNames() {
+        var parentClass = new LirClassDef("RuntimeOuter$Shared", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING));
+
+        var childClass = new LirClassDef("RuntimeOuter$Leaf", "RuntimeOuter$Shared", false, false, Map.of(), List.of(), List.of(), List.of());
+        var registry = newRegistry(
+                emptyApi(),
+                List.of(parentClass, childClass),
+                Map.of(
+                        "RuntimeOuter$Shared", "Shared",
+                        "RuntimeOuter$Leaf", "Leaf"
+                )
+        );
+        var result = ScopePropertyResolver.resolveObjectProperty(registry, new GdObjectType("RuntimeOuter$Leaf"), "value");
+
+        var resolved = assertInstanceOf(ScopePropertyResolver.Resolved.class, result);
+        assertEquals("RuntimeOuter$Shared", resolved.property().ownerClass().getName());
+        assertEquals("String", resolved.property().property().getType().getTypeName());
+    }
+
+    @Test
     @DisplayName("shared object property resolver should classify engine owner")
     void resolveObjectPropertyShouldClassifyEngineOwner() {
         var nodeClass = new ExtensionGdClass(
@@ -160,6 +182,28 @@ class ScopePropertyResolverTest {
     }
 
     @Test
+    @DisplayName("shared object property resolver should reject stale source-styled mapped inner superclass names")
+    void resolveObjectPropertyShouldRejectSourceStyledMappedInnerSuperclassNames() {
+        var parentClass = new LirClassDef("RuntimeOuter$Shared", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING));
+
+        var childClass = new LirClassDef("RuntimeOuter$Leaf", "Shared", false, false, Map.of(), List.of(), List.of(), List.of());
+        var registry = newRegistry(
+                emptyApi(),
+                List.of(parentClass, childClass),
+                Map.of(
+                        "RuntimeOuter$Shared", "Shared",
+                        "RuntimeOuter$Leaf", "Leaf"
+                )
+        );
+        var result = ScopePropertyResolver.resolveObjectProperty(registry, new GdObjectType("RuntimeOuter$Leaf"), "value");
+
+        var failed = assertInstanceOf(ScopePropertyResolver.Failed.class, result);
+        assertEquals(ScopePropertyResolver.FailureKind.MISSING_SUPER_METADATA, failed.kind());
+        assertEquals("Shared", failed.relatedClassName());
+    }
+
+    @Test
     @DisplayName("shared object property resolver should report inheritance cycle")
     void resolveObjectPropertyShouldReportInheritanceCycle() {
         var classA = new LirClassDef("ClassA", "ClassB", false, false, Map.of(), List.of(), List.of(), List.of());
@@ -175,9 +219,17 @@ class ScopePropertyResolverTest {
     }
 
     private static ClassRegistry newRegistry(ExtensionAPI api, List<LirClassDef> gdccClasses) {
+        return newRegistry(api, gdccClasses, Map.of());
+    }
+
+    private static ClassRegistry newRegistry(
+            ExtensionAPI api,
+            List<LirClassDef> gdccClasses,
+            Map<String, String> sourceNameOverrides
+    ) {
         var registry = new ClassRegistry(api);
         for (var gdccClass : gdccClasses) {
-            registry.addGdccClass(gdccClass);
+            registry.addGdccClass(gdccClass, sourceNameOverrides.get(gdccClass.getName()));
         }
         return registry;
     }

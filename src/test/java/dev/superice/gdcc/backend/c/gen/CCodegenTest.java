@@ -194,6 +194,32 @@ public class CCodegenTest {
     }
 
     @Test
+    public void generatesMappedCanonicalClassNamesVerbatimInArtifacts() throws Exception {
+        var runtimeOuterClass = new LirClassDef("RuntimeOuter", "Node");
+        var module = new LirModule("mapped_runtime_module", List.of(runtimeOuterClass));
+
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+
+        var cCode = new String(files.getFirst().contentWriter());
+        var hCode = new String(files.getLast().contentWriter());
+
+        assertTrue(hCode.contains("struct RuntimeOuter {"), hCode);
+        assertTrue(hCode.contains("RuntimeOuter_class_create_instance"), hCode);
+        assertTrue(cCode.contains("RuntimeOuter_class_create_instance"), cCode);
+        assertTrue(cCode.contains("godot_classdb_construct_object2(GD_STATIC_SN(u8\"Node\"))"), cCode);
+        assertFalse(hCode.contains("MappedOuter"), hCode);
+        assertFalse(cCode.contains("MappedOuter"), cCode);
+    }
+
+    @Test
     public void rendersOperatorEvaluatorHelpersAndUsesHelperCallsInFunctionBody() {
         var workerClass = new LirClassDef("Worker", "RefCounted");
         var func = new LirFunctionDef("operator_eval");

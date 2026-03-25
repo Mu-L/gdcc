@@ -36,12 +36,14 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -1357,13 +1359,22 @@ class FrontendTopBindingAnalyzerTest {
             @NotNull String fileName,
             @NotNull String source
     ) throws Exception {
-        return prepareBindingInput(fileName, source, new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        return prepareBindingInput(fileName, source, new ClassRegistry(ExtensionApiLoader.loadDefault()), Map.of());
     }
 
     private static @NotNull PreparedBindingInput prepareBindingInput(
             @NotNull String fileName,
             @NotNull String source,
             @NotNull ClassRegistry classRegistry
+    ) throws Exception {
+        return prepareBindingInput(fileName, source, classRegistry, Map.of());
+    }
+
+    private static @NotNull PreparedBindingInput prepareBindingInput(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
     ) throws Exception {
         var parserService = new GdScriptParserService();
         var diagnosticManager = new DiagnosticManager();
@@ -1372,7 +1383,7 @@ class FrontendTopBindingAnalyzerTest {
 
         var analysisData = FrontendAnalysisData.bootstrap();
         var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
-                new FrontendModule("test_module", List.of(unit)),
+                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
                 Objects.requireNonNull(classRegistry, "classRegistry must not be null"),
                 diagnosticManager,
                 analysisData

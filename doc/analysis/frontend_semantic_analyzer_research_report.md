@@ -17,6 +17,7 @@
 6. **`FrontendClassSkeletonBuilder` 与 `FrontendModuleSkeleton` 的现状应描述得更准确。** 它们不只是收集 `class_name / extends / signal / var / func`；现在还会通过 `FrontendSourceClassRelation` 与 `FrontendInnerClassRelation` 显式记录每个 `FrontendSourceUnit` 对一个顶层类和多个同源 inner `ClassDeclaration -> skeleton` pair 的归属。
 7. **signal 相关状态比旧报告更前进。** `ClassScope` 的 unqualified signal lookup 已经落地并有测试；当前工作区还出现了 `ScopeSignalResolver` / `ScopeResolvedSignal` 及对应测试，说明 receiver-based signal metadata lookup 已经开始落代码，虽然 frontend binder 仍未接上。
 8. **旧报告里大量“按外部 `gdparser` AST 全量节点覆盖面下结论”的段落，应当降级或删除。** 当前仓库能直接证明的是：frontend 已依赖 `gdparser:0.5.1`，并消费了 AST 通用模型与少量声明节点；至于 `gdparser` 全量 AST 形态，若要继续做跨仓库调研，应单独写附录，而不应混进这份“按当前代码库校对”的报告里。
+9. **frontend 当前类名模型已经收敛为 `sourceName + canonicalName + 派生 displayName()`。** `runtimeName` 不再作为持久化身份层；lexical type lookup 继续按 `sourceName`，而 registry/LIR/backend 与用户展示统一由 canonical 派生。
 
 ---
 
@@ -69,6 +70,10 @@
 - `src/test/java/dev/superice/gdcc/frontend/sema/FrontendInheritanceCycleTest.java`
 - `src/test/java/dev/superice/gdcc/frontend/sema/FrontendScopeAnalyzerTest.java`
 - `src/test/java/dev/superice/gdcc/frontend/sema/FrontendSemanticAnalyzerFrameworkTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendTopBindingAnalyzerTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendChainBindingAnalyzerTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzerTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendExprTypeAnalyzerTest.java`
 - `src/test/java/dev/superice/gdcc/frontend/scope/ClassScopeResolutionTest.java`
 - `src/test/java/dev/superice/gdcc/frontend/scope/ClassScopeSignalResolutionTest.java`
 - `src/test/java/dev/superice/gdcc/frontend/scope/FrontendStaticContextValueRestrictionTest.java`
@@ -81,8 +86,12 @@
 - `src/test/java/dev/superice/gdcc/frontend/scope/ScopeTypeMetaChainTest.java`
 - `src/test/java/dev/superice/gdcc/scope/ScopeProtocolTest.java`
 - `src/test/java/dev/superice/gdcc/scope/ClassRegistryTypeMetaTest.java`
+- `src/test/java/dev/superice/gdcc/scope/ClassRegistryGdccTest.java`
 - `src/test/java/dev/superice/gdcc/scope/resolver/ScopeMethodResolverTest.java`
 - `src/test/java/dev/superice/gdcc/scope/resolver/ScopePropertyResolverTest.java`
+- `src/test/java/dev/superice/gdcc/lir/parser/DomLirSerializerTest.java`
+- `src/test/java/dev/superice/gdcc/lir/parser/DomLirParserTest.java`
+- `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenTest.java`
 - 当前工作区测试：`src/test/java/dev/superice/gdcc/scope/resolver/ScopeSignalResolverTest.java`
 
 ### 2.4 明确移除的旧依据
@@ -127,6 +136,7 @@
 - 收集 `signal`、`var`、`func` 并注入 `LirClassDef`
 - 通过 `FrontendSourceClassRelation` / `FrontendInnerClassRelation` 显式记录每个 source file 的顶层 skeleton 与同源 inner `ClassDeclaration -> skeleton` pair
 - 已在成员填充前把 accepted top-level / inner class shell 一并注册进 `ClassRegistry`；inner class 继续通过 relation 显式保存 `lexicalOwner`、`sourceName`、`canonicalName`，其 `LirClassDef#getName()` 冻结为 canonical name
+- mapped top-level gdcc class 当前也已进入同一双名合同：lexical lookup 继续按 `sourceName`，而 `LirClassDef#getName()`、registry key、backend/LIR 输出都直接写 canonical name
 - 检查重复类名
 - 检查继承环，并以 diagnostics 形式拒绝 cyclic class subtree
 - 用 strict frontend declared-type 路径解析类型提示：先查 lexical gdcc 可见类型，再查 `ClassRegistry` strict type-meta；无法解析时降级到 `Variant` 并发出 `sema.type_resolution` warning
@@ -136,6 +146,7 @@
 
 - **它仍然只是 skeleton/interface 之前的浅层阶段，但已经不再依赖“每文件一个 classDef、靠平行列表索引配对”的脆弱协议**
 - **它已经包含一部分容错、诊断、注解保留、继承合法性检查，以及带 lexical owner / dual-name 语义的 inner class skeleton ownership 记录**
+- **mapped top-level class 当前也不再例外：source-facing 名与 downstream canonical identity 已在 skeleton freeze 时一次性分离**
 - **其隐式继承语义也必须与上游 Godot 保持一致：无 `extends` 的脚本类默认基类是 `RefCounted`，而不是 `Object`**
 - **对普通源码错误的恢复策略也已经开始收口：skeleton phase 更倾向于发 diagnostic 并跳过坏 subtree，而不是直接抛 frontend 异常打断整条 pipeline**
 
