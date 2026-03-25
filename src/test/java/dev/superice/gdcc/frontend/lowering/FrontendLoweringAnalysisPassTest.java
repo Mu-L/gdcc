@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.lowering;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
@@ -123,7 +124,7 @@ class FrontendLoweringAnalysisPassTest {
     private static @NotNull FrontendModule parseModule(
             @NotNull String fileName,
             @NotNull String source
-    ) throws Exception {
+    ) {
         return parseModule(fileName, source, Map.of());
     }
 
@@ -131,7 +132,7 @@ class FrontendLoweringAnalysisPassTest {
             @NotNull String fileName,
             @NotNull String source,
             @NotNull Map<String, String> topLevelCanonicalNameMap
-    ) throws Exception {
+    ) {
         var parserService = new GdScriptParserService();
         var parseDiagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, parseDiagnostics);

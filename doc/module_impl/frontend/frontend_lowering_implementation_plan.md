@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施中（已完成第 1-2 步；v1 目标：`FrontendModule -> analyzeForCompile -> LirModule(class skeleton only)`）
+- 状态：实施中（已完成第 1-4 步；v1 `FrontendModule -> analyzeForCompile -> LirModule(class skeleton only)` 已落地，下一阶段从第 5 步开始）
 - 更新时间：2026-03-25
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
@@ -141,12 +141,14 @@ public @Nullable LirModule lower(
 
 当前建议的内部结构为：
 
-- package-private `FrontendLoweringContext`
+- `FrontendLoweringContext`
   - 保存 module、registry、diagnostic manager、analysisData、lirModule、stop flag
-- package-private `FrontendLoweringPass`
+  - 当前为 `public`，仅为了允许 pass 实现驻留在 `frontend.lowering.pass` 子包
+- `FrontendLoweringPass`
   - 单一方法：`void run(FrontendLoweringContext context)`
+  - 当前为 `public`，仅为了支撑 lowering 内部固定 pass pipeline 的跨子包协作
 
-这里引入 pass 协议是合理的，因为 lowering 从第一天起就不是单 pass，而是明确要拆成 analysis、module/class skeleton emission、CFG、body lowering、finalize 等多个阶段。该协议应保持 package-private，不升级为额外 public 扩展点。
+这里引入 pass 协议是合理的，因为 lowering 从第一天起就不是单 pass，而是明确要拆成 analysis、module/class skeleton emission、CFG、body lowering、finalize 等多个阶段。当前 `public` 可见性只是包结构调整后的实现约束，不表示它们升级成外部插件扩展点。
 
 ### 2.3 v1 pass 列表
 
@@ -209,7 +211,7 @@ v1 不应 clone 这些 `LirClassDef`。当前计划保持“同一组 class/func
 
 约束：
 
-- `FrontendLoweringContext` 必须是 package-private 内部实现，不暴露为外部 API
+- `FrontendLoweringContext` 与 `FrontendLoweringPass` 当前虽然为 `public`，但仍只服务 lowering 内部固定 pipeline，不构成新的外部扩展 API
 - pass 列表顺序必须固定且可测试，不允许靠反射扫描或命名约定隐式装配
 - 不引入额外的 plugin / extension registry
 
@@ -227,7 +229,7 @@ v1 不应 clone 这些 `LirClassDef`。当前计划保持“同一组 class/func
 当前实现状态：
 
 - `FrontendLoweringPassManager` 已成为当前唯一 public lowering entrypoint
-- `FrontendLoweringContext` 与 `FrontendLoweringPass` 已按 package-private 内部协议落地
+- `FrontendLoweringContext` 与 `FrontendLoweringPass` 已作为 lowering 内部协议落地；当前可见性放宽仅用于支撑 `frontend.lowering.pass` 子包中的 pass 实现
 - manager 已支持固定顺序执行、stop 短路与 `null` 产物返回
 - 当前 default pipeline 已挂入真实 analysis pass，但在第 3 步落地前仍不会发布 `LirModule`
 
@@ -277,6 +279,8 @@ v1 不应 clone 这些 `LirClassDef`。当前计划保持“同一组 class/func
 
 ### 3.3 第 3 步：实现 `FrontendLoweringClassSkeletonPass`
 
+- 状态：已完成（2026-03-25）
+
 实施内容：
 
 - 读取 `analysisData.moduleSkeleton()`
@@ -310,7 +314,17 @@ v1 不应 clone 这些 `LirClassDef`。当前计划保持“同一组 class/func
   - `lower_preservesFunctionSkeletonsWithoutBasicBlocks`
   - `lower_preservesClassOrderAndSourceFileMetadata`
 
+当前实现状态：
+
+- `FrontendLoweringClassSkeletonPass` 已直接消费 `analysisData.moduleSkeleton()` 并发布 `LirModule`
+- 默认 lowering pipeline 已接上 skeleton emission，不再停留在 analysis-only `null` 返回状态
+- emitted `LirModule` 继续复用 `FrontendModuleSkeleton.allClassDefs()` 提供的同一组 `LirClassDef`
+- 当前测试已锚定 moduleName、类顺序、mapped top-level / inner canonical identity、`sourceFile`、signals、properties、functions 以及“无 basic block / 空 `entryBlockId`”合同
+- analysis data 未发布时，pass 会按 invariant fail-fast，而不是 silent fallback
+
 ### 3.4 第 4 步：补齐 v1 集成回归与序列化锚点
+
+- 状态：已完成（2026-03-25）
 
 实施内容：
 
@@ -338,6 +352,13 @@ v1 不应 clone 这些 `LirClassDef`。当前计划保持“同一组 class/func
 - `FrontendLoweringPassManagerTest`
   - `lower_compileReadyModule_returnsSerializableSkeletonOnlyLirModule`
   - `lower_compileBlockedModule_returnsNullAndKeepsDiagnostics`
+
+当前实现状态：
+
+- `FrontendLoweringPassManager` 默认 pipeline 现在会返回 skeleton-only `LirModule`
+- manager 集成测试已覆盖 compile-ready module 的成功 lowering、`DomLirSerializer` 序列化成功，以及输出 XML 不含 basic block / `entry` 属性
+- blocked path 继续由 compile-only gate 在 analysis pass 截停，manager 返回 `null` 并保留 `sema.compile_check` diagnostics
+- v1 的“函数没有 basic block 仍是合法中间态”已通过 lowering + serializer 联合回归固定
 
 ---
 

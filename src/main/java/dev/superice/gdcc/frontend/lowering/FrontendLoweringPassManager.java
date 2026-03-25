@@ -1,6 +1,8 @@
 package dev.superice.gdcc.frontend.lowering;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
+import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringClassSkeletonPass;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.scope.ClassRegistry;
@@ -12,13 +14,17 @@ import java.util.Objects;
 
 /// Public frontend lowering entrypoint that executes the fixed lowering pass pipeline.
 ///
-/// The manager currently only wires compile-ready analysis publication. Later passes will keep
-/// extending the same internal pipeline instead of adding parallel public entrypoints.
+/// The v1 pipeline consumes a `FrontendModule`, runs compile-ready semantic analysis, and emits a
+/// skeleton-only `LirModule`. Later lowering stages should extend this same internal pipeline
+/// instead of adding parallel public entrypoints.
 public final class FrontendLoweringPassManager {
     private final @NotNull List<FrontendLoweringPass> passes;
 
     public FrontendLoweringPassManager() {
-        this(List.of(new FrontendLoweringAnalysisPass()));
+        this(List.of(
+                new FrontendLoweringAnalysisPass(),
+                new FrontendLoweringClassSkeletonPass()
+        ));
     }
 
     FrontendLoweringPassManager(@NotNull List<FrontendLoweringPass> passes) {

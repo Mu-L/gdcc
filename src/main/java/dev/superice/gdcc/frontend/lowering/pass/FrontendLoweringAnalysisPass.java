@@ -1,5 +1,7 @@
-package dev.superice.gdcc.frontend.lowering;
+package dev.superice.gdcc.frontend.lowering.pass;
 
+import dev.superice.gdcc.frontend.lowering.FrontendLoweringContext;
+import dev.superice.gdcc.frontend.lowering.FrontendLoweringPass;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import org.jetbrains.annotations.NotNull;
 
@@ -9,14 +11,14 @@ import java.util.Objects;
 ///
 /// Lowering is only allowed to continue from `analyzeForCompile(...)` output. If the shared
 /// diagnostics already contain compile-surface errors, the pipeline stops before any LIR emission.
-final class FrontendLoweringAnalysisPass implements FrontendLoweringPass {
+public final class FrontendLoweringAnalysisPass implements FrontendLoweringPass {
     private final @NotNull FrontendSemanticAnalyzer semanticAnalyzer;
 
-    FrontendLoweringAnalysisPass() {
+    public FrontendLoweringAnalysisPass() {
         this(new FrontendSemanticAnalyzer());
     }
 
-    FrontendLoweringAnalysisPass(@NotNull FrontendSemanticAnalyzer semanticAnalyzer) {
+    public FrontendLoweringAnalysisPass(@NotNull FrontendSemanticAnalyzer semanticAnalyzer) {
         this.semanticAnalyzer = Objects.requireNonNull(semanticAnalyzer, "semanticAnalyzer must not be null");
     }
 

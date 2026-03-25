@@ -11,7 +11,11 @@ import org.jetbrains.annotations.Nullable;
 import java.util.Objects;
 
 /// Shared mutable lowering state passed between fixed frontend lowering passes.
-final class FrontendLoweringContext {
+///
+/// The type is public so pass implementations can live under `frontend.lowering.pass`, but it
+/// remains part of the lowering package's internal coordination contract rather than a new public
+/// compilation entrypoint.
+public final class FrontendLoweringContext {
     private final @NotNull FrontendModule module;
     private final @NotNull ClassRegistry classRegistry;
     private final @NotNull DiagnosticManager diagnosticManager;
@@ -19,7 +23,7 @@ final class FrontendLoweringContext {
     private @Nullable LirModule lirModule;
     private boolean stopRequested;
 
-    FrontendLoweringContext(
+    public FrontendLoweringContext(
             @NotNull FrontendModule module,
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnosticManager
@@ -29,46 +33,46 @@ final class FrontendLoweringContext {
         this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
     }
 
-    @NotNull FrontendModule module() {
+    public @NotNull FrontendModule module() {
         return module;
     }
 
-    @NotNull ClassRegistry classRegistry() {
+    public @NotNull ClassRegistry classRegistry() {
         return classRegistry;
     }
 
-    @NotNull DiagnosticManager diagnosticManager() {
+    public @NotNull DiagnosticManager diagnosticManager() {
         return diagnosticManager;
     }
 
-    void publishAnalysisData(@NotNull FrontendAnalysisData analysisData) {
+    public void publishAnalysisData(@NotNull FrontendAnalysisData analysisData) {
         this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
     }
 
-    @Nullable FrontendAnalysisData analysisDataOrNull() {
+    public @Nullable FrontendAnalysisData analysisDataOrNull() {
         return analysisData;
     }
 
-    @NotNull FrontendAnalysisData requireAnalysisData() {
+    public @NotNull FrontendAnalysisData requireAnalysisData() {
         if (analysisData == null) {
             throw new IllegalStateException("analysisData has not been published yet");
         }
         return analysisData;
     }
 
-    void publishLirModule(@NotNull LirModule lirModule) {
+    public void publishLirModule(@NotNull LirModule lirModule) {
         this.lirModule = Objects.requireNonNull(lirModule, "lirModule must not be null");
     }
 
-    @Nullable LirModule lirModuleOrNull() {
+    public @Nullable LirModule lirModuleOrNull() {
         return lirModule;
     }
 
-    void requestStop() {
+    public void requestStop() {
         stopRequested = true;
     }
 
-    boolean isStopRequested() {
+    public boolean isStopRequested() {
         return stopRequested;
     }
 }

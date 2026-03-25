@@ -2,11 +2,10 @@ package dev.superice.gdcc.frontend.lowering;
 
 import org.jetbrains.annotations.NotNull;
 
-/// Package-private lowering pass contract used by the fixed frontend lowering pipeline.
+/// Shared lowering pass protocol used by the fixed frontend lowering pipeline.
 ///
-/// The pipeline is intentionally not a public extension point. Passes only coordinate through the
-/// shared lowering context owned by the manager.
-@FunctionalInterface
-interface FrontendLoweringPass {
+/// Although implementations now live under `frontend.lowering.pass`, the protocol still exists only
+/// to support the internal pass manager pipeline rather than as an external extension point.
+public interface FrontendLoweringPass {
     void run(@NotNull FrontendLoweringContext context);
 }
