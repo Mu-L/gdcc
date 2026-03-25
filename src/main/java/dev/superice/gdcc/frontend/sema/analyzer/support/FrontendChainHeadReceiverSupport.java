@@ -225,7 +225,11 @@ public final class FrontendChainHeadReceiverSupport {
                     "Type-meta receiver '" + identifier.name() + "' is inside a skipped subtree"
             );
         }
-        var typeMetaResult = currentScope.resolveTypeMeta(identifier.name(), currentRestriction);
+        var typeMetaResult = analysisData.moduleSkeleton().resolveSourceFacingTypeMeta(
+                currentScope,
+                identifier.name(),
+                currentRestriction
+        );
         if (!typeMetaResult.isAllowed()) {
             return new FrontendChainReductionHelper.ReceiverState(
                     FrontendChainReductionHelper.Status.FAILED,

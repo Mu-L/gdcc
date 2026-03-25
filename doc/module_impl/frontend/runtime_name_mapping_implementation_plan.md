@@ -538,9 +538,9 @@
   - `ScopeMethodResolver`、`FrontendChainReductionHelper` 已改为展示 `displayName()`，不再默认回显 `sourceName()`。
 - [x] 7.2 property initializer 边界消息与 constructor/static-method 失败消息已同步
   - mapped gdcc type-meta 的用户可见消息现在稳定展示 canonical 派生名。
-- [ ] 7.3 `FrontendModuleSkeleton` 保留 mapping 与 caller-side remap helper 仍待落地
-  - 当前 analyzer 侧还没有统一的 remap-on-miss helper。
-  - mapped top-level source-facing self/cross-file type lookup 仍不能视为已完成能力。
+- [x] 7.3 `FrontendModuleSkeleton` 已保留 mapping 并发布 caller-side remap helper
+  - `FrontendModuleSkeleton` 现已冻结 `topLevelCanonicalNameMap`，并提供 `findMappedTopLevelCanonicalName(...)`、`remapTopLevelCanonicalName(...)`、`resolveSourceFacingTypeMeta(...)`、`tryResolveSourceFacingDeclaredType(...)`。
+  - helper 已把统一规则收口为“先 lexical/source lookup，只有 miss 时才按 mapping 重试 canonical”，不再依赖 `ClassScope` 发布 mapped top-level 自身 source-facing type-meta。
 
 ### 第 7A 步：全面迁移 frontend 类型名 / `TYPE_META` 解析到 caller-side remap 规则
 
@@ -611,10 +611,16 @@
 
 第 7A 步执行状态（2026-03-25）：
 
-- [ ] 7A.1 frontend 类型名 / `TYPE_META` 解析路径盘点待完成
-- [ ] 7A.2 caller-side remap 统一迁移待完成
-- [ ] 7A.3 正反两方面单元测试待补齐
-- [ ] 7A.4 targeted tests 与事实源同步待完成
+- [x] 7A.1 frontend 类型名 / `TYPE_META` 解析路径盘点已完成
+  - 本轮已核对 `FrontendDeclaredTypeSupport`、`FrontendClassSkeletonBuilder`、`FrontendVariableAnalyzer`、`FrontendTopBindingAnalyzer`、`FrontendChainHeadReceiverSupport`、`FrontendAssignmentSemanticSupport` 及其调用链，确认这些 frontend source-facing 类型入口已不再直接假定 top-level `sourceName == canonicalName`。
+- [x] 7A.2 caller-side remap 统一迁移已完成
+  - skeleton member declared type、parameter/local declared type、top binding `TYPE_META`、chain head static receiver、assignment 左值 type-meta 识别现已统一走 `FrontendModuleSkeleton` helper。
+  - `FrontendChainBindingAnalyzer`、`FrontendExprTypeAnalyzer`、`FrontendTypeCheckAnalyzer` 已统一下传 `moduleSkeleton`，不再各自散落手写 `map.getOrDefault(...)`。
+- [x] 7A.3 正反两方面单元测试已补齐
+  - 已新增/扩展 `FrontendModuleSkeletonTest`、`FrontendDeclaredTypeSupportTest`、`FrontendClassSkeletonTest`、`FrontendTopBindingAnalyzerTest`、`FrontendChainBindingAnalyzerTest`、`FrontendExprTypeAnalyzerTest`、`FrontendCompileCheckAnalyzerTest`。
+  - 正向覆盖 mapped top-level 自身与跨文件 source-facing declared type / `TYPE_META` / static route；反向覆盖 lexical 命中优先于 remap 与 immutable mapping contract。
+- [x] 7A.4 targeted tests 与事实源同步已完成
+  - 本轮已通过 caller-side remap 相关 targeted tests，并同步更新 `scope_analyzer_implementation.md`、`scope_type_resolver_implementation.md` 与 `doc/analysis/frontend_semantic_analyzer_research_report.md` 的当前事实描述。
 
 ### 第 8 步：确认继承链、属性解析和方法解析只继续依赖 canonical
 
@@ -705,10 +711,9 @@
   - `ClassRegistryTypeMetaTest`、`ClassRegistryGdccTest`、`FrontendClassSkeletonTest` 等已新增 `displayName()` 与 mapped top-level source override 断言。
 - [x] 9.2 已补充展示消息回归
   - `ScopeMethodResolverTest` 与 `FrontendChainReductionHelperTest` 现覆盖 mapped gdcc type-meta 在失败消息中展示 canonical 派生名。
-- [ ] 9.3 analyzer 与 compile-only gate 的 mapped-module source-facing 回归仍待 caller-side remap 方案落地
-  - 当前实现已回退“source-file `ClassScope` 直接发布 mapped top-level 自身 source-facing type-meta”的试探性做法。
-  - 后续应先完成 `FrontendModuleSkeleton` 对 `topLevelCanonicalNameMap` 的保留及 remap helper，再恢复 analyzer/compile-only 正向回归。
-  - `FrontendTopBindingAnalyzerTest`、`FrontendChainBindingAnalyzerTest`、`FrontendExprTypeAnalyzerTest`、`FrontendCompileCheckAnalyzerTest` 的 source-facing mapped top-level 正向回归已一并撤回，避免把未实现语义写成既成事实。
+- [x] 9.3 analyzer 与 compile-only gate 的 mapped-module source-facing 回归已恢复并通过
+  - `FrontendTopBindingAnalyzerTest`、`FrontendChainBindingAnalyzerTest`、`FrontendExprTypeAnalyzerTest`、`FrontendCompileCheckAnalyzerTest` 已重新补回 mapped top-level source-facing 正向回归。
+  - 当前实现继续坚持“调用者先 lexical，miss 后 remap”，未恢复“source-file `ClassScope` 直接发布 mapped top-level 自身 source-facing type-meta”的旧试探方案。
 - [x] 9.4 已补充 LIR/backend canonical-only 回归并同步事实源文档
   - `DomLirSerializerTest`、`DomLirParserTest` 已显式锚定 mapped top-level canonical `name/super` 的 parser/serializer 合同。
   - `CCodegenTest` 已显式锚定 C 模板生成继续直接使用 canonical `classDef.name`，不会重新回显 source alias。

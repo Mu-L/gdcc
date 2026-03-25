@@ -154,6 +154,7 @@ public class FrontendChainBindingAnalyzer {
             assignmentSemanticSupport = new FrontendAssignmentSemanticSupport(
                     analysisData.symbolBindings(),
                     scopesByAst,
+                    analysisData.moduleSkeleton(),
                     () -> currentRestriction,
                     classRegistry,
                     chainReduction

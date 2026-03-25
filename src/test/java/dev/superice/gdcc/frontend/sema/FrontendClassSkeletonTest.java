@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -364,6 +365,115 @@ class FrontendClassSkeletonTest {
         assertEquals("MappedOuter", mappedTopLevelMeta.sourceName());
         assertEquals("RuntimeOuter", mappedTopLevelMeta.displayName());
         assertNull(registry.findGdccClass("MappedOuter"));
+    }
+
+    @Test
+    void buildResolvesMappedTopLevelSelfDeclaredTypesViaCallerSideRemap() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "mapped_self_declared_type.gd"), """
+                class_name MappedWorker
+                extends RefCounted
+
+                var peer: MappedWorker
+
+                func copy(value: MappedWorker) -> MappedWorker:
+                    return value
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule(
+                        "mapped_module",
+                        List.of(unit),
+                        java.util.Map.of("MappedWorker", "RuntimeWorker")
+                ),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = result.sourceClassRelations().getFirst().topLevelClassDef();
+        var peerProperty = classDef.getProperties().getFirst();
+        var copyFunction = classDef.getFunctions().getFirst();
+
+        assertEquals(new GdObjectType("RuntimeWorker"), peerProperty.getType());
+        assertEquals(new GdObjectType("RuntimeWorker"), copyFunction.getReturnType());
+        assertEquals(new GdObjectType("RuntimeWorker"), copyFunction.getParameters().getFirst().getType());
+        assertTrue(diagnostics.snapshot().isEmpty(), () -> "Unexpected diagnostics: " + diagnostics.snapshot());
+    }
+
+    @Test
+    void buildResolvesMappedTopLevelDeclaredTypesAcrossSourceUnitsViaCallerSideRemap() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var workerUnit = parserService.parseUnit(Path.of("tmp", "mapped_worker_decl.gd"), """
+                class_name MappedWorker
+                extends RefCounted
+                """, diagnostics);
+        var consumerUnit = parserService.parseUnit(Path.of("tmp", "consumer_decl.gd"), """
+                class_name Consumer
+                extends RefCounted
+
+                var worker: MappedWorker
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule(
+                        "mapped_module",
+                        List.of(workerUnit, consumerUnit),
+                        java.util.Map.of("MappedWorker", "RuntimeWorker")
+                ),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var consumerRelation = result.sourceClassRelations().stream()
+                .filter(relation -> relation.sourceName().equals("Consumer"))
+                .findFirst()
+                .orElseThrow();
+        var workerProperty = consumerRelation.topLevelClassDef().getProperties().getFirst();
+
+        assertEquals(new GdObjectType("RuntimeWorker"), workerProperty.getType());
+        assertTrue(diagnostics.snapshot().isEmpty(), () -> "Unexpected diagnostics: " + diagnostics.snapshot());
+    }
+
+    @Test
+    void buildKeepsLexicalDeclaredTypeHitAheadOfMappedTopLevelRetry() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "mapped_shadowed_declared_type.gd"), """
+                class_name MappedWorker
+                extends RefCounted
+
+                class MappedWorker:
+                    pass
+
+                var local_worker: MappedWorker
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule(
+                        "mapped_module",
+                        List.of(unit),
+                        java.util.Map.of("MappedWorker", "RuntimeWorker")
+                ),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = result.sourceClassRelations().getFirst().topLevelClassDef();
+        var localWorkerProperty = classDef.getProperties().getFirst();
+
+        assertEquals(new GdObjectType("RuntimeWorker$MappedWorker"), localWorkerProperty.getType());
+        assertTrue(diagnostics.snapshot().isEmpty(), () -> "Unexpected diagnostics: " + diagnostics.snapshot());
     }
 
     @Test
@@ -773,7 +883,7 @@ class FrontendClassSkeletonTest {
         );
         @SuppressWarnings("unchecked")
         var sourceUnitGraphs = (List<Object>) invokeAccessor(discovery, "sourceUnitGraphs");
-        var shellContext = newSkeletonBuildContext(registry, diagnostics, unit.path(), analysisData);
+        var shellContext = newSkeletonBuildContext(registry, diagnostics, unit.path(), analysisData, Map.of());
         var shellRelations = new ArrayList<FrontendSourceClassRelation>();
         for (var sourceUnitGraph : sourceUnitGraphs) {
             if (invokeAccessor(sourceUnitGraph, "topLevelHeader") == null) {
@@ -1056,7 +1166,8 @@ class FrontendClassSkeletonTest {
             ClassRegistry classRegistry,
             DiagnosticManager diagnostics,
             Path sourcePath,
-            FrontendAnalysisData analysisData
+            FrontendAnalysisData analysisData,
+            Map<String, String> moduleTopLevelCanonicalNameMap
     ) throws Exception {
         var contextClass = Class.forName(
                 "dev.superice.gdcc.frontend.sema.FrontendClassSkeletonBuilder$SkeletonBuildContext"
@@ -1065,10 +1176,17 @@ class FrontendClassSkeletonTest {
                 ClassRegistry.class,
                 DiagnosticManager.class,
                 Path.class,
-                FrontendAnalysisData.class
+                FrontendAnalysisData.class,
+                Map.class
         );
         constructor.setAccessible(true);
-        return constructor.newInstance(classRegistry, diagnostics, sourcePath, analysisData);
+        return constructor.newInstance(
+                classRegistry,
+                diagnostics,
+                sourcePath,
+                analysisData,
+                moduleTopLevelCanonicalNameMap
+        );
     }
 
     private Object invokeBuilderMethod(

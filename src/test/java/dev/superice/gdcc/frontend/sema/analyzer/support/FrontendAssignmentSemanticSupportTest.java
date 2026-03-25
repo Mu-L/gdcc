@@ -392,6 +392,7 @@ class FrontendAssignmentSemanticSupportTest {
         return new FrontendAssignmentSemanticSupport(
                 analyzed.analysisData().symbolBindings(),
                 analyzed.analysisData().scopesByAst(),
+                analyzed.analysisData().moduleSkeleton(),
                 () -> restriction,
                 analyzed.classRegistry(),
                 chainReduction

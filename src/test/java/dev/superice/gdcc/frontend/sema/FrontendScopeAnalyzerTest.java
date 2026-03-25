@@ -59,7 +59,7 @@ class FrontendScopeAnalyzerTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = FrontendAnalysisData.bootstrap();
         var diagnostics = new DiagnosticManager();
-        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), diagnostics.snapshot()));
+        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), Map.of(), diagnostics.snapshot()));
 
         assertThrows(IllegalStateException.class, () -> analyzer.analyze(registry, analysisData, diagnostics));
     }
@@ -446,6 +446,7 @@ class FrontendScopeAnalyzerTest {
                                 new dev.superice.gdcc.lir.LirClassDef("SyntheticBlockScope", "Node"),
                                 List.of()
                         )),
+                        Map.of(),
                         boundaryDiagnostics
                 )
         );
@@ -756,6 +757,7 @@ class FrontendScopeAnalyzerTest {
                                 new dev.superice.gdcc.lir.LirClassDef("SyntheticMissingInner", "Node"),
                                 List.of()
                         )),
+                        Map.of(),
                         boundaryDiagnostics
                 )
         );
@@ -930,6 +932,7 @@ class FrontendScopeAnalyzerTest {
                                         ))
                                 )
                         ),
+                        Map.of(),
                         boundaryDiagnostics
                 )
         );
@@ -1043,7 +1046,7 @@ class FrontendScopeAnalyzerTest {
     private FrontendAnalysisData publishedAnalysisData() {
         var analysisData = FrontendAnalysisData.bootstrap();
         var boundaryDiagnostics = new DiagnosticSnapshot(List.of());
-        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), boundaryDiagnostics));
+        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), Map.of(), boundaryDiagnostics));
         analysisData.updateDiagnostics(boundaryDiagnostics);
         return analysisData;
     }

@@ -38,6 +38,7 @@ import java.lang.reflect.Modifier;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -67,7 +68,7 @@ class FrontendVariableAnalyzerTest {
         var analyzer = new FrontendVariableAnalyzer();
         var analysisData = FrontendAnalysisData.bootstrap();
         var diagnostics = new DiagnosticManager();
-        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), diagnostics.snapshot()));
+        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), Map.of(), diagnostics.snapshot()));
 
         assertThrows(IllegalStateException.class, () -> analyzer.analyze(analysisData, diagnostics));
     }
@@ -876,6 +877,7 @@ class FrontendVariableAnalyzerTest {
                         new LirClassDef("SkippedInnerClass", "Node"),
                         List.of()
                 )),
+                Map.of(),
                 boundaryDiagnostics
         ));
         analysisData.updateDiagnostics(boundaryDiagnostics);

@@ -242,11 +242,12 @@ inner class boundary 当前必须建立在 `FrontendModuleSkeleton.sourceClassRe
 - 它要求 skeleton 的最小 type-scope 与真实 scope graph 保持一致
 - 它避免后续 resolver 因“扁平化所有 inner classes”而偏离 lexical 可见性
 
-mapped top-level gdcc class 当前还需同时满足：
+mapped top-level gdcc class 当前已同时满足：
 
 - lexical type namespace 继续按 `sourceName` 发布顶层 type-meta
 - 命中后的 `canonicalName` / `displayName()` 已反映映射后的 canonical 发布名
 - global root 仍不额外暴露顶层 `sourceName` alias
+- mapped top-level 自身与跨文件 top-level 的 source-facing `TYPE_META` / declared type 恢复，统一由调用方通过 `FrontendModuleSkeleton` 执行“先 lexical，miss 后 remap”的 helper 完成，而不是靠 `ClassScope` 额外发布自身 alias
 
 ### 5.3 reject / skip 规则
 

@@ -64,7 +64,8 @@ public final class FrontendClassSkeletonBuilder {
                     classRegistry,
                     diagnosticManager,
                     sourceUnitGraph.unit().path(),
-                    analysisData
+                    analysisData,
+                    module.topLevelCanonicalNameMap()
             );
             sourceClassRelations.add(buildSourceClassRelationShell(sourceUnitGraph, context));
         }
@@ -74,12 +75,18 @@ public final class FrontendClassSkeletonBuilder {
                     classRegistry,
                     diagnosticManager,
                     sourceClassRelation.unit().path(),
-                    analysisData
+                    analysisData,
+                    module.topLevelCanonicalNameMap()
             );
             fillSourceClassRelationMembers(sourceClassRelation, context);
         }
 
-        return new FrontendModuleSkeleton(module.moduleName(), sourceClassRelations, diagnosticManager.snapshot());
+        return new FrontendModuleSkeleton(
+                module.moduleName(),
+                sourceClassRelations,
+                module.topLevelCanonicalNameMap(),
+                diagnosticManager.snapshot()
+        );
     }
 
     /// Builds one accepted source-owned skeleton relation from the validated header graph:
@@ -321,6 +328,7 @@ public final class FrontendClassSkeletonBuilder {
             var parameterType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                     parameter.type(),
                     declaredTypeScope,
+                    context.moduleTopLevelCanonicalNameMap(),
                     context.sourcePath(),
                     context.diagnostics()
             );
@@ -342,6 +350,7 @@ public final class FrontendClassSkeletonBuilder {
         var propertyType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 variableDeclaration.type(),
                 declaredTypeScope,
+                context.moduleTopLevelCanonicalNameMap(),
                 context.sourcePath(),
                 context.diagnostics()
         );
@@ -395,6 +404,7 @@ public final class FrontendClassSkeletonBuilder {
         functionDef.setReturnType(FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 functionDeclaration.returnType(),
                 declaredTypeScope,
+                context.moduleTopLevelCanonicalNameMap(),
                 context.sourcePath(),
                 context.diagnostics()
         ));
@@ -434,6 +444,7 @@ public final class FrontendClassSkeletonBuilder {
             var parameterType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                     parameter.type(),
                     declaredTypeScope,
+                    context.moduleTopLevelCanonicalNameMap(),
                     context.sourcePath(),
                     context.diagnostics()
             );
@@ -1695,7 +1706,8 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnostics,
             @NotNull Path sourcePath,
-            @NotNull FrontendAnalysisData analysisData
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull Map<String, String> moduleTopLevelCanonicalNameMap
     ) {
     }
 }

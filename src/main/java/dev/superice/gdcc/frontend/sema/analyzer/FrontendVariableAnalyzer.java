@@ -8,6 +8,7 @@ import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import dev.superice.gdcc.frontend.sema.FrontendExecutableInventorySupport;
+import dev.superice.gdcc.frontend.sema.FrontendModuleSkeleton;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeValue;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
@@ -81,6 +82,7 @@ public class FrontendVariableAnalyzer {
         for (var sourceClassRelation : moduleSkeleton.sourceClassRelations()) {
             new AstWalkerVariableBinder(
                     sourceClassRelation.unit().path(),
+                    moduleSkeleton,
                     scopesByAst,
                     diagnosticManager
             ).walk(sourceClassRelation.unit().ast());
@@ -98,6 +100,7 @@ public class FrontendVariableAnalyzer {
     /// - arbitrary expression children stay outside the binding walk
     private static final class AstWalkerVariableBinder implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
+        private final @NotNull FrontendModuleSkeleton moduleSkeleton;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
@@ -117,10 +120,12 @@ public class FrontendVariableAnalyzer {
 
         private AstWalkerVariableBinder(
                 @NotNull Path sourcePath,
+                @NotNull FrontendModuleSkeleton moduleSkeleton,
                 @NotNull FrontendAstSideTable<Scope> scopesByAst,
                 @NotNull DiagnosticManager diagnosticManager
         ) {
             this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath");
+            this.moduleSkeleton = Objects.requireNonNull(moduleSkeleton, "moduleSkeleton");
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager");
             this.astWalker = new ASTWalker(this);
@@ -334,6 +339,7 @@ public class FrontendVariableAnalyzer {
             var parameterType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                     parameter.type(),
                     callableScope,
+                    moduleSkeleton.topLevelCanonicalNameMap(),
                     sourcePath,
                     diagnosticManager
             );
@@ -407,6 +413,7 @@ public class FrontendVariableAnalyzer {
             var variableType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                     variableDeclaration.type(),
                     blockScope,
+                    moduleSkeleton.topLevelCanonicalNameMap(),
                     sourcePath,
                     diagnosticManager
             );

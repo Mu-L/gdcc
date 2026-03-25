@@ -1,6 +1,6 @@
 # GDCC 前端语义分析器调研报告（按当前代码库校对）
 
-- 日期：2026-03-14
+- 日期：2026-03-25
 - 校对范围：本报告只依据当前仓库中的文档、源码、测试，以及当前工作区已存在的代码文件进行修订；不再把仓库外 `E:/Projects/gdparser` 本地副本或旧的 GitHub 快照当作本报告的直接事实源。
 
 ---
@@ -18,6 +18,7 @@
 7. **signal 相关状态比旧报告更前进。** `ClassScope` 的 unqualified signal lookup 已经落地并有测试；当前工作区还出现了 `ScopeSignalResolver` / `ScopeResolvedSignal` 及对应测试，说明 receiver-based signal metadata lookup 已经开始落代码，虽然 frontend binder 仍未接上。
 8. **旧报告里大量“按外部 `gdparser` AST 全量节点覆盖面下结论”的段落，应当降级或删除。** 当前仓库能直接证明的是：frontend 已依赖 `gdparser:0.5.1`，并消费了 AST 通用模型与少量声明节点；至于 `gdparser` 全量 AST 形态，若要继续做跨仓库调研，应单独写附录，而不应混进这份“按当前代码库校对”的报告里。
 9. **frontend 当前类名模型已经收敛为 `sourceName + canonicalName + 派生 displayName()`。** `runtimeName` 不再作为持久化身份层；lexical type lookup 继续按 `sourceName`，而 registry/LIR/backend 与用户展示统一由 canonical 派生。
+10. **mapped top-level 的 source-facing 类型解析现已统一收口到 caller-side remap helper。** `FrontendModuleSkeleton` 已冻结模块级 mapping，并为 skeleton、`TYPE_META`、static route、compile-only gate 等 frontend 路径提供“先 lexical，miss 后 remap”的统一入口，而不是再靠 scope 特判发布 source alias。
 
 ---
 
@@ -137,6 +138,7 @@
 - 通过 `FrontendSourceClassRelation` / `FrontendInnerClassRelation` 显式记录每个 source file 的顶层 skeleton 与同源 inner `ClassDeclaration -> skeleton` pair
 - 已在成员填充前把 accepted top-level / inner class shell 一并注册进 `ClassRegistry`；inner class 继续通过 relation 显式保存 `lexicalOwner`、`sourceName`、`canonicalName`，其 `LirClassDef#getName()` 冻结为 canonical name
 - mapped top-level gdcc class 当前也已进入同一双名合同：lexical lookup 继续按 `sourceName`，而 `LirClassDef#getName()`、registry key、backend/LIR 输出都直接写 canonical name
+- `FrontendModuleSkeleton` 现已保留冻结后的顶层 mapping，并提供 caller-side remap helper，供 skeleton declared type、`TYPE_META`、static receiver 与 compile-only gate 复用
 - 检查重复类名
 - 检查继承环，并以 diagnostics 形式拒绝 cyclic class subtree
 - 用 strict frontend declared-type 路径解析类型提示：先查 lexical gdcc 可见类型，再查 `ClassRegistry` strict type-meta；无法解析时降级到 `Variant` 并发出 `sema.type_resolution` warning
@@ -151,6 +153,8 @@
 - **对普通源码错误的恢复策略也已经开始收口：skeleton phase 更倾向于发 diagnostic 并跳过坏 subtree，而不是直接抛 frontend 异常打断整条 pipeline**
 
 与之对应，`FrontendScopeAnalyzer` 当前也不再通过扁平化的 source-order / top-level-class 兼容视图来恢复来源关系，而是直接消费 `sourceClassRelations()` 中显式发布的顶层类和 inner `ClassDeclaration -> skeleton` pair。inner class 的独立 lexical boundary 现已在 analyzer 阶段被真正物化；当某个 inner class subtree 没有已发布 relation 时，analyzer 会局部跳过该 subtree，而不是扩大成整条 source 的失败。
+
+需要额外强调的是：mapped top-level 自身与跨文件 top-level 的 source-facing 类型恢复，当前不是通过 `ClassScope` 额外发布顶层 source alias，而是由 frontend 调用者统一依赖 `FrontendModuleSkeleton` 的 remap helper 完成。这个边界已经通过 analyzer 与 compile-only gate 的回归测试固定下来。
 
 与此同时，frontend 诊断主链也已经收敛到 shared `DiagnosticManager` + 边界 `DiagnosticSnapshot`：parser、skeleton 与 analyzer 都显式接收同一 manager，`FrontendSemanticAnalyzer` 在 skeleton 之后与 scope phase 之后各发布一次 diagnostics snapshot，而不是通过局部 list 或异常对象透传普通源码错误。
 

@@ -272,6 +272,34 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeForCompileLeavesMappedTopLevelStaticMethodRoutesOutOfCompileBlocks() throws Exception {
+        var source = """
+                class_name MappedWorker
+                extends RefCounted
+                
+                static func build() -> MappedWorker:
+                    return MappedWorker.new()
+                
+                var worker := MappedWorker.build()
+                """;
+
+        var sharedAnalyzed = analyzeShared(
+                "compile_check_mapped_static_method_route.gd",
+                source,
+                Map.of("MappedWorker", "RuntimeWorker")
+        );
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile(
+                "compile_check_mapped_static_method_route.gd",
+                source,
+                Map.of("MappedWorker", "RuntimeWorker")
+        );
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
     void analyzeForCompileSkipsExplicitCompileBlocksOutsideCompileSurface() throws Exception {
         var source = """
                 class_name CompileCheckSkippedSurface

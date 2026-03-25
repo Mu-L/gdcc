@@ -91,6 +91,47 @@ class FrontendChainBindingAnalyzerTest {
     }
 
     @Test
+    void analyzeResolvesMappedTopLevelStaticCallAcrossSourceUnitsViaCallerSideRemap() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var parserService = new GdScriptParserService();
+        var workerUnit = parserService.parseUnit(Path.of("tmp", "mapped_worker_chain.gd"), """
+                class_name MappedWorker
+                extends RefCounted
+                
+                static func build(seed) -> String:
+                    return ""
+                """, diagnostics);
+        var consumerUnit = parserService.parseUnit(Path.of("tmp", "mapped_consumer_chain.gd"), """
+                class_name Consumer
+                extends RefCounted
+                
+                func ping(seed):
+                    MappedWorker.build(seed)
+                """, diagnostics);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analysisData = new FrontendSemanticAnalyzer().analyze(
+                new FrontendModule(
+                        "test_module",
+                        List.of(workerUnit, consumerUnit),
+                        Map.of("MappedWorker", "RuntimeWorker")
+                ),
+                registry,
+                diagnostics
+        );
+
+        var pingFunction = findFunction(consumerUnit.ast(), "ping");
+        var callStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var buildStep = findNode(callStatement, AttributeCallStep.class, step -> step.name().equals("build"));
+        var resolvedBuild = analysisData.resolvedCalls().get(buildStep);
+
+        assertNotNull(resolvedBuild);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedBuild.status());
+        assertEquals(FrontendCallResolutionKind.STATIC_METHOD, resolvedBuild.callKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, resolvedBuild.receiverKind());
+        assertTrue(diagnosticsByCategory(analysisData, "sema.call_resolution").isEmpty());
+    }
+
+    @Test
     void analyzePublishesPropertyInitializerChainFactsWithoutOpeningClassConstInitializers() throws Exception {
         var analyzed = analyze(
                 "property_initializer_routes.gd",

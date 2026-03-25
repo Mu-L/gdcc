@@ -5,6 +5,7 @@ import dev.superice.gdcc.frontend.sema.FrontendBinding;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import dev.superice.gdcc.frontend.sema.FrontendModuleSkeleton;
 import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
 import dev.superice.gdcc.scope.ClassRegistry;
@@ -189,6 +190,7 @@ public final class FrontendAssignmentSemanticSupport {
 
     private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
     private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
+    private final @NotNull FrontendModuleSkeleton moduleSkeleton;
     private final @NotNull Supplier<ResolveRestriction> restrictionSupplier;
     private final @NotNull ClassRegistry classRegistry;
     private final @NotNull FrontendChainReductionFacade chainReduction;
@@ -197,12 +199,14 @@ public final class FrontendAssignmentSemanticSupport {
     public FrontendAssignmentSemanticSupport(
             @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
             @NotNull FrontendAstSideTable<Scope> scopesByAst,
+            @NotNull FrontendModuleSkeleton moduleSkeleton,
             @NotNull Supplier<ResolveRestriction> restrictionSupplier,
             @NotNull ClassRegistry classRegistry,
             @NotNull FrontendChainReductionFacade chainReduction
     ) {
         this.symbolBindings = Objects.requireNonNull(symbolBindings, "symbolBindings must not be null");
         this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
+        this.moduleSkeleton = Objects.requireNonNull(moduleSkeleton, "moduleSkeleton must not be null");
         this.restrictionSupplier = Objects.requireNonNull(restrictionSupplier, "restrictionSupplier must not be null");
         this.classRegistry = Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         this.chainReduction = Objects.requireNonNull(chainReduction, "chainReduction must not be null");
@@ -315,7 +319,11 @@ public final class FrontendAssignmentSemanticSupport {
             );
         }
 
-        var typeMetaResult = currentScope.resolveTypeMeta(identifierExpression.name(), currentRestriction());
+        var typeMetaResult = moduleSkeleton.resolveSourceFacingTypeMeta(
+                currentScope,
+                identifierExpression.name(),
+                currentRestriction()
+        );
         if (typeMetaResult.isAllowed()) {
             return AssignmentTargetResult.failed(
                     AssignmentTargetKind.IDENTIFIER,
@@ -803,12 +811,11 @@ public final class FrontendAssignmentSemanticSupport {
         return expressionResult(expressionType, true);
     }
 
-    private static @NotNull String requireNonBlank(@Nullable String value, @NotNull String fieldName) {
+    private static void requireNonBlank(@Nullable String value, @NotNull String fieldName) {
         var text = Objects.requireNonNull(value, fieldName + " must not be null");
         if (text.isBlank()) {
             throw new IllegalArgumentException(fieldName + " must not be blank");
         }
-        return text;
     }
 
     private record CallArgumentResolution(

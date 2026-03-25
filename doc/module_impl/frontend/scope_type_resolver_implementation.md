@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（shared resolver、skeleton 接入、真实 scope graph 接入、compatibility mapper 已落地）
+- 状态：事实源维护中（shared resolver、skeleton 接入、真实 scope graph 接入、compatibility mapper 与 caller-side remap 接入已落地）
 - 更新时间：2026-03-25
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -107,7 +107,10 @@
 `FrontendClassSkeletonBuilder` 当前事实：
 
 - declared type 解析已经切到 shared `ScopeTypeResolver`
-- strict frontend 位置继续使用 no-mapper overload
+- frontend source-facing declared type 入口现统一遵循 caller-side remap-on-miss 规则
+  - 先按源码字面名执行正常 lexical strict 查找
+  - 只有 miss 时才按 `FrontendModuleSkeleton.topLevelCanonicalNameMap()` 重试 canonical
+  - 底层 strict lookup 仍使用 shared resolver 的 no-mapper overload；mapping 只发生在 frontend 调用侧
 - parser 当前会把 inferred declaration marker `:=` 暴露到 `TypeRef.sourceText()`
   - 这不意味着 `:=` 的最终语义就是 `Variant`
   - 正确语义应当是在后续 `FrontendExprTypeAnalyzer` 中分析右侧表达式类型，并据此确定声明类型
@@ -170,7 +173,7 @@
 当前 skeleton 与 shared resolver 的契约：
 
 - member filling 只能依赖最小 type-scope 链，不直接回放 relation 私有解析逻辑
-- strict declared type 解析必须走 shared resolver 的 no-mapper overload
+- skeleton member declared type 解析必须先走 lexical strict lookup；mapped top-level source-facing miss 再由 caller-side remap helper 重试 canonical
 - inner class、outer class、same-module class 的 type 解析必须通过 lexical type namespace 生效
 - diagnostics 继续由 skeleton 自己决定何时发出、如何恢复
 
@@ -182,6 +185,7 @@
 - callable / block scope 继续沿 parent chain 继承 type namespace
 - type namespace 与 value/function namespace 必须保持独立
 - outer type 的可见性只能通过 type-meta parent chain 实现
+- mapped top-level 自身或跨文件 top-level 的 source-facing `TYPE_META` / strict declared type 恢复，不通过 scope graph 额外发布 source alias，而由 analyzer 调用侧按“lexical first, remap-on-miss second”统一完成
 
 ### 4.3 诊断边界
 
@@ -266,6 +270,7 @@ GDCC 当前的 type-meta 解析仍主要建立在 lexical parent chain 上。结
 
 - shared resolver 能在 lexical scope 中解析 inner class `sourceName`
 - shared resolver 与 frontend lexical scope 都继续按 mapped top-level `sourceName` 命中，再发布 canonical-derived `displayName()`
+- `FrontendModuleSkeleton` caller-side remap helper 已覆盖 skeleton、variable inventory、top binding、chain binding、expr type 与 compile-only gate 的 mapped top-level source-facing 回归
 - malformed structured text 不会触发 compatibility mapper
 - skeleton 与 analyzer 对 immediate inner class type-meta 的发布规则保持一致
 - deferred type-meta 来源会产生显式 diagnostic，而不是静默忽略

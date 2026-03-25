@@ -158,6 +158,7 @@ public class FrontendExprTypeAnalyzer {
             assignmentSemanticSupport = new FrontendAssignmentSemanticSupport(
                     analysisData.symbolBindings(),
                     scopesByAst,
+                    analysisData.moduleSkeleton(),
                     () -> currentRestriction,
                     classRegistry,
                     chainReduction

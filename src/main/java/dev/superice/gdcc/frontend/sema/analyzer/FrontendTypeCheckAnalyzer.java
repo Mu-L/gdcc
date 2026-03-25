@@ -494,6 +494,7 @@ public class FrontendTypeCheckAnalyzer {
             assignmentSemanticSupport = new FrontendAssignmentSemanticSupport(
                     analysisData.symbolBindings(),
                     scopesByAst,
+                    analysisData.moduleSkeleton(),
                     () -> currentRestriction,
                     classRegistry,
                     chainReduction

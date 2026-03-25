@@ -15,6 +15,7 @@ import dev.superice.gdparser.frontend.ast.Range;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -45,7 +46,7 @@ class FrontendAnalysisDataTest {
         var diagnostics = new DiagnosticSnapshot(List.of(
                 FrontendDiagnostic.warning("sema.unsupported_annotation", "warning", null, null)
         ));
-        var moduleSkeleton = new FrontendModuleSkeleton("test_module", List.of(), diagnostics);
+        var moduleSkeleton = new FrontendModuleSkeleton("test_module", List.of(), Map.of(), diagnostics);
 
         analysisData.updateModuleSkeleton(moduleSkeleton);
         analysisData.updateDiagnostics(diagnostics);

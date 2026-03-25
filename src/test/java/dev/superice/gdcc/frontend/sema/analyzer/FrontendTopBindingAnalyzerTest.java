@@ -445,6 +445,36 @@ class FrontendTopBindingAnalyzerTest {
     }
 
     @Test
+    void analyzeBindsMappedTopLevelTypeMetaChainHeadViaCallerSideRemap() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "mapped_type_meta_chain_head.gd",
+                """
+                        class_name MappedWorker
+                        extends RefCounted
+                        
+                        static func build():
+                            return null
+                        
+                        func ping():
+                            MappedWorker.build()
+                        """,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                Map.of("MappedWorker", "RuntimeWorker")
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "MappedWorker"),
+                FrontendBindingKind.TYPE_META
+        );
+        assertTrue(bindingDiagnostics(preparedInput.diagnosticManager()).isEmpty());
+    }
+
+    @Test
     void analyzePrefersLocalValueOverVisibleTypeMetaChainHeadAndReportsShadowingDiagnostic() throws Exception {
         var preparedInput = prepareBindingInput("shadowed_type_meta_chain_head.gd", """
                 class_name ShadowedTypeMetaChainHead

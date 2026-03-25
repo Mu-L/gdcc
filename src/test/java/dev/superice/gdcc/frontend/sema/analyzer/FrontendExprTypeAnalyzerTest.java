@@ -107,6 +107,35 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
+    void analyzePublishesMappedTopLevelStaticRouteTypesViaCallerSideRemap() throws Exception {
+        var analyzed = analyze(
+                "expr_type_mapped_static_route.gd",
+                """
+                        class_name MappedWorker
+                        extends RefCounted
+                        
+                        static func build(seed) -> String:
+                            return ""
+                        
+                        func ping(seed):
+                            MappedWorker.build(seed)
+                        """,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                Map.of("MappedWorker", "RuntimeWorker")
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var buildStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var buildExpression = assertInstanceOf(AttributeExpression.class, buildStatement.expression());
+        var buildType = analyzed.analysisData().expressionTypes().get(buildExpression);
+
+        assertNotNull(buildType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, buildType.status());
+        assertEquals("String", buildType.publishedType().getTypeName());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+    }
+
+    @Test
     void analyzePublishesSupportedPropertyInitializerExpressionTypesWithoutOpeningClassConstInitializers() throws Exception {
         var analyzed = analyze(
                 "expr_type_property_initializers.gd",
