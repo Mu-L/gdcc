@@ -63,13 +63,13 @@
 以下旧假设中，前 3 条已在第 3 步落地时拆除；后 2 条仍是当前待处理事实：
 
 - `FrontendSourceClassRelation` 已不再把顶层类压成单一 `name`，而是显式保留 `sourceName + canonicalName`；当前 relation 仍维持双名模型。
-- `FrontendClassSkeletonBuilder.discoverTopLevelHeader(...)` 已在 discovery 阶段写入顶层 `sourceName / runtimeName / canonicalName` 三层名字，但这是尚未收口的历史中间态。
-- `FrontendClassSkeletonBuilder.buildSourceClassRelationShell(...)` 现在会为顶层 shell 创建映射后的 canonical `LirClassDef`；但 registry/source-override 与 `ScopeTypeMeta` 仍未跟进“canonical 派生展示名”的最终模型。
-- `ClassRegistry.gdccClassSourceNameByCanonicalName` 当前文档和实现都偏向“只给 inner class 存 source override”。
-- `ScopeTypeMeta.sourceName` 当前同时承担两种职责：
-  - lexical type namespace lookup key
-  - 用户可见类型名/诊断展示名
-- 多处 frontend 诊断和 helper 默认把 `sourceName()` 当作展示名使用。
+- `FrontendClassSkeletonBuilder.discoverTopLevelHeader(...)` 已在 discovery 阶段直接冻结顶层 `sourceName / canonicalName` 双名，不再保留 header 层 `runtimeName` 中间态。
+- `FrontendClassSkeletonBuilder.buildSourceClassRelationShell(...)` 现在会为顶层 shell 创建映射后的 canonical `LirClassDef`，relation 也已提供派生 `displayName()`。
+- `ClassRegistry.gdccClassSourceNameByCanonicalName` 现在已覆盖任意 `sourceName != canonicalName` 的 gdcc class，而不再只服务 inner class。
+- `ScopeTypeMeta` 现在已经显式区分：
+  - `sourceName` 作为 lexical type namespace lookup key
+  - `displayName()` 作为由 `canonicalName` 派生的用户可见展示名
+- `ScopeMethodResolver`、`FrontendChainReductionHelper` 等主要展示路径已切到 `displayName()`。
 
 ### 2.2 已确认受影响的核心代码路径
 
@@ -293,16 +293,15 @@
 
 目标：
 
-- 在 header discovery 阶段就同时记录 `sourceName`、`runtimeName`、`canonicalName`。
-- 顶层 identity 从 discovery 开始即使用映射后的 runtime/canonical。
+- 在 header discovery 阶段就明确冻结 `sourceName` 与映射后的 `canonicalName`。
+- 顶层 identity 从 discovery 开始即使用映射后的 canonical。
 
 建议改动：
 
 - 扩展 `MutableClassHeader` / `AcceptedClassHeader` / `RejectedClassHeader`，显式保存：
   - `sourceName`
-  - `runtimeName`
   - `canonicalName`
-- `discoverTopLevelHeader(...)` 先解析 `sourceName`，再根据外部 mapping 计算 `runtimeName/canonicalName`。
+- `discoverTopLevelHeader(...)` 先解析 `sourceName`，再根据外部 mapping 计算 `canonicalName`。
 - `discoverInnerClassHeaders(...)` 不再只传 `parentCanonicalName` 的“未映射旧含义”，而是明确使用“已经冻结好的 parent canonicalName”。
 - `freezeAcceptedHeader(...)`、`toRejectedClassHeader(...)`、`describeClassHeaderOrigin(...)` 等辅助路径一并切换到新字段。
 
@@ -321,21 +320,21 @@
 - 无映射时，顶层类 header 产物与当前行为一致。
 - 有映射时，顶层 `AcceptedClassHeader.canonicalName()` 已经是映射后的名字。
 - 有映射时，内部类 `canonicalName` 自动使用映射后的顶层前缀。
-- “两个不同顶层类映射到同一 runtimeName” 会被 canonical conflict 明确拒绝。
+- “两个不同顶层类映射到同一 canonicalName” 会被 canonical conflict 明确拒绝。
 
 第 3 步执行状态（2026-03-24）：
 
 - [x] 3.1 扩展 header discovery 名字载体
-  - `MutableClassHeader`、`AcceptedClassHeader`、`RejectedClassHeader` 已显式保存 `sourceName / runtimeName / canonicalName`。
-  - `describeClassHeaderOrigin(...)` 等辅助路径已切到新字段，mapped top-level conflict 诊断现在能同时带出 source/runtime 事实。
+  - `MutableClassHeader`、`AcceptedClassHeader`、`RejectedClassHeader` 最终已收敛为 `sourceName / canonicalName` 双名。
+  - `describeClassHeaderOrigin(...)` 等辅助路径已切到 source/canonical 事实，mapped top-level conflict 诊断现在能同时带出 source/canonical 信息。
 - [x] 3.2 在 top-level discovery 阶段应用模块 runtime-name mapping
-  - `discoverTopLevelHeader(...)` 已从 `FrontendModule.topLevelRuntimeNameMap()` 计算顶层 `runtimeName/canonicalName`。
+  - `discoverTopLevelHeader(...)` 已从 `FrontendModule.topLevelCanonicalNameMap()` 计算顶层 canonicalName。
   - `discoverInnerClassHeaders(...)` 已统一基于“冻结后的 parent canonicalName”派生内部类 canonical 前缀。
 - [x] 3.3 保留 source 冲突与 canonical 冲突双轨校验，并让 shell 保持一致
   - top-level duplicate 检查仍按 `sourceName` 工作，duplicate diagnostic 也改为显式描述 source-facing 冲突。
   - canonical conflict 现在能正确拒绝“不同 top-level sourceName 映射到同一 runtime/canonicalName”。
   - 为保持 step3 后 skeleton contract 自洽，`FrontendSourceClassRelation` 已最小联动升级为 `sourceName + canonicalName` 双名模型，`buildSourceClassRelationShell(...)` 产出的 top-level `LirClassDef.getName()` 现在同步写入 mapped canonical。
-- `runtimeName` 仍只停留在 header 层，作为当前代码里的历史中间态存在；后续步骤的目标是收敛为“双名模型 + 派生 `displayName()`”，而不是把三名模型继续向 relation 或 `ScopeTypeMeta` 扩散。
+  - header discovery 已不再保留 `runtimeName` 中间态，后续步骤直接建立在“双名模型 + 派生 `displayName()`”上推进。
 - [x] 3.4 补充 targeted tests 并记录验收结果
   - 已新增/更新正向测试，覆盖 mapped top-level canonical、mapped inner canonical 前缀、mapped superclass source lookup -> canonical publication。
   - 已新增负向测试，覆盖两个不同 top-level sourceName 映射到同一 runtime/canonicalName 时的 canonical conflict。
@@ -351,7 +350,7 @@
 建议改动：
 
 - `FrontendOwnedClassRelation` 保持双名协议，不新增 `runtimeName()`。
-- 若需要统一用户可见展示，可在 relation 层提供 `displayName()`，直接返回 `canonicalName()`。
+- 在 relation 层提供 `displayName()`，直接返回 `canonicalName()`。
 - 不再把 top-level relation 升级成持久化三名模型，也不再让 inner relation 承载单独 `runtimeName` 字段。
 - `FrontendOwnedClassRelation.validateOwnedRelation(...)` 继续只校验：
   - relation `canonicalName == classDef.getName()`
@@ -368,6 +367,13 @@
 - top-level relation 继续只保留源码名与映射后的 canonical 名。
 - inner relation 继续只保留局部源码名与派生 canonical 名。
 - 若新增 `displayName()`，其返回值始终等于 `canonicalName()`。
+
+第 4 步执行状态（2026-03-25）：
+
+- [x] 4.1 `FrontendOwnedClassRelation` 收敛为双名协议
+  - relation 层已不再保留 `runtimeName`，统一通过默认 `displayName()` 返回 `canonicalName()`。
+- [x] 4.2 top-level / inner relation 共享同一展示语义
+  - `FrontendSourceClassRelation`、`FrontendInnerClassRelation` 都继续只持久化 `sourceName + canonicalName`，展示名不单独存储。
 
 ### 第 5 步：把 `ScopeTypeMeta` 从“lookup key + 展示名”双重职责中拆开，但展示名不单独存储
 
@@ -409,6 +415,13 @@
 - `ScopeTypeMeta` 可以同时表达“源码 lookup 名”和“派生展示名”。
 - 现有 type-meta lookup 协议保持 `FOUND_ALLOWED / NOT_FOUND` 合同不变。
 
+第 5 步执行状态（2026-03-25）：
+
+- [x] 5.1 `ScopeTypeMeta` 新增派生 `displayName()`
+  - `displayName()` 已落地，直接返回 `canonicalName()`；未引入新的持久化名字字段。
+- [x] 5.2 type-meta 双重职责已拆分
+  - `sourceName` 继续只承担 lexical type namespace lookup key，展示路径开始消费 `displayName()`。
+
 ### 第 6 步：调整 registry publication，让顶层映射类也拥有 source override
 
 目标：
@@ -445,6 +458,13 @@
 - 对映射后的顶层类，registry 返回的 `ScopeTypeMeta.sourceName()` 仍是源码名。
 - 对映射后的顶层类，registry 返回的 `ScopeTypeMeta.displayName()` 与 `canonicalName()` 为映射名。
 
+第 6 步执行状态（2026-03-25）：
+
+- [x] 6.1 registry source override 已扩展到任意 `sourceName != canonicalName` 的 gdcc class
+  - `publishClassShells(...)` 现在会为 mapped top-level class 也写入 source override。
+- [x] 6.2 global registry 仍保持 canonical-only 注册键
+  - `findGdccClass(...)` / `resolveTypeMetaHere(...)` 的 global lookup 仍只接受 canonical，不额外暴露 source alias。
+
 ### 第 7 步：修复 scope / analyzer / resolver 的展示名消费点
 
 目标：
@@ -480,6 +500,13 @@
 - source-facing lexical lookup 仍按源码名工作。
 - top binding / chain binding / expr type / compile check 的 side-table 发布不出现结构性退化。
 
+第 7 步执行状态（2026-03-25）：
+
+- [x] 7.1 shared/static-receiver 诊断已切到 `displayName()`
+  - `ScopeMethodResolver`、`FrontendChainReductionHelper` 已改为展示 `displayName()`，不再默认回显 `sourceName()`。
+- [x] 7.2 property initializer 边界消息与 constructor/static-method 失败消息已同步
+  - mapped gdcc type-meta 的用户可见消息现在稳定展示 canonical 派生名。
+
 ### 第 8 步：确认继承链、属性解析和方法解析只继续依赖 canonical
 
 目标：
@@ -509,6 +536,13 @@
 - 内部类继承 mapped 顶层前缀后的 superclass 时，继承链查找仍能命中。
 - property/method resolution 对 mapped 顶层类和其内部类都正常。
 - `checkAssignable(...)`、`getRefCountedStatus(...)` 对映射后的 canonical 结果保持正确。
+
+第 8 步执行状态（2026-03-25）：
+
+- [x] 8.1 canonical-only 继承链主逻辑保持不变
+  - 本轮未重写 `ClassScope` / registry 的 canonical walk 逻辑，只回归确认映射后的 canonical 身份继续可用。
+- [x] 8.2 mapped top-level / inner class 的 canonical 合同已由回归测试继续锚定
+  - 继承、方法解析、构造调用与 source-override 恢复的 targeted tests 已覆盖该边界。
 
 ### 第 9 步：补齐测试和文档更新
 
@@ -551,6 +585,13 @@
 - 新增测试能区分 `sourceName`、`displayName()`、`canonicalName`。
 - 旧测试中凡是写死“顶层 `sourceName == canonicalName`”的断言都已按新合同改写。
 - backend / LIR 相关测试继续证明 canonical-only contract 没被破坏。
+
+第 9 步执行状态（2026-03-25）：
+
+- [x] 9.1 已补充 source/display/canonical 三者分工断言
+  - `ClassRegistryTypeMetaTest`、`ClassRegistryGdccTest`、`FrontendClassSkeletonTest` 等已新增 `displayName()` 与 mapped top-level source override 断言。
+- [x] 9.2 已补充展示消息回归
+  - `ScopeMethodResolverTest` 与 `FrontendChainReductionHelperTest` 现覆盖 mapped gdcc type-meta 在失败消息中展示 canonical 派生名。
 
 ---
 

@@ -69,6 +69,7 @@ class FrontendChainHeadReceiverSupportTest {
         assertEquals(FrontendReceiverKind.TYPE_META, typeReceiver.receiverKind());
         assertEquals(new GdObjectType("Hero$Worker"), typeReceiver.receiverType());
         assertEquals("Worker", typeReceiver.receiverTypeMeta().sourceName());
+        assertEquals("Hero$Worker", typeReceiver.receiverTypeMeta().displayName());
 
         var literalReceiver = support.resolveHeadReceiver(literal);
         assertNotNull(literalReceiver);

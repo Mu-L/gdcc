@@ -15,6 +15,7 @@ import java.util.Objects;
 /// Field semantics:
 /// - `canonicalName`: stable identity used by registry/backend/cross-phase references.
 /// - `sourceName`: source-facing name visible in the current lexical type namespace.
+/// - `displayName()`: canonical-derived user-facing presentation name used by diagnostics/debug.
 /// - `instanceType`: the runtime/value-side type represented by this type-meta symbol.
 /// - `kind`: the metadata domain the type name came from.
 /// - `declaration`: backing metadata object when one exists.
@@ -40,5 +41,9 @@ public record ScopeTypeMeta(
         Objects.requireNonNull(sourceName, "sourceName");
         Objects.requireNonNull(instanceType, "instanceType");
         Objects.requireNonNull(kind, "kind");
+    }
+
+    public @NotNull String displayName() {
+        return canonicalName;
     }
 }

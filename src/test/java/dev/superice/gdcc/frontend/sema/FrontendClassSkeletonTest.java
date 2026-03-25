@@ -268,6 +268,7 @@ class FrontendClassSkeletonTest {
         assertNotNull(innerAMeta);
         assertEquals("OuterWithInner$InnerA", innerAMeta.canonicalName());
         assertEquals("InnerA", innerAMeta.sourceName());
+        assertEquals("OuterWithInner$InnerA", innerAMeta.displayName());
     }
 
     @Test
@@ -314,7 +315,7 @@ class FrontendClassSkeletonTest {
     }
 
     @Test
-    void buildMapsTopLevelAndInnerCanonicalNamesFromFrontendModuleRuntimeNameMap() throws IOException {
+    void buildMapsTopLevelAndInnerCanonicalNamesFromFrontendModuleCanonicalNameMap() throws IOException {
         var parserService = new GdScriptParserService();
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
@@ -342,6 +343,7 @@ class FrontendClassSkeletonTest {
 
         assertEquals("MappedOuter", relation.sourceName());
         assertEquals("RuntimeOuter", relation.canonicalName());
+        assertEquals("RuntimeOuter", relation.displayName());
         assertEquals("RuntimeOuter", relation.topLevelClassDef().getName());
         assertEquals(
                 List.of("RuntimeOuter$Inner"),
@@ -355,6 +357,12 @@ class FrontendClassSkeletonTest {
         );
         assertNotNull(registry.findGdccClass("RuntimeOuter"));
         assertNotNull(registry.findGdccClass("RuntimeOuter$Inner"));
+        assertEquals("MappedOuter", registry.findGdccClassSourceNameOverride("RuntimeOuter"));
+        assertEquals("Inner", registry.findGdccClassSourceNameOverride("RuntimeOuter$Inner"));
+        var mappedTopLevelMeta = registry.resolveTypeMeta("RuntimeOuter");
+        assertNotNull(mappedTopLevelMeta);
+        assertEquals("MappedOuter", mappedTopLevelMeta.sourceName());
+        assertEquals("RuntimeOuter", mappedTopLevelMeta.displayName());
         assertNull(registry.findGdccClass("MappedOuter"));
     }
 

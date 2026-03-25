@@ -18,17 +18,17 @@ class FrontendModuleTest {
     private final GdScriptParserService parserService = new GdScriptParserService();
 
     @Test
-    void constructorFreezesUnitsAndRuntimeNameMapWhilePreservingOrder() {
+    void constructorFreezesUnitsAndCanonicalNameMapWhilePreservingOrder() {
         var first = parse("first.gd", "class_name First\nextends RefCounted\n");
         var second = parse("second.gd", "class_name Second\nextends RefCounted\n");
         var units = new ArrayList<>(List.of(first, second));
-        var runtimeNameMap = new LinkedHashMap<String, String>();
-        runtimeNameMap.put("First", "FirstRuntime");
-        runtimeNameMap.put("Second", "SecondRuntime");
+        var canonicalNameMap = new LinkedHashMap<String, String>();
+        canonicalNameMap.put("First", "FirstRuntime");
+        canonicalNameMap.put("Second", "SecondRuntime");
 
-        var module = new FrontendModule("test_module", units, runtimeNameMap);
+        var module = new FrontendModule("test_module", units, canonicalNameMap);
         units.clear();
-        runtimeNameMap.clear();
+        canonicalNameMap.clear();
 
         assertEquals("test_module", module.moduleName());
         assertEquals(List.of(first, second), module.units());
@@ -37,12 +37,12 @@ class FrontendModuleTest {
                         "First", "FirstRuntime",
                         "Second", "SecondRuntime"
                 )),
-                new LinkedHashMap<>(module.topLevelRuntimeNameMap())
+                new LinkedHashMap<>(module.topLevelCanonicalNameMap())
         );
         assertThrows(UnsupportedOperationException.class, () -> module.units().add(first));
         assertThrows(
                 UnsupportedOperationException.class,
-                () -> module.topLevelRuntimeNameMap().put("Third", "ThirdRuntime")
+                () -> module.topLevelCanonicalNameMap().put("Third", "ThirdRuntime")
         );
     }
 
@@ -55,28 +55,28 @@ class FrontendModuleTest {
         assertEquals("single_module", module.moduleName());
         assertEquals(1, module.units().size());
         assertSame(unit, module.units().getFirst());
-        assertTrue(module.topLevelRuntimeNameMap().isEmpty());
+        assertTrue(module.topLevelCanonicalNameMap().isEmpty());
         assertThrows(
                 UnsupportedOperationException.class,
-                () -> module.topLevelRuntimeNameMap().put("Single", "SingleRuntime")
+                () -> module.topLevelCanonicalNameMap().put("Single", "SingleRuntime")
         );
     }
 
     @Test
-    void singleUnitFactoryFreezesProvidedRuntimeNameMap() {
+    void singleUnitFactoryFreezesProvidedCanonicalNameMap() {
         var unit = parse("single_with_map.gd", "class_name SingleWithMap\nextends RefCounted\n");
-        var runtimeNameMap = new LinkedHashMap<String, String>();
-        runtimeNameMap.put("SingleWithMap", "RuntimeSingleWithMap");
+        var canonicalNameMap = new LinkedHashMap<String, String>();
+        canonicalNameMap.put("SingleWithMap", "RuntimeSingleWithMap");
 
-        var module = FrontendModule.singleUnit("single_module", unit, runtimeNameMap);
-        runtimeNameMap.put("Late", "LateRuntime");
+        var module = FrontendModule.singleUnit("single_module", unit, canonicalNameMap);
+        canonicalNameMap.put("Late", "LateRuntime");
 
         assertEquals("single_module", module.moduleName());
         assertEquals(List.of(unit), module.units());
-        assertEquals(Map.of("SingleWithMap", "RuntimeSingleWithMap"), module.topLevelRuntimeNameMap());
+        assertEquals(Map.of("SingleWithMap", "RuntimeSingleWithMap"), module.topLevelCanonicalNameMap());
         assertThrows(
                 UnsupportedOperationException.class,
-                () -> module.topLevelRuntimeNameMap().put("Other", "OtherRuntime")
+                () -> module.topLevelCanonicalNameMap().put("Other", "OtherRuntime")
         );
     }
 
@@ -93,7 +93,7 @@ class FrontendModuleTest {
     }
 
     @Test
-    void constructorRejectsBlankRuntimeMappingEntries() {
+    void constructorRejectsBlankCanonicalMappingEntries() {
         var unit = parse("invalid_map.gd", "class_name InvalidMap\nextends RefCounted\n");
 
         assertThrows(

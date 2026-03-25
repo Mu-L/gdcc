@@ -45,6 +45,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -435,6 +436,34 @@ class FrontendChainReductionHelperTest {
         assertNotNull(staticBuildCall);
         assertEquals(FrontendReceiverKind.TYPE_META, staticBuildCall.receiverKind());
         assertTrue(result.notes().isEmpty());
+    }
+
+    @Test
+    void reduceUsesDisplayNameForMappedTypeMetaFailureMessages() {
+        var runtimeWorker = newClass("RuntimeWorker");
+        var registry = newRegistry(List.of(), List.of(runtimeWorker));
+        var chain = chain(identifier("Worker"), call("missing"));
+        var mappedTypeMeta = new ScopeTypeMeta(
+                "RuntimeWorker",
+                "Worker",
+                new GdObjectType("RuntimeWorker"),
+                ScopeTypeMetaKind.GDCC_CLASS,
+                runtimeWorker,
+                false
+        );
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(mappedTypeMeta),
+                registry,
+                noExpressionTypes()
+        ));
+
+        var firstTrace = result.stepTraces().getFirst();
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, firstTrace.status());
+        assertNotNull(firstTrace.detailReason());
+        assertTrue(firstTrace.detailReason().contains("RuntimeWorker"), firstTrace.detailReason());
+        assertFalse(firstTrace.detailReason().contains("type 'Worker'"), firstTrace.detailReason());
     }
 
     @Test

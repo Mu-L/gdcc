@@ -397,7 +397,7 @@ class FrontendClassHeaderDiscoveryTest {
     }
 
     @Test
-    void buildRejectsSingletonSuperclassSourceAtHeaderBoundary() throws Exception {
+    void buildRejectsSingletonSuperclassSourceAtHeaderBoundary() {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var singletonUnit = parserService.parseUnit(
@@ -537,6 +537,7 @@ class FrontendClassHeaderDiscoveryTest {
                         && diagnostic.message().contains("BetaSource")
         ));
         assertNotNull(registry.findGdccClass("SharedRuntime"));
+        assertEquals("AlphaSource", registry.findGdccClassSourceNameOverride("SharedRuntime"));
         assertNotNull(registry.findGdccClass("KeepAlive"));
         assertNull(registry.findGdccClass("BetaSource"));
     }
@@ -569,12 +570,12 @@ class FrontendClassHeaderDiscoveryTest {
     private FrontendModuleSkeleton buildSkeleton(
             String moduleName,
             List<FrontendSourceUnit> units,
-            Map<String, String> topLevelRuntimeNameMap,
+            Map<String, String> topLevelCanonicalNameMap,
             ClassRegistry registry,
             DiagnosticManager diagnostics
     ) {
         return new FrontendClassSkeletonBuilder().build(
-                new FrontendModule(moduleName, units, topLevelRuntimeNameMap),
+                new FrontendModule(moduleName, units, topLevelCanonicalNameMap),
                 registry,
                 diagnostics,
                 FrontendAnalysisData.bootstrap()

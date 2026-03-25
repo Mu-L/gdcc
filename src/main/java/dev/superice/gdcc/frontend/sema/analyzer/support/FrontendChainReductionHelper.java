@@ -716,7 +716,7 @@ public final class FrontendChainReductionHelper {
             @NotNull ScopeTypeMeta receiverTypeMeta
     ) {
         if (!(receiverTypeMeta.declaration() instanceof ExtensionGlobalEnum globalEnum)) {
-            var detailReason = "Global enum static load receiver '" + receiverTypeMeta.sourceName()
+            var detailReason = "Global enum static load receiver '" + receiverTypeMeta.displayName()
                     + "' has malformed declaration metadata";
             return failedStaticLoadTrace(stepIndex, step, incomingReceiver, null, receiverTypeMeta, detailReason);
         }
@@ -747,7 +747,7 @@ public final class FrontendChainReductionHelper {
     ) {
         var builtinClass = resolveBuiltinStaticOwner(classRegistry, receiverTypeMeta);
         if (builtinClass == null) {
-            var detailReason = "Builtin static receiver '" + receiverTypeMeta.sourceName()
+            var detailReason = "Builtin static receiver '" + receiverTypeMeta.displayName()
                     + "' is not backed by builtin class metadata";
             return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.BUILTIN, receiverTypeMeta, detailReason);
         }
@@ -793,7 +793,7 @@ public final class FrontendChainReductionHelper {
     ) {
         var engineClass = resolveEngineStaticOwner(classRegistry, receiverTypeMeta);
         if (engineClass == null) {
-            var detailReason = "Engine static receiver '" + receiverTypeMeta.sourceName()
+            var detailReason = "Engine static receiver '" + receiverTypeMeta.displayName()
                     + "' is not backed by engine class metadata";
             return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.ENGINE, receiverTypeMeta, detailReason);
         }
@@ -836,7 +836,7 @@ public final class FrontendChainReductionHelper {
         if (methodReference != null) {
             return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
         }
-        var detailReason = "Static load route on GDCC class '" + receiverTypeMeta.sourceName()
+        var detailReason = "Static load route on GDCC class '" + receiverTypeMeta.displayName()
                 + "' is outside the current class-constant support boundary";
         return new StepTrace(
                 stepIndex,
@@ -902,7 +902,7 @@ public final class FrontendChainReductionHelper {
             @NotNull ScopeValueKind valueKind
     ) {
         var detailReason = FrontendPropertyInitializerSupport.unsupportedTypeMetaValueMessage(
-                receiverTypeMeta.sourceName(),
+                receiverTypeMeta.displayName(),
                 step.name(),
                 valueKind
         );
@@ -1277,7 +1277,7 @@ public final class FrontendChainReductionHelper {
             }
             case ScopeMethodResolver.Failed failed -> {
                 var detailReason = "Static method lookup for '" + step.name() + "' on type '"
-                        + receiverTypeMeta.sourceName() + "' failed: " + failed.kind();
+                        + receiverTypeMeta.displayName() + "' failed: " + failed.kind();
                 yield new StepTrace(
                         stepIndex,
                         step,
@@ -1313,7 +1313,7 @@ public final class FrontendChainReductionHelper {
             @NotNull ScopeTypeMeta receiverTypeMeta
     ) {
         var detailReason = FrontendPropertyInitializerSupport.unsupportedTypeMetaMethodMessage(
-                receiverTypeMeta.sourceName(),
+                receiverTypeMeta.displayName(),
                 step.name()
         );
         return new StepTrace(
@@ -2047,7 +2047,7 @@ public final class FrontendChainReductionHelper {
         if (receiverTypeMeta.declaration() instanceof ExtensionBuiltinClass builtinClass) {
             return builtinClass;
         }
-        return classRegistry.findBuiltinClass(receiverTypeMeta.sourceName());
+        return classRegistry.findBuiltinClass(receiverTypeMeta.canonicalName());
     }
 
     private static @Nullable ExtensionGdClass resolveEngineStaticOwner(
@@ -2173,7 +2173,7 @@ public final class FrontendChainReductionHelper {
                     Status.FAILED,
                     null,
                     null,
-                    "Type meta '" + receiverTypeMeta.sourceName() + "' does not support constructor calls"
+                    "Type meta '" + receiverTypeMeta.displayName() + "' does not support constructor calls"
             );
             case ENGINE_CLASS -> resolveEngineConstructor(receiverTypeMeta, argumentTypes);
             case GDCC_CLASS -> resolveGdccConstructor(classRegistry, receiverTypeMeta, argumentTypes);
@@ -2190,7 +2190,7 @@ public final class FrontendChainReductionHelper {
                     Status.FAILED,
                     null,
                     ScopeOwnerKind.ENGINE,
-                    "Engine constructor receiver '" + receiverTypeMeta.sourceName() + "' has malformed declaration metadata"
+                    "Engine constructor receiver '" + receiverTypeMeta.displayName() + "' has malformed declaration metadata"
             );
         }
         if (!engineClass.isInstantiable()) {
@@ -2198,7 +2198,7 @@ public final class FrontendChainReductionHelper {
                     Status.FAILED,
                     null,
                     ScopeOwnerKind.ENGINE,
-                    "Engine class '" + receiverTypeMeta.sourceName() + "' is not instantiable"
+                    "Engine class '" + receiverTypeMeta.displayName() + "' is not instantiable"
             );
         }
         if (!argumentTypes.isEmpty()) {
@@ -2206,7 +2206,7 @@ public final class FrontendChainReductionHelper {
                     Status.FAILED,
                     null,
                     ScopeOwnerKind.ENGINE,
-                    "Engine class constructor '" + receiverTypeMeta.sourceName() + ".new' accepts no arguments"
+                    "Engine class constructor '" + receiverTypeMeta.displayName() + ".new' accepts no arguments"
             );
         }
         return new ConstructorResolution(Status.RESOLVED, null, ScopeOwnerKind.ENGINE, null);
@@ -2223,7 +2223,7 @@ public final class FrontendChainReductionHelper {
                     Status.FAILED,
                     null,
                     ScopeOwnerKind.GDCC,
-                    "Constructor receiver '" + receiverTypeMeta.sourceName() + "' has unavailable class metadata"
+                    "Constructor receiver '" + receiverTypeMeta.displayName() + "' has unavailable class metadata"
             );
         }
         var constructors = classDef.getFunctions().stream()
@@ -2237,7 +2237,7 @@ public final class FrontendChainReductionHelper {
                     Status.FAILED,
                     null,
                     ScopeOwnerKind.GDCC,
-                    "Class '" + receiverTypeMeta.sourceName() + "' has no matching constructor overload for "
+                    "Class '" + receiverTypeMeta.displayName() + "' has no matching constructor overload for "
                             + renderArgumentTypes(argumentTypes)
             );
         }
@@ -2255,7 +2255,7 @@ public final class FrontendChainReductionHelper {
                     Status.FAILED,
                     null,
                     ScopeOwnerKind.BUILTIN,
-                    "Builtin constructor receiver '" + receiverTypeMeta.sourceName() + "' is not backed by builtin metadata"
+                    "Builtin constructor receiver '" + receiverTypeMeta.displayName() + "' is not backed by builtin metadata"
             );
         }
         if (builtinClass.constructors().isEmpty()) {
@@ -2263,7 +2263,7 @@ public final class FrontendChainReductionHelper {
                     Status.FAILED,
                     null,
                     ScopeOwnerKind.BUILTIN,
-                    "Builtin type '" + receiverTypeMeta.sourceName() + "' has no constructor metadata"
+                    "Builtin type '" + receiverTypeMeta.displayName() + "' has no constructor metadata"
             );
         }
         return chooseConstructor(
@@ -2293,13 +2293,13 @@ public final class FrontendChainReductionHelper {
                     Status.FAILED,
                     null,
                     ownerKind,
-                    "Ambiguous constructor overload for '" + receiverTypeMeta.sourceName() + ".new': "
+                    "Ambiguous constructor overload for '" + receiverTypeMeta.displayName() + ".new': "
                             + renderCallableSignatures(applicable)
             );
         }
         var detailReason = constructors.isEmpty()
-                ? "Type '" + receiverTypeMeta.sourceName() + "' exposes no constructors"
-                : "No applicable constructor overload for '" + receiverTypeMeta.sourceName() + ".new': "
+                ? "Type '" + receiverTypeMeta.displayName() + "' exposes no constructors"
+                : "No applicable constructor overload for '" + receiverTypeMeta.displayName() + ".new': "
                 + buildCallableMismatchReason(classRegistry, constructors.getFirst(), argumentTypes)
                 + ". candidates: " + renderCallableSignatures(constructors);
         return new ConstructorResolution(Status.FAILED, null, ownerKind, detailReason);

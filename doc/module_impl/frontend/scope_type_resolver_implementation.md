@@ -91,10 +91,16 @@
 对 inner class 而言：
 
 - registry 只按 `canonicalName` 注册 gdcc class
-- `gdccClassSourceNameByCanonicalName` 只记录 inner class 的 source-facing `sourceName`
+- `gdccClassSourceNameByCanonicalName` 记录任意 `sourceName != canonicalName` 的 gdcc class source-facing `sourceName`
 - global namespace 不为 inner class 建立 `sourceName` alias
 
 若后续 resolver 的消费方需要统一展示类名，应从 `canonicalName` 派生 display 视图；resolver 本身不承担持久化 `runtimeName` 的职责。
+
+因此当前 registry 返回的 `ScopeTypeMeta` 已可同时覆盖：
+
+- inner class 的 `canonicalName != sourceName`
+- mapped top-level gdcc class 的 `canonicalName != sourceName`
+- `displayName() == canonicalName`
 
 ### 2.3 Frontend skeleton
 

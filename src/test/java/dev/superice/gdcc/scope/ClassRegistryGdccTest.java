@@ -66,6 +66,7 @@ public class ClassRegistryGdccTest {
         assertNotNull(innerMeta);
         assertEquals("Outer$Inner", innerMeta.canonicalName());
         assertEquals("Inner", innerMeta.sourceName());
+        assertEquals("Outer$Inner", innerMeta.displayName());
 
         var removed = registry.removeGdccClass("Outer$Inner");
         assertSame(innerClassDef, removed);
@@ -96,5 +97,29 @@ public class ClassRegistryGdccTest {
         ));
         assertEquals(RefCountedStatus.YES, registry.getRefCountedStatus(new GdObjectType("Outer$Leaf")));
         assertEquals(RefCountedStatus.NO, registry.getRefCountedStatus(new GdObjectType("Outer$BrokenLeaf")));
+    }
+
+    @Test
+    void addMappedTopLevelGdccClassKeepsSourceNameOverrideSideTableInSync() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var registry = new ClassRegistry(api);
+        var mappedClassDef = new LirClassDef("RuntimeOuter", "Object");
+
+        registry.addGdccClass(mappedClassDef, "MappedOuter");
+        assertTrue(registry.isGdccClass("RuntimeOuter"));
+        assertEquals("MappedOuter", registry.findGdccClassSourceNameOverride("RuntimeOuter"));
+        assertNull(registry.resolveTypeMeta("MappedOuter"));
+
+        var mappedMeta = registry.resolveTypeMeta("RuntimeOuter");
+        assertNotNull(mappedMeta);
+        assertEquals("RuntimeOuter", mappedMeta.canonicalName());
+        assertEquals("MappedOuter", mappedMeta.sourceName());
+        assertEquals("RuntimeOuter", mappedMeta.displayName());
+
+        var removed = registry.removeGdccClass("RuntimeOuter");
+        assertSame(mappedClassDef, removed);
+        assertNull(registry.findGdccClassSourceNameOverride("RuntimeOuter"));
+        assertNull(registry.findGdccClass("RuntimeOuter"));
+        assertNull(registry.resolveTypeMeta("RuntimeOuter"));
     }
 }

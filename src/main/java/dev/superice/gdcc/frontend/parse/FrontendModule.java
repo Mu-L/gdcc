@@ -11,20 +11,20 @@ import java.util.Objects;
 /// Immutable frontend module input snapshot.
 ///
 /// The semantic pipeline now consumes one module carrier instead of threading `moduleName`,
-/// `FrontendSourceUnit`s, and module-level runtime-name mapping through parallel parameters. The
-/// top-level runtime-name map is frozen here at the public boundary so skeleton/header work can
+/// `FrontendSourceUnit`s, and module-level canonical-name mapping through parallel parameters. The
+/// top-level canonical-name map is frozen here at the public boundary so skeleton/header work can
 /// always start from one stable module snapshot.
 public record FrontendModule(
         @NotNull String moduleName,
         @NotNull List<FrontendSourceUnit> units,
-        @NotNull Map<String, String> topLevelRuntimeNameMap
+        @NotNull Map<String, String> topLevelCanonicalNameMap
 ) {
     public FrontendModule {
         Objects.requireNonNull(moduleName, "moduleName must not be null");
         units = List.copyOf(Objects.requireNonNull(units, "units must not be null"));
-        topLevelRuntimeNameMap = freezeTopLevelRuntimeNameMap(Objects.requireNonNull(
-                topLevelRuntimeNameMap,
-                "topLevelRuntimeNameMap must not be null"
+        topLevelCanonicalNameMap = freezeTopLevelCanonicalNameMap(Objects.requireNonNull(
+                topLevelCanonicalNameMap,
+                "topLevelCanonicalNameMap must not be null"
         ));
     }
 
@@ -39,25 +39,31 @@ public record FrontendModule(
     public static @NotNull FrontendModule singleUnit(
             @NotNull String moduleName,
             @NotNull FrontendSourceUnit unit,
-            @NotNull Map<String, String> topLevelRuntimeNameMap
+            @NotNull Map<String, String> topLevelCanonicalNameMap
     ) {
-        return new FrontendModule(moduleName, List.of(unit), topLevelRuntimeNameMap);
+        return new FrontendModule(moduleName, List.of(unit), topLevelCanonicalNameMap);
     }
 
-    private static @NotNull Map<String, String> freezeTopLevelRuntimeNameMap(
-            @NotNull Map<String, String> topLevelRuntimeNameMap
+    private static @NotNull Map<String, String> freezeTopLevelCanonicalNameMap(
+            @NotNull Map<String, String> topLevelCanonicalNameMap
     ) {
-        var frozenEntries = new LinkedHashMap<String, String>(topLevelRuntimeNameMap.size());
-        for (var entry : topLevelRuntimeNameMap.entrySet()) {
-            var sourceName = Objects.requireNonNull(entry.getKey(), "topLevelRuntimeNameMap key must not be null");
-            var runtimeName = Objects.requireNonNull(entry.getValue(), "topLevelRuntimeNameMap value must not be null");
+        var frozenEntries = new LinkedHashMap<String, String>(topLevelCanonicalNameMap.size());
+        for (var entry : topLevelCanonicalNameMap.entrySet()) {
+            var sourceName = Objects.requireNonNull(
+                    entry.getKey(),
+                    "topLevelCanonicalNameMap key must not be null"
+            );
+            var canonicalName = Objects.requireNonNull(
+                    entry.getValue(),
+                    "topLevelCanonicalNameMap value must not be null"
+            );
             if (sourceName.isBlank()) {
-                throw new IllegalArgumentException("topLevelRuntimeNameMap key must not be blank");
+                throw new IllegalArgumentException("topLevelCanonicalNameMap key must not be blank");
             }
-            if (runtimeName.isBlank()) {
-                throw new IllegalArgumentException("topLevelRuntimeNameMap value must not be blank");
+            if (canonicalName.isBlank()) {
+                throw new IllegalArgumentException("topLevelCanonicalNameMap value must not be blank");
             }
-            frozenEntries.put(sourceName, runtimeName);
+            frozenEntries.put(sourceName, canonicalName);
         }
         return Collections.unmodifiableMap(frozenEntries);
     }

@@ -116,9 +116,9 @@ relation 层的长期约束：
 - 只按 `canonicalName` 注册 gdcc class
 - global namespace 不为 inner class 建立 `sourceName` alias
 - `gdccClassSourceNameByCanonicalName` 只记录：
-  - key: accepted inner class 的 canonical name
-  - value: 对应的 source-local `sourceName`
-- top-level gdcc class 不写入冗余 side-table 条目
+  - key: 任意 `sourceName != canonicalName` 的 accepted gdcc class canonical name
+  - value: 对应的 source-facing `sourceName`
+- source/canonical 完全相同的 top-level gdcc class 不写入冗余 side-table 条目
 - 删除 gdcc class 时必须同步清理 side-table
 
 该 side-table 只服务于：
@@ -137,6 +137,8 @@ relation 层的长期约束：
   - registry / backend / shared resolver 使用的稳定身份
 - `sourceName`
   - 当前 lexical type namespace 中可见的名字
+- `displayName()`
+  - 从 `canonicalName` 派生的用户可见展示名
 - `instanceType`
   - 离开 type namespace 后进入值语义时对应的运行时类型
 - `kind`
@@ -152,6 +154,7 @@ inner class 在 scope 中的长期规则：
 
 - local type-meta lookup 使用 `sourceName`
 - 命中后携带的 `ScopeTypeMeta` 同时保留 `canonicalName` 与 `sourceName`
+- 命中后 `displayName()` 统一返回 `canonicalName`
 - top-level `ClassScope` 只发布 direct inner classes 的 type-meta
 - inner `ClassScope` 只发布其 direct inner classes 的 type-meta
 - 当前 class 自身可在其类型解析上下文中按 `sourceName` 参与 declared type 解析
@@ -248,8 +251,8 @@ registry 侧 type-meta 合同已经冻结为：
   - `canonicalName != sourceName`
 - side-table miss 默认视作：
   - `sourceName == canonicalName`
-- mapped top-level gdcc class 当前仍不通过 registry side-table 恢复 `sourceName`
-  - 这类 source-facing 名字继续由 accepted relation 与 current-module lexical type namespace 承载
+- mapped top-level gdcc class 现在也可通过 registry side-table 恢复 `sourceName`
+  - 但 global namespace 仍不额外暴露 `sourceName` alias；source-facing lookup 继续依赖 accepted relation 与 current-module lexical type namespace
 
 ### 4.3 shared `ScopeTypeResolver`
 

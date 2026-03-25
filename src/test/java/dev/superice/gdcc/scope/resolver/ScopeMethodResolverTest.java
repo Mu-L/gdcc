@@ -3,6 +3,7 @@ package dev.superice.gdcc.scope.resolver;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ScopeOwnerKind;
+import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
@@ -24,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -311,6 +313,22 @@ class ScopeMethodResolverTest {
 
         assertEquals(ScopeMethodResolver.FailureKind.CONSTRUCTOR_ROUTE_UNSUPPORTED, failed.kind());
         assertTrue(failed.message().contains("constructor resolution"), failed.message());
+    }
+
+    @Test
+    @DisplayName("shared method resolver should use canonical-derived display names for mapped GDCC type-meta diagnostics")
+    void resolveStaticMethodShouldUseDisplayNameForMappedGdccTypeMetaDiagnostics() {
+        var registry = newRegistry(emptyApi(), List.of());
+        var runtimeWorker = newClass("RuntimeWorker", "RefCounted");
+        registry.addGdccClass(runtimeWorker, "Worker");
+        var workerTypeMeta = assertInstanceOf(ScopeTypeMeta.class, registry.resolveTypeMeta("RuntimeWorker"));
+
+        var result = ScopeMethodResolver.resolveStaticMethod(registry, workerTypeMeta, "missing", List.of());
+        var failed = assertInstanceOf(ScopeMethodResolver.Failed.class, result);
+
+        assertEquals(ScopeMethodResolver.FailureKind.METHOD_NOT_FOUND, failed.kind());
+        assertTrue(failed.message().contains("RuntimeWorker"), failed.message());
+        assertFalse(failed.message().contains("type 'Worker'"), failed.message());
     }
 
     @Test
