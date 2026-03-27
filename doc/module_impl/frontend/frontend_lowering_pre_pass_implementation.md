@@ -1,11 +1,11 @@
 # Frontend Lowering Pre-Pass 实现说明
 
-> 本文档作为 frontend pre-pass lowering 的长期事实源，记录当前已经落地的 lowering 入口、固定 pass pipeline、skeleton-only `LirModule` 产物合同，以及与 compile-only gate、frontend skeleton 和 LIR 的边界。本文档替代原 `frontend_lowering_implementation_plan.md` 中已完成的实施部分，不再保留阶段清单、完成记录或验收流水账。
+> 本文档作为 frontend pre-pass lowering 的长期事实源，记录当前已经落地的 lowering 入口、固定 pass pipeline、function lowering context scaffold、skeleton/shell-only `LirModule` 产物合同，以及与 compile-only gate、frontend skeleton 和 LIR 的边界。本文档替代原 `frontend_lowering_implementation_plan.md` 中已完成的实施部分，不再保留阶段清单、完成记录或验收流水账。
 
 ## 文档状态
 
-- 状态：事实源维护中（pre-pass lowering 已落地；当前稳定产物为 `FrontendModule -> analyzeForCompile -> skeleton-only LirModule`）
-- 更新时间：2026-03-25
+- 状态：事实源维护中（pre-pass lowering 已落地；当前稳定产物为 `FrontendModule -> analyzeForCompile -> skeleton/shell-only LirModule + function lowering context scaffold`）
+- 更新时间：2026-03-27
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -38,12 +38,16 @@
 - 输入：`FrontendModule`
 - 语义前置：`FrontendSemanticAnalyzer.analyzeForCompile(...)`
 - skeleton 事实源：`FrontendModuleSkeleton`
-- 输出：`LirModule(class skeleton only)`
+- 内部产物：
+  - `LirModule(skeleton/shell-only)`
+  - `FunctionLoweringContext` 集合
 
 这条链路的含义是：
 
 - frontend 已负责冻结 top-level mapping、class identity、canonical superclass、signals、properties、functions 与 `sourceFile`
 - lowering pre-pass 只消费这些已发布事实，不重新发现类，也不再做第二套 header/member build
+- lowering preparation 会为 compile-ready executable callable 建立函数级 lowering context
+- lowering preparation 会为 supported property initializer 补 hidden synthetic `init_func` shell
 - 当前产物合法进入 DOM/LIR serializer，但仍不是 body-complete module
 
 ---
@@ -120,6 +124,7 @@ public @Nullable LirModule lower(
 - `DiagnosticManager`
 - `FrontendAnalysisData`
 - `LirModule`
+- `FunctionLoweringContext` 集合
 - stop flag
 
 它当前为 `public`，仅为了允许具体 pass 实现驻留在 `frontend.lowering.pass` 子包。该可见性不表示 lowering 对外开放新的可扩展中间态 API。
@@ -140,8 +145,24 @@ void run(FrontendLoweringContext context)
 
 - `FrontendLoweringAnalysisPass`
 - `FrontendLoweringClassSkeletonPass`
+- `FrontendLoweringFunctionPreparationPass`
 
 `frontend.lowering.pass` 只承载固定 pipeline 的具体 pass，不承载额外注册或发现机制。
+
+### 4.5 `FunctionLoweringContext`
+
+`FunctionLoweringContext` 当前是 lowering 内部使用的统一函数级 scaffold，最小 kind 集合固定为：
+
+- `EXECUTABLE_BODY`
+- `PROPERTY_INIT`
+- `PARAMETER_DEFAULT_INIT`
+
+当前实现已实际发布：
+
+- `EXECUTABLE_BODY`
+- `PROPERTY_INIT`
+
+`PARAMETER_DEFAULT_INIT` 当前只冻结模型，不实际收集。
 
 ---
 
@@ -151,6 +172,7 @@ void run(FrontendLoweringContext context)
 
 1. `FrontendLoweringAnalysisPass`
 2. `FrontendLoweringClassSkeletonPass`
+3. `FrontendLoweringFunctionPreparationPass`
 
 ### 5.1 `FrontendLoweringAnalysisPass`
 
@@ -181,23 +203,44 @@ void run(FrontendLoweringContext context)
 - 不补充任何 basic block
 - 若 analysis data 未发布，必须按 invariant fail-fast
 
+### 5.3 `FrontendLoweringFunctionPreparationPass`
+
+职责：
+
+- 读取 `context.requireAnalysisData()` 与 `context.requireLirModule()`
+- 基于 `FrontendModuleSkeleton.sourceClassRelations()` 建立 AST owner -> class/source relation 索引
+- 为 compile-ready executable callable 发布 `EXECUTABLE_BODY` context
+- 为 supported property initializer 发布 `PROPERTY_INIT` context
+- 在 `LirPropertyDef.initFunc` 缺失时补 `_field_init_<property>` hidden synthetic function shell
+
+冻结边界：
+
+- preparation pass 不写 basic block、不设置 `entryBlockId`、不生成 instruction
+- executable callable 继续复用 skeleton phase 已发布的同一份 `LirFunctionDef`
+- property initializer 的 synthetic shell 只建立函数壳，不代表完整初始化时序已经落地
+- parameter default 仍不生成 context，但 `FunctionLoweringContext.Kind` 必须保留 `PARAMETER_DEFAULT_INIT`
+
 ---
 
-## 6. Skeleton-Only `LirModule` 合同
+## 6. Skeleton/Shell-Only `LirModule` 合同
 
 当前 lowering 输出的 `LirModule` 必须满足：
 
 - `moduleName == FrontendModule.moduleName()`
 - `classDefs` 顺序与 `FrontendModuleSkeleton.allClassDefs()` 一致
 - top-level 与 inner class 全部进入 module
-- 每个 `LirClassDef` 保持 skeleton phase 已写入的：
+- 每个 `LirClassDef` 至少保持 skeleton phase 已写入的：
   - canonical `name`
   - canonical `superName`
   - `signals`
   - `properties`
   - `functions`
   - `sourceFile`
-- 所有 `LirFunctionDef` 当前都保持 skeleton-only 状态：
+- `FrontendLoweringFunctionPreparationPass` 允许在 owning class 上追加 hidden synthetic property init shell：
+  - 名称来自 `LirPropertyDef.initFunc`
+  - `initFunc` 为空时当前兼容命名基线为 `_field_init_<property>`
+  - shell 仍无 basic block / `entryBlockId`
+- 所有 `LirFunctionDef` 当前都保持 shell-only 状态：
   - `basicBlockCount == 0`
   - `entryBlockId` 为空
 
@@ -266,6 +309,7 @@ void run(FrontendLoweringContext context)
 - `FrontendLoweringPassManagerTest`
 - `FrontendLoweringAnalysisPassTest`
 - `FrontendLoweringClassSkeletonPassTest`
+- `FrontendLoweringFunctionPreparationPassTest`
 - `DomLirSerializer` 对 skeleton-only module 的兼容性测试
 
 ---

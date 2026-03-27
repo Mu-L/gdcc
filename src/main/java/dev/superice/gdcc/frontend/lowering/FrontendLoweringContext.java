@@ -8,6 +8,7 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.List;
 import java.util.Objects;
 
 /// Shared mutable lowering state passed between fixed frontend lowering passes.
@@ -21,6 +22,7 @@ public final class FrontendLoweringContext {
     private final @NotNull DiagnosticManager diagnosticManager;
     private @Nullable FrontendAnalysisData analysisData;
     private @Nullable LirModule lirModule;
+    private @Nullable List<FunctionLoweringContext> functionLoweringContexts;
     private boolean stopRequested;
 
     public FrontendLoweringContext(
@@ -66,6 +68,31 @@ public final class FrontendLoweringContext {
 
     public @Nullable LirModule lirModuleOrNull() {
         return lirModule;
+    }
+
+    public @NotNull LirModule requireLirModule() {
+        if (lirModule == null) {
+            throw new IllegalStateException("lirModule has not been published yet");
+        }
+        return lirModule;
+    }
+
+    public void publishFunctionLoweringContexts(@NotNull List<FunctionLoweringContext> functionLoweringContexts) {
+        this.functionLoweringContexts = List.copyOf(Objects.requireNonNull(
+                functionLoweringContexts,
+                "functionLoweringContexts must not be null"
+        ));
+    }
+
+    public @Nullable List<FunctionLoweringContext> functionLoweringContextsOrNull() {
+        return functionLoweringContexts;
+    }
+
+    public @NotNull List<FunctionLoweringContext> requireFunctionLoweringContexts() {
+        if (functionLoweringContexts == null) {
+            throw new IllegalStateException("functionLoweringContexts have not been published yet");
+        }
+        return functionLoweringContexts;
     }
 
     public void requestStop() {

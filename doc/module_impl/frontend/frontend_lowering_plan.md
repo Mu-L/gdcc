@@ -4,12 +4,13 @@
 
 ## 文档状态
 
-- 状态：计划维护中（当前起点为 pre-pass lowering 已落地，下一阶段从 per-function lowering scaffold 开始）
-- 更新时间：2026-03-25
+- 状态：计划维护中（当前起点为 per-function lowering scaffold 的 Step 1 / Step 2 已落地，下一阶段转入最小 CFG 与 body lowering）
+- 更新时间：2026-03-27
 - 当前事实源：
   - `frontend_lowering_pre_pass_implementation.md`
   - `frontend_rules.md`
   - `frontend_compile_check_analyzer_implementation.md`
+  - `frontend_per_function_lowering_scaffold_plan.md`
   - `runtime_name_mapping_implementation.md`
   - `superclass_canonical_name_contract.md`
   - `doc/gdcc_low_ir.md`
@@ -22,7 +23,7 @@
 
 - public lowering 输入固定为 `FrontendModule`
 - lowering 内部统一走 `FrontendSemanticAnalyzer.analyzeForCompile(...)`
-- default pipeline 已稳定产出 `LirModule(class skeleton only)`
+- default pipeline 已稳定产出 `LirModule(skeleton/shell-only)` 与 function lowering context scaffold
 - compile-only gate 仍负责拦截当前未打通 lowering/backend 的 surface
 
 后续工程应在这条稳定链路之上继续推进，不要回退到“先手工做一份分析结果再喂 lowering”的分叉入口。
@@ -33,7 +34,7 @@
 
 建议按以下顺序推进，并保持每一步都是可运行、可回归、可单独提交的状态：
 
-1. function preparation
+1. function lowering context / preparation
 2. minimal CFG
 3. MVP statement / expression lowering
 4. compile gate blocker 按顺序解除
@@ -43,28 +44,43 @@
 
 ## 3. 第一步：建立 per-function lowering scaffold
 
+本步骤的细化实施与验收规则由独立文档维护：
+
+- `frontend_per_function_lowering_scaffold_plan.md`
+
 目标：
 
-- 在不生成真实 CFG 的前提下，为每个 `LirFunctionDef` 建立 body lowering 工作入口
-- 引入 function-local lowering context/work item，但保持结构简单，不制造多余抽象
+- 在不生成真实 CFG 的前提下，为所有未来会形成 `LirFunctionDef` 的 lowering 单元建立统一入口
+- 引入统一的 `FunctionLoweringContext`，但保持结构简单，不制造多余抽象
+- 明确 executable body、property initializer function 与 future parameter default initializer function 共用同一套函数级 scaffold
 
 建议实施内容：
 
 - 增加 `FrontendLoweringFunctionPreparationPass`
-- 为每个 compile-ready function 收集：
+- 建立统一的 function lowering context/worklist，最少覆盖：
+  - `EXECUTABLE_BODY`
+  - `PROPERTY_INIT`
+  - `PARAMETER_DEFAULT_INIT`
+- 为每个 compile-ready lowering 单元收集：
   - owning class
-  - source AST declaration
+  - source AST owner / lowering root
+  - target `LirFunctionDef`
   - 已发布的 scope / binding / member / call / expression-type facts
-- 建立 function-level worklist，作为后续 CFG/body lowering 的统一入口
+- executable callable 复用 skeleton phase 已发布的 `LirFunctionDef`
+- supported property initializer 应补 hidden synthetic init function shell，并回写 `LirPropertyDef.initFunc`
+- parameter default 当前仍不收集真实 context，但架构必须保留 future `default_value_func` 接线位置
 
 验收细则：
 
 - happy path：
-  - 所有 top-level / inner class function 都可进入 worklist
-  - `_init`、普通 instance function、static function 都能被区分
+  - 所有 top-level / inner class executable callable 都可进入 `EXECUTABLE_BODY` context
+  - supported property initializer 可进入 `PROPERTY_INIT` context，并稳定映射到 hidden synthetic init function shell
+  - `_init`、普通 instance function、static function 与 property init function 都能被区分
+  - 当前 `FunctionLoweringContext` 形状无需修改即可容纳 future `PARAMETER_DEFAULT_INIT`
 - negative path：
-  - compile gate 已挡下的 subtree 不进入 function lowering worklist
-  - 对缺失的 published fact 采用 invariant fail-fast，而不是 silent skip
+  - compile gate 已挡下的 subtree 不进入 function lowering context 集合
+  - 对缺失的 published fact 或 metadata 采用 invariant fail-fast，而不是 silent skip
+  - preparation 阶段不得伪造 basic block / `entryBlockId`
 
 ---
 
@@ -72,7 +88,8 @@
 
 目标：
 
-- 为当前 MVP 已支持的 executable body 建立最小 basic block / CFG
+- 为当前 MVP 已支持的函数级 lowering 单元建立最小 basic block / CFG
+- 当前实际落地范围先覆盖 executable callable；property initializer function 在对应 expression/body lowering 接通后复用同一套入口
 
 第一批建议只支持：
 
@@ -115,6 +132,7 @@
 目标：
 
 - 打通当前 frontend 已稳定发布事实的 MVP surface
+- 让 executable callable body 与 supported property initializer function 都通过同一套函数级 lowering 管线进入 instruction 生成
 
 建议优先顺序：
 
@@ -122,7 +140,7 @@
 2. bare/global call
 3. member call / property access
 4. assignment
-5. supported property initializer island
+5. supported property initializer function body
 
 建议实施内容：
 
@@ -133,12 +151,14 @@
   - `resolvedCalls`
   - `expressionTypes`
 - 不在 lowering 中重新推导语义
+- property initializer 的 expression lowering 应通过其 `PROPERTY_INIT` context 驱动，并最终写入对应 `init_func` 的函数体，而不是作为 callable body lowering 之外的常驻特例
 
 验收细则：
 
 - happy path：
   - lowering 只依赖 frontend 已发布 facts，不再做第二套 binder
   - 输出 instruction 的类型与 owner 路径和 frontend 已发布事实一致
+  - supported property initializer 通过 `init_func` 产生产物，而不是内联伪装进别的函数体
 - negative path：
   - 对缺失或冲突的 published fact 采用 invariant fail-fast
   - 不因为 backend 已有某条指令就跳过 frontend 事实校验
@@ -177,10 +197,16 @@
 - `for`
 - `match`
 - `lambda`
-- 参数默认值
+- 参数默认值语义本身
 - block-local `const`
 - signal coroutine use-site（`await` / `.emit(...)`）
 - property initializer 中依赖实例状态的完整初始化时序语义
+
+其中参数默认值需要额外明确：
+
+- 当前 deferred 的是 parameter default 的语义支持面，不是其架构位置
+- 后续实现时应把每个 supported default expression lowering 成 hidden synthetic function，并写入 `LirParameterDef.defaultValueFunc`
+- 不应把 parameter default 设计成仅靠调用点 inline 补全的唯一路径
 
 这些内容需要单独立项，并附带专门的文档、测试与回归边界。
 
