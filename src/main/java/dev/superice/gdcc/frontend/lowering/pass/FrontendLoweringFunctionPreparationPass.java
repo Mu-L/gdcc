@@ -134,17 +134,19 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
     ) {
         requirePublishedScope(functionDeclaration, "callable owner", analysisData);
         requirePublishedScope(functionDeclaration.body(), "callable body", analysisData);
+        var targetFunction = requireSkeletonFunction(
+                owningClass,
+                functionDeclaration.name(),
+                functionDeclaration.isStatic(),
+                functionDeclaration.parameters().size()
+        );
+        requireShellOnlyExecutableFunction(owningClass, targetFunction);
         return new FunctionLoweringContext(
                 FunctionLoweringContext.Kind.EXECUTABLE_BODY,
                 sourceClassRelation.unit().path(),
                 sourceClassRelation,
                 owningClass,
-                requireSkeletonFunction(
-                        owningClass,
-                        functionDeclaration.name(),
-                        functionDeclaration.isStatic(),
-                        functionDeclaration.parameters().size()
-                ),
+                targetFunction,
                 functionDeclaration,
                 functionDeclaration.body(),
                 analysisData
@@ -159,12 +161,14 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
     ) {
         requirePublishedScope(constructorDeclaration, "callable owner", analysisData);
         requirePublishedScope(constructorDeclaration.body(), "callable body", analysisData);
+        var targetFunction = requireSkeletonFunction(owningClass, "_init", false, constructorDeclaration.parameters().size());
+        requireShellOnlyExecutableFunction(owningClass, targetFunction);
         return new FunctionLoweringContext(
                 FunctionLoweringContext.Kind.EXECUTABLE_BODY,
                 sourceClassRelation.unit().path(),
                 sourceClassRelation,
                 owningClass,
-                requireSkeletonFunction(owningClass, "_init", false, constructorDeclaration.parameters().size()),
+                targetFunction,
                 constructorDeclaration,
                 constructorDeclaration.body(),
                 analysisData
@@ -357,6 +361,23 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
         }
         owningClass.addFunction(function);
         return function;
+    }
+
+    /// Preparation is the last shell-only stage for executable callable skeletons. Any existing
+    /// blocks or entry metadata mean a later lowering phase already mutated the function shape.
+    private void requireShellOnlyExecutableFunction(
+            @NotNull LirClassDef owningClass,
+            @NotNull LirFunctionDef function
+    ) {
+        if (function.getBasicBlockCount() != 0 || !function.getEntryBlockId().isEmpty()) {
+            throw new IllegalStateException(
+                    "Executable function '"
+                            + owningClass.getName()
+                            + "."
+                            + function.getName()
+                            + "' must remain shell-only during preparation"
+            );
+        }
     }
 
     /// `initFunc` may already point at a synthetic shell created by an earlier phase or by a

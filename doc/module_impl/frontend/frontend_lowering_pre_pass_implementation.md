@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（pre-pass lowering 已落地；当前稳定产物为 `FrontendModule -> analyzeForCompile -> skeleton/shell-only LirModule + function lowering context scaffold`）
-- 更新时间：2026-03-27
+- 更新时间：2026-03-28
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -170,6 +170,7 @@ void run(FrontendLoweringContext context)
 - `sourceOwner` 应保留原始 parameter/default declaration AST 节点
 - `loweringRoot` 只指向 parameter default expression
 - 对应 synthetic function 最终由 `LirParameterDef.defaultValueFunc` 引用，而不是退化成 call-site inline-only 设计
+- 后续 pass 应统一经由 `FunctionLoweringContext.analysisData()` 读取 `scopesByAst()`、`symbolBindings()`、`expressionTypes()`、`resolvedMembers()`、`resolvedCalls()`，而不是重新扫描 `FrontendModuleSkeleton` 去回找同一批函数级事实
 
 ---
 
@@ -220,11 +221,13 @@ void run(FrontendLoweringContext context)
 - 为 supported property initializer 发布 `PROPERTY_INIT` context
 - 在 `LirPropertyDef.initFunc` 缺失时补 `_field_init_<property>` hidden synthetic function shell
 - 当 `LirPropertyDef.initFunc` 已预先指向 synthetic shell 时，仅在该 shell 仍满足 hidden/property-signature/shell-only 合同时复用；冲突则 fail-fast
+- 若 executable callable 对应的 skeleton function 已经带有 basic block 或 `entryBlockId`，按 invariant fail-fast；preparation 不接管任何已进入 body-shape 的函数
 
 冻结边界：
 
 - preparation pass 不写 basic block、不设置 `entryBlockId`、不生成 instruction
 - executable callable 继续复用 skeleton phase 已发布的同一份 `LirFunctionDef`
+- executable callable 在进入 preparation 时仍必须保持 shell-only 状态；不允许把已进入 CFG/body 形状的函数继续当作 scaffold 消费
 - property initializer 的 synthetic shell 只建立函数壳，不代表完整初始化时序已经落地
 - parameter default 仍不生成 context，但 `FunctionLoweringContext.Kind` 必须保留 `PARAMETER_DEFAULT_INIT`，且 future `default_value_func` 合同已冻结为 hidden synthetic function route
 
@@ -320,6 +323,10 @@ void run(FrontendLoweringContext context)
 - `FrontendLoweringClassSkeletonPassTest`
 - `FrontendLoweringFunctionPreparationPassTest`
 - `DomLirSerializer` 对 skeleton-only module 的兼容性测试
+- 当前回归还显式锚定：
+  - compile-ready context 可直接读取 shared `analysisData()` side tables
+  - compile-blocked module 不会发布 function lowering contexts
+  - executable callable 与 property init shell 一旦偏离 shell-only 合同即 fail-fast
 
 ---
 

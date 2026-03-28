@@ -9,6 +9,7 @@ import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirModule;
@@ -18,11 +19,16 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
+import dev.superice.gdparser.frontend.ast.AttributeCallStep;
+import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
@@ -296,6 +302,22 @@ class FrontendLoweringFunctionPreparationPassTest {
     }
 
     @Test
+    void runFailsFastWhenAnalysisDataHasNotBeenPublishedYet() throws Exception {
+        var context = new FrontendLoweringContext(
+                new FrontendModule("test_module", List.of()),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                new DiagnosticManager()
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringFunctionPreparationPass().run(context)
+        );
+
+        assertEquals("analysisData has not been published yet", exception.getMessage());
+    }
+
+    @Test
     void runFailsFastWhenCallableBodyScopeIsMissing() throws Exception {
         var prepared = prepareCompileReadyContext();
         var outerSourceFile = prepared.module().units().getFirst().ast();
@@ -345,6 +367,22 @@ class FrontendLoweringFunctionPreparationPassTest {
         );
 
         assertTrue(exception.getMessage().contains("Expected exactly one function skeleton for RuntimePreparationOuter.ping"));
+    }
+
+    @Test
+    void runFailsFastWhenExecutableFunctionSkeletonAlreadyHasBodyShape() throws Exception {
+        var prepared = prepareCompileReadyContext();
+        var outerClass = requireClass(prepared.context().requireLirModule(), "RuntimePreparationOuter");
+        var pingFunction = requireFunction(outerClass, "ping");
+        pingFunction.addBasicBlock(new LirBasicBlock("entry"));
+        pingFunction.setEntryBlockId("entry");
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringFunctionPreparationPass().run(prepared.context())
+        );
+
+        assertTrue(exception.getMessage().contains("Executable function 'RuntimePreparationOuter.ping' must remain shell-only during preparation"));
     }
 
     @Test
@@ -513,6 +551,61 @@ class FrontendLoweringFunctionPreparationPassTest {
     }
 
     @Test
+    void runPublishesAnalysisFactsIntoFunctionLoweringContextsForLaterPasses() throws Exception {
+        var prepared = prepareFactRichCompileReadyContext();
+
+        new FrontendLoweringFunctionPreparationPass().run(prepared.context());
+
+        var publishedAnalysisData = prepared.context().requireAnalysisData();
+        var contexts = prepared.context().requireFunctionLoweringContexts();
+        var propertyContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimePreparationFacts",
+                "_field_init_ready_value"
+        );
+        assertSame(publishedAnalysisData, propertyContext.analysisData());
+        assertNotNull(propertyContext.analysisData().scopesByAst().get(propertyContext.sourceOwner()));
+        assertNotNull(propertyContext.analysisData().scopesByAst().get(propertyContext.loweringRoot()));
+        var readyInitializer = assertInstanceOf(AttributeExpression.class, propertyContext.loweringRoot());
+        var workerHead = findNode(
+                readyInitializer,
+                IdentifierExpression.class,
+                identifierExpression -> identifierExpression.name().equals("Worker")
+        );
+        var handleStep = findNode(
+                readyInitializer,
+                AttributePropertyStep.class,
+                step -> step.name().equals("handle")
+        );
+        var readStep = findNode(
+                readyInitializer,
+                AttributeCallStep.class,
+                step -> step.name().equals("read")
+        );
+        assertNotNull(propertyContext.analysisData().symbolBindings().get(workerHead));
+        assertNotNull(propertyContext.analysisData().resolvedMembers().get(handleStep));
+        assertNotNull(propertyContext.analysisData().resolvedCalls().get(readStep));
+        assertNotNull(propertyContext.analysisData().expressionTypes().get(readyInitializer));
+
+        var pingContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimePreparationFacts",
+                "ping"
+        );
+        assertSame(publishedAnalysisData, pingContext.analysisData());
+        assertNotNull(pingContext.analysisData().scopesByAst().get(pingContext.sourceOwner()));
+        assertNotNull(pingContext.analysisData().scopesByAst().get(pingContext.loweringRoot()));
+        var valueUseSite = findNode(
+                pingContext.loweringRoot(),
+                IdentifierExpression.class,
+                identifierExpression -> identifierExpression.name().equals("value")
+        );
+        assertNotNull(pingContext.analysisData().symbolBindings().get(valueUseSite));
+    }
+
+    @Test
     void lowerCompileBlockedModuleStopsBeforePreparationPass() throws Exception {
         var continuationRan = new AtomicBoolean();
         var diagnostics = new DiagnosticManager();
@@ -580,6 +673,33 @@ class FrontendLoweringFunctionPreparationPassTest {
         ));
     }
 
+    @Test
+    void lowerCompileBlockedModuleLeavesFunctionLoweringContextsUnpublished() throws Exception {
+        var module = parseModule(
+                List.of(new SourceFixture(
+                        "preparation_blocked_assert_contexts.gd",
+                        """
+                                class_name PreparationBlockedAssertContexts
+                                extends RefCounted
+                                
+                                func ping(value):
+                                    assert(value, "blocked in compile mode")
+                                """
+                )),
+                Map.of()
+        );
+        var context = new FrontendLoweringContext(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                new DiagnosticManager()
+        );
+
+        new FrontendLoweringAnalysisPass().run(context);
+
+        assertTrue(context.isStopRequested());
+        assertNull(context.functionLoweringContextsOrNull());
+    }
+
     private static @NotNull PreparedContext prepareCompileReadyContext() throws Exception {
         var diagnostics = new DiagnosticManager();
         var module = parseModule(
@@ -610,6 +730,43 @@ class FrontendLoweringFunctionPreparationPassTest {
                                 """
                 )),
                 Map.of("PreparationOuter", "RuntimePreparationOuter")
+        );
+        var context = new FrontendLoweringContext(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        new FrontendLoweringAnalysisPass().run(context);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        return new PreparedContext(context, diagnostics, module);
+    }
+
+    private static @NotNull PreparedContext prepareFactRichCompileReadyContext() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var module = parseModule(
+                List.of(new SourceFixture(
+                        "preparation_fact_rich.gd",
+                        """
+                                class_name PreparationFacts
+                                extends RefCounted
+                                
+                                class Handle:
+                                    func read() -> int:
+                                        return 1
+                                
+                                class Worker:
+                                    var handle: Handle = Handle.new()
+                                
+                                    static func build() -> Worker:
+                                        return Worker.new()
+                                
+                                var ready_value: int = Worker.build().handle.read()
+                                
+                                func ping(value: int) -> int:
+                                    return value
+                                """
+                )),
+                Map.of("PreparationFacts", "RuntimePreparationFacts")
         );
         var context = new FrontendLoweringContext(
                 module,
@@ -700,6 +857,26 @@ class FrontendLoweringFunctionPreparationPassTest {
                 .filter(predicate)
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Missing statement " + statementType.getSimpleName()));
+    }
+
+    private static <T extends Node> @NotNull T findNode(
+            @NotNull Node root,
+            @NotNull Class<T> nodeType,
+            @NotNull Predicate<T> predicate
+    ) {
+        if (nodeType.isInstance(root)) {
+            var candidate = nodeType.cast(root);
+            if (predicate.test(candidate)) {
+                return candidate;
+            }
+        }
+        for (var child : root.getChildren()) {
+            try {
+                return findNode(child, nodeType, predicate);
+            } catch (AssertionError ignored) {
+            }
+        }
+        throw new AssertionError("Node not found: " + nodeType.getSimpleName());
     }
 
     private record PreparedContext(

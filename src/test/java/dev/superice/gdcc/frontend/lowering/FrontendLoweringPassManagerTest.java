@@ -100,7 +100,7 @@ class FrontendLoweringPassManagerTest {
                                         extends RefCounted
                                         
                                         signal changed(value: int)
-                                        var count: int
+                                        var count: int = 1
                                         
                                         func ping(value: int) -> int:
                                             return value
@@ -129,6 +129,7 @@ class FrontendLoweringPassManagerTest {
         assertTrue(xml.contains("<signal name=\"changed\">"), xml);
         assertTrue(xml.contains("name=\"count\""), xml);
         assertTrue(xml.contains("type=\"int\""), xml);
+        assertTrue(xml.contains("name=\"_field_init_count\""), xml);
         assertFalse(xml.contains("<basic_block id="), xml);
         assertFalse(xml.contains("<basic_blocks entry="), xml);
     }
