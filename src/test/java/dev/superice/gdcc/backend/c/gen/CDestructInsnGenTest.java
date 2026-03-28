@@ -37,7 +37,7 @@ public class CDestructInsnGenTest {
         func.createAndAddVariable("s", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new DestructInsn("s", LifecycleProvenance.USER_EXPLICIT));
+        entry.appendInstruction(new DestructInsn("s", LifecycleProvenance.USER_EXPLICIT));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -60,7 +60,7 @@ public class CDestructInsnGenTest {
         func.createAndAddVariable("obj", new GdObjectType("MyObject"));
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new DestructInsn("obj", LifecycleProvenance.USER_EXPLICIT));
+        entry.appendInstruction(new DestructInsn("obj", LifecycleProvenance.USER_EXPLICIT));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -93,7 +93,7 @@ public class CDestructInsnGenTest {
         func.createAndAddVariable("node", new GdObjectType("Node"));
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new DestructInsn("node", LifecycleProvenance.USER_EXPLICIT));
+        entry.appendInstruction(new DestructInsn("node", LifecycleProvenance.USER_EXPLICIT));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -113,7 +113,7 @@ public class CDestructInsnGenTest {
         func.setReturnType(GdVoidType.VOID);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new DestructInsn("missing", LifecycleProvenance.USER_EXPLICIT));
+        entry.appendInstruction(new DestructInsn("missing", LifecycleProvenance.USER_EXPLICIT));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -134,7 +134,7 @@ public class CDestructInsnGenTest {
         func.createAndAddVariable("value", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new DestructInsn("value", LifecycleProvenance.AUTO_GENERATED));
+        entry.appendInstruction(new DestructInsn("value", LifecycleProvenance.AUTO_GENERATED));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);

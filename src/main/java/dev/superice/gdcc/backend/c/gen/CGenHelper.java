@@ -113,7 +113,7 @@ public final class CGenHelper {
         for (var func : classDef.getFunctions()) {
             var bodyBuilder = new CBodyBuilder(this, classDef, func);
             for (var block : func) {
-                var instructions = block.instructions();
+                var instructions = block.getInstructions();
                 for (var i = 0; i < instructions.size(); i++) {
                     var instruction = instructions.get(i);
                     bodyBuilder.setCurrentPosition(block, i, instruction);

@@ -41,11 +41,11 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.setReturnType(GdVoidType.VOID);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
 
         var finallyBlock = new LirBasicBlock("__finally__");
-        finallyBlock.instructions().add(new ReturnInsn(null));
+        finallyBlock.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(finallyBlock);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -67,11 +67,11 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.createAndAddVariable("result", GdIntType.INT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn("result"));
+        entry.appendInstruction(new ReturnInsn("result"));
         func.addBasicBlock(entry);
 
         var finallyBlock = new LirBasicBlock("__finally__");
-        finallyBlock.instructions().add(new ReturnInsn("_return_val"));
+        finallyBlock.appendInstruction(new ReturnInsn("_return_val"));
         func.addBasicBlock(finallyBlock);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -92,11 +92,11 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.setReturnType(GdIntType.INT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new GotoInsn("__finally__"));
+        entry.appendInstruction(new GotoInsn("__finally__"));
         func.addBasicBlock(entry);
 
         var finallyBlock = new LirBasicBlock("__finally__");
-        finallyBlock.instructions().add(new ReturnInsn("_return_val"));
+        finallyBlock.appendInstruction(new ReturnInsn("_return_val"));
         func.addBasicBlock(finallyBlock);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -117,7 +117,7 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.createAndAddVariable("v", GdIntType.INT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn("v"));
+        entry.appendInstruction(new ReturnInsn("v"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -139,7 +139,7 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.createAndAddRefVariable("refStr", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn("i"));
+        entry.appendInstruction(new ReturnInsn("i"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -150,7 +150,7 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         var finallyBlock = func.getBasicBlock("__finally__");
         assertNotNull(finallyBlock);
-        var instructions = finallyBlock.instructions();
+        var instructions = finallyBlock.getInstructions();
         assertEquals(2, instructions.size());
 
         var destructInsn = assertInstanceOf(DestructInsn.class, instructions.getFirst());
@@ -170,11 +170,11 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.createAndAddVariable("str", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
 
         var existingFinally = new LirBasicBlock("__finally__");
-        existingFinally.instructions().add(new NopInsn());
+        existingFinally.appendInstruction(new NopInsn());
         func.addBasicBlock(existingFinally);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -185,15 +185,15 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         var finallyBlock = func.getBasicBlock("__finally__");
         assertNotNull(finallyBlock);
-        assertEquals(3, finallyBlock.instructions().size());
+        assertEquals(3, finallyBlock.getInstructionCount());
 
-        assertInstanceOf(NopInsn.class, finallyBlock.instructions().getFirst());
+        assertInstanceOf(NopInsn.class, finallyBlock.getInstructions().getFirst());
 
-        var destructInsn = assertInstanceOf(DestructInsn.class, finallyBlock.instructions().get(1));
+        var destructInsn = assertInstanceOf(DestructInsn.class, finallyBlock.getInstruction(1));
         assertEquals("str", destructInsn.variableId());
         assertEquals(LifecycleProvenance.AUTO_GENERATED, destructInsn.getProvenance());
 
-        var returnInsn = assertInstanceOf(ReturnInsn.class, finallyBlock.instructions().getLast());
+        var returnInsn = assertInstanceOf(ReturnInsn.class, finallyBlock.getInstructions().getLast());
         assertNull(returnInsn.returnValueId());
     }
 
@@ -207,7 +207,7 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.createAndAddRefVariable("refStr", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -218,11 +218,11 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         var prepareBlock = func.getBasicBlock("__prepare__");
         assertNotNull(prepareBlock);
-        var hasPlainStrInit = prepareBlock.instructions().stream()
+        var hasPlainStrInit = prepareBlock.getInstructions().stream()
                 .filter(LiteralStringInsn.class::isInstance)
                 .map(LiteralStringInsn.class::cast)
                 .anyMatch(insn -> insn.resultId().equals("plainStr"));
-        var hasRefStrInit = prepareBlock.instructions().stream()
+        var hasRefStrInit = prepareBlock.getInstructions().stream()
                 .filter(LiteralStringInsn.class::isInstance)
                 .map(LiteralStringInsn.class::cast)
                 .anyMatch(insn -> insn.resultId().equals("refStr"));
@@ -239,12 +239,12 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.createAndAddVariable("plainStr", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
 
         var existingPrepare = new LirBasicBlock("__prepare__");
-        existingPrepare.instructions().add(new LiteralStringInsn("plainStr", ""));
-        existingPrepare.instructions().add(new GotoInsn("entry"));
+        existingPrepare.appendInstruction(new LiteralStringInsn("plainStr", ""));
+        existingPrepare.appendInstruction(new GotoInsn("entry"));
         func.addBasicBlock(existingPrepare);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -264,7 +264,7 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         var prepareBlock = func.getBasicBlock("__prepare__");
         assertNotNull(prepareBlock);
-        assertEquals(2, prepareBlock.instructions().size());
+        assertEquals(2, prepareBlock.getInstructionCount());
         assertTrue(outputBuffer.toString(StandardCharsets.UTF_8).contains("already contains instruction"));
     }
 
@@ -277,12 +277,12 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.createAndAddVariable("str", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
 
         var existingFinally = new LirBasicBlock("__finally__");
-        existingFinally.instructions().add(new DestructInsn("str"));
-        existingFinally.instructions().add(new ReturnInsn(null));
+        existingFinally.appendInstruction(new DestructInsn("str"));
+        existingFinally.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(existingFinally);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -302,9 +302,9 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         var finallyBlock = func.getBasicBlock("__finally__");
         assertNotNull(finallyBlock);
-        assertEquals(2, finallyBlock.instructions().size());
-        assertInstanceOf(DestructInsn.class, finallyBlock.instructions().getFirst());
-        var returnInsn = assertInstanceOf(ReturnInsn.class, finallyBlock.instructions().getLast());
+        assertEquals(2, finallyBlock.getInstructionCount());
+        assertInstanceOf(DestructInsn.class, finallyBlock.getInstructions().getFirst());
+        var returnInsn = assertInstanceOf(ReturnInsn.class, finallyBlock.getInstructions().getLast());
         assertNull(returnInsn.returnValueId());
         assertTrue(outputBuffer.toString(StandardCharsets.UTF_8).contains("already contains instruction"));
     }

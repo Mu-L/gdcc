@@ -173,13 +173,13 @@ class CallMethodInsnGenEngineInheritanceTest {
         func.addParameter(new LirParameterDef("child", new GdObjectType("GDInheritanceChildWorker"), null, func));
         func.createAndAddVariable("result", GdIntType.INT);
 
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "result",
                 "base_value",
                 "child",
                 List.of()
         ));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -189,13 +189,13 @@ class CallMethodInsnGenEngineInheritanceTest {
         func.addParameter(new LirParameterDef("peer", new GdObjectType("GDInheritancePeerWorker"), null, func));
         func.createAndAddVariable("result", GdIntType.INT);
 
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "result",
                 "child_only_consume_peer",
                 "baseRef",
                 List.of(varRef("peer"))
         ));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -203,8 +203,8 @@ class CallMethodInsnGenEngineInheritanceTest {
         var func = newMethod("base_value", GdIntType.INT, selfType);
         func.createAndAddVariable("result", GdIntType.INT);
 
-        entry(func).instructions().add(new LiteralIntInsn("result", 41));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new LiteralIntInsn("result", 41));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -214,21 +214,21 @@ class CallMethodInsnGenEngineInheritanceTest {
         func.createAndAddVariable("seed", GdIntType.INT);
         func.createAndAddVariable("result", GdIntType.INT);
 
-        entry(func).instructions().add(new LiteralIntInsn("seed", 101));
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new LiteralIntInsn("seed", 101));
+        entry(func).appendInstruction(new CallMethodInsn(
                 "result",
                 "echo_value",
                 "peer",
                 List.of(varRef("seed"))
         ));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
     private static LirFunctionDef newPeerEchoFunction(GdObjectType selfType) {
         var func = newMethod("echo_value", GdIntType.INT, selfType);
         func.addParameter(new LirParameterDef("value", GdIntType.INT, null, func));
-        entry(func).instructions().add(new ReturnInsn("value"));
+        entry(func).appendInstruction(new ReturnInsn("value"));
         return func;
     }
 

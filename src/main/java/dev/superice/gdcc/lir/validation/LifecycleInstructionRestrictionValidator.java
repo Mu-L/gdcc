@@ -30,8 +30,8 @@ public final class LifecycleInstructionRestrictionValidator {
     private void validateBlock(@NotNull CodegenContext ctx,
                                @NotNull LirFunctionDef func,
                                @NotNull LirBasicBlock block) {
-        for (int index = 0; index < block.instructions().size(); index++) {
-            var insn = block.instructions().get(index);
+        for (int index = 0; index < block.getInstructionCount(); index++) {
+            var insn = block.getInstruction(index);
             if (!(insn instanceof LifecycleInstruction lifecycleInsn)) {
                 continue;
             }

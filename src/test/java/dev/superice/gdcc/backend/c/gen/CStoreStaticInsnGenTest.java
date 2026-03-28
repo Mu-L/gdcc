@@ -36,8 +36,8 @@ class CStoreStaticInsnGenTest {
         func.createAndAddVariable("value", GdIntType.INT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new StoreStaticInsn("Node", "NOTIFICATION_ENTER_TREE", "value"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new StoreStaticInsn("Node", "NOTIFICATION_ENTER_TREE", "value"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);

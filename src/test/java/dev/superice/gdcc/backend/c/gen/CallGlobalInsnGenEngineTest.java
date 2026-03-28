@@ -118,12 +118,12 @@ class CallGlobalInsnGenEngineTest {
         func.addParameter(new LirParameterDef("angleRad", GdFloatType.FLOAT, null, func));
         func.createAndAddVariable("result", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "result",
                 "tan",
                 List.of(varRef("angleRad"))
         ));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -133,12 +133,12 @@ class CallGlobalInsnGenEngineTest {
         func.addParameter(new LirParameterDef("y", GdFloatType.FLOAT, null, func));
         func.createAndAddVariable("result", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "result",
                 "fposmod",
                 List.of(varRef("x"), varRef("y"))
         ));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -154,16 +154,16 @@ class CallGlobalInsnGenEngineTest {
         func.createAndAddVariable("resultVariant", GdVariantType.VARIANT);
         func.createAndAddVariable("result", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new PackVariantInsn("fromVariant", "from"));
-        entry(func).instructions().add(new PackVariantInsn("toVariant", "to"));
-        entry(func).instructions().add(new PackVariantInsn("weightVariant", "weight"));
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new PackVariantInsn("fromVariant", "from"));
+        entry(func).appendInstruction(new PackVariantInsn("toVariant", "to"));
+        entry(func).appendInstruction(new PackVariantInsn("weightVariant", "weight"));
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "resultVariant",
                 "lerp",
                 List.of(varRef("fromVariant"), varRef("toVariant"), varRef("weightVariant"))
         ));
-        entry(func).instructions().add(new UnpackVariantInsn("result", "resultVariant"));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new UnpackVariantInsn("result", "resultVariant"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -179,16 +179,16 @@ class CallGlobalInsnGenEngineTest {
         func.createAndAddVariable("resultVariant", GdVariantType.VARIANT);
         func.createAndAddVariable("result", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new PackVariantInsn("aVariant", "a"));
-        entry(func).instructions().add(new PackVariantInsn("bVariant", "b"));
-        entry(func).instructions().add(new PackVariantInsn("cVariant", "c"));
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new PackVariantInsn("aVariant", "a"));
+        entry(func).appendInstruction(new PackVariantInsn("bVariant", "b"));
+        entry(func).appendInstruction(new PackVariantInsn("cVariant", "c"));
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "resultVariant",
                 "max",
                 List.of(varRef("aVariant"), varRef("bVariant"), varRef("cVariant"))
         ));
-        entry(func).instructions().add(new UnpackVariantInsn("result", "resultVariant"));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new UnpackVariantInsn("result", "resultVariant"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -197,14 +197,14 @@ class CallGlobalInsnGenEngineTest {
         func.createAndAddVariable("messageText", GdStringType.STRING);
         func.createAndAddVariable("messageVariant", GdVariantType.VARIANT);
 
-        entry(func).instructions().add(new LiteralStringInsn("messageText", "[engine] call_print from extension"));
-        entry(func).instructions().add(new PackVariantInsn("messageVariant", "messageText"));
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new LiteralStringInsn("messageText", "[engine] call_print from extension"));
+        entry(func).appendInstruction(new PackVariantInsn("messageVariant", "messageText"));
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "print",
                 List.of(varRef("messageVariant"))
         ));
-        entry(func).instructions().add(new ReturnInsn(null));
+        entry(func).appendInstruction(new ReturnInsn(null));
         return func;
     }
 

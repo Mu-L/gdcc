@@ -9,6 +9,7 @@ import dev.superice.gdcc.enums.GdInstruction;
 import dev.superice.gdcc.enums.LifecycleProvenance;
 import dev.superice.gdcc.lir.*;
 import dev.superice.gdcc.lir.insn.*;
+import dev.superice.gdcc.lir.validation.ControlFlowIntegrityValidator;
 import dev.superice.gdcc.lir.validation.LifecycleInstructionRestrictionValidator;
 import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.type.*;
@@ -53,6 +54,8 @@ public class CCodegen implements Codegen {
     public CodegenContext ctx;
     public LirModule module;
     private CGenHelper helper;
+    /// Validator for block layout and successor integrity.
+    private final ControlFlowIntegrityValidator controlFlowValidator = new ControlFlowIntegrityValidator();
     /// Validator for lifecycle instruction usage restrictions.
     private final LifecycleInstructionRestrictionValidator lifecycleValidator = new LifecycleInstructionRestrictionValidator();
 
@@ -63,7 +66,7 @@ public class CCodegen implements Codegen {
     }
 
     private static boolean containsInstruction(@NotNull LirBasicBlock block, @NotNull LirInstruction instruction) {
-        for (var existingInsn : block.instructions()) {
+        for (var existingInsn : block.getInstructions()) {
             if (existingInsn.checkEquals(instruction)) {
                 return true;
             }
@@ -81,14 +84,17 @@ public class CCodegen implements Codegen {
                     instruction);
             return;
         }
-        block.instructions().add(instruction);
+        if (instruction instanceof ControlFlowInstruction controlFlowInstruction) {
+            block.setTerminator(controlFlowInstruction);
+            return;
+        }
+        block.appendNonTerminatorInstruction(instruction);
     }
 
     private @NotNull String resolvePrepareEntryTarget(@NotNull LirFunctionDef func, @NotNull LirBasicBlock prepareBB) {
-        for (var instruction : prepareBB.instructions()) {
-            if (instruction instanceof GotoInsn(var targetBbId) && !"__prepare__".equals(targetBbId)) {
-                return targetBbId;
-            }
+        var terminator = prepareBB.getTerminator();
+        if (terminator instanceof GotoInsn(var targetBbId) && !"__prepare__".equals(targetBbId)) {
+            return targetBbId;
         }
         LOGGER.warn("Function {} already enters __prepare__ without a non-self goto target, keep __prepare__ as goto target.",
                 func.getName());
@@ -114,8 +120,8 @@ public class CCodegen implements Codegen {
                     var tmpVar = func.createAndAddTmpVariable(propertyDef.getType());
                     var bb = new LirBasicBlock("entry");
                     func.addBasicBlock(bb);
-                    bb.instructions().add(new LoadPropertyInsn(tmpVar.id(), propertyDef.getName(), "self"));
-                    bb.instructions().add(new ReturnInsn(tmpVar.id()));
+                    bb.appendNonTerminatorInstruction(new LoadPropertyInsn(tmpVar.id(), propertyDef.getName(), "self"));
+                    bb.setTerminator(new ReturnInsn(tmpVar.id()));
                     func.setEntryBlockId("entry");
                     classDef.addFunction(func);
                 }
@@ -129,8 +135,8 @@ public class CCodegen implements Codegen {
 
                     var bb = new LirBasicBlock("entry");
                     func.addBasicBlock(bb);
-                    bb.instructions().add(new StorePropertyInsn(propertyDef.getName(), "self", "value"));
-                    bb.instructions().add(new ReturnInsn(null));
+                    bb.appendNonTerminatorInstruction(new StorePropertyInsn(propertyDef.getName(), "self", "value"));
+                    bb.setTerminator(new ReturnInsn(null));
                     func.setEntryBlockId("entry");
                     classDef.addFunction(func);
                 }
@@ -144,21 +150,25 @@ public class CCodegen implements Codegen {
                     var bb = new LirBasicBlock("entry");
                     func.addBasicBlock(bb);
                     switch (propertyDef.getType()) {
-                        case GdObjectType _ -> bb.instructions().add(new LiteralNullInsn(tmpVar.id()));
-                        case GdVariantType _, GdNilType _ -> bb.instructions().add(new LiteralNilInsn(tmpVar.id()));
-                        case GdBoolType _ -> bb.instructions().add(new LiteralBoolInsn(tmpVar.id(), false));
-                        case GdIntType _ -> bb.instructions().add(new LiteralIntInsn(tmpVar.id(), 0));
-                        case GdFloatType _ -> bb.instructions().add(new LiteralFloatInsn(tmpVar.id(), 0.0));
-                        case GdStringType _ -> bb.instructions().add(new LiteralStringInsn(tmpVar.id(), ""));
-                        case GdStringNameType _ -> bb.instructions().add(new LiteralStringNameInsn(tmpVar.id(), ""));
+                        case GdObjectType _ -> bb.appendNonTerminatorInstruction(new LiteralNullInsn(tmpVar.id()));
+                        case GdVariantType _, GdNilType _ ->
+                                bb.appendNonTerminatorInstruction(new LiteralNilInsn(tmpVar.id()));
+                        case GdBoolType _ -> bb.appendNonTerminatorInstruction(new LiteralBoolInsn(tmpVar.id(), false));
+                        case GdIntType _ -> bb.appendNonTerminatorInstruction(new LiteralIntInsn(tmpVar.id(), 0));
+                        case GdFloatType _ -> bb.appendNonTerminatorInstruction(new LiteralFloatInsn(tmpVar.id(), 0.0));
+                        case GdStringType _ ->
+                                bb.appendNonTerminatorInstruction(new LiteralStringInsn(tmpVar.id(), ""));
+                        case GdStringNameType _ ->
+                                bb.appendNonTerminatorInstruction(new LiteralStringNameInsn(tmpVar.id(), ""));
                         case GdArrayType gdArrayType ->
-                                bb.instructions().add(new ConstructArrayInsn(tmpVar.id(), gdArrayType.getValueType().getTypeName()));
-                        case GdPackedArrayType _ -> bb.instructions().add(new ConstructArrayInsn(tmpVar.id(), null));
+                                bb.appendNonTerminatorInstruction(new ConstructArrayInsn(tmpVar.id(), gdArrayType.getValueType().getTypeName()));
+                        case GdPackedArrayType _ ->
+                                bb.appendNonTerminatorInstruction(new ConstructArrayInsn(tmpVar.id(), null));
                         case GdDictionaryType gdDictionaryType ->
-                                bb.instructions().add(new ConstructDictionaryInsn(tmpVar.id(), gdDictionaryType.getKeyType().getTypeName(), gdDictionaryType.getValueType().getTypeName()));
-                        default -> bb.instructions().add(new ConstructBuiltinInsn(tmpVar.id(), List.of()));
+                                bb.appendNonTerminatorInstruction(new ConstructDictionaryInsn(tmpVar.id(), gdDictionaryType.getKeyType().getTypeName(), gdDictionaryType.getValueType().getTypeName()));
+                        default -> bb.appendNonTerminatorInstruction(new ConstructBuiltinInsn(tmpVar.id(), List.of()));
                     }
-                    bb.instructions().add(new ReturnInsn(tmpVar.id()));
+                    bb.setTerminator(new ReturnInsn(tmpVar.id()));
                     func.setEntryBlockId("entry");
                     classDef.addFunction(func);
                 }
@@ -250,6 +260,7 @@ public class CCodegen implements Codegen {
         if (ctx == null || module == null) {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generateBlock().");
         }
+        controlFlowValidator.validateFunction(func);
         lifecycleValidator.validateFunction(ctx, func);
         // Check if the entry block is valid
         if (!func.hasBasicBlock(func.getEntryBlockId())) {
@@ -260,8 +271,8 @@ public class CCodegen implements Codegen {
         bodyBuilder.appendRaw("goto " + func.getEntryBlockId() + ";\n");
         for (var bb : func) {
             bodyBuilder.beginBasicBlock(bb.id());
-            for (int i = 0; i < bb.instructions().size(); i++) {
-                var insn = bb.instructions().get(i);
+            for (int i = 0; i < bb.getInstructionCount(); i++) {
+                var insn = bb.getInstruction(i);
                 CInsnGen<LirInstruction> insnGen = (CInsnGen<LirInstruction>) INSN_GENS.get(insn.opcode());
                 if (insnGen == null) {
                     throw new UnsupportedOperationException("Unsupported instruction opcode: " + insn.opcode().opcode());
@@ -284,6 +295,7 @@ public class CCodegen implements Codegen {
         this.ensureFunctionFinallyBlock();
         for (var classDef : module.getClassDefs()) {
             for (var function : classDef.getFunctions()) {
+                controlFlowValidator.validateFunction(function);
                 lifecycleValidator.validateFunction(ctx, function);
             }
         }

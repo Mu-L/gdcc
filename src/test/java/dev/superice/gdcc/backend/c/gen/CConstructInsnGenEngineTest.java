@@ -319,13 +319,13 @@ class CConstructInsnGenEngineTest {
         func.createAndAddVariable("t", GdTransform2DType.TRANSFORM2D);
 
         var block = entry(func);
-        block.instructions().add(new LiteralFloatInsn("xx", 1.0));
-        block.instructions().add(new LiteralFloatInsn("xy", 0.0));
-        block.instructions().add(new LiteralFloatInsn("yx", 0.0));
-        block.instructions().add(new LiteralFloatInsn("yy", 1.0));
-        block.instructions().add(new LiteralFloatInsn("tx", 2.0));
-        block.instructions().add(new LiteralFloatInsn("ty", 3.0));
-        block.instructions().add(new ConstructBuiltinInsn(
+        block.appendInstruction(new LiteralFloatInsn("xx", 1.0));
+        block.appendInstruction(new LiteralFloatInsn("xy", 0.0));
+        block.appendInstruction(new LiteralFloatInsn("yx", 0.0));
+        block.appendInstruction(new LiteralFloatInsn("yy", 1.0));
+        block.appendInstruction(new LiteralFloatInsn("tx", 2.0));
+        block.appendInstruction(new LiteralFloatInsn("ty", 3.0));
+        block.appendInstruction(new ConstructBuiltinInsn(
                 "t",
                 List.of(
                         varRef("xx"),
@@ -336,14 +336,14 @@ class CConstructInsnGenEngineTest {
                         varRef("ty")
                 )
         ));
-        block.instructions().add(new ReturnInsn("t"));
+        block.appendInstruction(new ReturnInsn("t"));
         return func;
     }
 
     private static LirFunctionDef newPrepareTransformFunction(GdObjectType selfType) {
         var func = newMethod("make_transform2d_prepare", GdTransform2DType.TRANSFORM2D, selfType);
         func.createAndAddVariable("t", GdTransform2DType.TRANSFORM2D);
-        entry(func).instructions().add(new ReturnInsn("t"));
+        entry(func).appendInstruction(new ReturnInsn("t"));
         return func;
     }
 
@@ -351,8 +351,8 @@ class CConstructInsnGenEngineTest {
         var arrayType = new GdArrayType(GdVariantType.VARIANT);
         var func = newMethod("make_generic_array_explicit", arrayType, selfType);
         func.createAndAddVariable("arr", arrayType);
-        entry(func).instructions().add(new ConstructArrayInsn("arr", null));
-        entry(func).instructions().add(new ReturnInsn("arr"));
+        entry(func).appendInstruction(new ConstructArrayInsn("arr", null));
+        entry(func).appendInstruction(new ReturnInsn("arr"));
         return func;
     }
 
@@ -360,7 +360,7 @@ class CConstructInsnGenEngineTest {
         var arrayType = new GdArrayType(GdVariantType.VARIANT);
         var func = newMethod("make_generic_array_prepare", arrayType, selfType);
         func.createAndAddVariable("arr", arrayType);
-        entry(func).instructions().add(new ReturnInsn("arr"));
+        entry(func).appendInstruction(new ReturnInsn("arr"));
         return func;
     }
 
@@ -368,8 +368,8 @@ class CConstructInsnGenEngineTest {
         var dictionaryType = new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT);
         var func = newMethod("make_generic_dictionary_explicit", dictionaryType, selfType);
         func.createAndAddVariable("dict", dictionaryType);
-        entry(func).instructions().add(new ConstructDictionaryInsn("dict", null, null));
-        entry(func).instructions().add(new ReturnInsn("dict"));
+        entry(func).appendInstruction(new ConstructDictionaryInsn("dict", null, null));
+        entry(func).appendInstruction(new ReturnInsn("dict"));
         return func;
     }
 
@@ -377,7 +377,7 @@ class CConstructInsnGenEngineTest {
         var dictionaryType = new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT);
         var func = newMethod("make_generic_dictionary_prepare", dictionaryType, selfType);
         func.createAndAddVariable("dict", dictionaryType);
-        entry(func).instructions().add(new ReturnInsn("dict"));
+        entry(func).appendInstruction(new ReturnInsn("dict"));
         return func;
     }
 
@@ -385,8 +385,8 @@ class CConstructInsnGenEngineTest {
         var arrayType = new GdArrayType(new GdObjectType("Node"));
         var func = newMethodWithMarker("make_typed_array_explicit", arrayType, selfType);
         func.createAndAddVariable("arr", arrayType);
-        entry(func).instructions().add(new ConstructArrayInsn("arr", "Node"));
-        entry(func).instructions().add(new ReturnInsn("arr"));
+        entry(func).appendInstruction(new ConstructArrayInsn("arr", "Node"));
+        entry(func).appendInstruction(new ReturnInsn("arr"));
         return func;
     }
 
@@ -394,7 +394,7 @@ class CConstructInsnGenEngineTest {
         var arrayType = new GdArrayType(new GdObjectType("Node"));
         var func = newMethodWithMarker("make_typed_array_prepare", arrayType, selfType);
         func.createAndAddVariable("arr", arrayType);
-        entry(func).instructions().add(new ReturnInsn("arr"));
+        entry(func).appendInstruction(new ReturnInsn("arr"));
         return func;
     }
 
@@ -402,8 +402,8 @@ class CConstructInsnGenEngineTest {
         var dictionaryType = new GdDictionaryType(GdStringNameType.STRING_NAME, new GdObjectType("Node"));
         var func = newMethodWithMarker("make_typed_dictionary_explicit", dictionaryType, selfType);
         func.createAndAddVariable("dict", dictionaryType);
-        entry(func).instructions().add(new ConstructDictionaryInsn("dict", "StringName", "Node"));
-        entry(func).instructions().add(new ReturnInsn("dict"));
+        entry(func).appendInstruction(new ConstructDictionaryInsn("dict", "StringName", "Node"));
+        entry(func).appendInstruction(new ReturnInsn("dict"));
         return func;
     }
 
@@ -411,22 +411,22 @@ class CConstructInsnGenEngineTest {
         var dictionaryType = new GdDictionaryType(GdStringNameType.STRING_NAME, new GdObjectType("Node"));
         var func = newMethodWithMarker("make_typed_dictionary_prepare", dictionaryType, selfType);
         func.createAndAddVariable("dict", dictionaryType);
-        entry(func).instructions().add(new ReturnInsn("dict"));
+        entry(func).appendInstruction(new ReturnInsn("dict"));
         return func;
     }
 
     private static LirFunctionDef newExplicitPackedArrayFunction(String methodName, GdType packedType, GdObjectType selfType) {
         var func = newMethod(methodName, packedType, selfType);
         func.createAndAddVariable("packed", packedType);
-        entry(func).instructions().add(new ConstructArrayInsn("packed", null));
-        entry(func).instructions().add(new ReturnInsn("packed"));
+        entry(func).appendInstruction(new ConstructArrayInsn("packed", null));
+        entry(func).appendInstruction(new ReturnInsn("packed"));
         return func;
     }
 
     private static LirFunctionDef newPreparePackedArrayFunction(String methodName, GdType packedType, GdObjectType selfType) {
         var func = newMethod(methodName, packedType, selfType);
         func.createAndAddVariable("packed", packedType);
-        entry(func).instructions().add(new ReturnInsn("packed"));
+        entry(func).appendInstruction(new ReturnInsn("packed"));
         return func;
     }
 

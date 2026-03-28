@@ -341,8 +341,8 @@ public class CAssignInsnGenTest {
 
     private void addEntryAssignAndReturn(LirFunctionDef func, AssignInsn assignInsn) {
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(assignInsn);
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(assignInsn);
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
     }

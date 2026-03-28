@@ -41,8 +41,8 @@ public class CPackUnpackVariantInsnGenTest {
         func.createAndAddVariable("variant", GdVariantType.VARIANT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new UnpackVariantInsn("result", "variant"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new UnpackVariantInsn("result", "variant"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -65,8 +65,8 @@ public class CPackUnpackVariantInsnGenTest {
         func.createAndAddVariable("variant", GdVariantType.VARIANT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new UnpackVariantInsn("result", "variant"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new UnpackVariantInsn("result", "variant"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -110,8 +110,8 @@ public class CPackUnpackVariantInsnGenTest {
         func.createAndAddVariable("value", new GdObjectType("TargetClass"));
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new PackVariantInsn("result", "value"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new PackVariantInsn("result", "value"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -135,8 +135,8 @@ public class CPackUnpackVariantInsnGenTest {
         func.createAndAddVariable("value", new GdArrayType(GdStringNameType.STRING_NAME));
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new PackVariantInsn("result", "value"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new PackVariantInsn("result", "value"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -159,8 +159,8 @@ public class CPackUnpackVariantInsnGenTest {
         func.createAndAddVariable("variant", GdVariantType.VARIANT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new UnpackVariantInsn("result", "variant"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new UnpackVariantInsn("result", "variant"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);

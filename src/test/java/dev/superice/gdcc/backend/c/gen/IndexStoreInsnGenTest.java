@@ -637,7 +637,7 @@ class IndexStoreInsnGenTest {
         }
 
         var entry = entry(func);
-        entry.instructions().add(instruction);
+        entry.appendInstruction(instruction);
         workerClass.addFunction(func);
 
         var bodyBuilder = newBodyBuilder(workerClass, func);

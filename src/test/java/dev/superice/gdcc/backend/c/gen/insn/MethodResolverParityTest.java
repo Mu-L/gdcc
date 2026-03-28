@@ -42,7 +42,7 @@ class MethodResolverParityTest {
         var workerClass = newClass("Worker", "RefCounted");
         var ping = newFunction("ping");
         ping.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, ping));
-        entry(ping).instructions().add(new ReturnInsn(null));
+        entry(ping).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(ping);
 
         var bodyBuilder = newBodyBuilder(emptyApi(), List.of(workerClass));
@@ -149,7 +149,7 @@ class MethodResolverParityTest {
         var parentClass = newClass("RuntimeOuter$Shared", "RefCounted");
         var ping = newFunction("ping");
         ping.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter$Shared"), null, ping));
-        entry(ping).instructions().add(new ReturnInsn(null));
+        entry(ping).appendInstruction(new ReturnInsn(null));
         parentClass.addFunction(ping);
 
         var childClass = newClass("RuntimeOuter$Leaf", "RuntimeOuter$Shared");

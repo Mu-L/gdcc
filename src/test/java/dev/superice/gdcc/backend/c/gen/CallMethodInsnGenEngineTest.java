@@ -429,13 +429,13 @@ class CallMethodInsnGenEngineTest {
         func.addParameter(new LirParameterDef("len", GdIntType.INT, null, func));
         func.createAndAddVariable("result", GdStringType.STRING);
 
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "result",
                 "substr",
                 "text",
                 List.of(varRef("from"), varRef("len"))
         ));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -444,13 +444,13 @@ class CallMethodInsnGenEngineTest {
         func.addParameter(new LirParameterDef("node", new GdObjectType("Node"), null, func));
         func.createAndAddVariable("result", GdIntType.INT);
 
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "result",
                 "get_child_count",
                 "node",
                 List.of()
         ));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -460,13 +460,13 @@ class CallMethodInsnGenEngineTest {
         func.addParameter(new LirParameterDef("obj", new GdObjectType("MysteryObject"), null, func));
         func.createAndAddVariable("result", GdIntType.INT);
 
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "result",
                 "get_instance_id",
                 "obj",
                 List.of()
         ));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -476,15 +476,15 @@ class CallMethodInsnGenEngineTest {
         func.createAndAddVariable("value", GdVariantType.VARIANT);
         func.createAndAddVariable("result", GdIntType.INT);
 
-        entry(func).instructions().add(new LiteralStringInsn("source", "42"));
-        entry(func).instructions().add(new PackVariantInsn("value", "source"));
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new LiteralStringInsn("source", "42"));
+        entry(func).appendInstruction(new PackVariantInsn("value", "source"));
+        entry(func).appendInstruction(new CallMethodInsn(
                 "result",
                 "to_int",
                 "value",
                 List.of()
         ));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -497,17 +497,17 @@ class CallMethodInsnGenEngineTest {
         func.createAndAddVariable("resultVariant", GdVariantType.VARIANT);
         func.createAndAddVariable("resultBool", GdBoolType.BOOL);
 
-        entry(func).instructions().add(new LiteralStringNameInsn("dispatchMethod", "has_method"));
-        entry(func).instructions().add(new LiteralStringNameInsn("argMethodName", "queue_free"));
-        entry(func).instructions().add(new PackVariantInsn("argMethodNameVariant", "argMethodName"));
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new LiteralStringNameInsn("dispatchMethod", "has_method"));
+        entry(func).appendInstruction(new LiteralStringNameInsn("argMethodName", "queue_free"));
+        entry(func).appendInstruction(new PackVariantInsn("argMethodNameVariant", "argMethodName"));
+        entry(func).appendInstruction(new CallMethodInsn(
                 "resultVariant",
                 "call",
                 "node",
                 List.of(varRef("dispatchMethod"), varRef("argMethodNameVariant"))
         ));
-        entry(func).instructions().add(new UnpackVariantInsn("resultBool", "resultVariant"));
-        entry(func).instructions().add(new ReturnInsn("resultBool"));
+        entry(func).appendInstruction(new UnpackVariantInsn("resultBool", "resultVariant"));
+        entry(func).appendInstruction(new ReturnInsn("resultBool"));
         return func;
     }
 
@@ -517,20 +517,20 @@ class CallMethodInsnGenEngineTest {
         func.addParameter(new LirParameterDef("value", GdIntType.INT, null, func));
         func.createAndAddVariable("result", GdIntType.INT);
 
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "result",
                 "echo_value",
                 "peer",
                 List.of(varRef("value"))
         ));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
     private static LirFunctionDef newGdccPeerEchoFunction(GdObjectType selfType) {
         var func = newMethod("echo_value", GdIntType.INT, selfType);
         func.addParameter(new LirParameterDef("value", GdIntType.INT, null, func));
-        entry(func).instructions().add(new ReturnInsn("value"));
+        entry(func).appendInstruction(new ReturnInsn("value"));
         return func;
     }
 
@@ -540,27 +540,27 @@ class CallMethodInsnGenEngineTest {
         func.addParameter(new LirParameterDef("value", GdIntType.INT, null, func));
         func.createAndAddVariable("result", GdIntType.INT);
 
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "result",
                 "child_only_echo",
                 "baseRef",
                 List.of(varRef("value"))
         ));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
     private static LirFunctionDef newGdccDynamicBasePingFunction(GdObjectType selfType) {
         var func = newMethod("ping", GdIntType.INT, selfType);
         func.addParameter(new LirParameterDef("value", GdIntType.INT, null, func));
-        entry(func).instructions().add(new ReturnInsn("value"));
+        entry(func).appendInstruction(new ReturnInsn("value"));
         return func;
     }
 
     private static LirFunctionDef newGdccDynamicChildOnlyEchoFunction(GdObjectType selfType) {
         var func = newMethod("child_only_echo", GdIntType.INT, selfType);
         func.addParameter(new LirParameterDef("value", GdIntType.INT, null, func));
-        entry(func).instructions().add(new ReturnInsn("value"));
+        entry(func).appendInstruction(new ReturnInsn("value"));
         return func;
     }
 
@@ -568,13 +568,13 @@ class CallMethodInsnGenEngineTest {
         var func = newMethod("call_self_get_child_count", GdIntType.INT, selfType);
         func.createAndAddVariable("result", GdIntType.INT);
 
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "result",
                 "get_child_count",
                 "self",
                 List.of()
         ));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 

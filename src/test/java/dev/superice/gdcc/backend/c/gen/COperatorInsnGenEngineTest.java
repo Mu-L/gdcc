@@ -500,8 +500,8 @@ class COperatorInsnGenEngineTest {
         func.addParameter(new LirParameterDef(leftName, leftType, null, func));
         func.addParameter(new LirParameterDef(rightName, rightType, null, func));
         func.createAndAddVariable("result", returnType);
-        entry(func).instructions().add(new BinaryOpInsn("result", operator, leftName, rightName));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new BinaryOpInsn("result", operator, leftName, rightName));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -512,8 +512,8 @@ class COperatorInsnGenEngineTest {
         func.createAndAddVariable("left_nil", GdNilType.NIL);
         func.createAndAddVariable("right_nil", GdNilType.NIL);
         func.createAndAddVariable("result", GdBoolType.BOOL);
-        entry(func).instructions().add(new BinaryOpInsn("result", operator, "left_nil", "right_nil"));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new BinaryOpInsn("result", operator, "left_nil", "right_nil"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -526,8 +526,8 @@ class COperatorInsnGenEngineTest {
         func.addParameter(new LirParameterDef(rightName, rightType, null, func));
         func.createAndAddVariable("left_nil", GdNilType.NIL);
         func.createAndAddVariable("result", GdBoolType.BOOL);
-        entry(func).instructions().add(new BinaryOpInsn("result", operator, "left_nil", rightName));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new BinaryOpInsn("result", operator, "left_nil", rightName));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -538,8 +538,8 @@ class COperatorInsnGenEngineTest {
         func.createAndAddVariable("left_nil", GdNilType.NIL);
         func.createAndAddVariable("right_obj", GdObjectType.OBJECT);
         func.createAndAddVariable("result", GdBoolType.BOOL);
-        entry(func).instructions().add(new BinaryOpInsn("result", operator, "left_nil", "right_obj"));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new BinaryOpInsn("result", operator, "left_nil", "right_obj"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -550,8 +550,8 @@ class COperatorInsnGenEngineTest {
         func.createAndAddVariable("left_obj", GdObjectType.OBJECT);
         func.createAndAddVariable("right_obj", GdObjectType.OBJECT);
         func.createAndAddVariable("result", GdBoolType.BOOL);
-        entry(func).instructions().add(new BinaryOpInsn("result", operator, "left_obj", "right_obj"));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new BinaryOpInsn("result", operator, "left_obj", "right_obj"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -562,8 +562,8 @@ class COperatorInsnGenEngineTest {
         func.addParameter(new LirParameterDef("obj", GdObjectType.OBJECT, null, func));
         func.createAndAddVariable("null_obj", GdObjectType.OBJECT);
         func.createAndAddVariable("result", GdBoolType.BOOL);
-        entry(func).instructions().add(new BinaryOpInsn("result", operator, "null_obj", "obj"));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new BinaryOpInsn("result", operator, "null_obj", "obj"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -593,13 +593,13 @@ class COperatorInsnGenEngineTest {
         func.createAndAddVariable("result", returnType);
 
         if (packLeft) {
-            entry(func).instructions().add(new PackVariantInsn("left_variant", leftName));
+            entry(func).appendInstruction(new PackVariantInsn("left_variant", leftName));
         }
         if (packRight) {
-            entry(func).instructions().add(new PackVariantInsn("right_variant", rightName));
+            entry(func).appendInstruction(new PackVariantInsn("right_variant", rightName));
         }
-        entry(func).instructions().add(new BinaryOpInsn("result", operator, leftOperandId, rightOperandId));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new BinaryOpInsn("result", operator, leftOperandId, rightOperandId));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 

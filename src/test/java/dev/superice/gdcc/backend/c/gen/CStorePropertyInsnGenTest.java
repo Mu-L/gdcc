@@ -126,9 +126,9 @@ public class CStorePropertyInsnGenTest {
         setter.createAndAddVariable("rhs", new GdObjectType("RefCounted"));
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("rhs", "obj", "self"));
-        entry.instructions().add(new StorePropertyInsn("obj", "self", "rhs"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new LoadPropertyInsn("rhs", "obj", "self"));
+        entry.appendInstruction(new StorePropertyInsn("obj", "self", "rhs"));
+        entry.appendInstruction(new ReturnInsn(null));
         setter.addBasicBlock(entry);
         setter.setEntryBlockId("entry");
         gdccClass.addFunction(setter);
@@ -670,8 +670,8 @@ public class CStorePropertyInsnGenTest {
 
     private void addEntryStoreAndReturn(LirFunctionDef func, StorePropertyInsn storeInsn) {
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(storeInsn);
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(storeInsn);
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
     }

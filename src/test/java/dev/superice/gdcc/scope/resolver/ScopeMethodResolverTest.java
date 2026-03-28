@@ -36,13 +36,13 @@ class ScopeMethodResolverTest {
         var baseClass = newClass("Base", "RefCounted");
         var basePing = newFunction("ping");
         basePing.addParameter(new LirParameterDef("self", new GdObjectType("Base"), null, basePing));
-        entry(basePing).instructions().add(new ReturnInsn(null));
+        entry(basePing).appendInstruction(new ReturnInsn(null));
         baseClass.addFunction(basePing);
 
         var subClass = newClass("Sub", "Base");
         var subPing = newFunction("ping");
         subPing.addParameter(new LirParameterDef("self", new GdObjectType("Sub"), null, subPing));
-        entry(subPing).instructions().add(new ReturnInsn(null));
+        entry(subPing).appendInstruction(new ReturnInsn(null));
         subClass.addFunction(subPing);
 
         var registry = newRegistry(emptyApi(), List.of(baseClass, subClass));
@@ -65,7 +65,7 @@ class ScopeMethodResolverTest {
         var consume = newFunction("consume");
         consume.addParameter(new LirParameterDef("value", GdVariantType.VARIANT, null, consume));
         consume.setReturnType(GdIntType.INT);
-        entry(consume).instructions().add(new ReturnInsn(null));
+        entry(consume).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(consume);
 
         var registry = newRegistry(emptyApi(), List.of(workerClass));
@@ -90,7 +90,7 @@ class ScopeMethodResolverTest {
         var consume = newFunction("consume");
         consume.addParameter(new LirParameterDef("self", new GdObjectType("Node"), null, consume));
         consume.addParameter(new LirParameterDef("value", GdVariantType.VARIANT, null, consume));
-        entry(consume).instructions().add(new ReturnInsn(null));
+        entry(consume).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(consume);
 
         var registry = newRegistry(emptyApi(), List.of(workerClass));
@@ -112,7 +112,7 @@ class ScopeMethodResolverTest {
         var parentClass = newClass("Outer$Shared", "RefCounted");
         var parentPing = newFunction("ping");
         parentPing.addParameter(new LirParameterDef("self", new GdObjectType("Outer$Shared"), null, parentPing));
-        entry(parentPing).instructions().add(new ReturnInsn(null));
+        entry(parentPing).appendInstruction(new ReturnInsn(null));
         parentClass.addFunction(parentPing);
 
         var childClass = newClass("Outer$Leaf", "Outer$Shared");
@@ -135,7 +135,7 @@ class ScopeMethodResolverTest {
         var parentClass = newClass("RuntimeOuter$Shared", "RefCounted");
         var parentPing = newFunction("ping");
         parentPing.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter$Shared"), null, parentPing));
-        entry(parentPing).instructions().add(new ReturnInsn(null));
+        entry(parentPing).appendInstruction(new ReturnInsn(null));
         parentClass.addFunction(parentPing);
 
         var childClass = newClass("RuntimeOuter$Leaf", "RuntimeOuter$Shared");
@@ -165,7 +165,7 @@ class ScopeMethodResolverTest {
         var parentClass = newClass("Outer$Shared", "RefCounted");
         var parentPing = newFunction("ping");
         parentPing.addParameter(new LirParameterDef("self", new GdObjectType("Outer$Shared"), null, parentPing));
-        entry(parentPing).instructions().add(new ReturnInsn(null));
+        entry(parentPing).appendInstruction(new ReturnInsn(null));
         parentClass.addFunction(parentPing);
 
         var childClass = newClass("Outer$Leaf", "Shared");
@@ -188,7 +188,7 @@ class ScopeMethodResolverTest {
         var parentClass = newClass("RuntimeOuter$Shared", "RefCounted");
         var parentPing = newFunction("ping");
         parentPing.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter$Shared"), null, parentPing));
-        entry(parentPing).instructions().add(new ReturnInsn(null));
+        entry(parentPing).appendInstruction(new ReturnInsn(null));
         parentClass.addFunction(parentPing);
 
         var childClass = newClass("RuntimeOuter$Leaf", "Shared");
@@ -239,14 +239,14 @@ class ScopeMethodResolverTest {
         fixed.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, fixed));
         fixed.addParameter(new LirParameterDef("text", GdStringType.STRING, null, fixed));
         fixed.addParameter(new LirParameterDef("count", GdIntType.INT, null, fixed));
-        entry(fixed).instructions().add(new ReturnInsn(null));
+        entry(fixed).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(fixed);
 
         var vararg = newFunction("echo");
         vararg.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, vararg));
         vararg.addParameter(new LirParameterDef("text", GdStringType.STRING, null, vararg));
         vararg.setVararg(true);
-        entry(vararg).instructions().add(new ReturnInsn(null));
+        entry(vararg).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(vararg);
 
         var registry = newRegistry(emptyApi(), List.of(workerClass));
@@ -397,7 +397,7 @@ class ScopeMethodResolverTest {
         var workerClass = newClass("Worker", "RefCounted");
         var init = newFunction("_init");
         init.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, init));
-        entry(init).instructions().add(new ReturnInsn(null));
+        entry(init).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(init);
 
         var registry = newRegistry(emptyApi(), List.of(workerClass));

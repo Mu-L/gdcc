@@ -61,7 +61,7 @@ class CConstructInsnGenTest {
         func.createAndAddVariable("f", GdFloatType.FLOAT);
         func.createAndAddVariable("t", GdTransform2DType.TRANSFORM2D);
 
-        entry(func).instructions().add(new ConstructBuiltinInsn(
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
                 "t",
                 List.of(
                         new LirInstruction.VariableOperand("a"),
@@ -85,7 +85,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_builtin_non_var_operand");
         func.createAndAddVariable("t", GdTransform2DType.TRANSFORM2D);
 
-        entry(func).instructions().add(new ConstructBuiltinInsn(
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
                 "t",
                 List.of(new LirInstruction.StringOperand("not_var"))
         ));
@@ -102,7 +102,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_typed_array");
         func.createAndAddVariable("arr", new GdArrayType(GdStringNameType.STRING_NAME));
 
-        entry(func).instructions().add(new ConstructArrayInsn("arr", "StringName"));
+        entry(func).appendInstruction(new ConstructArrayInsn("arr", "StringName"));
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func);
@@ -117,7 +117,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_array_mismatch");
         func.createAndAddVariable("arr", new GdArrayType(GdStringNameType.STRING_NAME));
 
-        entry(func).instructions().add(new ConstructArrayInsn("arr", "String"));
+        entry(func).appendInstruction(new ConstructArrayInsn("arr", "String"));
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
@@ -131,7 +131,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_packed_array");
         func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
 
-        entry(func).instructions().add(new ConstructArrayInsn("packed", null));
+        entry(func).appendInstruction(new ConstructArrayInsn("packed", null));
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func);
@@ -145,7 +145,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_packed_array_with_class_name");
         func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
 
-        entry(func).instructions().add(new ConstructArrayInsn("packed", "PackedInt32Array"));
+        entry(func).appendInstruction(new ConstructArrayInsn("packed", "PackedInt32Array"));
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
@@ -166,7 +166,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_typed_dictionary");
         func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
 
-        entry(func).instructions().add(new ConstructDictionaryInsn("dict", "StringName", "Variant"));
+        entry(func).appendInstruction(new ConstructDictionaryInsn("dict", "StringName", "Variant"));
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func);
@@ -182,7 +182,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_dictionary_mismatch");
         func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
 
-        entry(func).instructions().add(new ConstructDictionaryInsn("dict", "String", "Variant"));
+        entry(func).appendInstruction(new ConstructDictionaryInsn("dict", "String", "Variant"));
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
@@ -196,7 +196,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_array_unknown_object_leaf");
         func.createAndAddVariable("arr", new GdArrayType(new GdObjectType("FutureItem")));
 
-        entry(func).instructions().add(new ConstructArrayInsn("arr", "FutureItem"));
+        entry(func).appendInstruction(new ConstructArrayInsn("arr", "FutureItem"));
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func);
@@ -211,7 +211,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_dictionary_unknown_object_leaf");
         func.createAndAddVariable("dict", new GdDictionaryType(GdStringType.STRING, new GdObjectType("FutureItem")));
 
-        entry(func).instructions().add(new ConstructDictionaryInsn("dict", "String", "FutureItem"));
+        entry(func).appendInstruction(new ConstructDictionaryInsn("dict", "String", "FutureItem"));
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func);
@@ -246,7 +246,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_dictionary_partial_operand_mismatch");
         func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdStringType.STRING));
 
-        entry(func).instructions().add(new ConstructDictionaryInsn("dict", "StringName", null));
+        entry(func).appendInstruction(new ConstructDictionaryInsn("dict", "StringName", null));
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
@@ -260,7 +260,7 @@ class CConstructInsnGenTest {
         var func = newFunction("prepare_inject_constructs");
         func.createAndAddVariable("arr", new GdArrayType(GdStringNameType.STRING_NAME));
         func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
-        entry(func).instructions().add(new ReturnInsn(null));
+        entry(func).appendInstruction(new ReturnInsn(null));
         clazz.addFunction(func);
 
         var module = new LirModule("test_module", List.of(clazz));
@@ -271,13 +271,13 @@ class CConstructInsnGenTest {
         assertNotNull(prepare);
         assertEquals("__prepare__", func.getEntryBlockId());
 
-        var hasArrayInsn = prepare.instructions().stream()
+        var hasArrayInsn = prepare.getInstructions().stream()
                 .filter(ConstructArrayInsn.class::isInstance)
                 .map(ConstructArrayInsn.class::cast)
                 .anyMatch(insn -> "arr".equals(insn.resultId()) && "StringName".equals(insn.className()));
         assertTrue(hasArrayInsn);
 
-        var hasDictionaryInsn = prepare.instructions().stream()
+        var hasDictionaryInsn = prepare.getInstructions().stream()
                 .filter(ConstructDictionaryInsn.class::isInstance)
                 .map(ConstructDictionaryInsn.class::cast)
                 .anyMatch(insn ->
@@ -294,7 +294,7 @@ class CConstructInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("prepare_inject_packed_construct");
         func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
-        entry(func).instructions().add(new ReturnInsn(null));
+        entry(func).appendInstruction(new ReturnInsn(null));
         clazz.addFunction(func);
 
         var module = new LirModule("test_module", List.of(clazz));
@@ -303,13 +303,13 @@ class CConstructInsnGenTest {
 
         var prepare = func.getBasicBlock("__prepare__");
         assertNotNull(prepare);
-        var hasPackedArrayInsn = prepare.instructions().stream()
+        var hasPackedArrayInsn = prepare.getInstructions().stream()
                 .filter(ConstructArrayInsn.class::isInstance)
                 .map(ConstructArrayInsn.class::cast)
                 .anyMatch(insn -> "packed".equals(insn.resultId()) && insn.className() == null);
         assertTrue(hasPackedArrayInsn);
 
-        var hasPackedBuiltinInsn = prepare.instructions().stream()
+        var hasPackedBuiltinInsn = prepare.getInstructions().stream()
                 .filter(ConstructBuiltinInsn.class::isInstance)
                 .map(ConstructBuiltinInsn.class::cast)
                 .anyMatch(insn -> "packed".equals(insn.resultId()));
@@ -323,7 +323,7 @@ class CConstructInsnGenTest {
         var func = newFunction("prepare_emit_typed_ctor_calls");
         func.createAndAddVariable("arr", new GdArrayType(GdStringNameType.STRING_NAME));
         func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
-        entry(func).instructions().add(new ReturnInsn(null));
+        entry(func).appendInstruction(new ReturnInsn(null));
         clazz.addFunction(func);
 
         var module = new LirModule("test_module", List.of(clazz));
@@ -342,7 +342,7 @@ class CConstructInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("prepare_emit_packed_ctor_call");
         func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
-        entry(func).instructions().add(new ReturnInsn(null));
+        entry(func).appendInstruction(new ReturnInsn(null));
         clazz.addFunction(func);
 
         var module = new LirModule("test_module", List.of(clazz));
@@ -361,7 +361,7 @@ class CConstructInsnGenTest {
             var clazz = newTestClass();
             var func = newFunction("construct_" + packedCase.label() + "_array");
             func.createAndAddVariable("packed", packedCase.type());
-            entry(func).instructions().add(new ConstructArrayInsn("packed", null));
+            entry(func).appendInstruction(new ConstructArrayInsn("packed", null));
             clazz.addFunction(func);
 
             var body = generateBody(clazz, func);
@@ -379,7 +379,7 @@ class CConstructInsnGenTest {
             var clazz = newTestClass();
             var func = newFunction("prepare_inject_" + packedCase.label());
             func.createAndAddVariable("packed", packedCase.type());
-            entry(func).instructions().add(new ReturnInsn(null));
+            entry(func).appendInstruction(new ReturnInsn(null));
             clazz.addFunction(func);
 
             var module = new LirModule("test_module", List.of(clazz));
@@ -388,13 +388,13 @@ class CConstructInsnGenTest {
 
             var prepare = func.getBasicBlock("__prepare__");
             assertNotNull(prepare);
-            var hasPackedArrayInsn = prepare.instructions().stream()
+            var hasPackedArrayInsn = prepare.getInstructions().stream()
                     .filter(ConstructArrayInsn.class::isInstance)
                     .map(ConstructArrayInsn.class::cast)
                     .anyMatch(insn -> "packed".equals(insn.resultId()) && insn.className() == null);
             assertTrue(hasPackedArrayInsn, () -> "Missing construct_array injection for " + packedCase.typeName());
 
-            var hasPackedBuiltinInsn = prepare.instructions().stream()
+            var hasPackedBuiltinInsn = prepare.getInstructions().stream()
                     .filter(ConstructBuiltinInsn.class::isInstance)
                     .map(ConstructBuiltinInsn.class::cast)
                     .anyMatch(insn -> "packed".equals(insn.resultId()));
@@ -409,7 +409,7 @@ class CConstructInsnGenTest {
             var clazz = newTestClass();
             var func = newFunction("prepare_emit_" + packedCase.label());
             func.createAndAddVariable("packed", packedCase.type());
-            entry(func).instructions().add(new ReturnInsn(null));
+            entry(func).appendInstruction(new ReturnInsn(null));
             clazz.addFunction(func);
 
             var module = new LirModule("test_module", List.of(clazz));
@@ -449,7 +449,7 @@ class CConstructInsnGenTest {
             var entryBlock = initFunc.getBasicBlock(initFunc.getEntryBlockId());
             assertNotNull(entryBlock, () -> "Missing entry block in " + initFuncName);
 
-            var hasConstructArrayInsn = entryBlock.instructions().stream()
+            var hasConstructArrayInsn = entryBlock.getInstructions().stream()
                     .filter(ConstructArrayInsn.class::isInstance)
                     .map(ConstructArrayInsn.class::cast)
                     .anyMatch(insn -> insn.className() == null);
@@ -458,7 +458,7 @@ class CConstructInsnGenTest {
                     () -> "Field init function should use construct_array for " + propertyCase.packedCase().typeName()
             );
 
-            var hasConstructBuiltinInsn = entryBlock.instructions().stream()
+            var hasConstructBuiltinInsn = entryBlock.getInstructions().stream()
                     .anyMatch(ConstructBuiltinInsn.class::isInstance);
             assertFalse(
                     hasConstructBuiltinInsn,
@@ -482,7 +482,7 @@ class CConstructInsnGenTest {
         func.createAndAddVariable("arr", new GdArrayType(GdStringNameType.STRING_NAME));
 
         var prepare = new LirBasicBlock("__prepare__");
-        prepare.instructions().add(new ConstructArrayInsn("arr", "String"));
+        prepare.appendInstruction(new ConstructArrayInsn("arr", "String"));
         func.addBasicBlock(prepare);
         func.setEntryBlockId("__prepare__");
         clazz.addFunction(func);
@@ -502,7 +502,7 @@ class CConstructInsnGenTest {
         func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
 
         var prepare = new LirBasicBlock("__prepare__");
-        prepare.instructions().add(new ConstructDictionaryInsn("dict", "String", "Variant"));
+        prepare.appendInstruction(new ConstructDictionaryInsn("dict", "String", "Variant"));
         func.addBasicBlock(prepare);
         func.setEntryBlockId("__prepare__");
         clazz.addFunction(func);
@@ -546,7 +546,7 @@ class CConstructInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("construct_packed_array_with_blank_class_name");
         func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
-        entry(func).instructions().add(new ConstructArrayInsn("packed", className));
+        entry(func).appendInstruction(new ConstructArrayInsn("packed", className));
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
@@ -557,7 +557,7 @@ class CConstructInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("construct_array_invalid_hint_" + hintText);
         func.createAndAddVariable("arr", new GdArrayType(GdVariantType.VARIANT));
-        entry(func).instructions().add(new ConstructArrayInsn("arr", hintText));
+        entry(func).appendInstruction(new ConstructArrayInsn("arr", hintText));
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func, api));

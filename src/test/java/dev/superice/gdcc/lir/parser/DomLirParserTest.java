@@ -50,7 +50,38 @@ public class DomLirParserTest {
         var bb = fn.getBasicBlock("entry");
         System.out.println(bb);
         assertNotNull(bb);
-        assertEquals(2, bb.instructions().size());
+        assertEquals(2, bb.getInstructionCount());
+    }
+
+    @Test
+    public void parse_rejectsInstructionAfterTerminatorWithinBasicBlock() throws Exception {
+        var xml = """
+                <ir>
+                  <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                    <functions>
+                      <function name="_init" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="false">
+                        <parameters/>
+                        <captures/>
+                        <return_type type="void"/>
+                        <variables>
+                          <variable id="0" type="String"/>
+                        </variables>
+                        <basic_blocks entry="entry">
+                          <basic_block id="entry">
+                            return;
+                            $0 = literal_string "unexpected";
+                          </basic_block>
+                        </basic_blocks>
+                      </function>
+                    </functions>
+                  </class_def>
+                </ir>
+                """;
+
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        var exception = assertThrows(IllegalStateException.class, () -> parser.parse(new StringReader(xml)));
+
+        assertTrue(exception.getMessage().contains("terminator"), exception.getMessage());
     }
 
     @Test

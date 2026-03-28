@@ -41,7 +41,7 @@ public class COwnReleaseObjectInsnGenTest {
         func.createAndAddVariable("obj", new GdObjectType("MyObject"));
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new TryOwnObjectInsn("obj", LifecycleProvenance.USER_EXPLICIT));
+        entry.appendInstruction(new TryOwnObjectInsn("obj", LifecycleProvenance.USER_EXPLICIT));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -64,7 +64,7 @@ public class COwnReleaseObjectInsnGenTest {
         func.createAndAddVariable("obj", new GdObjectType("UnknownObject"));
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new TryReleaseObjectInsn("obj", LifecycleProvenance.USER_EXPLICIT));
+        entry.appendInstruction(new TryReleaseObjectInsn("obj", LifecycleProvenance.USER_EXPLICIT));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -92,7 +92,7 @@ public class COwnReleaseObjectInsnGenTest {
         func.createAndAddVariable("obj", new GdObjectType("Node"));
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new TryOwnObjectInsn("obj", LifecycleProvenance.USER_EXPLICIT));
+        entry.appendInstruction(new TryOwnObjectInsn("obj", LifecycleProvenance.USER_EXPLICIT));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -117,7 +117,7 @@ public class COwnReleaseObjectInsnGenTest {
         func.createAndAddVariable("notObj", GdIntType.INT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new TryOwnObjectInsn("notObj", LifecycleProvenance.USER_EXPLICIT));
+        entry.appendInstruction(new TryOwnObjectInsn("notObj", LifecycleProvenance.USER_EXPLICIT));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -139,7 +139,7 @@ public class COwnReleaseObjectInsnGenTest {
         func.createAndAddVariable("obj", new GdObjectType("UnknownObject"));
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new TryOwnObjectInsn("obj", LifecycleProvenance.AUTO_GENERATED));
+        entry.appendInstruction(new TryOwnObjectInsn("obj", LifecycleProvenance.AUTO_GENERATED));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -161,7 +161,7 @@ public class COwnReleaseObjectInsnGenTest {
         func.createAndAddVariable("obj", new GdObjectType("UnknownObject"));
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new TryReleaseObjectInsn("obj", LifecycleProvenance.INTERNAL));
+        entry.appendInstruction(new TryReleaseObjectInsn("obj", LifecycleProvenance.INTERNAL));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);

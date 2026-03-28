@@ -51,7 +51,7 @@ public class CCodegenTest {
         func.createAndAddVariable("result", GdVariantType.VARIANT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new VariantGetInsn("result", "self", "key"));
+        entry.appendInstruction(new VariantGetInsn("result", "self", "key"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -89,7 +89,7 @@ public class CCodegenTest {
         func.createAndAddVariable("value", GdVariantType.VARIANT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new VariantSetInsn("self", "key", "value"));
+        entry.appendInstruction(new VariantSetInsn("self", "key", "value"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -126,7 +126,7 @@ public class CCodegenTest {
         func.createAndAddVariable("result", GdIntType.INT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"));
+        entry.appendInstruction(new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -230,9 +230,9 @@ public class CCodegenTest {
         func.createAndAddVariable("result", GdBoolType.BOOL);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new BinaryOpInsn("tmp", GodotOperator.IN, "left", "right"));
-        entry.instructions().add(new UnaryOpInsn("result", GodotOperator.NOT, "tmp"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new BinaryOpInsn("tmp", GodotOperator.IN, "left", "right"));
+        entry.appendInstruction(new UnaryOpInsn("result", GodotOperator.NOT, "tmp"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -270,8 +270,8 @@ public class CCodegenTest {
         func.createAndAddVariable("result", GdBoolType.BOOL);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new BinaryOpInsn("result", GodotOperator.GREATER, "left", "right"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new BinaryOpInsn("result", GodotOperator.GREATER, "left", "right"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
