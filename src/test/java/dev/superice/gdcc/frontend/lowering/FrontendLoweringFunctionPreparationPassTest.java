@@ -101,6 +101,7 @@ class FrontendLoweringFunctionPreparationPassTest {
         assertSame(outerConstructor, initContext.sourceOwner());
         assertSame(outerConstructor.body(), initContext.loweringRoot());
         assertInstanceOf(Block.class, initContext.loweringRoot());
+        assertSame(requireFunction(outerClass, "_init"), initContext.targetFunction());
 
         var helperContext = requireContext(
                 contexts,
@@ -112,6 +113,7 @@ class FrontendLoweringFunctionPreparationPassTest {
         assertSame(outerStaticFunction.body(), helperContext.loweringRoot());
         assertInstanceOf(Block.class, helperContext.loweringRoot());
         assertTrue(helperContext.targetFunction().isStatic());
+        assertSame(requireFunction(outerClass, "helper"), helperContext.targetFunction());
 
         var pingContext = requireContext(
                 contexts,
@@ -122,6 +124,7 @@ class FrontendLoweringFunctionPreparationPassTest {
         assertSame(outerFunction, pingContext.sourceOwner());
         assertSame(outerFunction.body(), pingContext.loweringRoot());
         assertInstanceOf(Block.class, pingContext.loweringRoot());
+        assertSame(requireFunction(outerClass, "ping"), pingContext.targetFunction());
 
         var pongContext = requireContext(
                 contexts,
@@ -132,6 +135,7 @@ class FrontendLoweringFunctionPreparationPassTest {
         assertSame(innerFunction, pongContext.sourceOwner());
         assertSame(innerFunction.body(), pongContext.loweringRoot());
         assertInstanceOf(Block.class, pongContext.loweringRoot());
+        assertSame(requireFunction(innerClass, "pong"), pongContext.targetFunction());
 
         var outerPropertyContext = requireContext(
                 contexts,
@@ -241,6 +245,55 @@ class FrontendLoweringFunctionPreparationPassTest {
         );
 
         assertTrue(exception.getMessage().contains("callable body scope has not been published"));
+    }
+
+    @Test
+    void runFailsFastWhenCallableOwnerScopeIsMissing() throws Exception {
+        var prepared = prepareCompileReadyContext();
+        var outerSourceFile = prepared.module().units().getFirst().ast();
+        var outerFunction = requireStatement(
+                outerSourceFile.statements(),
+                FunctionDeclaration.class,
+                function -> function.name().equals("ping")
+        );
+        prepared.context().requireAnalysisData().scopesByAst().remove(outerFunction);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringFunctionPreparationPass().run(prepared.context())
+        );
+
+        assertTrue(exception.getMessage().contains("callable owner scope has not been published"));
+    }
+
+    @Test
+    void runFailsFastWhenFunctionSkeletonIsMissing() throws Exception {
+        var prepared = prepareCompileReadyContext();
+        var outerClass = requireClass(prepared.context().requireLirModule(), "RuntimePreparationOuter");
+        assertTrue(outerClass.removeFunction(requireFunction(outerClass, "ping")));
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringFunctionPreparationPass().run(prepared.context())
+        );
+
+        assertTrue(exception.getMessage().contains("Expected exactly one function skeleton for RuntimePreparationOuter.ping"));
+    }
+
+    @Test
+    void runFailsFastWhenIndexedClassSkeletonIsMissingFromPublishedLirModule() throws Exception {
+        var prepared = prepareCompileReadyContext();
+        var lirModule = prepared.context().requireLirModule();
+        var innerClass = requireClass(lirModule, "RuntimePreparationOuter$Inner");
+        assertTrue(lirModule.getClassDefs().remove(innerClass));
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringFunctionPreparationPass().run(prepared.context())
+        );
+
+        assertTrue(exception.getMessage().contains("RuntimePreparationOuter$Inner"));
+        assertTrue(exception.getMessage().contains("is not part of the published LIR module"));
     }
 
     @Test

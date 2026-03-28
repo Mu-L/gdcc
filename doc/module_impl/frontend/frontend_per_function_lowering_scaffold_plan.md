@@ -208,6 +208,17 @@
 
 ## 6. Step 3: 收集 executable callable context
 
+### 6.0 当前状态
+
+- 状态：已完成
+- 完成时间：2026-03-28
+- 已落地产出：
+  - compile-ready executable callable context 收集已覆盖 top-level function、inner class function、static function 与 constructor `_init`
+  - executable callable context 继续复用 skeleton phase 已发布的同一份 `LirFunctionDef`
+  - AST owner -> owning class / source relation identity 索引已用于 inner class executable callable 收集
+  - fail-fast guard rail 已通过测试锚定：缺失 callable owner scope、callable body scope、function skeleton、published class skeleton 时立即中止
+  - `FrontendLoweringFunctionPreparationPassTest` 已补充 executable callable 的对象同一性与负向边界回归
+
 ### 6.1 目标
 
 在不重新发现类、不重建 function skeleton 的前提下，稳定收集每个 compile-ready executable callable 对应的 `LirFunctionDef`。
