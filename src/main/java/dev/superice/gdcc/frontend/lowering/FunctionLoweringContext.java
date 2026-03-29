@@ -83,12 +83,13 @@ public final class FunctionLoweringContext {
     /// tables.
     private final @NotNull FrontendAnalysisData analysisData;
 
-    /// Per-function CFG skeleton bundles keyed by original AST node identity.
+    /// Legacy per-function CFG skeleton bundles keyed by original AST node identity.
     ///
-    /// CFG-oriented passes publish into this side table after the function shells already exist.
-    /// Keeping the mapping local to the lowering context lets later passes recover block roles by
-    /// AST identity without mutating shared semantic state or prematurely materializing the blocks
-    /// into the target `LirFunctionDef`.
+    /// This side table currently exists only for the metadata-only `FrontendLoweringCfgPass`.
+    /// It freezes deterministic AST-to-role bookkeeping for the migration period, but it is not a
+    /// complete frontend CFG model: condition-evaluation regions, loop-control edges, and
+    /// short-circuit semantics still require a future frontend CFG graph carrier from the
+    /// dedicated `frontend.lowering.cfg` package.
     private final @NotNull FrontendAstSideTable<CfgNodeBlocks> cfgNodeBlocks = new FrontendAstSideTable<>();
 
     public FunctionLoweringContext(
@@ -185,10 +186,11 @@ public final class FunctionLoweringContext {
         PARAMETER_DEFAULT_INIT
     }
 
-    /// Role-bearing CFG skeleton blocks published for one AST node.
+    /// Legacy role-bearing CFG skeleton blocks published for one AST node.
     ///
-    /// The bundle keeps lexical block order so later lowering/materialization work can emit the
-    /// same deterministic block order without re-deriving the shape from source traversal.
+    /// These bundles are a migration aid for the current metadata-only CFG pass. They intentionally
+    /// stop short of expressing full source control-flow semantics and should eventually be
+    /// replaced by frontend CFG graph regions.
     public sealed interface CfgNodeBlocks
             permits BlockCfgNodeBlocks, IfCfgNodeBlocks, ElifCfgNodeBlocks, WhileCfgNodeBlocks {
         @NotNull List<LirBasicBlock> blocks();

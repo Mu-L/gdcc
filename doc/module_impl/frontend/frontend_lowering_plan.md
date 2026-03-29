@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：计划维护中（function pre-pass scaffold 已落地，下一阶段转入最小 CFG 与 body lowering）
-- 更新时间：2026-03-28
+- 状态：计划维护中（function pre-pass scaffold 已落地；当前第二阶段转入 frontend CFG graph migration）
+- 更新时间：2026-03-29
 - 当前事实源：
   - `frontend_lowering_skeleton_pre_pass_implementation.md`
   - `frontend_lowering_func_pre_pass_implementation.md`
@@ -35,8 +35,8 @@
 建议按以下顺序推进，并保持每一步都是可运行、可回归、可单独提交的状态：
 
 1. function lowering context / preparation
-2. minimal CFG
-3. MVP statement / expression lowering
+2. frontend CFG graph / condition-evaluation-region
+3. frontend CFG -> LIR body lowering
 4. compile gate blocker 按顺序解除
 5. post-MVP backlog 单独立项
 
@@ -84,15 +84,18 @@
 
 ---
 
-## 4. 第二步：实现最小 CFG lowering
+## 4. 第二步：迁移到 frontend CFG graph
 
 本步骤的详细实施计划由独立文档维护：
 
-- `frontend_lowering_cfg_pass_plan.md`
+- `frontend_lowering_cfg_graph_plan.md`
+- `frontend_lowering_cfg_pass_plan.md`（legacy 迁移说明）
 
 目标：
 
-- 为当前 MVP 已支持的函数级 lowering 单元建立最小 basic block / CFG
+- 在真正写 LIR 前，先建立 frontend-only CFG graph
+- 让 CFG 层能够表达 condition-evaluation-region，而不只是 metadata-only block skeleton
+- 新 CFG graph 必须在独立的 `frontend.lowering.cfg` 包中实现，并只由 `FrontendLoweringBuildCfgPass` 构建
 - 当前实际落地范围先覆盖 executable callable；property initializer function 在对应 expression/body lowering 接通后复用同一套入口
 
 第一批建议只支持：
@@ -113,29 +116,35 @@
 
 建议实施内容：
 
-- 引入 `FrontendLoweringCfgPass`
-- 先在 `FunctionLoweringContext` 上增加 AST-keyed 的 CFG block skeleton side table
-- block bundle 必须按 node role 建模，不能退化成“一个 node 只对应一个 block”的平面 map
-- 只有在 terminator 能与 block shape 同步闭合时，才把 block 真正写入 `LirFunctionDef`
-- 在首次写入 basic block 时同步设置 `entryBlockId`
+- 在 `frontend.lowering.cfg` 包中独立实现 frontend CFG graph model 与 builder
+- 引入 `FrontendLoweringBuildCfgPass` 作为唯一的 CFG 构图入口
+- 现有 `FrontendLoweringCfgPass` 立即标注废弃，并在迁移完成后删除
+- 在 `FunctionLoweringContext` 上增加 frontend CFG graph 与 AST-keyed region side table
+- 明确区分：
+  - `buildValue(...)`
+  - `buildCondition(...)`
+- `and` / `or` 无论处于 value context 还是 condition context，都必须按短路控制流展开；不得把 value-context `and/or` 回退成单个线性二元表达式节点
+- `BranchNode` 当前允许持有非 `bool` condition value，truthiness / condition normalization 延后到 frontend CFG -> LIR lowering
+- 在 frontend CFG graph 稳定前，`LirModule` 继续保持 shell-only
 
 验收细则：
 
 - happy path：
-  - executable callable 拥有稳定、可预测的 CFG skeleton shape
-  - `if / elif / else` 与 `while` 的 block shape 可预测且有回归测试锚定
+  - executable callable 拥有稳定、可预测的 frontend CFG graph shape
+  - `if / elif / else` 与 `while` 都拥有显式 condition-entry region
+  - 非 `bool` condition 与 `and` / `or` 的前置求值区域有回归测试锚定
 - negative path：
   - 未实现结构不被 silent drop
   - compile gate 尚未解除时，对应脚本仍在 analysis pass 被挡下
-  - 不出现“有 basic block 但没有合法 entry / 无法继续消费”的半成品 LIR
+  - 不出现“frontend CFG 尚未闭环却提前把半成品 block 写进 LIR”的中间态
 
 ---
 
-## 5. 第三步：实现 MVP 支持面的 statement / expression lowering
+## 5. 第三步：实现 frontend CFG -> LIR body lowering
 
 目标：
 
-- 打通当前 frontend 已稳定发布事实的 MVP surface
+- 在 frontend CFG graph 已冻结的前提下，打通当前 frontend 已稳定发布事实的 MVP surface
 - 让 executable callable body 与 supported property initializer function 都通过同一套函数级 lowering 管线进入 instruction 生成
 
 建议优先顺序：
@@ -149,6 +158,7 @@
 建议实施内容：
 
 - 引入 `FrontendLoweringBodyInsnPass`
+- 让 body lowering 以 `frontend.lowering.cfg` 中发布的 frontend CFG graph 为直接输入，而不是重新从 AST + `CfgNodeBlocks` 推断控制流
 - 严格消费已发布的：
   - `symbolBindings`
   - `resolvedMembers`
@@ -188,7 +198,7 @@
 
 说明：
 
-- `ConditionalExpression` 依赖 CFG 合同先稳定
+- `ConditionalExpression` 依赖 frontend CFG graph / condition-evaluation-region 合同先稳定
 - `assert` 依赖 lowering/backend 的 statement 语义
 - container / cast / runtime integration / static field 相关 blocker 均应在对应 lowering/backend 设计闭环后再解除
 
@@ -233,6 +243,6 @@
   - `frontend_rules.md`
   - `frontend_compile_check_analyzer_implementation.md`
   - `frontend_lowering_skeleton_pre_pass_implementation.md`
-  - `frontend_lowering_cfg_pass_plan.md`
+  - `frontend_lowering_cfg_graph_plan.md`
   - 本文档
   - 对应 lowering / backend 测试

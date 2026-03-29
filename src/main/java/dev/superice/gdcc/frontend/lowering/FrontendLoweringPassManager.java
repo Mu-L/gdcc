@@ -18,7 +18,10 @@ import java.util.Objects;
 ///
 /// The current pipeline consumes a `FrontendModule`, runs compile-ready semantic analysis, and
 /// emits a shell-only `LirModule` while also publishing lowering-local per-function scaffolding and
-/// metadata needed by later body passes.
+/// legacy CFG metadata. The current `FrontendLoweringCfgPass` is deprecated transitional plumbing
+/// and is expected to be replaced by a dedicated `FrontendLoweringBuildCfgPass` that builds the
+/// frontend CFG graph from the future `frontend.lowering.cfg` package.
+@SuppressWarnings("deprecation")
 public final class FrontendLoweringPassManager {
     private final @NotNull List<FrontendLoweringPass> passes;
 

@@ -14,6 +14,7 @@
 - 关联文档：
   - `frontend_lowering_plan.md`
   - `frontend_lowering_skeleton_pre_pass_implementation.md`
+  - `frontend_lowering_cfg_graph_plan.md`
   - `frontend_lowering_cfg_pass_plan.md`
   - `frontend_rules.md`
   - `frontend_compile_check_analyzer_implementation.md`
@@ -25,6 +26,7 @@
   - 当前实现不解除 compile-only gate blocker
   - 当前实现不让 parameter default 进入 compile-ready lowering surface
   - 当前实现不把无 initializer 的 property 变成 frontend-generated init shell
+  - 当前实现不把 legacy metadata-only `FrontendLoweringCfgPass` 视为最终 CFG 架构
 
 ---
 
@@ -259,8 +261,9 @@ negative path 至少要锚定：
 - callable skeleton 匹配键未来可能需要从 `name + static + parameterCount` 升级
 - property initializer 的完整执行时序、实例状态可见性和初始化顺序仍未闭环
 - parameter default 的可见性、捕获、求值顺序，以及 instance-vs-static synthetic function 策略仍待专门设计
-- `ConditionalExpression` 等依赖 CFG 的结构，必须等最小 CFG lowering 稳定后再放行
+- `ConditionalExpression` 等依赖 control-flow 的结构，必须等 frontend CFG graph / condition-evaluation-region 合同稳定后再放行
 - truthiness / condition normalization 属于后续 CFG/body lowering 责任，不应下沉回 function pre-pass
+- 当前 `FrontendLoweringCfgPass` 与 `FunctionLoweringContext.cfgNodeBlocks` 仍属于迁移期过渡层；后续 CFG 工程应在独立的 `frontend.lowering.cfg` 包中实施，并由 `FrontendLoweringBuildCfgPass` 构建，而不是继续扩展 legacy block-bundle metadata
 - backend 目前仍保留 no-initializer property 的默认 init shell 兜底；未来若要把这部分前移到 lowering，需要先统一 frontend/backend 对“默认值函数所有权”的合同
 
 这些问题不应反向污染当前 function pre-pass 的事实边界。后续工程应在现有 scaffold 之上继续推进，而不是回退到“每个后续 pass 各自重建 callable/property 索引”的分叉设计。

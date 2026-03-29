@@ -232,7 +232,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - compile surface 上 `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 中仍残留的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`
   - `assert` 在这里仍只是 compile-only blocked；共享 type-check 继续保留 Godot-compatible condition contract，不把它回退成 strict-bool `sema.type_check`
   - 上述 7 类表达式属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
-  - `ConditionalExpression` 当前单独被列入这份清单，是因为真正的 lowering 需要等 control-flow / CFG 侧合同冻结后再接通
+  - `ConditionalExpression` 当前单独被列入这份清单，是因为真正的 lowering 需要等 frontend CFG graph / condition-evaluation-region 合同冻结后再接通；现有 metadata-only `FrontendLoweringCfgPass` 仍属于过渡层
   - `DYNAMIC` 不属于 compile blocker；它保留为 frontend 已接受的 runtime-open 事实，而不是 lowering 未实现状态
   - 该 category 只属于 compile-only 入口，不属于默认共享语义 / inspection / 未来 LSP 入口
 

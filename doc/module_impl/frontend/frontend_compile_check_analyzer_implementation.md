@@ -151,7 +151,7 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 
 其中 `ConditionalExpression` 还带有一条更具体的当前事实：
 
-- 它的 lowering 需要依赖 control-flow / CFG 侧合同冻结
+- 它的 lowering 需要依赖 frontend CFG graph / condition-evaluation-region 合同冻结；当前 legacy metadata-only `FrontendLoweringCfgPass` 仍不足以支撑解封
 - 因此在 CFG 入口尚未定型前，compile gate 必须先把它挡在编译管线外
 
 这些错误不表示：

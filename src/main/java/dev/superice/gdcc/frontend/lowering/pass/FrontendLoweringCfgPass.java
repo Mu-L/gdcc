@@ -20,10 +20,14 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 
-/// Freezes the first CFG-pass contract without materializing any block skeleton yet.
+/// Legacy transitional CFG pass.
 ///
-/// This step only validates that later CFG work will see compile-ready executable lowering units
-/// that already crossed the compile gate and therefore satisfy the current compile surface.
+/// The current implementation only publishes metadata-only block skeleton bundles for executable
+/// bodies that already crossed the compile gate. It does not yet build the intended frontend CFG
+/// graph, so it cannot express condition-evaluation regions, short-circuit control flow, loop
+/// control, or truthiness normalization. Future CFG work must migrate this pass rather than treat
+/// it as completed frontend CFG lowering.
+@Deprecated(since = "2026-03-29")
 public final class FrontendLoweringCfgPass implements FrontendLoweringPass {
     private int nextIfIndex;
     private int nextElifIndex;
