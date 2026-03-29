@@ -3,6 +3,7 @@ package dev.superice.gdcc.frontend.lowering;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringClassSkeletonPass;
+import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringCfgPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringFunctionPreparationPass;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.lir.LirModule;
@@ -16,7 +17,8 @@ import java.util.Objects;
 /// Public frontend lowering entrypoint that executes the fixed lowering pass pipeline.
 ///
 /// The current pipeline consumes a `FrontendModule`, runs compile-ready semantic analysis, and
-/// emits a skeleton/shell-only `LirModule` plus the first function-level lowering worklist.
+/// emits a shell-only `LirModule` while also publishing lowering-local per-function scaffolding and
+/// metadata needed by later body passes.
 public final class FrontendLoweringPassManager {
     private final @NotNull List<FrontendLoweringPass> passes;
 
@@ -24,7 +26,8 @@ public final class FrontendLoweringPassManager {
         this(List.of(
                 new FrontendLoweringAnalysisPass(),
                 new FrontendLoweringClassSkeletonPass(),
-                new FrontendLoweringFunctionPreparationPass()
+                new FrontendLoweringFunctionPreparationPass(),
+                new FrontendLoweringCfgPass()
         ));
     }
 
@@ -37,6 +40,16 @@ public final class FrontendLoweringPassManager {
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnosticManager
     ) {
+        return lowerToContext(module, classRegistry, diagnosticManager).lirModuleOrNull();
+    }
+
+    /// Package-local test hook that exposes the final lowering context without widening the public
+    /// lowering API. The public entrypoint still returns only the published `LirModule`.
+    @NotNull FrontendLoweringContext lowerToContext(
+            @NotNull FrontendModule module,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
         var context = new FrontendLoweringContext(module, classRegistry, diagnosticManager);
         for (var pass : passes) {
             if (context.isStopRequested()) {
@@ -44,6 +57,6 @@ public final class FrontendLoweringPassManager {
             }
             pass.run(context);
         }
-        return context.lirModuleOrNull();
+        return context;
     }
 }

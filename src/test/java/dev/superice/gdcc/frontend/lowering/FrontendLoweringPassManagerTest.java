@@ -8,6 +8,8 @@ import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.parser.DomLirSerializer;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.IfStatement;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
@@ -20,8 +22,10 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -135,6 +139,76 @@ class FrontendLoweringPassManagerTest {
     }
 
     @Test
+    void lowerToContextRunsDefaultCfgPassButKeepsPublishedLirShellOnly() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var manager = new FrontendLoweringPassManager();
+        var module = parseModule(
+                List.of(new SourceFixture(
+                        "lowering_manager_cfg_metadata.gd",
+                        """
+                                class_name CfgMetadataOuter
+                                extends RefCounted
+                                
+                                var count: int = 1
+                                
+                                func ping(flag: bool) -> void:
+                                    if flag:
+                                        pass
+                                    else:
+                                        return
+                                """
+                )),
+                Map.of("CfgMetadataOuter", "RuntimeCfgMetadataOuter")
+        );
+
+        var context = manager.lowerToContext(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        var lowered = context.requireLirModule();
+        var contexts = context.requireFunctionLoweringContexts();
+        var executableContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeCfgMetadataOuter",
+                "ping"
+        );
+        var propertyContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeCfgMetadataOuter",
+                "_field_init_count"
+        );
+        var pingFunction = requireFunctionDeclaration(module.units().getFirst().ast(), "ping");
+        var rootBlock = pingFunction.body();
+        var outerIf = assertInstanceOf(IfStatement.class, rootBlock.statements().getFirst());
+
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertTrue(executableContext.hasCfgNodeBlocks(rootBlock)),
+                () -> assertInstanceOf(
+                        FunctionLoweringContext.BlockCfgNodeBlocks.class,
+                        executableContext.requireCfgNodeBlocks(rootBlock)
+                ),
+                () -> assertTrue(executableContext.hasCfgNodeBlocks(outerIf)),
+                () -> assertInstanceOf(
+                        FunctionLoweringContext.IfCfgNodeBlocks.class,
+                        executableContext.requireCfgNodeBlocks(outerIf)
+                ),
+                () -> assertNull(propertyContext.cfgNodeBlocksOrNull(propertyContext.loweringRoot())),
+                () -> assertEquals(0, executableContext.targetFunction().getBasicBlockCount()),
+                () -> assertTrue(executableContext.targetFunction().getEntryBlockId().isEmpty()),
+                () -> assertEquals(0, propertyContext.targetFunction().getBasicBlockCount()),
+                () -> assertTrue(propertyContext.targetFunction().getEntryBlockId().isEmpty())
+        );
+
+        var xml = new DomLirSerializer().serializeToString(lowered);
+        assertFalse(xml.contains("<basic_block id="), xml);
+        assertFalse(xml.contains("<basic_blocks entry="), xml);
+    }
+
+    @Test
     void lowerModuleWithPropertyWithoutInitializerDoesNotPublishFrontendInitShellIntoSerializedLir() throws Exception {
         var diagnostics = new DiagnosticManager();
         var lowered = new FrontendLoweringPassManager().lower(
@@ -164,6 +238,35 @@ class FrontendLoweringPassManagerTest {
         assertTrue(xml.contains("name=\"plain_count\""), xml);
         assertFalse(xml.contains("init_func=\"_field_init_plain_count\""), xml);
         assertFalse(xml.contains("name=\"_field_init_plain_count\""), xml);
+    }
+
+    @Test
+    void lowerToContextCompileBlockedModuleStopsBeforeCfgMetadataPublication() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var context = new FrontendLoweringPassManager().lowerToContext(
+                parseModule(
+                        List.of(new SourceFixture(
+                                "lowering_manager_cfg_compile_blocked.gd",
+                                """
+                                        class_name LoweringManagerCfgCompileBlocked
+                                        extends RefCounted
+                                        
+                                        func ping(value):
+                                            assert(value, "blocked in compile mode")
+                                        """
+                        )),
+                        Map.of()
+                ),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+
+        assertAll(
+                () -> assertTrue(context.isStopRequested()),
+                () -> assertNull(context.lirModuleOrNull()),
+                () -> assertNull(context.functionLoweringContextsOrNull()),
+                () -> assertTrue(diagnostics.hasErrors())
+        );
     }
 
     @Test
@@ -197,6 +300,34 @@ class FrontendLoweringPassManagerTest {
                 compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("assert statement")),
                 () -> "Unexpected diagnostics: " + diagnostics.snapshot()
         );
+    }
+
+    private static @NotNull FunctionLoweringContext requireContext(
+            @NotNull List<FunctionLoweringContext> contexts,
+            @NotNull FunctionLoweringContext.Kind kind,
+            @NotNull String owningClassName,
+            @NotNull String functionName
+    ) {
+        return contexts.stream()
+                .filter(context -> context.kind() == kind)
+                .filter(context -> context.owningClass().getName().equals(owningClassName))
+                .filter(context -> context.targetFunction().getName().equals(functionName))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "Missing context " + kind + " " + owningClassName + "." + functionName
+                ));
+    }
+
+    private static @NotNull FunctionDeclaration requireFunctionDeclaration(
+            @NotNull dev.superice.gdparser.frontend.ast.SourceFile sourceFile,
+            @NotNull String functionName
+    ) {
+        return sourceFile.statements().stream()
+                .filter(FunctionDeclaration.class::isInstance)
+                .map(FunctionDeclaration.class::cast)
+                .filter(function -> function.name().equals(functionName))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing function declaration " + functionName));
     }
 
     private static @NotNull FrontendModule parseModule(
