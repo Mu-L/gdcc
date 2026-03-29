@@ -90,6 +90,9 @@ class FrontendLoweringCfgPassTest {
 
         assertAll(
                 () -> assertSame(prepared.context().requireAnalysisData(), executableContext.analysisData()),
+                () -> assertFalse(executableContext.hasFrontendCfgGraph()),
+                () -> assertNull(executableContext.frontendCfgGraphOrNull()),
+                () -> assertNull(executableContext.frontendCfgRegionOrNull(rootBlock)),
                 () -> assertEquals(List.of("entry"), blockIds(rootBlocks.blocks())),
                 () -> assertEquals("if_then_0", outerIfBlocks.thenEntry().id()),
                 () -> assertEquals("if_false_0", outerIfBlocks.elseOrNextClauseEntry().id()),

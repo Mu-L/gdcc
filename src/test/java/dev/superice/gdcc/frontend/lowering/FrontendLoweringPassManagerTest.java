@@ -186,16 +186,22 @@ class FrontendLoweringPassManagerTest {
 
         assertAll(
                 () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertFalse(executableContext.hasFrontendCfgGraph()),
                 () -> assertTrue(executableContext.hasCfgNodeBlocks(rootBlock)),
                 () -> assertInstanceOf(
                         FunctionLoweringContext.BlockCfgNodeBlocks.class,
                         executableContext.requireCfgNodeBlocks(rootBlock)
                 ),
+                () -> assertNull(executableContext.frontendCfgGraphOrNull()),
+                () -> assertNull(executableContext.frontendCfgRegionOrNull(rootBlock)),
                 () -> assertTrue(executableContext.hasCfgNodeBlocks(outerIf)),
                 () -> assertInstanceOf(
                         FunctionLoweringContext.IfCfgNodeBlocks.class,
                         executableContext.requireCfgNodeBlocks(outerIf)
                 ),
+                () -> assertNull(executableContext.frontendCfgRegionOrNull(outerIf)),
+                () -> assertFalse(propertyContext.hasFrontendCfgGraph()),
+                () -> assertNull(propertyContext.frontendCfgGraphOrNull()),
                 () -> assertNull(propertyContext.cfgNodeBlocksOrNull(propertyContext.loweringRoot())),
                 () -> assertEquals(0, executableContext.targetFunction().getBasicBlockCount()),
                 () -> assertTrue(executableContext.targetFunction().getEntryBlockId().isEmpty()),

@@ -1,5 +1,7 @@
 package dev.superice.gdcc.frontend.lowering;
 
+import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
+import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgRegion;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendSourceClassRelation;
@@ -83,13 +85,26 @@ public final class FunctionLoweringContext {
     /// tables.
     private final @NotNull FrontendAnalysisData analysisData;
 
+    /// Frontend-only CFG graph published by the future `FrontendLoweringBuildCfgPass`.
+    ///
+    /// The graph carrier is separate from LIR basic blocks so frontend can first freeze source
+    /// control-flow, condition-evaluation regions, and short-circuit structure before any
+    /// frontend CFG -> LIR lowering starts writing real blocks.
+    private @Nullable FrontendCfgGraph frontendCfgGraph;
+
+    /// AST-keyed structured regions inside `frontendCfgGraph`.
+    ///
+    /// These regions are the new source-of-truth entry/merge/exit anchors for structured source
+    /// nodes such as `Block`, `if`/`elif`, and `while`. Like the semantic side tables, the lookup
+    /// deliberately uses AST identity instead of structural equality.
+    private final @NotNull FrontendAstSideTable<FrontendCfgRegion> frontendCfgRegions = new FrontendAstSideTable<>();
+
     /// Legacy per-function CFG skeleton bundles keyed by original AST node identity.
     ///
     /// This side table currently exists only for the metadata-only `FrontendLoweringCfgPass`.
-    /// It freezes deterministic AST-to-role bookkeeping for the migration period, but it is not a
-    /// complete frontend CFG model: condition-evaluation regions, loop-control edges, and
-    /// short-circuit semantics still require a future frontend CFG graph carrier from the
-    /// dedicated `frontend.lowering.cfg` package.
+    /// It freezes deterministic AST-to-role bookkeeping for the migration period, but the new
+    /// frontend CFG architecture is represented by `frontendCfgGraph` plus `frontendCfgRegions`.
+    @Deprecated(since = "2026-03-29")
     private final @NotNull FrontendAstSideTable<CfgNodeBlocks> cfgNodeBlocks = new FrontendAstSideTable<>();
 
     public FunctionLoweringContext(
@@ -147,10 +162,74 @@ public final class FunctionLoweringContext {
         return analysisData;
     }
 
+    /// Publishes the immutable frontend CFG graph for this lowering unit.
+    ///
+    /// Duplicate publication is rejected so later passes can rely on one stable frontend CFG graph
+    /// snapshot per function context.
+    public void publishFrontendCfgGraph(@NotNull FrontendCfgGraph frontendCfgGraph) {
+        Objects.requireNonNull(frontendCfgGraph, "frontendCfgGraph must not be null");
+        if (this.frontendCfgGraph != null) {
+            throw new IllegalStateException("Frontend CFG graph has already been published");
+        }
+        this.frontendCfgGraph = frontendCfgGraph;
+    }
+
+    public @Nullable FrontendCfgGraph frontendCfgGraphOrNull() {
+        return frontendCfgGraph;
+    }
+
+    public @NotNull FrontendCfgGraph requireFrontendCfgGraph() {
+        if (frontendCfgGraph == null) {
+            throw new IllegalStateException("Frontend CFG graph has not been published yet");
+        }
+        return frontendCfgGraph;
+    }
+
+    public boolean hasFrontendCfgGraph() {
+        return frontendCfgGraph != null;
+    }
+
+    /// Publishes one AST-keyed frontend CFG region for this lowering unit.
+    ///
+    /// The mapping must remain one-to-one by AST identity so later passes can recover the region
+    /// entry/merge/exit anchors for the original source node without rebuilding the region lookup.
+    public void publishFrontendCfgRegion(@NotNull Node astNode, @NotNull FrontendCfgRegion region) {
+        Objects.requireNonNull(astNode, "astNode must not be null");
+        Objects.requireNonNull(region, "region must not be null");
+        if (frontendCfgRegions.containsKey(astNode)) {
+            throw new IllegalStateException(
+                    "Frontend CFG region has already been published for " + describeCfgAstNode(astNode)
+            );
+        }
+        frontendCfgRegions.put(astNode, region);
+    }
+
+    public @Nullable FrontendCfgRegion frontendCfgRegionOrNull(@NotNull Node astNode) {
+        return frontendCfgRegions.get(Objects.requireNonNull(astNode, "astNode must not be null"));
+    }
+
+    public @NotNull FrontendCfgRegion requireFrontendCfgRegion(@NotNull Node astNode) {
+        var region = frontendCfgRegionOrNull(astNode);
+        if (region == null) {
+            throw new IllegalStateException(
+                    "Frontend CFG region has not been published for " + describeCfgAstNode(astNode)
+            );
+        }
+        return region;
+    }
+
+    public boolean hasFrontendCfgRegion(@NotNull Node astNode) {
+        return frontendCfgRegions.containsKey(Objects.requireNonNull(astNode, "astNode must not be null"));
+    }
+
     /// Publishes one AST-keyed CFG block bundle for this lowering unit.
     ///
     /// Duplicate publication for the same AST node is a protocol violation because later passes
     /// must be able to rely on a one-to-one mapping from node identity to block-role bundle.
+    ///
+    /// @deprecated Legacy migration-only API for `FrontendLoweringCfgPass`. New frontend CFG work
+    /// should publish `frontendCfgGraph` plus `frontendCfgRegions` instead.
+    @Deprecated(since = "2026-03-29")
     public void publishCfgNodeBlocks(@NotNull Node astNode, @NotNull CfgNodeBlocks blocks) {
         Objects.requireNonNull(astNode, "astNode must not be null");
         Objects.requireNonNull(blocks, "blocks must not be null");
@@ -162,10 +241,16 @@ public final class FunctionLoweringContext {
         cfgNodeBlocks.put(astNode, blocks);
     }
 
+    /// @deprecated Legacy migration-only API for `FrontendLoweringCfgPass`. New frontend CFG work
+    /// should read `frontendCfgGraph` plus `frontendCfgRegions` instead.
+    @Deprecated(since = "2026-03-29")
     public @Nullable CfgNodeBlocks cfgNodeBlocksOrNull(@NotNull Node astNode) {
         return cfgNodeBlocks.get(Objects.requireNonNull(astNode, "astNode must not be null"));
     }
 
+    /// @deprecated Legacy migration-only API for `FrontendLoweringCfgPass`. New frontend CFG work
+    /// should read `frontendCfgGraph` plus `frontendCfgRegions` instead.
+    @Deprecated(since = "2026-03-29")
     public @NotNull CfgNodeBlocks requireCfgNodeBlocks(@NotNull Node astNode) {
         var blocks = cfgNodeBlocksOrNull(astNode);
         if (blocks == null) {
@@ -176,6 +261,9 @@ public final class FunctionLoweringContext {
         return blocks;
     }
 
+    /// @deprecated Legacy migration-only API for `FrontendLoweringCfgPass`. New frontend CFG work
+    /// should read `frontendCfgGraph` plus `frontendCfgRegions` instead.
+    @Deprecated(since = "2026-03-29")
     public boolean hasCfgNodeBlocks(@NotNull Node astNode) {
         return cfgNodeBlocks.containsKey(Objects.requireNonNull(astNode, "astNode must not be null"));
     }
@@ -191,12 +279,14 @@ public final class FunctionLoweringContext {
     /// These bundles are a migration aid for the current metadata-only CFG pass. They intentionally
     /// stop short of expressing full source control-flow semantics and should eventually be
     /// replaced by frontend CFG graph regions.
+    @Deprecated(since = "2026-03-29")
     public sealed interface CfgNodeBlocks
             permits BlockCfgNodeBlocks, IfCfgNodeBlocks, ElifCfgNodeBlocks, WhileCfgNodeBlocks {
         @NotNull List<LirBasicBlock> blocks();
     }
 
     /// CFG bundle for the executable-body root block.
+    @Deprecated(since = "2026-03-29")
     public record BlockCfgNodeBlocks(@NotNull LirBasicBlock entry) implements CfgNodeBlocks {
         public BlockCfgNodeBlocks {
             Objects.requireNonNull(entry, "entry must not be null");
@@ -212,6 +302,7 @@ public final class FunctionLoweringContext {
     ///
     /// `elseOrNextClauseEntry` may alias `merge` when the source statement has neither `else` nor
     /// `elif`, because the false path then falls through directly into the merge block.
+    @Deprecated(since = "2026-03-29")
     public record IfCfgNodeBlocks(
             @NotNull LirBasicBlock thenEntry,
             @NotNull LirBasicBlock elseOrNextClauseEntry,
@@ -233,6 +324,7 @@ public final class FunctionLoweringContext {
     ///
     /// `nextClauseOrMerge` may alias the owning `if` merge block when this clause is the final
     /// false-continuation point in the chain.
+    @Deprecated(since = "2026-03-29")
     public record ElifCfgNodeBlocks(
             @NotNull LirBasicBlock bodyEntry,
             @NotNull LirBasicBlock nextClauseOrMerge
@@ -249,6 +341,7 @@ public final class FunctionLoweringContext {
     }
 
     /// CFG bundle for one `while` statement.
+    @Deprecated(since = "2026-03-29")
     public record WhileCfgNodeBlocks(
             @NotNull LirBasicBlock conditionEntry,
             @NotNull LirBasicBlock bodyEntry,

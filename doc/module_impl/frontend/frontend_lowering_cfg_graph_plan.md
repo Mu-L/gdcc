@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：计划维护中（legacy metadata-only CFG pass 已落地，但仍属于未完成过渡层；下一阶段迁移到 frontend CFG graph）
+- 状态：实施中（第 1、2 阶段已完成；legacy metadata-only CFG pass 仍在默认 pipeline 中作为待迁移过渡层；第 3 阶段未开始）
 - 更新时间：2026-03-29
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
@@ -201,14 +201,14 @@ frontend 与 LIR 当前已经冻结了两条必须同时满足的事实：
 推荐的最小 region 形状：
 
 - `BlockRegion(entryId)`
-- `IfRegion(conditionEntryId, thenEntryId, elseOrNextClauseEntryId, mergeId)`
-- `ElifRegion(conditionEntryId, bodyEntryId, nextClauseOrMergeId)`
-- `WhileRegion(conditionEntryId, bodyEntryId, exitId)`
+- `FrontendIfRegion(conditionEntryId, thenEntryId, elseOrNextClauseEntryId, mergeId)`
+- `FrontendElifRegion(conditionEntryId, bodyEntryId, nextClauseOrMergeId)`
+- `FrontendWhileRegion(conditionEntryId, bodyEntryId, exitId)`
 
 这一步有两个直接收益：
 
 - `if` / `elif` 首次拥有显式 `conditionEntryId`
-- `continue` 可以稳定回跳到 `WhileRegion.conditionEntryId`
+- `continue` 可以稳定回跳到 `FrontendWhileRegion.conditionEntryId`
 
 ### 2.5 包与 pass 的职责边界
 
@@ -321,7 +321,7 @@ frontend CFG builder 需要显式维护 loop stack。
 
 ### 3.3 `while` 的 `break` / `continue`
 
-当前 block-bundle metadata 无法可靠表达 loop-control edge。引入 `WhileRegion` 与 loop stack 后：
+当前 block-bundle metadata 无法可靠表达 loop-control edge。引入 `FrontendWhileRegion` 与 loop stack 后：
 
 - `continue` 总是回到条件入口
 - `break` 总是离开当前 loop
@@ -346,7 +346,7 @@ frontend CFG builder 需要显式维护 loop stack。
 
 - 在代码注释与实施文档中明确标注：
   - 当前 `FrontendLoweringCfgPass` 是 legacy metadata-only skeleton
-  - 当前 `FunctionLoweringContext.cfgNodeBlocks` 是迁移期 side table
+  - 当前 `FunctionLoweringContext.cfgNodeBlocks` 是迁移期 side table，并已显式标注弃用
   - 现有实现尚未完成 frontend CFG 工程
 - 在代码中把 `FrontendLoweringCfgPass` 明确标注为 deprecated / for-removal
 - `frontend_lowering_cfg_pass_plan.md` 改为归档/迁移说明，不再作为当前实施主计划
@@ -358,6 +358,12 @@ frontend CFG builder 需要显式维护 loop stack。
 - 新旧文档的职责边界清晰：
   - 新文档是当前主计划
   - 旧文档仅保留 legacy 迁移背景
+
+当前状态（2026-03-29）：
+
+- 已完成。
+- `FrontendLoweringCfgPass` 已明确标注为 deprecated 的 legacy metadata-only skeleton。
+- `frontend_lowering_cfg_pass_plan.md` 已归档为迁移说明；相关 frontend 文档已对齐到“frontend CFG graph 尚未落地完成”的现状。
 
 ### 4.2 第二步：在 `FunctionLoweringContext` 中引入 frontend CFG graph carrier
 
@@ -377,6 +383,24 @@ frontend CFG builder 需要显式维护 loop stack。
   - duplicate publish 继续 fail-fast
   - 不属于该函数的 AST 节点不得误命中
   - graph 与 region side table 不得共享到别的 function context
+
+当前状态（2026-03-29）：
+
+- 已完成。
+- `frontend.lowering.cfg` 包已新增独立的 `FrontendCfgGraph` 与 `FrontendCfgRegion` 模型，固定了 frontend-only graph / region 的最小发布合同。
+- 结构化 region 已固定为 top-level 类型：
+  - `FrontendIfRegion`
+  - `FrontendElifRegion`
+  - `FrontendWhileRegion`
+- `FunctionLoweringContext` 已新增：
+  - per-function `frontendCfgGraph` carrier
+  - AST identity keyed `frontendCfgRegions` side table
+- 当前默认 pipeline 仍不会发布新 graph；在第 3 阶段 `FrontendLoweringBuildCfgPass` 接入前，legacy `cfgNodeBlocks` 继续仅作为显式弃用的过渡兼容物存在。
+- 已有单元测试锚定：
+  - duplicate graph / region publish fail-fast
+  - region lookup 继续按 AST identity 工作
+  - graph / region 不会跨 function context 泄漏
+  - 默认 pipeline 与 legacy CFG pass 均不会误发布新 graph
 
 ### 4.3 第三步：先迁移直线型 executable body
 
@@ -408,7 +432,7 @@ frontend CFG builder 需要显式维护 loop stack。
 
 - 为 `if` / `elif` / `while` 发布带 `conditionEntryId` 的 region
 - graph node id 继续采用 deterministic lexical-counter 策略
-- `IfRegion.mergeId` 与 `WhileRegion.exitId` 必须稳定可回归
+- `FrontendIfRegion.mergeId` 与 `FrontendWhileRegion.exitId` 必须稳定可回归
 
 验收细则：
 

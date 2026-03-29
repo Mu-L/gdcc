@@ -1,0 +1,96 @@
+package dev.superice.gdcc.frontend.lowering.cfg;
+
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.PassStatement;
+import dev.superice.gdparser.frontend.ast.Point;
+import dev.superice.gdparser.frontend.ast.Range;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class FrontendCfgGraphTest {
+    private static final Range SYNTHETIC_RANGE = new Range(0, 1, new Point(0, 0), new Point(0, 1));
+
+    @Test
+    void constructorCopiesNodeTopologyAndSupportsTypedLookup() {
+        var sequenceItems = new ArrayList<FrontendCfgGraph.SequenceItem>();
+        sequenceItems.add(new FrontendCfgGraph.StatementItem(new PassStatement(SYNTHETIC_RANGE)));
+        sequenceItems.add(new FrontendCfgGraph.EvalExprItem(identifier("flag"), "v0"));
+
+        var nodes = new LinkedHashMap<String, FrontendCfgGraph.Node>();
+        nodes.put("entry", new FrontendCfgGraph.SequenceNode("entry", sequenceItems, "branch"));
+        nodes.put("branch", new FrontendCfgGraph.BranchNode("branch", identifier("flag"), "v0", "then", "else"));
+        nodes.put("then", new FrontendCfgGraph.StopNode("then", "ret0"));
+        nodes.put("else", new FrontendCfgGraph.StopNode("else", null));
+
+        var graph = new FrontendCfgGraph("entry", nodes);
+        sequenceItems.clear();
+        nodes.clear();
+
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("entry"));
+        var branchNode = assertInstanceOf(FrontendCfgGraph.BranchNode.class, graph.requireNode("branch"));
+        var thenNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode("then"));
+
+        assertAll(
+                () -> assertEquals(List.of("entry", "branch", "then", "else"), graph.nodeIds()),
+                () -> assertEquals(4, graph.nodes().size()),
+                () -> assertTrue(graph.hasNode("entry")),
+                () -> assertEquals(2, entryNode.items().size()),
+                () -> assertEquals("branch", entryNode.nextId()),
+                () -> assertEquals("v0", branchNode.conditionValueId()),
+                () -> assertEquals(List.of("then", "else"), List.of(branchNode.trueTargetId(), branchNode.falseTargetId())),
+                () -> assertEquals("ret0", thenNode.returnValueIdOrNull()),
+                () -> assertNull(graph.nodeOrNull("missing")),
+                () -> assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> graph.nodes().put("extra", new FrontendCfgGraph.StopNode("extra", null))
+                )
+        );
+    }
+
+    @Test
+    void constructorRejectsBrokenEntryAndEdgeContracts() {
+        var missingEntryNodes = new LinkedHashMap<String, FrontendCfgGraph.Node>();
+        missingEntryNodes.put("stop", new FrontendCfgGraph.StopNode("stop", null));
+
+        var keyMismatchNodes = new LinkedHashMap<String, FrontendCfgGraph.Node>();
+        keyMismatchNodes.put("entry", new FrontendCfgGraph.StopNode("other", null));
+
+        var brokenTargetNodes = new LinkedHashMap<String, FrontendCfgGraph.Node>();
+        brokenTargetNodes.put("entry", new FrontendCfgGraph.SequenceNode("entry", List.of(), "branch"));
+        brokenTargetNodes.put("branch", new FrontendCfgGraph.BranchNode("branch", identifier("flag"), "v0", "then", "missing"));
+        brokenTargetNodes.put("then", new FrontendCfgGraph.StopNode("then", null));
+
+        var missingEntry = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph("missing", missingEntryNodes)
+        );
+        var keyMismatch = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph("entry", keyMismatchNodes)
+        );
+        var brokenTarget = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph("entry", brokenTargetNodes)
+        );
+
+        assertAll(
+                () -> assertTrue(missingEntry.getMessage().contains("entry node")),
+                () -> assertTrue(keyMismatch.getMessage().contains("node id mismatch")),
+                () -> assertTrue(brokenTarget.getMessage().contains("missing falseTargetId"))
+        );
+    }
+
+    private static IdentifierExpression identifier(String name) {
+        return new IdentifierExpression(name, SYNTHETIC_RANGE);
+    }
+}

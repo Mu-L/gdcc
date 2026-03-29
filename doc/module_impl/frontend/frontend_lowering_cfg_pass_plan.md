@@ -30,7 +30,7 @@
 - pass 不向 `LirFunctionDef` 写 basic block
 - pass 不设置 `entryBlockId`
 - public lowering 返回值继续保持 shell-only `LirModule`
-- pass 当前应视为 `@Deprecated(forRemoval = true)` 的 legacy 实现
+- pass 当前应视为 `@Deprecated(since = "2026-03-29")` 的 legacy 实现
 
 这些事实仍然有效，但它们不应再被表述成“frontend CFG 已完成”。
 

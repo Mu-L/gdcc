@@ -263,7 +263,7 @@ negative path 至少要锚定：
 - parameter default 的可见性、捕获、求值顺序，以及 instance-vs-static synthetic function 策略仍待专门设计
 - `ConditionalExpression` 等依赖 control-flow 的结构，必须等 frontend CFG graph / condition-evaluation-region 合同稳定后再放行
 - truthiness / condition normalization 属于后续 CFG/body lowering 责任，不应下沉回 function pre-pass
-- 当前 `FrontendLoweringCfgPass` 与 `FunctionLoweringContext.cfgNodeBlocks` 仍属于迁移期过渡层；后续 CFG 工程应在独立的 `frontend.lowering.cfg` 包中实施，并由 `FrontendLoweringBuildCfgPass` 构建，而不是继续扩展 legacy block-bundle metadata
+- 当前 `FrontendLoweringCfgPass` 与 `FunctionLoweringContext.cfgNodeBlocks` 仍属于迁移期过渡层；其中 `cfgNodeBlocks` 已显式标注弃用。后续 CFG 工程应在独立的 `frontend.lowering.cfg` 包中实施，并由 `FrontendLoweringBuildCfgPass` 构建，而不是继续扩展 legacy block-bundle metadata
 - backend 目前仍保留 no-initializer property 的默认 init shell 兜底；未来若要把这部分前移到 lowering，需要先统一 frontend/backend 对“默认值函数所有权”的合同
 
 这些问题不应反向污染当前 function pre-pass 的事实边界。后续工程应在现有 scaffold 之上继续推进，而不是回退到“每个后续 pass 各自重建 callable/property 索引”的分叉设计。
