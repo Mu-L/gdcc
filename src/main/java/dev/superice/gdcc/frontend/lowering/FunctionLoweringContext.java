@@ -1,7 +1,7 @@
 package dev.superice.gdcc.frontend.lowering;
 
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
-import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgRegion;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendSourceClassRelation;

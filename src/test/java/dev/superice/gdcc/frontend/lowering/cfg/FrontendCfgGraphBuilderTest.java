@@ -1,6 +1,8 @@
 package dev.superice.gdcc.frontend.lowering.cfg;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
@@ -105,10 +107,10 @@ class FrontendCfgGraphBuilderTest {
         var build = new FrontendCfgGraphBuilder().buildStraightLineExecutableBody(rootBlock);
         var graph = build.graph();
         var entryNode = (FrontendCfgGraph.SequenceNode) graph.requireNode("seq_0");
-        var initializer0 = (FrontendCfgGraph.OpaqueExprValueItem) entryNode.items().get(0);
-        var declaration0 = (FrontendCfgGraph.LocalDeclarationItem) entryNode.items().get(1);
-        var initializer1 = (FrontendCfgGraph.OpaqueExprValueItem) entryNode.items().get(2);
-        var declaration1 = (FrontendCfgGraph.LocalDeclarationItem) entryNode.items().get(3);
+        var initializer0 = (OpaqueExprValueItem) entryNode.items().get(0);
+        var declaration0 = (LocalDeclarationItem) entryNode.items().get(1);
+        var initializer1 = (OpaqueExprValueItem) entryNode.items().get(2);
+        var declaration1 = (LocalDeclarationItem) entryNode.items().get(3);
         var stopNode = (FrontendCfgGraph.StopNode) graph.requireNode("stop_0");
 
         assertAll(
@@ -144,8 +146,8 @@ class FrontendCfgGraphBuilderTest {
         var build = new FrontendCfgGraphBuilder().buildStraightLineExecutableBody(rootBlock);
         var graph = build.graph();
         var entryNode = (FrontendCfgGraph.SequenceNode) graph.requireNode("seq_0");
-        var declaration = assertInstanceOf(FrontendCfgGraph.LocalDeclarationItem.class, entryNode.items().getFirst());
-        var returnValue = assertInstanceOf(FrontendCfgGraph.OpaqueExprValueItem.class, entryNode.items().get(1));
+        var declaration = assertInstanceOf(LocalDeclarationItem.class, entryNode.items().getFirst());
+        var returnValue = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().get(1));
 
         assertAll(
                 () -> assertEquals(2, entryNode.items().size()),

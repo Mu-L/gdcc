@@ -2,10 +2,12 @@ package dev.superice.gdcc.frontend.lowering;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
-import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgRegion;
-import dev.superice.gdcc.frontend.lowering.cfg.FrontendElifRegion;
-import dev.superice.gdcc.frontend.lowering.cfg.FrontendIfRegion;
-import dev.superice.gdcc.frontend.lowering.cfg.FrontendWhileRegion;
+import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendElifRegion;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendIfRegion;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendWhileRegion;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringClassSkeletonPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringFunctionPreparationPass;
@@ -156,8 +158,8 @@ class FunctionLoweringContextTest {
         nodes.put(entryId, new FrontendCfgGraph.SequenceNode(
                 entryId,
                 List.of(
-                        new FrontendCfgGraph.SourceAnchorItem(new PassStatement(SYNTHETIC_RANGE)),
-                        new FrontendCfgGraph.OpaqueExprValueItem(conditionExpression, prefix + "_v0")
+                        new SourceAnchorItem(new PassStatement(SYNTHETIC_RANGE)),
+                        new OpaqueExprValueItem(conditionExpression, prefix + "_v0")
                 ),
                 branchId
         ));

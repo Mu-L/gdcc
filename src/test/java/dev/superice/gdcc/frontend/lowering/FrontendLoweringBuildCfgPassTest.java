@@ -2,7 +2,10 @@ package dev.superice.gdcc.frontend.lowering;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
-import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgRegion;
+import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringBuildCfgPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringClassSkeletonPass;
@@ -103,39 +106,39 @@ class FrontendLoweringBuildCfgPassTest {
                 () -> assertEquals("stop_0", entryNode.nextId()),
                 () -> assertEquals(5, entryItems.size()),
                 () -> assertSame(passStatement, assertInstanceOf(
-                        FrontendCfgGraph.SourceAnchorItem.class,
+                        SourceAnchorItem.class,
                         entryItems.getFirst()
                 ).statement()),
                 () -> assertSame(expressionStatement.expression(), assertInstanceOf(
-                        FrontendCfgGraph.OpaqueExprValueItem.class,
+                        OpaqueExprValueItem.class,
                         entryItems.get(1)
                 ).expression()),
                 () -> assertEquals("v0", assertInstanceOf(
-                        FrontendCfgGraph.OpaqueExprValueItem.class,
+                        OpaqueExprValueItem.class,
                         entryItems.get(1)
                 ).resultValueId()),
                 () -> assertSame(variableDeclaration.value(), assertInstanceOf(
-                        FrontendCfgGraph.OpaqueExprValueItem.class,
+                        OpaqueExprValueItem.class,
                         entryItems.get(2)
                 ).expression()),
                 () -> assertEquals("local_1", assertInstanceOf(
-                        FrontendCfgGraph.OpaqueExprValueItem.class,
+                        OpaqueExprValueItem.class,
                         entryItems.get(2)
                 ).resultValueId()),
                 () -> assertSame(variableDeclaration, assertInstanceOf(
-                        FrontendCfgGraph.LocalDeclarationItem.class,
+                        LocalDeclarationItem.class,
                         entryItems.get(3)
                 ).declaration()),
                 () -> assertEquals("local_1", assertInstanceOf(
-                        FrontendCfgGraph.LocalDeclarationItem.class,
+                        LocalDeclarationItem.class,
                         entryItems.get(3)
                 ).initializerValueIdOrNull()),
                 () -> assertSame(returnStatement.value(), assertInstanceOf(
-                        FrontendCfgGraph.OpaqueExprValueItem.class,
+                        OpaqueExprValueItem.class,
                         entryItems.get(4)
                 ).expression()),
                 () -> assertEquals("v2", assertInstanceOf(
-                        FrontendCfgGraph.OpaqueExprValueItem.class,
+                        OpaqueExprValueItem.class,
                         entryItems.get(4)
                 ).resultValueId()),
                 () -> assertEquals("v2", stopNode.returnValueIdOrNull()),

@@ -1,5 +1,9 @@
 package dev.superice.gdcc.frontend.lowering.cfg;
 
+import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.Point;
@@ -23,9 +27,9 @@ class FrontendCfgGraphTest {
 
     @Test
     void constructorCopiesNodeTopologyAndSupportsTypedLookup() {
-        var sequenceItems = new ArrayList<FrontendCfgGraph.SequenceItem>();
-        sequenceItems.add(new FrontendCfgGraph.SourceAnchorItem(new PassStatement(SYNTHETIC_RANGE)));
-        sequenceItems.add(new FrontendCfgGraph.OpaqueExprValueItem(identifier("flag"), "v0"));
+        var sequenceItems = new ArrayList<SequenceItem>();
+        sequenceItems.add(new SourceAnchorItem(new PassStatement(SYNTHETIC_RANGE)));
+        sequenceItems.add(new OpaqueExprValueItem(identifier("flag"), "v0"));
 
         var nodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
         nodes.put("entry", new FrontendCfgGraph.SequenceNode("entry", sequenceItems, "branch"));
@@ -95,9 +99,9 @@ class FrontendCfgGraphTest {
     void valueOpItemsExposeStableAnchorOperandAndResultContracts() {
         var passStatement = new PassStatement(SYNTHETIC_RANGE);
         var expression = identifier("seed");
-        var sourceAnchor = new FrontendCfgGraph.SourceAnchorItem(passStatement);
-        var opaqueValue = new FrontendCfgGraph.OpaqueExprValueItem(expression, "v0");
-        var callItem = new FrontendCfgGraph.CallItem(expression, "recv0", List.of("arg0", "arg1"), "v1");
+        var sourceAnchor = new SourceAnchorItem(passStatement);
+        var opaqueValue = new OpaqueExprValueItem(expression, "v0");
+        var callItem = new CallItem(expression, "recv0", List.of("arg0", "arg1"), "v1");
 
         assertAll(
                 () -> assertSame(passStatement, sourceAnchor.statement()),
@@ -116,11 +120,11 @@ class FrontendCfgGraphTest {
     void valueOpItemsRejectBlankValueIds() {
         var blankOpaque = assertThrows(
                 IllegalArgumentException.class,
-                () -> new FrontendCfgGraph.OpaqueExprValueItem(identifier("seed"), " ")
+                () -> new OpaqueExprValueItem(identifier("seed"), " ")
         );
         var blankCallOperand = assertThrows(
                 IllegalArgumentException.class,
-                () -> new FrontendCfgGraph.CallItem(identifier("seed"), "recv0", List.of("arg0", " "), "v1")
+                () -> new CallItem(identifier("seed"), "recv0", List.of("arg0", " "), "v1")
         );
 
         assertAll(

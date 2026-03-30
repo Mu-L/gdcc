@@ -1,8 +1,13 @@
-package dev.superice.gdcc.frontend.lowering.cfg;
+package dev.superice.gdcc.frontend.lowering.cfg.region;
 
+import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import org.jetbrains.annotations.NotNull;
 
 /// Region for one `elif` clause inside an `if` chain.
+///
+/// `conditionEntryId` is typically the clause's `BranchNode`, `bodyEntryId` is the first node of
+/// the clause body, and `nextClauseOrMergeId` points either to the next `elif`/`else` entry or to
+/// the shared merge/exit of the surrounding `if` chain.
 public record FrontendElifRegion(
         @NotNull String conditionEntryId,
         @NotNull String bodyEntryId,

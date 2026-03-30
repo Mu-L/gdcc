@@ -1,5 +1,10 @@
 package dev.superice.gdcc.frontend.lowering.cfg;
 
+import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -61,36 +66,36 @@ public final class FrontendCfgGraphBuilder {
         return true;
     }
 
-/// Builds the phase-3 graph for one executable-body root.
-///
-/// The resulting sequence now uses explicit frontend value-op items instead of relying on a loose
-/// "`EvalExprItem` + `StatementItem` belong together" pairing:
-/// - side-effect-free `pass` stays a pure `SourceAnchorItem`
-/// - discarded-expression statements become `OpaqueExprValueItem`
-/// - local `var` declarations materialize as `LocalDeclarationItem` that explicitly consumes the
-///   initializer value id when one exists
-/// - `return` value evaluation is emitted before the terminal `StopNode`
-///
-/// Complex expressions are still represented as one opaque value op in this stage. The later
-/// recursive `buildValue(...)` migration will explode those roots into member/call/subscript ops.
-///
-/// If a reachable unsupported statement still arrives here, that indicates the caller bypassed
-/// the expected preflight contract, so we fail fast instead of silently emitting a partial graph.
+    /// Builds the phase-3 graph for one executable-body root.
+    ///
+    /// The resulting sequence now uses explicit frontend value-op items instead of relying on a loose
+    /// "`EvalExprItem` + `StatementItem` belong together" pairing:
+    /// - side-effect-free `pass` stays a pure `SourceAnchorItem`
+    /// - discarded-expression statements become `OpaqueExprValueItem`
+    /// - local `var` declarations materialize as `LocalDeclarationItem` that explicitly consumes the
+    ///   initializer value id when one exists
+    /// - `return` value evaluation is emitted before the terminal `StopNode`
+    ///
+    /// Complex expressions are still represented as one opaque value op in this stage. The later
+    /// recursive `buildValue(...)` migration will explode those roots into member/call/subscript ops.
+    ///
+    /// If a reachable unsupported statement still arrives here, that indicates the caller bypassed
+    /// the expected preflight contract, so we fail fast instead of silently emitting a partial graph.
     public @NotNull ExecutableBodyBuild buildStraightLineExecutableBody(@NotNull Block rootBlock) {
         Objects.requireNonNull(rootBlock, "rootBlock must not be null");
 
-        var items = new ArrayList<FrontendCfgGraph.SequenceItem>();
+        var items = new ArrayList<SequenceItem>();
         String returnValueId = null;
         for (var statement : rootBlock.statements()) {
             switch (statement) {
                 // `pass` has no extra evaluation work, but preserving the statement node keeps the
                 // graph anchored to the original source for later lowering and diagnostics.
-                case PassStatement passStatement -> items.add(new FrontendCfgGraph.SourceAnchorItem(passStatement));
+                case PassStatement passStatement -> items.add(new SourceAnchorItem(passStatement));
                 // Discarded-expression statements still need their value computation represented,
                 // because the CFG must preserve execution order even when the produced value is not
                 // consumed by a later source statement.
                 case ExpressionStatement expressionStatement -> items.add(
-                        new FrontendCfgGraph.OpaqueExprValueItem(
+                        new OpaqueExprValueItem(
                                 expressionStatement.expression(),
                                 nextValueId()
                         )
@@ -104,12 +109,12 @@ public final class FrontendCfgGraphBuilder {
                     String initializerValueId = null;
                     if (initializer != null) {
                         initializerValueId = nextVariableValueId(variableDeclaration.name());
-                        items.add(new FrontendCfgGraph.OpaqueExprValueItem(
+                        items.add(new OpaqueExprValueItem(
                                 initializer,
                                 initializerValueId
                         ));
                     }
-                    items.add(new FrontendCfgGraph.LocalDeclarationItem(variableDeclaration, initializerValueId));
+                    items.add(new LocalDeclarationItem(variableDeclaration, initializerValueId));
                 }
                 case ReturnStatement returnStatement -> {
                     // The return value, when present, is still ordinary linear evaluation that must
@@ -118,7 +123,7 @@ public final class FrontendCfgGraphBuilder {
                     var returnValue = returnStatement.value();
                     if (returnValue != null) {
                         returnValueId = nextValueId();
-                        items.add(new FrontendCfgGraph.OpaqueExprValueItem(returnValue, returnValueId));
+                        items.add(new OpaqueExprValueItem(returnValue, returnValueId));
                     }
                     var graph = buildGraph(items, returnValueId);
                     return new ExecutableBodyBuild(graph, new FrontendCfgRegion.BlockRegion(graph.entryNodeId()));
@@ -136,7 +141,7 @@ public final class FrontendCfgGraphBuilder {
     /// Keeping this in one helper ensures the entry sequence, terminal stop, and deterministic node
     /// ids stay uniform across empty functions, fallthrough functions, and early-return functions.
     private @NotNull FrontendCfgGraph buildGraph(
-            @NotNull List<FrontendCfgGraph.SequenceItem> items,
+            @NotNull List<SequenceItem> items,
             String returnValueIdOrNull
     ) {
         var entryId = nextSequenceId();

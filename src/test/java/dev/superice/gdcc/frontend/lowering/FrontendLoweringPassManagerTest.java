@@ -5,7 +5,8 @@ import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
-import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgRegion;
+import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.parser.DomLirSerializer;
@@ -283,7 +284,7 @@ class FrontendLoweringPassManagerTest {
                 () -> assertEquals(List.of("seq_0", "stop_0"), graph.nodeIds()),
                 () -> assertEquals("seq_0", rootRegion.entryId()),
                 () -> assertSame(expressionStatement.expression(), assertInstanceOf(
-                        FrontendCfgGraph.OpaqueExprValueItem.class,
+                        OpaqueExprValueItem.class,
                         entryNode.items().get(1)
                 ).expression()),
                 () -> assertEquals("v1", stopNode.returnValueIdOrNull()),
