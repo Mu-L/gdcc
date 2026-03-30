@@ -4,9 +4,12 @@ import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
+import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgRegion;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.parser.DomLirSerializer;
+import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
@@ -212,6 +215,86 @@ class FrontendLoweringPassManagerTest {
         var xml = new DomLirSerializer().serializeToString(lowered);
         assertFalse(xml.contains("<basic_block id="), xml);
         assertFalse(xml.contains("<basic_blocks entry="), xml);
+    }
+
+    @Test
+    void lowerToContextPublishesFrontendCfgGraphForStraightLineExecutableBodies() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var manager = new FrontendLoweringPassManager();
+        var module = parseModule(
+                List.of(new SourceFixture(
+                        "lowering_manager_frontend_cfg_graph.gd",
+                        """
+                                class_name StraightLineCfgOuter
+                                extends RefCounted
+                                
+                                var ready_value: int = 1
+                                
+                                func ping(seed: int) -> int:
+                                    pass
+                                    seed + 1
+                                    return seed
+                                
+                                func branchy(flag: bool) -> void:
+                                    if flag:
+                                        pass
+                                """
+                )),
+                Map.of("StraightLineCfgOuter", "RuntimeStraightLineCfgOuter")
+        );
+
+        var context = manager.lowerToContext(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        var contexts = context.requireFunctionLoweringContexts();
+        var straightLineContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeStraightLineCfgOuter",
+                "ping"
+        );
+        var structuredContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeStraightLineCfgOuter",
+                "branchy"
+        );
+        var propertyContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeStraightLineCfgOuter",
+                "_field_init_ready_value"
+        );
+        var pingFunction = requireFunctionDeclaration(module.units().getFirst().ast(), "ping");
+        var rootBlock = pingFunction.body();
+        var expressionStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().get(1));
+        var graph = straightLineContext.requireFrontendCfgGraph();
+        var rootRegion = assertInstanceOf(
+                FrontendCfgRegion.BlockRegion.class,
+                straightLineContext.requireFrontendCfgRegion(rootBlock)
+        );
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("seq_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode("stop_0"));
+
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertEquals(List.of("seq_0", "stop_0"), graph.nodeIds()),
+                () -> assertEquals("seq_0", rootRegion.entryId()),
+                () -> assertSame(expressionStatement.expression(), assertInstanceOf(
+                        FrontendCfgGraph.EvalExprItem.class,
+                        entryNode.items().get(1)
+                ).expression()),
+                () -> assertEquals("v1", stopNode.returnValueIdOrNull()),
+                () -> assertNull(structuredContext.frontendCfgGraphOrNull()),
+                () -> assertNull(structuredContext.frontendCfgRegionOrNull(structuredContext.loweringRoot())),
+                () -> assertNull(propertyContext.frontendCfgGraphOrNull()),
+                () -> assertEquals(0, straightLineContext.targetFunction().getBasicBlockCount()),
+                () -> assertTrue(straightLineContext.targetFunction().getEntryBlockId().isEmpty()),
+                () -> assertEquals(0, propertyContext.targetFunction().getBasicBlockCount()),
+                () -> assertTrue(propertyContext.targetFunction().getEntryBlockId().isEmpty())
+        );
     }
 
     @Test

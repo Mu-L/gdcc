@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：实施中（第 1、2 阶段已完成；legacy metadata-only CFG pass 仍在默认 pipeline 中作为待迁移过渡层；第 3 阶段未开始）
-- 更新时间：2026-03-29
+- 状态：实施中（第 1、2 阶段已完成；phase-3 straight-line executable body graph 已落地；显式 value-op 层、structured control-flow、body lowering 与 bare call `resolvedCall` published 面仍待迁移）
+- 更新时间：2026-03-30
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
   - `src/main/java/dev/superice/gdcc/frontend/lowering/cfg/**`
@@ -44,7 +44,8 @@
 1. `FrontendLoweringAnalysisPass`
 2. `FrontendLoweringClassSkeletonPass`
 3. `FrontendLoweringFunctionPreparationPass`
-4. `FrontendLoweringCfgPass`（legacy，待删除）
+4. `FrontendLoweringBuildCfgPass`
+5. `FrontendLoweringCfgPass`（legacy，待删除）
 
 当前稳定输入与边界：
 
@@ -395,44 +396,123 @@ frontend CFG builder 需要显式维护 loop stack。
 - `FunctionLoweringContext` 已新增：
   - per-function `frontendCfgGraph` carrier
   - AST identity keyed `frontendCfgRegions` side table
-- 当前默认 pipeline 仍不会发布新 graph；在第 3 阶段 `FrontendLoweringBuildCfgPass` 接入前，legacy `cfgNodeBlocks` 继续仅作为显式弃用的过渡兼容物存在。
+- 当前默认 pipeline 已开始通过 `FrontendLoweringBuildCfgPass` 为 phase-3 straight-line executable body 发布 frontend CFG graph；在显式 value-op 层与 structured control-flow 迁移完成前，structured executable body 仍仅保留 legacy `cfgNodeBlocks` 过渡骨架。
 - 已有单元测试锚定：
   - duplicate graph / region publish fail-fast
   - region lookup 继续按 AST identity 工作
   - graph / region 不会跨 function context 泄漏
-  - 默认 pipeline 与 legacy CFG pass 均不会误发布新 graph
+  - default pipeline 会为 phase-3 straight-line executable body 发布新 graph，而 legacy CFG pass 继续不会误发布新 graph
 
-### 4.3 第三步：先迁移直线型 executable body
+### 4.3 第三步：把 `SequenceNode.items` 升级为 frontend 线性 value-op 层
 
 实施内容：
 
-- 新增 `FrontendLoweringBuildCfgPass`
-- 让 `FrontendLoweringBuildCfgPass` 构建 frontend CFG graph，而不是继续扩展 `FrontendLoweringCfgPass`
-- 第一批先覆盖：
-  - 空 `Block`
-  - `PassStatement`
-  - `ExpressionStatement`
-  - compile-ready local `var`
-  - `ReturnStatement`
-- `return` 终结 lexical path，后续 sibling statement 不再继续挂接
-- public lowering 仍然保持 shell-only `LirModule`
+- 当前 `StatementItem(statement)` / `EvalExprItem(expression, resultValueId)` 只能表达“原 AST 片段 + 整体求值占位”，不足以支撑 nested call/member/subscript lowering
+- 将 `SequenceNode.items` 升级为 AST-anchored、ANF-like 的最小线性执行项集合
+- 第一批至少显式区分：
+  - 纯 source anchor / `pass`
+  - local declaration commit，消费已算好的 initializer value id
+  - assignment/store commit，消费已算好的 RHS value id
+  - member load
+  - subscript load
+  - call
+  - future `CastExpression` / `TypeTestExpression` 的预留 op slot
+  - leaf/simple expression eval
+- 每个执行项都必须显式声明：
+  - result value id
+  - operand value ids / receiver value id / base value id / argument value ids
+  - 对应的 source AST anchor
+- `StatementItem` 若继续保留，只能承担非执行语义的 source anchor；不得再承载会触发二次 lower 的真实执行语义
+- 当前 local `var` initializer 的 `EvalExprItem + StatementItem(variableDeclaration)` 只是过渡形状，后续必须迁移为显式 declaration-commit item
 
 验收细则：
 
 - happy path：
-  - 空函数与直线型函数得到稳定 graph entry
-  - `return` 后的 source remainder 不再继续发布 region
+  - local declaration 与 future assignment 不再依赖 `EvalExprItem + StatementItem` 的隐式配对来表达执行语义
+  - nested operand consumer 可以只依赖 item 上的 operand value id 读取前序结果
+  - 后续 body lowering consumer 无需再从 declaration / assignment statement AST 回溯已 lower 的子表达式
 - negative path：
-  - 未支持 statement kind 继续 fail-fast
-  - 不得偷偷向 `LirFunctionDef` 写 block
+  - 不允许同一 initializer / RHS 既作为独立 eval item 产出，又在 statement item 中再次作为“待递归 lower”的 subtree 被消费
+  - 不允许把 call / member / subscript 的真实执行语义继续藏在 generic statement passthrough 中
 
-### 4.4 第四步：迁移 `if / elif / else / while` 的结构骨架
+### 4.4 第四步：补齐 `resolvedCalls()` 的 bare `CallExpression` published 面
 
 实施内容：
 
-- 为 `if` / `elif` / `while` 发布带 `conditionEntryId` 的 region
-- graph node id 继续采用 deterministic lexical-counter 策略
-- `FrontendIfRegion.mergeId` 与 `FrontendWhileRegion.exitId` 必须稳定可回归
+- 当前 `resolvedCalls()` 的主要 published surface 仍是 `AttributeCallStep`；bare `CallExpression` 主要只有 `expressionTypes()` 的返回类型结果，缺少 lowering-ready 的正式 call fact
+- 修复语义分析发布面，使 bare `CallExpression` 与 attribute call 一样拥有可供 lowering 直接消费的 `resolvedCall`
+- 同步更新 compile-check / inspection / lowering 文档合同，明确：
+  - 哪些 AST key 可以出现在 `resolvedCalls()`
+  - bare call 不再只作为 display-only / derived 信息存在
+- 继续区分 concrete route kind：
+  - bare identifier call
+  - attribute/member call
+  - future callable-value call
+- lowering 不得自己重新选择 bare call overload；必须消费语义阶段已发布的 call fact
+
+验收细则：
+
+- happy path：
+  - bare `CallExpression` 可稳定读回 `callKind`、`receiverKind`、`argumentTypes`、`returnType` 与 `declarationSite`
+  - chain call 与 bare call 共享统一的 published call fact contract
+  - inspection tool 不再需要仅为 bare call 生成 `derived` 说明才能展示调用结果
+- negative path：
+  - 不允许 lowering 仅凭 `expressionTypes()` 重新猜测 bare call route
+  - 不允许 bare call 与 attribute call 在 `resolvedCalls()` 中长期维持两套不对称 contract
+  - compile gate / inspection / lowering 文档不得继续保留“`resolvedCalls()` 只能以 `AttributeCallStep` 为 key”的过时描述
+
+### 4.5 第五步：实现递归 `buildValue(...)` 与显式 operand 展开
+
+实施内容：
+
+- `FrontendCfgGraphBuilder` 不再把整个复杂表达式打包成单个 `EvalExprItem`
+- `buildValue(...)` 必须递归构图，并返回“当前 continuation + result value id”一类的 builder 内部状态
+- 优先覆盖：
+  - bare/global call
+  - attribute/member property access
+  - attribute/member call
+  - plain subscript
+  - attribute-subscript
+  - assignment expression
+  - future `CastExpression` / `TypeTestExpression` 的前置接线位
+- `AttributeExpression` 按 `base + steps` 逐步展开，而不是留给 body lowering 再次做 chain reduction
+- 函数参数、subscript 下标、assignment RHS 都必须先 lower child，再由父操作 item 显式消费 child value ids
+- declaration / assignment 必须显式区分：
+  - 求值阶段
+  - commit/store 阶段
+
+验收细则：
+
+- happy path：
+  - `foo(bar(), baz(qux()))`
+  - `arr[idx(a())]`
+  - `obj.a().b[c()].d(e())`
+  - `x = foo(arr[idx()])`
+    都能在 frontend CFG 中展开成显式 value-op 序列，而不是遗留成需要未来二次 AST 递归的黑盒表达式项
+  - builder 可以稳定表达嵌套参数、嵌套下标、链式 member/call/subscript 的 evaluation order
+- negative path：
+  - 不允许 child 表达式已经产生 value id，但父 item 仍缺少显式 operand 引用
+  - 不允许 declaration / assignment 继续依赖 raw statement AST 才能恢复真实执行顺序
+  - 不得因为引入 value-op 层而破坏 AST-keyed region side table 的 contract
+
+### 4.6 第六步：在显式 value-op 层上完成结构控制流与短路
+
+实施内容：
+
+- 为 `if` / `elif` / `while` 发布稳定 region：
+  - `conditionEntryId`
+  - branch body entry
+  - merge / exit
+- 正式拆分：
+  - `buildValue(...)`
+  - `buildCondition(...)`
+- `buildCondition(...)` 对普通 condition 先产出必要的前置 value-op / sequence，再连接 `BranchNode`
+- `BranchNode` 保留 source condition value，不提前强制 bool 化；truthiness normalization 延后到 frontend CFG -> LIR lowering
+- `and` / `or` 无论出现在 value context 还是 condition context，都必须展开成多节点短路控制流
+- 引入 loop stack，正式支持：
+  - `BreakStatement`
+  - `ContinueStatement`
+- `ConditionalExpression` 在 value-merge contract 冻结前继续 compile-block
 
 验收细则：
 
@@ -441,76 +521,65 @@ frontend CFG builder 需要显式维护 loop stack。
   - `if / else`
   - `if / elif / else`
   - `while`
-  - nested `if` inside `while`
-  - nested `while` inside `if`
-    都能得到稳定 graph shape 与 region 映射
+  - nested `if` / `while`
+    都有稳定 graph shape 与 region 映射
+  - `if payload:` / `while payload:` 存在显式条件前置区域
+  - `var x = a and b`、`return a or b`、`call(a and b)` 都走短路控制流，不会 eager 求值两侧
+  - `continue` 稳定回到当前 loop 的 condition entry；`break` 稳定跳到当前 loop exit
 - negative path：
-  - empty branch body 不得漏建 merge / exit contract
-  - fully-terminating branch chain 后不得继续发布错误的 lexical remainder
-
-### 4.5 第五步：引入 `buildCondition(...)` 与 condition-evaluation-region
-
-实施内容：
-
-- 在 builder 中正式拆分：
-  - `buildValue(...)`
-  - `buildCondition(...)`
-- `buildCondition(...)` 对普通条件表达式先生成线性求值步骤，再连接 `BranchNode`
-- `BranchNode` 保留 source condition value，不提前强制 bool 化
-- `buildValue(...)` 遇到 `and` / `or` 时，不得生成单个线性 `EvalExprItem`；必须改走短路控制流展开，并在汇合点写回统一结果值
-
-验收细则：
-
-- happy path：
-  - 非 `bool` condition 也能构图成功
-  - `if payload:` 与 `while payload:` 的 graph 中都存在显式条件求值区域
-  - value context 下的 `and` / `or` 也会生成多个 `SequenceNode` 与 `BranchNode`
-- negative path：
-  - 不得因为 LIR bool-only 边界而反向把 frontend 规则改成 strict-bool
-  - 不得在本步骤就提前解除 `ConditionalExpression` compile gate
-
-### 4.6 第六步：实现短路与 loop-control
-
-实施内容：
-
-- `buildCondition(...)` 特判：
-  - `and`
-  - `or`
-  - `not`
-- `buildValue(...)` 对 `and` / `or` 复用同一套短路控制流展开，而不是回退到普通二元表达式求值
-- 引入 loop stack，正式消费：
-  - `BreakStatement`
-  - `ContinueStatement`
-- 在此之前，若 compile-ready surface 仍可能泄露 `break` / `continue`，必须继续视为前置协议破坏并 fail-fast
-
-验收细则：
-
-- happy path：
-  - `a and b` 在 false path 上不进入 `b` 的求值区域
-  - `a or b` 在 true path 上不进入 `b` 的求值区域
-  - `var x = a and b` 与 `return a or b` 也会走短路控制流，而不是 eager 求值
-  - `continue` 稳定回到当前 loop 的 `conditionEntryId`
-  - `break` 稳定跳到当前 loop 的 `exitId`
-  - nested loop 中内外层 `break` / `continue` 不串线
-- negative path：
+  - empty branch body 不得漏建 merge / exit
+  - fully-terminating branch chain 后不得错误挂接 lexical remainder
   - 没有 loop frame 时遇到 `break` / `continue` 必须 fail-fast
-  - 不能把 `continue` 错跳到 body entry
+  - 不得因为 frontend CFG 已能表达分支就提前解封 `ConditionalExpression`
 
-### 4.7 第七步：移除 legacy block-bundle 依赖
+### 4.7 第七步：实现 `FrontendLoweringBodyInsnPass`，只消费 frontend CFG 与 published facts
 
 实施内容：
 
-- 当所有 frontend CFG 读者都已改为 graph/region 后，逐步移除：
+- 引入 `FrontendLoweringBodyInsnPass`
+- body lowering 只允许消费：
+  - `frontendCfgGraph`
+  - `frontendCfgRegions`
+  - `analysisData` 中已发布的 `symbolBindings()` / `resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`
+- body lowering 不得重新做：
+  - chain reduction
+  - bare call overload 选择
+  - AST 级“哪些 child 先求值”的第二套推导
+- 先打通 MVP surface：
+  - identifier / literal / unary / binary
+  - bare/global call
+  - member/property access
+  - member call
+  - subscript
+  - assignment
+- 在这个阶段之前，`LirModule` 继续保持 shell-only；在这个阶段之后才允许把 real block / instruction materialize 到 `LirFunctionDef`
+
+验收细则：
+
+- happy path：
+  - body lowering 可以直接按 sequence item 的 operand/result id 生成 instruction，而不需要重走已 lower 的 child AST
+  - bare call 与 attribute call 都直接消费 published `resolvedCall`
+  - 输出 block / terminator / instruction 与 frontend CFG control-flow shape 一致
+- negative path：
+  - 不允许 `FrontendLoweringBodyInsnPass` 遇到 declaration / assignment / call item 时再回到原 statement/expression AST 做第二套递归 lower
+  - 不允许 lowering 自己补做语义路由推导来绕过缺失的 published fact
+  - 在 body lowering 未闭环前，不得偷偷向 `LirFunctionDef` 写半成品 block
+
+### 4.8 第八步：移除 legacy block-bundle 与过渡 pass
+
+实施内容：
+
+- 当 frontend CFG graph、显式 value-op 层与 body lowering 已全部接通后，删除：
   - `CfgNodeBlocks`
+  - `FrontendLoweringCfgPass`
   - 以 `LirBasicBlock` 作为 metadata skeleton 的 legacy side table
-- 从默认 pipeline 中移除并删除 `FrontendLoweringCfgPass`
-- 让 `FrontendLoweringBuildCfgPass` 成为唯一的 frontend CFG 构图入口
+- `FrontendLoweringBuildCfgPass` 成为唯一 CFG 构图入口
 - 若迁移期确实需要兼容层，也只能是短期桥接，不得继续扩展其职责
 
 验收细则：
 
 - happy path：
-  - `FrontendLoweringBuildCfgPassTest` 与 `FrontendLoweringPassManagerTest` 改为锚定 frontend CFG graph
+  - `FrontendLoweringBuildCfgPassTest`、`FrontendLoweringPassManagerTest` 与 future `FrontendLoweringBodyInsnPassTest` 全部锚定新 graph + value-op contract
 - negative path：
   - 不允许 graph 与 legacy side table 长期双写并各自漂移
   - 仓库内不再保留 `FrontendLoweringCfgPass`
@@ -522,9 +591,9 @@ frontend CFG builder 需要显式维护 loop stack。
 建议至少覆盖：
 
 - `FrontendLoweringBuildCfgPassTest`
-  - 空函数
-  - `pass`
-  - `return`
+  - 直线型 executable body 的显式 value-op item 形状
+  - local declaration 不再使用“initializer eval + statement passthrough”隐式配对表达执行语义
+  - nested call / member / subscript 的 value-op 展开顺序
   - `if`
   - `if / else`
   - `if / elif / else`
@@ -536,23 +605,36 @@ frontend CFG builder 需要显式维护 loop stack。
   - `break` / `continue`
   - fully-terminating branch 后的 lexical remainder
   - compile-blocked module 不进入 cfg pass
+- `FrontendChainBindingAnalyzerTest`
+  - bare `CallExpression` 发布正式 `resolvedCall`
+  - bare call 与 attribute call 的 `resolvedCalls()` contract 对齐
+- `FrontendAnalysisInspectionToolTest`
+  - bare call 不再仅依赖 display-only `derived` 结果
+  - `resolvedCalls()` 新 published 面与展示逻辑保持一致
+- `FrontendCompileCheckAnalyzerTest`
+  - `resolvedCalls()` 的 AST key contract 与 compile gate 描述保持一致
+  - `ConditionalExpression` 继续 compile-block
+- `FrontendLoweringBodyInsnPassTest`
+  - body lowering 只消费 graph + published facts
+  - declaration / assignment / call 不会触发二次 AST 递归 lower
+  - operand/result value id 与生成 instruction 的顺序严格一致
 - `FrontendLoweringPassManagerTest`
   - 默认 pipeline 发布 frontend CFG graph
-  - `LirModule` 继续保持 shell-only
-  - property initializer context 继续不进入 frontend CFG materialization
-- `FrontendCompileCheckAnalyzerTest`
-  - `ConditionalExpression` 继续 compile-block
-  - compile gate 说明与 frontend CFG graph 计划保持一致
+  - body lowering 闭环前 `LirModule` 继续保持 shell-only
+  - property initializer context 继续不进入 executable-body graph materialization
 
 测试重点应优先覆盖：
 
 - AST identity keyed region lookup
 - deterministic node id / graph shape
+- 明确的 operand/result value id contract
+- 不重复 lower 同一 expression subtree
+- nested argument / nested index 的 evaluation order
+- bare call published call fact 的完整性
 - condition context 与 value context 的分工
 - short-circuit 只展开必要路径
-- `and` / `or` 在 value context 下也不会 eager 求值
 - loop stack target 的正确性
-- shell-only LIR 合同未被破坏
+- shell-only LIR 合同在 body lowering 闭环前未被破坏
 
 ---
 
@@ -562,14 +644,36 @@ frontend CFG builder 需要显式维护 loop stack。
 
 风险：
 
-- legacy `CfgNodeBlocks` 与新 graph 并存时，容易出现两套结构不同步
+- legacy `CfgNodeBlocks` 与新 graph/value-op 层并存时，容易出现两套结构不同步
 
 缓解：
 
-- 明确 graph/region 是新主模型
+- 明确 graph/region + value-op 是新主模型
 - legacy block-bundle 只允许短期兼容，不得继续加需求
 
-### 6.2 用 ASTWalker 直接实现控制流构图
+### 6.2 `SequenceItem` 语义仍然过粗导致重复处理
+
+风险：
+
+- 若 declaration / assignment / call 的真实执行语义仍由 raw statement/expression AST 承担，future body lowering 很容易在 `EvalExprItem` 之外再次递归同一子树
+
+缓解：
+
+- 尽早把执行语义迁移到显式 value-op item
+- 保持“child 先产出 value id，parent item 只消费 value id”的单向 contract
+
+### 6.3 bare `CallExpression` 的 call fact 发布面继续缺口化
+
+风险：
+
+- 若 bare call 继续只有 `expressionTypes()` 而没有正式 `resolvedCall`，lowering 就会被迫自行猜测 route / overload 结果
+
+缓解：
+
+- 把 bare `CallExpression` 纳入正式 `resolvedCalls()` published 面
+- 同步更新 compile gate、inspection tool 与 lowering 文档，避免 contract 漂移
+
+### 6.4 用 ASTWalker 直接实现控制流构图
 
 风险：
 
@@ -577,6 +681,7 @@ frontend CFG builder 需要显式维护 loop stack。
   - lexical continuation
   - true/false target
   - loop stack
+  - 当前 sequence/value-op 写入位置
 - 通用 ASTWalker 更适合遍历，不适合承担这套有向构图协议
 
 缓解：
@@ -584,7 +689,7 @@ frontend CFG builder 需要显式维护 loop stack。
 - 保持显式状态机构图器
 - 允许局部复用 AST 访问帮助函数，但不要把核心构图逻辑改写成 generic walker callback
 
-### 6.3 过早解除 `ConditionalExpression`
+### 6.5 过早解除 `ConditionalExpression`
 
 风险：
 
@@ -593,9 +698,9 @@ frontend CFG builder 需要显式维护 loop stack。
 缓解：
 
 - 继续维持 compile gate
-- 直到 condition region 与 value merge 合同一起冻结后再解封
+- 直到 condition region、value-op contract 与 value merge 合同一起冻结后再解封
 
-### 6.4 property initializer / parameter default 过早接入
+### 6.6 property initializer / parameter default 过早接入
 
 风险：
 
@@ -615,6 +720,8 @@ frontend CFG builder 需要显式维护 loop stack。
 
 - `frontend_rules.md`
 - `frontend_compile_check_analyzer_implementation.md`
+- `frontend_chain_binding_expr_type_implementation.md`
+- `frontend_analysis_inspection_tool_implementation.md`
 - `diagnostic_manager.md`
 - `frontend_lowering_plan.md`
 - `frontend_lowering_func_pre_pass_implementation.md`

@@ -85,7 +85,7 @@ public final class FunctionLoweringContext {
     /// tables.
     private final @NotNull FrontendAnalysisData analysisData;
 
-    /// Frontend-only CFG graph published by the future `FrontendLoweringBuildCfgPass`.
+    /// Frontend-only CFG graph published by `FrontendLoweringBuildCfgPass`.
     ///
     /// The graph carrier is separate from LIR basic blocks so frontend can first freeze source
     /// control-flow, condition-evaluation regions, and short-circuit structure before any
