@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施中（第 1、2、3、4 阶段已完成；structured control-flow、recursive `buildValue(...)` 与 body lowering 仍待迁移）
+- 状态：实施中（第 1、2、3、4 阶段已完成；structured control-flow、显式 `and` / `or` 短路构图、recursive `buildValue(...)` 与 body lowering 仍待迁移）
 - 更新时间：2026-03-30
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
@@ -565,7 +565,6 @@ frontend CFG builder 需要显式维护 loop stack。
   - `buildCondition(...)`
 - `buildCondition(...)` 对普通 condition 先产出必要的前置 value-op / sequence，再连接 `BranchNode`
 - `BranchNode` 保留 source condition value，不提前强制 bool 化；truthiness normalization 延后到 frontend CFG -> LIR lowering
-- `and` / `or` 无论出现在 value context 还是 condition context，都必须展开成多节点短路控制流
 - 引入 loop stack，正式支持：
   - `BreakStatement`
   - `ContinueStatement`
@@ -589,7 +588,50 @@ frontend CFG builder 需要显式维护 loop stack。
   - 没有 loop frame 时遇到 `break` / `continue` 必须 fail-fast
   - 不得因为 frontend CFG 已能表达分支就提前解封 `ConditionalExpression`
 
-### 4.7 第七步：实现 `FrontendLoweringBodyInsnPass`，只消费 frontend CFG 与 published facts
+### 4.7 第七步：显式实现 `and` / `or` 的短路构图步骤
+
+实施内容：
+
+- 将 `and` / `or` 从“普通二元 value-op”中彻底移出，固定为专门的控制流构图路径
+- `buildCondition(...)` 遇到：
+  - `a and b`
+  - `a or b`
+  - `not a`
+  必须直接展开为多段 sequence + branch 的短路区域，不得退化成单个线性 item
+- `buildValue(...)` 遇到 `and` / `or` 时，必须显式：
+  - 分配最终结果 value id
+  - 生成左操作数求值节点
+  - 生成短路分支节点
+  - 在短路路径与继续求右操作数路径上分别写入 `true` / `false`
+  - 汇合到统一 continuation，并把结果 value id 交还父级调用者
+- 这一步必须覆盖所有 value context 消费点，而不是只覆盖顶层赋值/返回：
+  - `var x = a and b`
+  - `return a or b`
+  - `call(a and b)`
+  - `arr[a or b]`
+  - `obj.m(not a or b)`
+- 若 `and` / `or` 嵌套在 member/call/subscript/assignment 参数中，仍必须遵守“child 先产出 value id，parent 只消费 value id”的单向 contract
+- 结果写入建议继续用显式 value-op item 建模；不得回退为“靠 body lowering 看到 AST 后再补写 true/false”的隐式协议
+
+验收细则：
+
+- happy path：
+  - `if a and b`
+  - `while a or b`
+  - `var x = a and b`
+  - `return a or b`
+  - `call(a and b)`
+  - `arr[a or b]`
+    都会稳定生成多 `SequenceNode` / `BranchNode` 的短路图形，而不是 eager 求值左右操作数
+  - `buildValue(...)` 返回给父节点的始终是统一结果 value id，而不是“左右操作数 AST 仍待后处理”的半成品
+  - `not` 在 condition context 下也复用分支翻转/重接线逻辑，而不是单独走 eager bool 运算
+- negative path：
+  - 不允许 `and` / `or` 继续落成单个普通 binary value-op item
+  - 不允许 value context 下只因为静态类型是 `bool` 就跳过短路区域构建
+  - 不允许 parent item 直接引用 `and` / `or` 的左右 child AST，而绕过中间结果 value id
+  - 不允许 body lowering 成为第一个理解 `and` / `or` 短路语义的阶段
+
+### 4.8 第八步：实现 `FrontendLoweringBodyInsnPass`，只消费 frontend CFG 与 published facts
 
 实施内容：
 
@@ -622,7 +664,7 @@ frontend CFG builder 需要显式维护 loop stack。
   - 不允许 lowering 自己补做语义路由推导来绕过缺失的 published fact
   - 在 body lowering 未闭环前，不得偷偷向 `LirFunctionDef` 写半成品 block
 
-### 4.8 第八步：移除 legacy block-bundle 与过渡 pass
+### 4.9 第九步：移除 legacy block-bundle 与过渡 pass
 
 实施内容：
 
