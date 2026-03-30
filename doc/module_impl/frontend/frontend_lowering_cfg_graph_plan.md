@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施中（第 1、2 阶段已完成；phase-3 straight-line executable body graph 已落地；显式 value-op 层、structured control-flow、body lowering 与 bare call `resolvedCall` published 面仍待迁移）
+- 状态：实施中（第 1、2、3、4 阶段已完成；structured control-flow、recursive `buildValue(...)` 与 body lowering 仍待迁移）
 - 更新时间：2026-03-30
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
@@ -407,7 +407,7 @@ frontend CFG builder 需要显式维护 loop stack。
 
 实施内容：
 
-- 当前 `StatementItem(statement)` / `EvalExprItem(expression, resultValueId)` 只能表达“原 AST 片段 + 整体求值占位”，不足以支撑 nested call/member/subscript lowering
+- 迁移前的 `StatementItem(statement)` / `EvalExprItem(expression, resultValueId)` 只能表达“原 AST 片段 + 整体求值占位”，不足以支撑 nested call/member/subscript lowering
 - 将 `SequenceNode.items` 升级为 AST-anchored、ANF-like 的最小线性执行项集合
 - 第一批至少显式区分：
   - 纯 source anchor / `pass`
@@ -435,11 +435,42 @@ frontend CFG builder 需要显式维护 loop stack。
   - 不允许同一 initializer / RHS 既作为独立 eval item 产出，又在 statement item 中再次作为“待递归 lower”的 subtree 被消费
   - 不允许把 call / member / subscript 的真实执行语义继续藏在 generic statement passthrough 中
 
+当前状态（2026-03-30）：
+
+- 已完成。
+- `FrontendCfgGraph.SequenceNode.items` 已冻结为：
+  - `SourceAnchorItem`
+  - `ValueOpItem`
+- 当前已发布的 `ValueOpItem` 子类包括：
+  - `OpaqueExprValueItem`
+  - `LocalDeclarationItem`
+  - `AssignmentItem`
+  - `MemberLoadItem`
+  - `SubscriptLoadItem`
+  - `CallItem`
+  - `CastItem`
+  - `TypeTestItem`
+- phase-3 straight-line builder 已不再依赖 `EvalExprItem + StatementItem` 的隐式配对来表达 local `var` 的执行语义：
+  - `pass` 只保留为纯 `SourceAnchorItem`
+  - discarded expression / return value 目前先落为 `OpaqueExprValueItem`
+  - local declaration commit 通过 `LocalDeclarationItem` 显式消费 initializer value id
+- 对于没有 initializer 的 local `var`，builder 仍会发布显式 declaration-commit item，而不会退回 generic statement passthrough。
+- 已有单元测试锚定：
+  - `FrontendCfgGraphTest`
+    - value-op anchor / operand / result-value contract
+    - blank value id negative path
+  - `FrontendCfgGraphBuilderTest`
+    - declaration-derived initializer ids
+    - declaration-without-initializer 仍发布显式 commit item
+    - reachable unsupported statement fail-fast
+  - `FrontendLoweringBuildCfgPassTest` / `FrontendLoweringPassManagerTest`
+    - default pipeline 已对齐到 `SourceAnchorItem + OpaqueExprValueItem + LocalDeclarationItem` 的当前 contract
+
 ### 4.4 第四步：补齐 `resolvedCalls()` 的 bare `CallExpression` published 面
 
 实施内容：
 
-- 当前 `resolvedCalls()` 的主要 published surface 仍是 `AttributeCallStep`；bare `CallExpression` 主要只有 `expressionTypes()` 的返回类型结果，缺少 lowering-ready 的正式 call fact
+- 迁移前 `resolvedCalls()` 的主要 published surface 仍是 `AttributeCallStep`；bare `CallExpression` 主要只有 `expressionTypes()` 的返回类型结果，缺少 lowering-ready 的正式 call fact
 - 修复语义分析发布面，使 bare `CallExpression` 与 attribute call 一样拥有可供 lowering 直接消费的 `resolvedCall`
 - 同步更新 compile-check / inspection / lowering 文档合同，明确：
   - 哪些 AST key 可以出现在 `resolvedCalls()`
@@ -460,6 +491,32 @@ frontend CFG builder 需要显式维护 loop stack。
   - 不允许 lowering 仅凭 `expressionTypes()` 重新猜测 bare call route
   - 不允许 bare call 与 attribute call 在 `resolvedCalls()` 中长期维持两套不对称 contract
   - compile gate / inspection / lowering 文档不得继续保留“`resolvedCalls()` 只能以 `AttributeCallStep` 为 key”的过时描述
+
+当前状态（2026-03-30）：
+
+- 已完成。
+- `FrontendExpressionSemanticSupport.ExpressionSemanticResult` 已新增 `publishedCallOrNull`，用于把 bare `CallExpression` 的正式 call fact 从 shared expression semantic support 传回 analyzer owner。
+- `FrontendExprTypeAnalyzer` 现已在发布 bare call expression type 的同时，把正式 `FrontendResolvedCall` 写入 `analysisData.resolvedCalls()`。
+- `resolvedCalls()` 的当前 AST key 合同已对齐为：
+  - `AttributeCallStep`
+  - bare `CallExpression`
+- `FrontendCompileCheckAnalyzer` 已接受 bare `CallExpression` 作为 `resolvedCalls()` key，并能对 call-expression anchor 正常执行 compile-surface blocker 扫描。
+- `FrontendAnalysisInspectionTool` 已改为：
+  - 优先读取 bare `CallExpression` 的 published call fact
+  - 仅在仍无 published fact 的 `CallExpression` 上保留 derived 兼容路径
+  - 保持未发布 `AttributeCallStep` 的 display-only `UNPUBLISHED_CALL_FACT`
+- 已有单元测试锚定：
+  - `FrontendExpressionSemanticSupportTest`
+    - bare call resolved / blocked / unsupported 三分流
+    - `publishedCallOrNull` 的正反路径
+  - `FrontendChainBindingAnalyzerTest`
+    - bare call 在完整语义流水线后会稳定出现在 `resolvedCalls()`
+    - bare call 作为 chain argument 时仍能保留 published call fact
+  - `FrontendAnalysisInspectionToolTest`
+    - bare `CallExpression` published 展示不会退化成 derived
+    - direct callable invocation 继续只走 derived fallback
+  - `FrontendCompileCheckAnalyzerTest`
+    - bare `CallExpression` keyed `resolvedCalls()` 不会破坏 compile-check，并可稳定生成 call-anchor blocker
 
 ### 4.5 第五步：实现递归 `buildValue(...)` 与显式 operand 展开
 

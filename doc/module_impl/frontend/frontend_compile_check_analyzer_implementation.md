@@ -230,7 +230,7 @@ compile gate 当前对 shared publication 不变量保持 fail-fast：
 
 - `expressionTypes()` 必须以 `Expression` 为 key
 - `resolvedMembers()` 必须以 `AttributePropertyStep` 为 key
-- `resolvedCalls()` 必须以 `AttributeCallStep` 为 key
+- `resolvedCalls()` 必须以 `AttributeCallStep` 或 bare `CallExpression` 为 key
 - compile gate 启动前，对每个 source file 都必须已经发布 scope graph
 
 这些 guard rail 属于实现协议损坏，不属于普通源码错误。

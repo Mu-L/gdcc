@@ -4,8 +4,11 @@ import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
+import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
+import dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirFunctionDef;
@@ -48,10 +51,12 @@ import java.util.List;
 import java.util.Objects;
 import java.util.function.Predicate;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendExpressionSemanticSupportTest {
@@ -158,9 +163,19 @@ class FrontendExpressionSemanticSupportTest {
                 true,
                 false
         );
-        assertTrue(resolvedResult.rootOwnsOutcome());
-        assertEquals(FrontendExpressionTypeStatus.RESOLVED, resolvedResult.expressionType().status());
-        assertEquals("int", resolvedResult.expressionType().publishedType().getTypeName());
+        var resolvedCall = resolvedResult.publishedCallOrNull();
+        assertAll(
+                () -> assertTrue(resolvedResult.rootOwnsOutcome()),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, resolvedResult.expressionType().status()),
+                () -> assertEquals("int", resolvedResult.expressionType().publishedType().getTypeName()),
+                () -> assertNotNull(resolvedCall),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedCall.callKind()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, resolvedCall.receiverKind()),
+                () -> assertEquals(List.of("int"), resolvedCall.argumentTypes().stream().map(type -> type.getTypeName()).toList()),
+                () -> assertEquals("int", resolvedCall.returnType().getTypeName()),
+                () -> assertNotNull(resolvedCall.declarationSite())
+        );
 
         var blockedResult = staticSupport.resolveCallExpressionType(
                 blockedBareCall,
@@ -168,10 +183,20 @@ class FrontendExpressionSemanticSupportTest {
                 true,
                 false
         );
-        assertTrue(blockedResult.rootOwnsOutcome());
-        assertEquals(FrontendExpressionTypeStatus.BLOCKED, blockedResult.expressionType().status());
-        assertNotNull(blockedResult.expressionType().publishedType());
-        assertEquals("int", blockedResult.expressionType().publishedType().getTypeName());
+        var blockedCall = blockedResult.publishedCallOrNull();
+        assertAll(
+                () -> assertTrue(blockedResult.rootOwnsOutcome()),
+                () -> assertEquals(FrontendExpressionTypeStatus.BLOCKED, blockedResult.expressionType().status()),
+                () -> assertNotNull(blockedResult.expressionType().publishedType()),
+                () -> assertEquals("int", blockedResult.expressionType().publishedType().getTypeName()),
+                () -> assertNotNull(blockedCall),
+                () -> assertEquals(FrontendCallResolutionStatus.BLOCKED, blockedCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, blockedCall.callKind()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, blockedCall.receiverKind()),
+                () -> assertEquals(List.of("int"), blockedCall.argumentTypes().stream().map(type -> type.getTypeName()).toList()),
+                () -> assertEquals("int", blockedCall.returnType().getTypeName()),
+                () -> assertNotNull(blockedCall.declarationSite())
+        );
 
         var unsupportedResult = unrestrictedSupport.resolveCallExpressionType(
                 unsupportedDirectCall,
@@ -179,9 +204,12 @@ class FrontendExpressionSemanticSupportTest {
                 true,
                 false
         );
-        assertTrue(unsupportedResult.rootOwnsOutcome());
-        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, unsupportedResult.expressionType().status());
-        assertTrue(unsupportedResult.expressionType().detailReason().contains("Direct invocation of callable values"));
+        assertAll(
+                () -> assertTrue(unsupportedResult.rootOwnsOutcome()),
+                () -> assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, unsupportedResult.expressionType().status()),
+                () -> assertTrue(unsupportedResult.expressionType().detailReason().contains("Direct invocation of callable values")),
+                () -> assertNull(unsupportedResult.publishedCallOrNull())
+        );
     }
 
     @Test

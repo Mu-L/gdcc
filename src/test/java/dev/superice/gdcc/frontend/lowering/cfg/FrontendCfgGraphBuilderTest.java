@@ -105,10 +105,10 @@ class FrontendCfgGraphBuilderTest {
         var build = new FrontendCfgGraphBuilder().buildStraightLineExecutableBody(rootBlock);
         var graph = build.graph();
         var entryNode = (FrontendCfgGraph.SequenceNode) graph.requireNode("seq_0");
-        var initializer0 = (FrontendCfgGraph.EvalExprItem) entryNode.items().get(0);
-        var declaration0 = (FrontendCfgGraph.StatementItem) entryNode.items().get(1);
-        var initializer1 = (FrontendCfgGraph.EvalExprItem) entryNode.items().get(2);
-        var declaration1 = (FrontendCfgGraph.StatementItem) entryNode.items().get(3);
+        var initializer0 = (FrontendCfgGraph.OpaqueExprValueItem) entryNode.items().get(0);
+        var declaration0 = (FrontendCfgGraph.LocalDeclarationItem) entryNode.items().get(1);
+        var initializer1 = (FrontendCfgGraph.OpaqueExprValueItem) entryNode.items().get(2);
+        var declaration1 = (FrontendCfgGraph.LocalDeclarationItem) entryNode.items().get(3);
         var stopNode = (FrontendCfgGraph.StopNode) graph.requireNode("stop_0");
 
         assertAll(
@@ -116,8 +116,43 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertEquals("local_0", initializer0.resultValueId()),
                 () -> assertEquals("other_1", initializer1.resultValueId()),
                 () -> assertEquals("v2", stopNode.returnValueIdOrNull()),
-                () -> assertEquals("local", assertInstanceOf(VariableDeclaration.class, declaration0.statement()).name()),
-                () -> assertEquals("other", assertInstanceOf(VariableDeclaration.class, declaration1.statement()).name())
+                () -> assertEquals("local", declaration0.declaration().name()),
+                () -> assertEquals("local_0", declaration0.initializerValueIdOrNull()),
+                () -> assertEquals("other", declaration1.declaration().name()),
+                () -> assertEquals("other_1", declaration1.initializerValueIdOrNull())
+        );
+    }
+
+    @Test
+    void buildStraightLineExecutableBodyKeepsDeclarationCommitExplicitWhenInitializerIsMissing() {
+        var rootBlock = requireFunctionDeclaration(
+                parseModule(
+                        "cfg_builder_declaration_without_initializer.gd",
+                        """
+                                class_name CfgBuilderDeclarationWithoutInitializer
+                                extends RefCounted
+                                
+                                func ping() -> int:
+                                    var local: int
+                                    return 1
+                                """,
+                        Map.of()
+                ).units().getFirst().ast(),
+                "ping"
+        ).body();
+
+        var build = new FrontendCfgGraphBuilder().buildStraightLineExecutableBody(rootBlock);
+        var graph = build.graph();
+        var entryNode = (FrontendCfgGraph.SequenceNode) graph.requireNode("seq_0");
+        var declaration = assertInstanceOf(FrontendCfgGraph.LocalDeclarationItem.class, entryNode.items().getFirst());
+        var returnValue = assertInstanceOf(FrontendCfgGraph.OpaqueExprValueItem.class, entryNode.items().get(1));
+
+        assertAll(
+                () -> assertEquals(2, entryNode.items().size()),
+                () -> assertEquals("local", declaration.declaration().name()),
+                () -> assertTrue(declaration.operandValueIds().isEmpty()),
+                () -> assertEquals(List.of(), declaration.operandValueIds()),
+                () -> assertEquals("v0", returnValue.resultValueId())
         );
     }
 

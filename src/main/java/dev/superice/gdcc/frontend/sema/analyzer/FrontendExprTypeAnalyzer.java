@@ -8,6 +8,7 @@ import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
@@ -551,15 +552,16 @@ public class FrontendExprTypeAnalyzer {
                                 false
                         )
                 );
-                case CallExpression callExpression -> finishSemanticResolution(
-                        callExpression,
-                        expressionSemanticSupport.resolveCallExpressionType(
-                                callExpression,
-                                this::resolveExpressionDependencyType,
-                                true,
-                                false
-                        )
-                );
+                case CallExpression callExpression -> {
+                    var resolution = expressionSemanticSupport.resolveCallExpressionType(
+                            callExpression,
+                            this::resolveExpressionDependencyType,
+                            true,
+                            false
+                    );
+                    publishBareResolvedCall(callExpression, resolution.publishedCallOrNull());
+                    yield finishSemanticResolution(callExpression, resolution);
+                }
                 case SubscriptExpression subscriptExpression -> finishSemanticResolution(
                         subscriptExpression,
                         expressionSemanticSupport.resolveSubscriptExpressionType(
@@ -665,6 +667,27 @@ public class FrontendExprTypeAnalyzer {
                     publishExpressionType(expression),
                     "publishExpressionType must not return null for non-null expressions"
             );
+        }
+
+        /// Bare `CallExpression` facts are now first-class published call results, so later compile
+        /// checks, inspection, and lowering can consume the same `resolvedCalls()` surface that
+        /// attribute calls already use. Duplicate publication on the same AST identity still fails
+        /// fast because it would indicate two semantic owners racing to define one call route.
+        private void publishBareResolvedCall(
+                @NotNull CallExpression callExpression,
+                @Nullable FrontendResolvedCall publishedCall
+        ) {
+            if (publishedCall == null) {
+                return;
+            }
+            var resolvedCalls = analysisData.resolvedCalls();
+            if (resolvedCalls.containsKey(callExpression)) {
+                throw new IllegalStateException(
+                        "resolvedCalls() already contains a published fact for bare CallExpression at "
+                                + callExpression.range()
+                );
+            }
+            resolvedCalls.put(callExpression, publishedCall);
         }
 
         private @NotNull FrontendExpressionType finishSemanticResolution(

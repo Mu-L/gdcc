@@ -1104,6 +1104,13 @@ class FrontendChainBindingAnalyzerTest {
         assertEquals(FrontendExpressionTypeStatus.BLOCKED, blockedBareCallType.status());
         assertNotNull(blockedBareCallType.publishedType());
         assertEquals("int", blockedBareCallType.publishedType().getTypeName());
+        var publishedBlockedBareCall = analyzed.analysisData().resolvedCalls().get(blockedBareCall);
+        assertNotNull(publishedBlockedBareCall);
+        assertEquals(FrontendCallResolutionStatus.BLOCKED, publishedBlockedBareCall.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, publishedBlockedBareCall.callKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, publishedBlockedBareCall.receiverKind());
+        assertEquals(List.of("int"), publishedBlockedBareCall.argumentTypes().stream().map(type -> type.getTypeName()).toList());
+        assertEquals("int", publishedBlockedBareCall.returnType().getTypeName());
 
         var outerChainType = analyzed.analysisData().expressionTypes().get(chainExpression);
         assertNotNull(outerChainType);
@@ -1137,11 +1144,24 @@ class FrontendChainBindingAnalyzerTest {
         );
 
         var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var bareCall = findNode(
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()),
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("helper")
+        );
         var consumeStep = findNode(
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()),
                 AttributeCallStep.class,
                 step -> step.name().equals("consume")
         );
+        var resolvedBareCall = analyzed.analysisData().resolvedCalls().get(bareCall);
+        assertNotNull(resolvedBareCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedBareCall.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedBareCall.callKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedBareCall.receiverKind());
+        assertEquals(List.of(), resolvedBareCall.argumentTypes());
+        assertEquals("int", resolvedBareCall.returnType().getTypeName());
 
         var resolvedConsume = analyzed.analysisData().resolvedCalls().get(consumeStep);
         assertNotNull(resolvedConsume);

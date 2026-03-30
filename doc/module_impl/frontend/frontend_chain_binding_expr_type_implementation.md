@@ -56,7 +56,7 @@
 这意味着：
 
 - `FrontendChainBindingAnalyzer` 只运行在 skeleton、scope graph、variable inventory 与 `symbolBindings()` 已发布之后
-- `FrontendExprTypeAnalyzer` 只运行在 `symbolBindings()`、`resolvedMembers()`、`resolvedCalls()` 已发布之后
+- `FrontendExprTypeAnalyzer` 只运行在 `symbolBindings()`、`resolvedMembers()` 与当前 `resolvedCalls()` published surface 已发布之后
 - body phase 仍保持“先发布 member/call，再发布 expression type”的顶层边界，不回头重开更早 phase
 
 ### 1.2 当前 owner 边界
@@ -68,11 +68,11 @@
   - 负责 bare `TYPE_META` ordinary-value misuse 的首条 `sema.binding`
   - 负责 bare identifier 在 value namespace / function namespace / type-meta namespace 之间的最外层分流
 - `FrontendChainBindingAnalyzer`
-  - 只发布 `resolvedMembers()` 与 `resolvedCalls()`
+  - 发布 `resolvedMembers()` 与 chain-owned `resolvedCalls()` facts
   - 负责 `sema.member_resolution`、`sema.call_resolution`、`sema.deferred_chain_resolution`、`sema.unsupported_chain_route`
   - 负责链式 route 级别的恢复与 suffix 封口
 - `FrontendExprTypeAnalyzer`
-  - 只发布 `expressionTypes()`
+  - 发布 `expressionTypes()`，并补充 bare `CallExpression` 的 `resolvedCalls()` facts
   - 负责 `sema.expression_resolution`、`sema.deferred_expression_resolution`、`sema.unsupported_expression_route`、`sema.discarded_expression`
   - 负责 expression-only 路径的恢复、statement warning 与 `:=` 最小回填
 
@@ -149,7 +149,7 @@
 配套约束为：
 
 - `FrontendChainBindingAnalyzer` 不写 `expressionTypes()`
-- `FrontendExprTypeAnalyzer` 不改写 `resolvedMembers()` / `resolvedCalls()`
+- `FrontendExprTypeAnalyzer` 不改写 `resolvedMembers()`，且只允许向 `resolvedCalls()` 补充 bare `CallExpression` published facts
 - `FrontendTopBindingAnalyzer` 继续不解析尾部成员、尾部调用或 assignment target
 - class property `var` initializer subtree 已进入这三张表的正式 published support surface；class constant initializer 仍不属于该支持面
 - 但这张 published support surface 的稳定含义只保证 subtree facts 可发布，不自动承诺同 class 非静态依赖已属于 MVP 正式语义面
@@ -169,6 +169,11 @@
 - `FrontendCallResolutionStatus`
 - `FrontendReceiverKind`
 - owner / receiver type / return type / argument type snapshot / declaration metadata / detail reason
+
+`resolvedCalls()` 的当前 AST key 合同同样冻结为：
+
+- `AttributeCallStep`
+- bare `CallExpression`
 
 ### 3.2 状态语义
 
@@ -227,6 +232,7 @@
   - generic unknown miss
 - bare function-like symbol 在 value position 会 materialize 为 `Callable`
 - bare `TYPE_META` ordinary-value misuse 会保留真实 `TYPE_META` binding，并在 expression typing 中保留 `FAILED` provenance
+- bare identifier call 在 expression typing 时会同步发布正式 `FrontendResolvedCall`，供 compile-check / inspection / lowering 直接消费
 
 当前 route-head-only `TYPE_META` 规则同样冻结为：
 

@@ -513,6 +513,10 @@ public final class FrontendAnalysisInspectionTool {
                 @NotNull String id,
                 @NotNull CallExpression callExpression
         ) {
+            var published = analysisData.resolvedCalls().get(callExpression);
+            var derivedCallKind = callExpression.callee() instanceof IdentifierExpression
+                    ? "BARE_CALL_DERIVED"
+                    : "CALL_DERIVED";
             var expressionType = analysisData.expressionTypes().get(callExpression);
             var calleeBinding = callExpression.callee() instanceof IdentifierExpression identifierExpression
                     ? analysisData.symbolBindings().get(identifierExpression)
@@ -523,16 +527,24 @@ public final class FrontendAnalysisInspectionTool {
                     callExpression,
                     sourceTextIndex.formatRange(callExpression.range()),
                     sourceTextIndex.snippet(callExpression.range()),
-                    "derived",
-                    expressionType != null ? expressionType.status().name() : "UNPUBLISHED",
-                    "BARE_CALL_DERIVED",
-                    "UNKNOWN",
+                    published != null ? "published" : "derived",
+                    published != null
+                            ? published.status().name()
+                            : expressionType != null ? expressionType.status().name() : "UNPUBLISHED",
+                    published != null ? published.callKind().name() : derivedCallKind,
+                    published != null ? published.receiverKind().name() : "UNKNOWN",
                     calleeBinding != null ? calleeBinding.kind().name() : null,
-                    null,
-                    formatExpressionArgumentTypes(callExpression.arguments()),
-                    expressionType != null ? formatTypeName(expressionType.publishedType()) : null,
-                    calleeBinding != null ? formatDeclarationSite(calleeBinding.declarationSite()) : null,
-                    deriveCallExpressionReason(callExpression, expressionType, calleeBinding)
+                    published != null ? formatTypeName(published.receiverType()) : null,
+                    published != null ? formatTypeList(published.argumentTypes()) : formatExpressionArgumentTypes(callExpression.arguments()),
+                    published != null
+                            ? formatTypeName(published.returnType())
+                            : expressionType != null ? formatTypeName(expressionType.publishedType()) : null,
+                    published != null
+                            ? formatDeclarationSite(published.declarationSite())
+                            : calleeBinding != null ? formatDeclarationSite(calleeBinding.declarationSite()) : null,
+                    published != null
+                            ? Objects.requireNonNullElse(published.detailReason(), "Published bare call fact")
+                            : deriveCallExpressionReason(callExpression, expressionType, calleeBinding)
             );
         }
 

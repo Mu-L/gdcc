@@ -152,12 +152,12 @@ class FunctionLoweringContextTest {
         var branchId = prefix + "_branch";
         var stopId = prefix + "_stop";
         var conditionExpression = new IdentifierExpression(prefix + "_flag", SYNTHETIC_RANGE);
-        var nodes = new LinkedHashMap<String, FrontendCfgGraph.Node>();
+        var nodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
         nodes.put(entryId, new FrontendCfgGraph.SequenceNode(
                 entryId,
                 List.of(
-                        new FrontendCfgGraph.StatementItem(new PassStatement(SYNTHETIC_RANGE)),
-                        new FrontendCfgGraph.EvalExprItem(conditionExpression, prefix + "_v0")
+                        new FrontendCfgGraph.SourceAnchorItem(new PassStatement(SYNTHETIC_RANGE)),
+                        new FrontendCfgGraph.OpaqueExprValueItem(conditionExpression, prefix + "_v0")
                 ),
                 branchId
         ));

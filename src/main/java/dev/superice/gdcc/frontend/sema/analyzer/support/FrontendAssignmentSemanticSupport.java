@@ -796,7 +796,7 @@ public final class FrontendAssignmentSemanticSupport {
             @NotNull FrontendExpressionType expressionType,
             boolean rootOwnsOutcome
     ) {
-        return new FrontendExpressionSemanticSupport.ExpressionSemanticResult(expressionType, rootOwnsOutcome);
+        return new FrontendExpressionSemanticSupport.ExpressionSemanticResult(expressionType, rootOwnsOutcome, null);
     }
 
     private static @NotNull FrontendExpressionSemanticSupport.ExpressionSemanticResult propagated(

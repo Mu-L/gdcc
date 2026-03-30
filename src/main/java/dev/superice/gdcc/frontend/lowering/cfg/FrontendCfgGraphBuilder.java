@@ -61,16 +61,21 @@ public final class FrontendCfgGraphBuilder {
         return true;
     }
 
-    /// Builds the phase-3 graph for one executable-body root.
-    ///
-    /// The resulting sequence preserves source evaluation order in a form that later frontend CFG ->
-    /// LIR lowering can consume directly:
-    /// - side-effect-free `pass` and declaration anchors stay as `StatementItem`
-    /// - expression work becomes `EvalExprItem`
-    /// - `return` value evaluation is emitted before the terminal `StopNode`
-    ///
-    /// If a reachable unsupported statement still arrives here, that indicates the caller bypassed
-    /// the expected preflight contract, so we fail fast instead of silently emitting a partial graph.
+/// Builds the phase-3 graph for one executable-body root.
+///
+/// The resulting sequence now uses explicit frontend value-op items instead of relying on a loose
+/// "`EvalExprItem` + `StatementItem` belong together" pairing:
+/// - side-effect-free `pass` stays a pure `SourceAnchorItem`
+/// - discarded-expression statements become `OpaqueExprValueItem`
+/// - local `var` declarations materialize as `LocalDeclarationItem` that explicitly consumes the
+///   initializer value id when one exists
+/// - `return` value evaluation is emitted before the terminal `StopNode`
+///
+/// Complex expressions are still represented as one opaque value op in this stage. The later
+/// recursive `buildValue(...)` migration will explode those roots into member/call/subscript ops.
+///
+/// If a reachable unsupported statement still arrives here, that indicates the caller bypassed
+/// the expected preflight contract, so we fail fast instead of silently emitting a partial graph.
     public @NotNull ExecutableBodyBuild buildStraightLineExecutableBody(@NotNull Block rootBlock) {
         Objects.requireNonNull(rootBlock, "rootBlock must not be null");
 
@@ -80,30 +85,31 @@ public final class FrontendCfgGraphBuilder {
             switch (statement) {
                 // `pass` has no extra evaluation work, but preserving the statement node keeps the
                 // graph anchored to the original source for later lowering and diagnostics.
-                case PassStatement passStatement -> items.add(new FrontendCfgGraph.StatementItem(passStatement));
+                case PassStatement passStatement -> items.add(new FrontendCfgGraph.SourceAnchorItem(passStatement));
                 // Discarded-expression statements still need their value computation represented,
                 // because the CFG must preserve execution order even when the produced value is not
                 // consumed by a later source statement.
                 case ExpressionStatement expressionStatement -> items.add(
-                        new FrontendCfgGraph.EvalExprItem(
+                        new FrontendCfgGraph.OpaqueExprValueItem(
                                 expressionStatement.expression(),
                                 nextValueId()
                         )
                 );
                 case VariableDeclaration variableDeclaration when variableDeclaration.kind() == DeclarationKind.VAR -> {
-                    // Keep the initializer value ahead of the declaration item so later body lowering
-                    // can preserve source evaluation order while still anchoring the declaration AST.
-                    // Variable initializers use declaration-derived value ids so later debug output
-                    // and graph inspection can tie the temporary back to the source slot more
-                    // directly than the generic `vN` naming used for other linear evaluations.
+                    // Variable initializers still materialize before the declaration commit so source
+                    // evaluation order stays explicit. The declaration itself is no longer a generic
+                    // statement passthrough; it consumes the initializer value id through a dedicated
+                    // declaration-commit item.
                     var initializer = variableDeclaration.value();
+                    String initializerValueId = null;
                     if (initializer != null) {
-                        items.add(new FrontendCfgGraph.EvalExprItem(
+                        initializerValueId = nextVariableValueId(variableDeclaration.name());
+                        items.add(new FrontendCfgGraph.OpaqueExprValueItem(
                                 initializer,
-                                nextVariableValueId(variableDeclaration.name())
+                                initializerValueId
                         ));
                     }
-                    items.add(new FrontendCfgGraph.StatementItem(variableDeclaration));
+                    items.add(new FrontendCfgGraph.LocalDeclarationItem(variableDeclaration, initializerValueId));
                 }
                 case ReturnStatement returnStatement -> {
                     // The return value, when present, is still ordinary linear evaluation that must
@@ -112,7 +118,7 @@ public final class FrontendCfgGraphBuilder {
                     var returnValue = returnStatement.value();
                     if (returnValue != null) {
                         returnValueId = nextValueId();
-                        items.add(new FrontendCfgGraph.EvalExprItem(returnValue, returnValueId));
+                        items.add(new FrontendCfgGraph.OpaqueExprValueItem(returnValue, returnValueId));
                     }
                     var graph = buildGraph(items, returnValueId);
                     return new ExecutableBodyBuild(graph, new FrontendCfgRegion.BlockRegion(graph.entryNodeId()));
@@ -135,7 +141,7 @@ public final class FrontendCfgGraphBuilder {
     ) {
         var entryId = nextSequenceId();
         var stopId = nextStopId();
-        var nodes = new LinkedHashMap<String, FrontendCfgGraph.Node>(2);
+        var nodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>(2);
         nodes.put(entryId, new FrontendCfgGraph.SequenceNode(entryId, items, stopId));
         nodes.put(stopId, new FrontendCfgGraph.StopNode(stopId, returnValueIdOrNull));
         return new FrontendCfgGraph(entryId, nodes);

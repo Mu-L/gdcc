@@ -10,7 +10,10 @@ import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
+import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
+import dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
+import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
@@ -19,6 +22,8 @@ import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
+import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
@@ -499,6 +504,43 @@ class FrontendCompileCheckAnalyzerTest {
         assertEquals(1, compileDiagnostics.size());
         assertEquals(FrontendRange.fromAstRange(readStep.range()), compileDiagnostics.getFirst().range());
         assertTrue(compileDiagnostics.getFirst().message().contains("synthetic failed attribute expression"));
+    }
+
+    @Test
+    void analyzeReportsCompileBlocksForPublishedBareCallFacts() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_bare_call_fact.gd", """
+                class_name CompileCheckBareCallFact
+                extends RefCounted
+
+                func helper(value: int) -> int:
+                    return value
+
+                static func ping_static(value: int):
+                    helper(value)
+                """);
+        var pingStaticFunction = findFunction(preparedInput.unit().ast().statements(), "ping_static");
+        var bareCall = findNode(
+                assertInstanceOf(ExpressionStatement.class, pingStaticFunction.body().statements().getFirst()),
+                CallExpression.class,
+                ignored -> true
+        );
+        var publishedBareCall = Objects.requireNonNull(preparedInput.analysisData().resolvedCalls().get(bareCall));
+
+        assertEquals(FrontendCallResolutionStatus.BLOCKED, publishedBareCall.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, publishedBareCall.callKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, publishedBareCall.receiverKind());
+        preparedInput.analysisData().expressionTypes().put(
+                bareCall,
+                FrontendExpressionType.resolved(publishedBareCall.returnType())
+        );
+
+        runCompileCheck(preparedInput);
+
+        var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
+        assertEquals(1, compileDiagnostics.size());
+        assertEquals(FrontendRange.fromAstRange(bareCall.range()), compileDiagnostics.getFirst().range());
+        assertTrue(compileDiagnostics.getFirst().message().contains("Call expression 'helper(...)'"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("not accessible in the current context"));
     }
 
     @Test

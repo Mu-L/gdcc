@@ -23,6 +23,7 @@ import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.Block;
+import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ConditionalExpression;
@@ -466,7 +467,7 @@ public class FrontendCompileCheckAnalyzer {
 
         private void scanExpressionTypeCompileBlocks() {
             for (var entry : expressionTypes.entrySet()) {
-                var expression = requireExpression(entry.getKey(), "expressionTypes");
+                var expression = requireExpression(entry.getKey());
                 var publishedType = Objects.requireNonNull(entry.getValue(), "publishedType must not be null");
                 if (!isCompileBlocking(publishedType.status()) || !compileSurfaceNodes.contains(expression)) {
                     continue;
@@ -488,7 +489,7 @@ public class FrontendCompileCheckAnalyzer {
 
         private void scanResolvedMemberCompileBlocks() {
             for (var entry : resolvedMembers.entrySet()) {
-                var anchor = requireAttributePropertyStep(entry.getKey(), "resolvedMembers");
+                var anchor = requireAttributePropertyStep(entry.getKey());
                 var publishedMember = Objects.requireNonNull(entry.getValue(), "publishedMember must not be null");
                 if (!isCompileBlocking(publishedMember.status()) || !compileSurfaceNodes.contains(anchor)) {
                     continue;
@@ -506,7 +507,7 @@ public class FrontendCompileCheckAnalyzer {
 
         private void scanResolvedCallCompileBlocks() {
             for (var entry : resolvedCalls.entrySet()) {
-                var anchor = requireAttributeCallStep(entry.getKey(), "resolvedCalls");
+                var anchor = requireCallAnchor(entry.getKey());
                 var publishedCall = Objects.requireNonNull(entry.getValue(), "publishedCall must not be null");
                 if (!isCompileBlocking(publishedCall.status()) || !compileSurfaceNodes.contains(anchor)) {
                     continue;
@@ -514,7 +515,7 @@ public class FrontendCompileCheckAnalyzer {
                 reportCompileBlock(
                         anchor,
                         publishedCompileBlockedMessage(
-                                "Call step '" + publishedCall.callableName() + "'",
+                                describeCallAnchor(anchor, publishedCall),
                                 publishedCall.status(),
                                 publishedCall.detailReason()
                         )
@@ -536,37 +537,42 @@ public class FrontendCompileCheckAnalyzer {
             return expression;
         }
 
-        private static @NotNull Expression requireExpression(@NotNull Node node, @NotNull String sideTableName) {
+        private static @NotNull Expression requireExpression(@NotNull Node node) {
             if (node instanceof Expression expression) {
                 return expression;
             }
-            throw new IllegalStateException(sideTableName + " must be keyed by expression nodes");
+            throw new IllegalStateException("expressionTypes must be keyed by expression nodes");
         }
 
-        private static @NotNull AttributePropertyStep requireAttributePropertyStep(
-                @NotNull Node node,
-                @NotNull String sideTableName
-        ) {
+        private static @NotNull AttributePropertyStep requireAttributePropertyStep(@NotNull Node node) {
             if (node instanceof AttributePropertyStep attributePropertyStep) {
                 return attributePropertyStep;
             }
-            throw new IllegalStateException(sideTableName + " must be keyed by attribute property steps");
+            throw new IllegalStateException("resolvedMembers must be keyed by attribute property steps");
         }
 
-        private static @NotNull AttributeCallStep requireAttributeCallStep(
-                @NotNull Node node,
-                @NotNull String sideTableName
-        ) {
-            if (node instanceof AttributeCallStep attributeCallStep) {
-                return attributeCallStep;
+        private static @NotNull Node requireCallAnchor(@NotNull Node node) {
+            if (node instanceof AttributeCallStep || node instanceof CallExpression) {
+                return node;
             }
-            throw new IllegalStateException(sideTableName + " must be keyed by attribute call steps");
+            throw new IllegalStateException("resolvedCalls must be keyed by attribute call steps or CallExpression");
         }
 
         private static @NotNull String describeExpression(@NotNull Expression expression) {
             return switch (Objects.requireNonNull(expression, "expression must not be null")) {
                 case AttributeExpression _ -> "Attribute expression";
                 default -> "Expression";
+            };
+        }
+
+        private static @NotNull String describeCallAnchor(
+                @NotNull Node anchor,
+                @NotNull FrontendResolvedCall publishedCall
+        ) {
+            return switch (anchor) {
+                case AttributeCallStep _ -> "Call step '" + publishedCall.callableName() + "'";
+                case CallExpression _ -> "Call expression '" + publishedCall.callableName() + "(...)'";
+                default -> throw new IllegalStateException("unexpected call anchor: " + anchor.getClass().getSimpleName());
             };
         }
 

@@ -3,18 +3,27 @@ package dev.superice.gdcc.frontend.sema.analyzer.support;
 import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendBinding;
+import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
+import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
+import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
+import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
+import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
+import dev.superice.gdcc.scope.ScopeOwnerKind;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdcc.type.GdDictionaryType;
+import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
@@ -66,7 +75,8 @@ public final class FrontendExpressionSemanticSupport {
 
     public record ExpressionSemanticResult(
             @NotNull FrontendExpressionType expressionType,
-            boolean rootOwnsOutcome
+            boolean rootOwnsOutcome,
+            @Nullable FrontendResolvedCall publishedCallOrNull
     ) {
         public ExpressionSemanticResult {
             Objects.requireNonNull(expressionType, "expressionType must not be null");
@@ -608,31 +618,40 @@ public final class FrontendExpressionSemanticSupport {
                     "Bare call '" + bareCallee.name() + "(...)' is inside a skipped subtree"
             ));
         }
+        var bareCallRoute = bareCallRoute(bareCallee);
         var functionResult = currentScope.resolveFunctions(bareCallee.name(), currentRestriction());
         if (functionResult.isAllowed()) {
             var overloadSelection = selectCallableOverload(functionResult.requireValue(), argumentTypes);
             if (overloadSelection.selected() != null) {
-                return rootOutcome(FrontendExpressionType.resolved(
-                        overloadSelection.selected().getReturnType()
-                ));
+                var selected = overloadSelection.selected();
+                return rootOutcome(
+                        FrontendExpressionType.resolved(selected.getReturnType()),
+                        resolvedBareCall(bareCallee, bareCallRoute, selected, argumentTypes)
+                );
             }
-            return rootOutcome(FrontendExpressionType.failed(
-                    Objects.requireNonNull(overloadSelection.detailReason(), "detailReason must not be null")
-            ));
+            var detailReason = Objects.requireNonNull(overloadSelection.detailReason(), "detailReason must not be null");
+                return rootOutcome(
+                        FrontendExpressionType.failed(detailReason),
+                        failedBareCall(bareCallee, bareCallRoute, argumentTypes, detailReason)
+                );
         }
         if (functionResult.isBlocked()) {
             var overloadSelection = selectCallableOverload(functionResult.requireValue(), argumentTypes);
-            var blockedReturnType = overloadSelection.selected() != null
-                    ? overloadSelection.selected().getReturnType()
+            var selected = overloadSelection.selected();
+            var blockedReturnType = selected != null
+                    ? selected.getReturnType()
                     : null;
-            return rootOutcome(FrontendExpressionType.blocked(
-                    blockedReturnType,
-                    "Binding '" + bareCallee.name() + "' is not accessible in the current context"
-            ));
+            var detailReason = "Binding '" + bareCallee.name() + "' is not accessible in the current context";
+            return rootOutcome(
+                    FrontendExpressionType.blocked(blockedReturnType, detailReason),
+                    selected != null ? blockedBareCall(bareCallee, bareCallRoute, selected, argumentTypes, detailReason) : null
+            );
         }
-        return rootOutcome(FrontendExpressionType.failed(
-                "Published bare callee binding '" + bareCallee.name() + "' is no longer visible"
-        ));
+        var detailReason = "Published bare callee binding '" + bareCallee.name() + "' is no longer visible";
+        return rootOutcome(
+                FrontendExpressionType.failed(detailReason),
+                failedBareCall(bareCallee, bareCallRoute, argumentTypes, detailReason)
+        );
     }
 
     @NotNull CallableOverloadSelection selectCallableOverload(
@@ -657,6 +676,111 @@ public final class FrontendExpressionSemanticSupport {
                 + buildCallableMismatchReason(overloadSet.getFirst(), argumentTypes)
                 + ". candidates: " + renderCallableSignatures(overloadSet);
         return new CallableOverloadSelection(null, detailReason);
+    }
+
+    private @NotNull BareCallRoute bareCallRoute(@NotNull IdentifierExpression bareCallee) {
+        var binding = symbolBindings.get(Objects.requireNonNull(bareCallee, "bareCallee must not be null"));
+        var receiverType = currentClassReceiverType(bareCallee);
+        if (binding == null) {
+            return new BareCallRoute(FrontendCallResolutionKind.UNKNOWN, FrontendReceiverKind.UNKNOWN, receiverType);
+        }
+        return switch (binding.kind()) {
+            case METHOD -> new BareCallRoute(
+                    FrontendCallResolutionKind.INSTANCE_METHOD,
+                    FrontendReceiverKind.INSTANCE,
+                    receiverType
+            );
+            case STATIC_METHOD -> new BareCallRoute(
+                    FrontendCallResolutionKind.STATIC_METHOD,
+                    FrontendReceiverKind.TYPE_META,
+                    receiverType
+            );
+            case UTILITY_FUNCTION -> new BareCallRoute(
+                    FrontendCallResolutionKind.STATIC_METHOD,
+                    FrontendReceiverKind.TYPE_META,
+                    null
+            );
+            default -> new BareCallRoute(FrontendCallResolutionKind.UNKNOWN, FrontendReceiverKind.UNKNOWN, receiverType);
+        };
+    }
+
+    private @NotNull FrontendResolvedCall resolvedBareCall(
+            @NotNull IdentifierExpression bareCallee,
+            @NotNull BareCallRoute bareCallRoute,
+            @NotNull FunctionDef selected,
+            @NotNull List<GdType> argumentTypes
+    ) {
+        return FrontendResolvedCall.resolved(
+                bareCallee.name(),
+                bareCallRoute.callKind(),
+                bareCallRoute.receiverKind(),
+                ownerKind(selected),
+                bareCallRoute.receiverType(),
+                selected.getReturnType(),
+                argumentTypes,
+                selected
+        );
+    }
+
+    private @NotNull FrontendResolvedCall blockedBareCall(
+            @NotNull IdentifierExpression bareCallee,
+            @NotNull BareCallRoute bareCallRoute,
+            @NotNull FunctionDef selected,
+            @NotNull List<GdType> argumentTypes,
+            @NotNull String detailReason
+    ) {
+        return FrontendResolvedCall.blocked(
+                bareCallee.name(),
+                bareCallRoute.callKind(),
+                bareCallRoute.receiverKind(),
+                ownerKind(selected),
+                bareCallRoute.receiverType(),
+                selected.getReturnType(),
+                argumentTypes,
+                selected,
+                detailReason
+        );
+    }
+
+    private @NotNull FrontendResolvedCall failedBareCall(
+            @NotNull IdentifierExpression bareCallee,
+            @NotNull BareCallRoute bareCallRoute,
+            @NotNull List<GdType> argumentTypes,
+            @NotNull String detailReason
+    ) {
+        return FrontendResolvedCall.failed(
+                bareCallee.name(),
+                bareCallRoute.callKind(),
+                bareCallRoute.receiverKind(),
+                null,
+                bareCallRoute.receiverType(),
+                argumentTypes,
+                null,
+                detailReason
+        );
+    }
+
+    private @Nullable ScopeOwnerKind ownerKind(@Nullable FunctionDef functionDef) {
+        if (functionDef == null) {
+            return null;
+        }
+        return switch (functionDef) {
+            case LirFunctionDef _ -> ScopeOwnerKind.GDCC;
+            case ExtensionBuiltinClass.ClassMethod _, ExtensionBuiltinClass.ConstructorInfo _ -> ScopeOwnerKind.BUILTIN;
+            case ExtensionGdClass.ClassMethod _, ExtensionUtilityFunction _ -> ScopeOwnerKind.ENGINE;
+            default -> null;
+        };
+    }
+
+    private @Nullable GdType currentClassReceiverType(@NotNull IdentifierExpression anchor) {
+        var currentScope = scopesByAst.get(Objects.requireNonNull(anchor, "anchor must not be null"));
+        while (currentScope != null) {
+            if (currentScope instanceof ClassScope classScope) {
+                return new GdObjectType(classScope.getCurrentClass().getName());
+            }
+            currentScope = currentScope.getParentScope();
+        }
+        return null;
     }
 
     private boolean matchesCallableArguments(
@@ -900,11 +1024,18 @@ public final class FrontendExpressionSemanticSupport {
     }
 
     private static @NotNull ExpressionSemanticResult propagated(@NotNull FrontendExpressionType expressionType) {
-        return new ExpressionSemanticResult(expressionType, false);
+        return new ExpressionSemanticResult(expressionType, false, null);
     }
 
     private static @NotNull ExpressionSemanticResult rootOutcome(@NotNull FrontendExpressionType expressionType) {
-        return new ExpressionSemanticResult(expressionType, true);
+        return rootOutcome(expressionType, null);
+    }
+
+    private static @NotNull ExpressionSemanticResult rootOutcome(
+            @NotNull FrontendExpressionType expressionType,
+            @Nullable FrontendResolvedCall publishedCallOrNull
+    ) {
+        return new ExpressionSemanticResult(expressionType, true, publishedCallOrNull);
     }
 
     private record CallArgumentResolution(
@@ -920,5 +1051,16 @@ public final class FrontendExpressionSemanticSupport {
             @Nullable FunctionDef selected,
             @Nullable String detailReason
     ) {
+    }
+
+    private record BareCallRoute(
+            @NotNull FrontendCallResolutionKind callKind,
+            @NotNull FrontendReceiverKind receiverKind,
+            @Nullable GdType receiverType
+    ) {
+        private BareCallRoute {
+            Objects.requireNonNull(callKind, "callKind must not be null");
+            Objects.requireNonNull(receiverKind, "receiverKind must not be null");
+        }
     }
 }

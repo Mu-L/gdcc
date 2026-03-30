@@ -14,6 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -23,10 +24,10 @@ class FrontendCfgGraphTest {
     @Test
     void constructorCopiesNodeTopologyAndSupportsTypedLookup() {
         var sequenceItems = new ArrayList<FrontendCfgGraph.SequenceItem>();
-        sequenceItems.add(new FrontendCfgGraph.StatementItem(new PassStatement(SYNTHETIC_RANGE)));
-        sequenceItems.add(new FrontendCfgGraph.EvalExprItem(identifier("flag"), "v0"));
+        sequenceItems.add(new FrontendCfgGraph.SourceAnchorItem(new PassStatement(SYNTHETIC_RANGE)));
+        sequenceItems.add(new FrontendCfgGraph.OpaqueExprValueItem(identifier("flag"), "v0"));
 
-        var nodes = new LinkedHashMap<String, FrontendCfgGraph.Node>();
+        var nodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
         nodes.put("entry", new FrontendCfgGraph.SequenceNode("entry", sequenceItems, "branch"));
         nodes.put("branch", new FrontendCfgGraph.BranchNode("branch", identifier("flag"), "v0", "then", "else"));
         nodes.put("then", new FrontendCfgGraph.StopNode("then", "ret0"));
@@ -59,13 +60,13 @@ class FrontendCfgGraphTest {
 
     @Test
     void constructorRejectsBrokenEntryAndEdgeContracts() {
-        var missingEntryNodes = new LinkedHashMap<String, FrontendCfgGraph.Node>();
+        var missingEntryNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
         missingEntryNodes.put("stop", new FrontendCfgGraph.StopNode("stop", null));
 
-        var keyMismatchNodes = new LinkedHashMap<String, FrontendCfgGraph.Node>();
+        var keyMismatchNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
         keyMismatchNodes.put("entry", new FrontendCfgGraph.StopNode("other", null));
 
-        var brokenTargetNodes = new LinkedHashMap<String, FrontendCfgGraph.Node>();
+        var brokenTargetNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
         brokenTargetNodes.put("entry", new FrontendCfgGraph.SequenceNode("entry", List.of(), "branch"));
         brokenTargetNodes.put("branch", new FrontendCfgGraph.BranchNode("branch", identifier("flag"), "v0", "then", "missing"));
         brokenTargetNodes.put("then", new FrontendCfgGraph.StopNode("then", null));
@@ -87,6 +88,44 @@ class FrontendCfgGraphTest {
                 () -> assertTrue(missingEntry.getMessage().contains("entry node")),
                 () -> assertTrue(keyMismatch.getMessage().contains("node id mismatch")),
                 () -> assertTrue(brokenTarget.getMessage().contains("missing falseTargetId"))
+        );
+    }
+
+    @Test
+    void valueOpItemsExposeStableAnchorOperandAndResultContracts() {
+        var passStatement = new PassStatement(SYNTHETIC_RANGE);
+        var expression = identifier("seed");
+        var sourceAnchor = new FrontendCfgGraph.SourceAnchorItem(passStatement);
+        var opaqueValue = new FrontendCfgGraph.OpaqueExprValueItem(expression, "v0");
+        var callItem = new FrontendCfgGraph.CallItem(expression, "recv0", List.of("arg0", "arg1"), "v1");
+
+        assertAll(
+                () -> assertSame(passStatement, sourceAnchor.statement()),
+                () -> assertSame(passStatement, sourceAnchor.anchor()),
+                () -> assertSame(expression, opaqueValue.expression()),
+                () -> assertSame(expression, opaqueValue.anchor()),
+                () -> assertEquals("v0", opaqueValue.resultValueIdOrNull()),
+                () -> assertEquals(List.of(), opaqueValue.operandValueIds()),
+                () -> assertSame(expression, callItem.anchor()),
+                () -> assertEquals("v1", callItem.resultValueIdOrNull()),
+                () -> assertEquals(List.of("recv0", "arg0", "arg1"), callItem.operandValueIds())
+        );
+    }
+
+    @Test
+    void valueOpItemsRejectBlankValueIds() {
+        var blankOpaque = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph.OpaqueExprValueItem(identifier("seed"), " ")
+        );
+        var blankCallOperand = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph.CallItem(identifier("seed"), "recv0", List.of("arg0", " "), "v1")
+        );
+
+        assertAll(
+                () -> assertTrue(blankOpaque.getMessage().contains("resultValueId")),
+                () -> assertTrue(blankCallOperand.getMessage().contains("argumentValueIds[1]"))
         );
     }
 

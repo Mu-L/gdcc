@@ -103,35 +103,39 @@ class FrontendLoweringBuildCfgPassTest {
                 () -> assertEquals("stop_0", entryNode.nextId()),
                 () -> assertEquals(5, entryItems.size()),
                 () -> assertSame(passStatement, assertInstanceOf(
-                        FrontendCfgGraph.StatementItem.class,
+                        FrontendCfgGraph.SourceAnchorItem.class,
                         entryItems.getFirst()
                 ).statement()),
                 () -> assertSame(expressionStatement.expression(), assertInstanceOf(
-                        FrontendCfgGraph.EvalExprItem.class,
+                        FrontendCfgGraph.OpaqueExprValueItem.class,
                         entryItems.get(1)
                 ).expression()),
                 () -> assertEquals("v0", assertInstanceOf(
-                        FrontendCfgGraph.EvalExprItem.class,
+                        FrontendCfgGraph.OpaqueExprValueItem.class,
                         entryItems.get(1)
                 ).resultValueId()),
                 () -> assertSame(variableDeclaration.value(), assertInstanceOf(
-                        FrontendCfgGraph.EvalExprItem.class,
+                        FrontendCfgGraph.OpaqueExprValueItem.class,
                         entryItems.get(2)
                 ).expression()),
                 () -> assertEquals("local_1", assertInstanceOf(
-                        FrontendCfgGraph.EvalExprItem.class,
+                        FrontendCfgGraph.OpaqueExprValueItem.class,
                         entryItems.get(2)
                 ).resultValueId()),
                 () -> assertSame(variableDeclaration, assertInstanceOf(
-                        FrontendCfgGraph.StatementItem.class,
+                        FrontendCfgGraph.LocalDeclarationItem.class,
                         entryItems.get(3)
-                ).statement()),
+                ).declaration()),
+                () -> assertEquals("local_1", assertInstanceOf(
+                        FrontendCfgGraph.LocalDeclarationItem.class,
+                        entryItems.get(3)
+                ).initializerValueIdOrNull()),
                 () -> assertSame(returnStatement.value(), assertInstanceOf(
-                        FrontendCfgGraph.EvalExprItem.class,
+                        FrontendCfgGraph.OpaqueExprValueItem.class,
                         entryItems.get(4)
                 ).expression()),
                 () -> assertEquals("v2", assertInstanceOf(
-                        FrontendCfgGraph.EvalExprItem.class,
+                        FrontendCfgGraph.OpaqueExprValueItem.class,
                         entryItems.get(4)
                 ).resultValueId()),
                 () -> assertEquals("v2", stopNode.returnValueIdOrNull()),

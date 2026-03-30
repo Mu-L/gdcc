@@ -283,7 +283,7 @@ class FrontendLoweringPassManagerTest {
                 () -> assertEquals(List.of("seq_0", "stop_0"), graph.nodeIds()),
                 () -> assertEquals("seq_0", rootRegion.entryId()),
                 () -> assertSame(expressionStatement.expression(), assertInstanceOf(
-                        FrontendCfgGraph.EvalExprItem.class,
+                        FrontendCfgGraph.OpaqueExprValueItem.class,
                         entryNode.items().get(1)
                 ).expression()),
                 () -> assertEquals("v1", stopNode.returnValueIdOrNull()),

@@ -1,10 +1,16 @@
 package dev.superice.gdcc.frontend.lowering.cfg;
 
+import dev.superice.gdparser.frontend.ast.AssignmentExpression;
+import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
+import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Statement;
+import dev.superice.gdparser.frontend.ast.TypeTestExpression;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -22,7 +28,7 @@ import java.util.Objects;
 /// `FunctionLoweringContext`, so the constructor validates entry/successor references eagerly.
 public record FrontendCfgGraph(
         @NotNull String entryNodeId,
-        @NotNull Map<String, Node> nodes
+        @NotNull Map<String, NodeDef> nodes
 ) {
     public FrontendCfgGraph {
         entryNodeId = validateNodeId(entryNodeId, "entryNodeId");
@@ -35,11 +41,11 @@ public record FrontendCfgGraph(
         return nodes.containsKey(validateNodeId(nodeId, "nodeId"));
     }
 
-    public @Nullable Node nodeOrNull(@NotNull String nodeId) {
+    public @Nullable NodeDef nodeOrNull(@NotNull String nodeId) {
         return nodes.get(validateNodeId(nodeId, "nodeId"));
     }
 
-    public @NotNull Node requireNode(@NotNull String nodeId) {
+    public @NotNull NodeDef requireNode(@NotNull String nodeId) {
         var node = nodeOrNull(nodeId);
         if (node == null) {
             throw new IllegalStateException("Frontend CFG node has not been published: " + nodeId);
@@ -52,16 +58,30 @@ public record FrontendCfgGraph(
     }
 
     /// One frontend CFG node.
-    public sealed interface Node permits SequenceNode, BranchNode, StopNode {
+    public sealed interface NodeDef permits SequenceNode, BranchNode, StopNode {
         @NotNull String id();
     }
 
     /// One linear item executed inside a `SequenceNode`.
     ///
-    /// The first implementation round only needs statement passthrough and expression evaluation
-    /// steps, but the sealed shape keeps room for future builder-local items without reworking the
-    /// graph carrier contract.
-    public sealed interface SequenceItem permits StatementItem, EvalExprItem {
+    /// `SequenceNode` intentionally separates pure source anchors from real value-producing or
+    /// state-mutating operations so later lowering passes no longer need to infer execution meaning
+    /// from raw statement AST pairing.
+    public sealed interface SequenceItem permits SourceAnchorItem, ValueOpItem {
+        @NotNull Node anchor();
+    }
+
+    /// Executing frontend value-op item.
+    ///
+    /// All real execution work published into the frontend CFG goes through this shape:
+    /// - `anchor()` keeps the source AST root that owns the operation
+    /// - `resultValueIdOrNull()` names the value produced by this item when it is value-producing
+    /// - `operandValueIds()` lists already-materialized inputs consumed by this item in source order
+    public sealed interface ValueOpItem extends SequenceItem permits OpaqueExprValueItem, LocalDeclarationItem,
+            AssignmentItem, MemberLoadItem, SubscriptLoadItem, CallItem, CastItem, TypeTestItem {
+        @Nullable String resultValueIdOrNull();
+
+        @NotNull List<String> operandValueIds();
     }
 
     /// Sequence node for straight-line execution.
@@ -72,7 +92,7 @@ public record FrontendCfgGraph(
             @NotNull String id,
             @NotNull List<SequenceItem> items,
             @NotNull String nextId
-    ) implements Node {
+    ) implements NodeDef {
         public SequenceNode {
             id = validateNodeId(id, "id");
             items = List.copyOf(Objects.requireNonNull(items, "items must not be null"));
@@ -90,10 +110,11 @@ public record FrontendCfgGraph(
             @NotNull String conditionValueId,
             @NotNull String trueTargetId,
             @NotNull String falseTargetId
-    ) implements Node {
+    ) implements NodeDef {
         public BranchNode {
             id = validateNodeId(id, "id");
-            conditionValueId = validateNodeId(conditionValueId, "conditionValueId");
+            Objects.requireNonNull(conditionRoot, "conditionRoot must not be null");
+            conditionValueId = validateValueId(conditionValueId, "conditionValueId");
             trueTargetId = validateNodeId(trueTargetId, "trueTargetId");
             falseTargetId = validateNodeId(falseTargetId, "falseTargetId");
         }
@@ -103,30 +124,268 @@ public record FrontendCfgGraph(
     public record StopNode(
             @NotNull String id,
             @Nullable String returnValueIdOrNull
-    ) implements Node {
+    ) implements NodeDef {
         public StopNode {
             id = validateNodeId(id, "id");
-            returnValueIdOrNull = validateOptionalNodeId(returnValueIdOrNull, "returnValueIdOrNull");
+            returnValueIdOrNull = validateOptionalValueId(returnValueIdOrNull, "returnValueIdOrNull");
         }
     }
 
-    /// Linear passthrough of one source statement.
-    public record StatementItem(@NotNull Statement statement) implements SequenceItem {
+    /// Non-executing source anchor kept only for diagnostics and lexical-position bookkeeping.
+    ///
+    /// This item intentionally carries no operands or result value id. Real execution semantics such
+    /// as declaration commits must use a concrete `ValueOpItem` instead of hiding work behind a
+    /// generic statement passthrough.
+    public record SourceAnchorItem(@NotNull Statement statement) implements SequenceItem {
+        public SourceAnchorItem {
+            Objects.requireNonNull(statement, "statement must not be null");
+        }
+
+        @Override
+        public @NotNull Node anchor() {
+            return statement;
+        }
     }
 
-    /// Linear evaluation of one expression into a frontend-local value id.
-    public record EvalExprItem(
+    /// Transitional opaque expression evaluation.
+    ///
+    /// Stage 3 stops hiding execution under `StatementItem`, but stage 5 has not yet exploded every
+    /// nested call/member/subscript subtree into dedicated ops. This item therefore represents one
+    /// whole source expression that still lowers as a single value-producing step.
+    public record OpaqueExprValueItem(
             @NotNull Expression expression,
             @NotNull String resultValueId
-    ) implements SequenceItem {
-        public EvalExprItem {
-            resultValueId = validateNodeId(resultValueId, "resultValueId");
+    ) implements ValueOpItem {
+        public OpaqueExprValueItem {
+            Objects.requireNonNull(expression, "expression must not be null");
+            resultValueId = validateValueId(resultValueId, "resultValueId");
+        }
+
+        @Override
+        public @NotNull Node anchor() {
+            return expression;
+        }
+
+        @Override
+        public @NotNull String resultValueIdOrNull() {
+            return resultValueId;
+        }
+
+        @Override
+        public @NotNull List<String> operandValueIds() {
+            return List.of();
         }
     }
 
-    private static @NotNull Map<String, Node> copyNodes(@NotNull Map<String, Node> nodes) {
+    /// Local declaration commit that consumes an already-evaluated initializer value when present.
+    ///
+    /// Keeping the declaration commit explicit prevents later lowering from having to rediscover
+    /// whether a nearby expression evaluation belonged to this declaration or to some unrelated
+    /// neighboring statement.
+    public record LocalDeclarationItem(
+            @NotNull VariableDeclaration declaration,
+            @Nullable String initializerValueIdOrNull
+    ) implements ValueOpItem {
+        public LocalDeclarationItem {
+            Objects.requireNonNull(declaration, "declaration must not be null");
+            initializerValueIdOrNull = validateOptionalValueId(initializerValueIdOrNull, "initializerValueIdOrNull");
+        }
+
+        @Override
+        public @NotNull Node anchor() {
+            return declaration;
+        }
+
+        @Override
+        public @Nullable String resultValueIdOrNull() {
+            return null;
+        }
+
+        @Override
+        public @NotNull List<String> operandValueIds() {
+            return initializerValueIdOrNull == null ? List.of() : List.of(initializerValueIdOrNull);
+        }
+    }
+
+    /// Future assignment/store commit placeholder.
+    public record AssignmentItem(
+            @NotNull AssignmentExpression assignment,
+            @NotNull String rhsValueId,
+            @Nullable String resultValueIdOrNull
+    ) implements ValueOpItem {
+        public AssignmentItem {
+            Objects.requireNonNull(assignment, "assignment must not be null");
+            rhsValueId = validateValueId(rhsValueId, "rhsValueId");
+            resultValueIdOrNull = validateOptionalValueId(resultValueIdOrNull, "resultValueIdOrNull");
+        }
+
+        @Override
+        public @NotNull Node anchor() {
+            return assignment;
+        }
+
+        @Override
+        public @NotNull List<String> operandValueIds() {
+            return List.of(rhsValueId);
+        }
+    }
+
+    /// Future member/property load placeholder.
+    public record MemberLoadItem(
+            @NotNull Expression expression,
+            @NotNull String baseValueId,
+            @NotNull String resultValueId
+    ) implements ValueOpItem {
+        public MemberLoadItem {
+            Objects.requireNonNull(expression, "expression must not be null");
+            baseValueId = validateValueId(baseValueId, "baseValueId");
+            resultValueId = validateValueId(resultValueId, "resultValueId");
+        }
+
+        @Override
+        public @NotNull Node anchor() {
+            return expression;
+        }
+
+        @Override
+        public @NotNull String resultValueIdOrNull() {
+            return resultValueId;
+        }
+
+        @Override
+        public @NotNull List<String> operandValueIds() {
+            return List.of(baseValueId);
+        }
+    }
+
+    /// Future subscript load placeholder.
+    public record SubscriptLoadItem(
+            @NotNull Expression expression,
+            @NotNull String baseValueId,
+            @NotNull List<String> argumentValueIds,
+            @NotNull String resultValueId
+    ) implements ValueOpItem {
+        public SubscriptLoadItem {
+            Objects.requireNonNull(expression, "expression must not be null");
+            baseValueId = validateValueId(baseValueId, "baseValueId");
+            argumentValueIds = copyValueIds(argumentValueIds, "argumentValueIds");
+            resultValueId = validateValueId(resultValueId, "resultValueId");
+        }
+
+        @Override
+        public @NotNull Node anchor() {
+            return expression;
+        }
+
+        @Override
+        public @NotNull String resultValueIdOrNull() {
+            return resultValueId;
+        }
+
+        @Override
+        public @NotNull List<String> operandValueIds() {
+            var operands = new ArrayList<String>(1 + argumentValueIds.size());
+            operands.add(baseValueId);
+            operands.addAll(argumentValueIds);
+            return List.copyOf(operands);
+        }
+    }
+
+    /// Future call placeholder.
+    public record CallItem(
+            @NotNull Expression expression,
+            @Nullable String receiverValueIdOrNull,
+            @NotNull List<String> argumentValueIds,
+            @NotNull String resultValueId
+    ) implements ValueOpItem {
+        public CallItem {
+            Objects.requireNonNull(expression, "expression must not be null");
+            receiverValueIdOrNull = validateOptionalValueId(receiverValueIdOrNull, "receiverValueIdOrNull");
+            argumentValueIds = copyValueIds(argumentValueIds, "argumentValueIds");
+            resultValueId = validateValueId(resultValueId, "resultValueId");
+        }
+
+        @Override
+        public @NotNull Node anchor() {
+            return expression;
+        }
+
+        @Override
+        public @NotNull String resultValueIdOrNull() {
+            return resultValueId;
+        }
+
+        @Override
+        public @NotNull List<String> operandValueIds() {
+            if (receiverValueIdOrNull == null) {
+                return argumentValueIds;
+            }
+            var operands = new ArrayList<String>(1 + argumentValueIds.size());
+            operands.add(receiverValueIdOrNull);
+            operands.addAll(argumentValueIds);
+            return List.copyOf(operands);
+        }
+    }
+
+    /// Future cast placeholder.
+    public record CastItem(
+            @NotNull CastExpression expression,
+            @NotNull String operandValueId,
+            @NotNull String resultValueId
+    ) implements ValueOpItem {
+        public CastItem {
+            Objects.requireNonNull(expression, "expression must not be null");
+            operandValueId = validateValueId(operandValueId, "operandValueId");
+            resultValueId = validateValueId(resultValueId, "resultValueId");
+        }
+
+        @Override
+        public @NotNull Node anchor() {
+            return expression;
+        }
+
+        @Override
+        public @NotNull String resultValueIdOrNull() {
+            return resultValueId;
+        }
+
+        @Override
+        public @NotNull List<String> operandValueIds() {
+            return List.of(operandValueId);
+        }
+    }
+
+    /// Future type-test placeholder.
+    public record TypeTestItem(
+            @NotNull TypeTestExpression expression,
+            @NotNull String operandValueId,
+            @NotNull String resultValueId
+    ) implements ValueOpItem {
+        public TypeTestItem {
+            Objects.requireNonNull(expression, "expression must not be null");
+            operandValueId = validateValueId(operandValueId, "operandValueId");
+            resultValueId = validateValueId(resultValueId, "resultValueId");
+        }
+
+        @Override
+        public @NotNull Node anchor() {
+            return expression;
+        }
+
+        @Override
+        public @NotNull String resultValueIdOrNull() {
+            return resultValueId;
+        }
+
+        @Override
+        public @NotNull List<String> operandValueIds() {
+            return List.of(operandValueId);
+        }
+    }
+
+    private static @NotNull Map<String, NodeDef> copyNodes(@NotNull Map<String, NodeDef> nodes) {
         Objects.requireNonNull(nodes, "nodes must not be null");
-        var copiedNodes = new LinkedHashMap<String, Node>(nodes.size());
+        var copiedNodes = new LinkedHashMap<String, NodeDef>(nodes.size());
         for (var entry : nodes.entrySet()) {
             var nodeId = validateNodeId(entry.getKey(), "nodeId");
             var node = Objects.requireNonNull(entry.getValue(), "node must not be null");
@@ -140,13 +399,13 @@ public record FrontendCfgGraph(
         return Collections.unmodifiableMap(copiedNodes);
     }
 
-    private static void validateEntryNode(@NotNull Map<String, Node> nodes, @NotNull String entryNodeId) {
+    private static void validateEntryNode(@NotNull Map<String, NodeDef> nodes, @NotNull String entryNodeId) {
         if (!nodes.containsKey(entryNodeId)) {
             throw new IllegalArgumentException("Frontend CFG entry node does not exist: " + entryNodeId);
         }
     }
 
-    private static void validateSuccessorTargets(@NotNull Map<String, Node> nodes) {
+    private static void validateSuccessorTargets(@NotNull Map<String, NodeDef> nodes) {
         for (var node : nodes.values()) {
             switch (node) {
                 case SequenceNode(_, _, var nextId) -> validateTargetNode(nodes, node.id(), "nextId", nextId);
@@ -161,7 +420,7 @@ public record FrontendCfgGraph(
     }
 
     private static void validateTargetNode(
-            @NotNull Map<String, Node> nodes,
+            @NotNull Map<String, NodeDef> nodes,
             @NotNull String sourceNodeId,
             @NotNull String edgeName,
             @NotNull String targetNodeId
@@ -182,7 +441,20 @@ public record FrontendCfgGraph(
         return nonNullId;
     }
 
-    private static @Nullable String validateOptionalNodeId(@Nullable String id, @NotNull String fieldName) {
-        return id == null ? null : validateNodeId(id, fieldName);
+    static @NotNull String validateValueId(@Nullable String id, @NotNull String fieldName) {
+        return validateNodeId(id, fieldName);
+    }
+
+    private static @Nullable String validateOptionalValueId(@Nullable String id, @NotNull String fieldName) {
+        return id == null ? null : validateValueId(id, fieldName);
+    }
+
+    private static @NotNull List<String> copyValueIds(@Nullable List<String> ids, @NotNull String fieldName) {
+        var source = Objects.requireNonNull(ids, fieldName + " must not be null");
+        var copied = new ArrayList<String>(source.size());
+        for (var index = 0; index < source.size(); index++) {
+            copied.add(validateValueId(source.get(index), fieldName + "[" + index + "]"));
+        }
+        return List.copyOf(copied);
     }
 }
