@@ -1,7 +1,6 @@
 package dev.superice.gdcc.frontend.lowering.cfg.item;
 
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
-import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.Node;
 import org.jetbrains.annotations.NotNull;
 
@@ -10,23 +9,25 @@ import java.util.Objects;
 
 /// Property/member read placeholder for a previously-evaluated base value.
 ///
-/// `expression` remains the full source root so diagnostics and later semantic lookups still anchor
-/// to the original AST, while `baseValueId` and `resultValueId` make the data-flow explicit inside
-/// the sequence.
+/// `memberAnchor` is normally the published `AttributePropertyStep`, while `memberName` freezes the
+/// exact source member token used by this read so later lowering does not need to peel it back out of
+/// the surrounding attribute chain.
 public record MemberLoadItem(
-        @NotNull Expression expression,
+        @NotNull Node memberAnchor,
+        @NotNull String memberName,
         @NotNull String baseValueId,
         @NotNull String resultValueId
 ) implements ValueOpItem {
     public MemberLoadItem {
-        Objects.requireNonNull(expression, "expression must not be null");
+        Objects.requireNonNull(memberAnchor, "memberAnchor must not be null");
+        memberName = FrontendCfgItemSupport.requireNonBlank(memberName, "memberName");
         baseValueId = FrontendCfgGraph.validateValueId(baseValueId, "baseValueId");
         resultValueId = FrontendCfgGraph.validateValueId(resultValueId, "resultValueId");
     }
 
     @Override
     public @NotNull Node anchor() {
-        return expression;
+        return memberAnchor;
     }
 
     @Override

@@ -11,16 +11,20 @@ import java.util.Objects;
 
 /// Assignment/store commit placeholder for the frontend CFG.
 ///
-/// `rhsValueId` points to the already-evaluated right-hand side. `resultValueIdOrNull` remains
-/// optional because future lowering may need to preserve assignment-as-expression semantics for some
-/// source forms, while statement-root assignments only commit state and publish no new value.
+/// `targetOperandValueIds` freezes the already-evaluated receiver/index operands of the assignment
+/// target in source order, while `rhsValueId` points to the already-evaluated right-hand side.
+/// `resultValueIdOrNull` remains optional because future lowering may need to preserve
+/// assignment-as-expression semantics for some source forms, while statement-root assignments only
+/// commit state and publish no new value.
 public record AssignmentItem(
         @NotNull AssignmentExpression assignment,
+        @NotNull List<String> targetOperandValueIds,
         @NotNull String rhsValueId,
         @Nullable String resultValueIdOrNull
 ) implements ValueOpItem {
     public AssignmentItem {
         Objects.requireNonNull(assignment, "assignment must not be null");
+        targetOperandValueIds = FrontendCfgItemSupport.copyValueIds(targetOperandValueIds, "targetOperandValueIds");
         rhsValueId = FrontendCfgGraph.validateValueId(rhsValueId, "rhsValueId");
         resultValueIdOrNull = FrontendCfgItemSupport.validateOptionalValueId(
                 resultValueIdOrNull,
@@ -35,6 +39,9 @@ public record AssignmentItem(
 
     @Override
     public @NotNull List<String> operandValueIds() {
-        return List.of(rhsValueId);
+        var operands = new java.util.ArrayList<String>(targetOperandValueIds.size() + 1);
+        operands.addAll(targetOperandValueIds);
+        operands.add(rhsValueId);
+        return List.copyOf(operands);
     }
 }

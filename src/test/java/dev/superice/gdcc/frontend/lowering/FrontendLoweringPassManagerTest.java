@@ -278,16 +278,19 @@ class FrontendLoweringPassManagerTest {
         );
         var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("seq_0"));
         var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode("stop_0"));
+        var binaryValue = assertInstanceOf(
+                OpaqueExprValueItem.class,
+                entryNode.items().get(3)
+        );
 
         assertAll(
                 () -> assertFalse(diagnostics.hasErrors()),
                 () -> assertEquals(List.of("seq_0", "stop_0"), graph.nodeIds()),
                 () -> assertEquals("seq_0", rootRegion.entryId()),
-                () -> assertSame(expressionStatement.expression(), assertInstanceOf(
-                        OpaqueExprValueItem.class,
-                        entryNode.items().get(1)
-                ).expression()),
-                () -> assertEquals("v1", stopNode.returnValueIdOrNull()),
+                () -> assertEquals(5, entryNode.items().size()),
+                () -> assertSame(expressionStatement.expression(), binaryValue.expression()),
+                () -> assertEquals(List.of("v0", "v1"), binaryValue.operandValueIds()),
+                () -> assertEquals("v3", stopNode.returnValueIdOrNull()),
                 () -> assertNull(structuredContext.frontendCfgGraphOrNull()),
                 () -> assertNull(structuredContext.frontendCfgRegionOrNull(structuredContext.loweringRoot())),
                 () -> assertNull(propertyContext.frontendCfgGraphOrNull()),

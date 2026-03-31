@@ -8,19 +8,26 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 import java.util.Objects;
 
-/// Transitional value-producing item for one whole source expression.
+/// Transitional value-producing item for generic source expressions.
 ///
-/// The current frontend CFG migration still treats many nested expression trees as one opaque step.
-/// `expression` keeps the original source root, and `resultValueId` gives later items or control-flow
-/// nodes one stable handle for the produced value without requiring immediate lowering into finer
-/// member/call/subscript operations.
+/// The exact lowering of many simple expression kinds still lives in later phases, but this item no
+/// longer hides nested special operations as one subtree black box. `operandValueIds` now records the
+/// already-materialized child values in source order, while `expression` keeps the original generic
+/// root so future body lowering can finish the operator-specific materialization without re-lowering
+/// those children.
 public record OpaqueExprValueItem(
         @NotNull Expression expression,
+        @NotNull List<String> operandValueIds,
         @NotNull String resultValueId
 ) implements ValueOpItem {
     public OpaqueExprValueItem {
         Objects.requireNonNull(expression, "expression must not be null");
+        operandValueIds = FrontendCfgItemSupport.copyValueIds(operandValueIds, "operandValueIds");
         resultValueId = FrontendCfgGraph.validateValueId(resultValueId, "resultValueId");
+    }
+
+    public OpaqueExprValueItem(@NotNull Expression expression, @NotNull String resultValueId) {
+        this(expression, List.of(), resultValueId);
     }
 
     @Override
@@ -31,10 +38,5 @@ public record OpaqueExprValueItem(
     @Override
     public @NotNull String resultValueIdOrNull() {
         return resultValueId;
-    }
-
-    @Override
-    public @NotNull List<String> operandValueIds() {
-        return List.of();
     }
 }

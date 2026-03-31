@@ -19,8 +19,8 @@ import java.util.Objects;
 ///
 /// The current pipeline consumes a `FrontendModule`, runs compile-ready semantic analysis, and
 /// emits a shell-only `LirModule` while also publishing lowering-local per-function scaffolding,
-/// phase-3 straight-line frontend CFG graphs, and legacy CFG metadata for still-unmigrated
-/// structured bodies.
+/// linear frontend CFG graphs with explicit value-op operands/results, and legacy CFG metadata for
+/// still-unmigrated structured bodies.
 @SuppressWarnings("deprecation")
 public final class FrontendLoweringPassManager {
     private final @NotNull List<FrontendLoweringPass> passes;

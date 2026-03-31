@@ -1,9 +1,14 @@
 package dev.superice.gdcc.frontend.lowering.cfg;
 
+import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
+import dev.superice.gdparser.frontend.ast.AssignmentExpression;
+import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.Point;
@@ -100,19 +105,34 @@ class FrontendCfgGraphTest {
         var passStatement = new PassStatement(SYNTHETIC_RANGE);
         var expression = identifier("seed");
         var sourceAnchor = new SourceAnchorItem(passStatement);
-        var opaqueValue = new OpaqueExprValueItem(expression, "v0");
-        var callItem = new CallItem(expression, "recv0", List.of("arg0", "arg1"), "v1");
+        var propertyStep = new AttributePropertyStep("payload", SYNTHETIC_RANGE);
+        var assignmentExpression = new AssignmentExpression("=", identifier("target"), expression, SYNTHETIC_RANGE);
+        var opaqueValue = new OpaqueExprValueItem(expression, List.of("lhs0", "rhs0"), "v0");
+        var memberItem = new MemberLoadItem(propertyStep, "payload", "recv0", "v1");
+        var subscriptItem = new SubscriptLoadItem(expression, "items", "recv1", List.of("arg0"), "v2");
+        var callItem = new CallItem(expression, "build", "recv2", List.of("arg1", "arg2"), "v3");
+        var assignmentItem = new AssignmentItem(assignmentExpression, List.of("slot0", "index0"), "rhs3", null);
 
         assertAll(
                 () -> assertSame(passStatement, sourceAnchor.statement()),
                 () -> assertSame(passStatement, sourceAnchor.anchor()),
                 () -> assertSame(expression, opaqueValue.expression()),
                 () -> assertSame(expression, opaqueValue.anchor()),
+                () -> assertEquals(List.of("lhs0", "rhs0"), opaqueValue.operandValueIds()),
                 () -> assertEquals("v0", opaqueValue.resultValueIdOrNull()),
-                () -> assertEquals(List.of(), opaqueValue.operandValueIds()),
+                () -> assertSame(propertyStep, memberItem.anchor()),
+                () -> assertEquals("payload", memberItem.memberName()),
+                () -> assertEquals(List.of("recv0"), memberItem.operandValueIds()),
+                () -> assertSame(expression, subscriptItem.anchor()),
+                () -> assertEquals("items", subscriptItem.memberNameOrNull()),
+                () -> assertEquals(List.of("recv1", "arg0"), subscriptItem.operandValueIds()),
                 () -> assertSame(expression, callItem.anchor()),
-                () -> assertEquals("v1", callItem.resultValueIdOrNull()),
-                () -> assertEquals(List.of("recv0", "arg0", "arg1"), callItem.operandValueIds())
+                () -> assertEquals("build", callItem.callableName()),
+                () -> assertEquals("v3", callItem.resultValueIdOrNull()),
+                () -> assertEquals(List.of("recv2", "arg1", "arg2"), callItem.operandValueIds()),
+                () -> assertSame(assignmentExpression, assignmentItem.anchor()),
+                () -> assertEquals(List.of("slot0", "index0", "rhs3"), assignmentItem.operandValueIds()),
+                () -> assertNull(assignmentItem.resultValueIdOrNull())
         );
     }
 
@@ -124,12 +144,17 @@ class FrontendCfgGraphTest {
         );
         var blankCallOperand = assertThrows(
                 IllegalArgumentException.class,
-                () -> new CallItem(identifier("seed"), "recv0", List.of("arg0", " "), "v1")
+                () -> new CallItem(identifier("seed"), "build", "recv0", List.of("arg0", " "), "v1")
+        );
+        var blankMemberName = assertThrows(
+                IllegalArgumentException.class,
+                () -> new MemberLoadItem(identifier("seed"), " ", "recv0", "v2")
         );
 
         assertAll(
                 () -> assertTrue(blankOpaque.getMessage().contains("resultValueId")),
-                () -> assertTrue(blankCallOperand.getMessage().contains("argumentValueIds[1]"))
+                () -> assertTrue(blankCallOperand.getMessage().contains("argumentValueIds[1]")),
+                () -> assertTrue(blankMemberName.getMessage().contains("memberName"))
         );
     }
 

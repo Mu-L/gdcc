@@ -2,9 +2,10 @@ package dev.superice.gdcc.frontend.lowering;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
-import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
-import dev.superice.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringBuildCfgPass;
@@ -14,11 +15,11 @@ import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
-import dev.superice.gdparser.frontend.ast.ExpressionStatement;
+import dev.superice.gdparser.frontend.ast.AttributeCallStep;
+import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
-import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
-import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
@@ -31,72 +32,84 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendLoweringBuildCfgPassTest {
     @Test
-    void runPublishesFrontendCfgGraphForStraightLineExecutableBodiesAndKeepsLirShellOnly() throws Exception {
+    void runPublishesFrontendCfgGraphForLinearExecutableBodiesAndKeepsLirShellOnly() throws Exception {
         var prepared = prepareContext(
-                "build_cfg_straight_line.gd",
+                "build_cfg_linear_value_ops.gd",
                 """
-                        class_name BuildCfgStraightLine
+                        class_name BuildCfgLinearValueOps
                         extends RefCounted
                         
                         var ready_value: int = 1
+                        var payloads: Dictionary[int, BuildCfgLinearValueOps]
+                        var value: int
+                        
+                        func helper(value: int) -> int:
+                            return value + 1
+                        
+                        func build(seed: int) -> BuildCfgLinearValueOps:
+                            return self
+                        
+                        func fetch(index: int) -> BuildCfgLinearValueOps:
+                            return self
                         
                         func ping(seed: int) -> int:
-                            pass
-                            seed + 1
-                            var local: int = seed + 2
-                            return local
-                            if seed:
-                                pass
+                            return build(helper(seed)).payloads[helper(seed)].fetch(helper(seed)).value
                         
                         func branchy(flag: bool) -> void:
                             if flag:
                                 pass
                         """,
-                Map.of("BuildCfgStraightLine", "RuntimeBuildCfgStraightLine")
+                Map.of("BuildCfgLinearValueOps", "RuntimeBuildCfgLinearValueOps")
         );
 
         new FrontendLoweringBuildCfgPass().run(prepared.context());
 
         var contexts = prepared.context().requireFunctionLoweringContexts();
-        var straightLineContext = requireContext(
+        var linearContext = requireContext(
                 contexts,
                 FunctionLoweringContext.Kind.EXECUTABLE_BODY,
-                "RuntimeBuildCfgStraightLine",
+                "RuntimeBuildCfgLinearValueOps",
                 "ping"
         );
         var structuredContext = requireContext(
                 contexts,
                 FunctionLoweringContext.Kind.EXECUTABLE_BODY,
-                "RuntimeBuildCfgStraightLine",
+                "RuntimeBuildCfgLinearValueOps",
                 "branchy"
         );
         var propertyContext = requireContext(
                 contexts,
                 FunctionLoweringContext.Kind.PROPERTY_INIT,
-                "RuntimeBuildCfgStraightLine",
+                "RuntimeBuildCfgLinearValueOps",
                 "_field_init_ready_value"
         );
-        var sourceFile = prepared.module().units().getFirst().ast();
-        var pingFunction = requireFunctionDeclaration(sourceFile, "ping");
+
+        var pingFunction = requireFunctionDeclaration(prepared.module().units().getFirst().ast(), "ping");
         var pingBlock = pingFunction.body();
-        var passStatement = assertInstanceOf(PassStatement.class, pingBlock.statements().get(0));
-        var expressionStatement = assertInstanceOf(ExpressionStatement.class, pingBlock.statements().get(1));
-        var variableDeclaration = assertInstanceOf(VariableDeclaration.class, pingBlock.statements().get(2));
-        var returnStatement = assertInstanceOf(ReturnStatement.class, pingBlock.statements().get(3));
-        var graph = straightLineContext.requireFrontendCfgGraph();
+        var returnStatement = assertInstanceOf(ReturnStatement.class, pingBlock.statements().getFirst());
+        var returnExpression = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var fetchStep = assertInstanceOf(AttributeCallStep.class, returnExpression.steps().get(1));
+        var valueStep = assertInstanceOf(AttributePropertyStep.class, returnExpression.steps().get(2));
+
+        var graph = linearContext.requireFrontendCfgGraph();
         var blockRegion = assertInstanceOf(
                 FrontendCfgRegion.BlockRegion.class,
-                straightLineContext.requireFrontendCfgRegion(pingBlock)
+                linearContext.requireFrontendCfgRegion(pingBlock)
         );
         var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("seq_0"));
         var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode("stop_0"));
-        var entryItems = entryNode.items();
+        var items = entryNode.items();
+        var firstSeed = assertInstanceOf(OpaqueExprValueItem.class, items.get(0));
+        var firstHelper = assertInstanceOf(CallItem.class, items.get(1));
+        var buildCall = assertInstanceOf(CallItem.class, items.get(2));
+        var payloadsSubscript = assertInstanceOf(SubscriptLoadItem.class, items.get(5));
+        var fetchCall = assertInstanceOf(CallItem.class, items.get(8));
+        var valueRead = assertInstanceOf(MemberLoadItem.class, items.get(9));
 
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
@@ -104,46 +117,21 @@ class FrontendLoweringBuildCfgPassTest {
                 () -> assertEquals("seq_0", graph.entryNodeId()),
                 () -> assertEquals("seq_0", blockRegion.entryId()),
                 () -> assertEquals("stop_0", entryNode.nextId()),
-                () -> assertEquals(5, entryItems.size()),
-                () -> assertSame(passStatement, assertInstanceOf(
-                        SourceAnchorItem.class,
-                        entryItems.getFirst()
-                ).statement()),
-                () -> assertSame(expressionStatement.expression(), assertInstanceOf(
-                        OpaqueExprValueItem.class,
-                        entryItems.get(1)
-                ).expression()),
-                () -> assertEquals("v0", assertInstanceOf(
-                        OpaqueExprValueItem.class,
-                        entryItems.get(1)
-                ).resultValueId()),
-                () -> assertSame(variableDeclaration.value(), assertInstanceOf(
-                        OpaqueExprValueItem.class,
-                        entryItems.get(2)
-                ).expression()),
-                () -> assertEquals("local_1", assertInstanceOf(
-                        OpaqueExprValueItem.class,
-                        entryItems.get(2)
-                ).resultValueId()),
-                () -> assertSame(variableDeclaration, assertInstanceOf(
-                        LocalDeclarationItem.class,
-                        entryItems.get(3)
-                ).declaration()),
-                () -> assertEquals("local_1", assertInstanceOf(
-                        LocalDeclarationItem.class,
-                        entryItems.get(3)
-                ).initializerValueIdOrNull()),
-                () -> assertSame(returnStatement.value(), assertInstanceOf(
-                        OpaqueExprValueItem.class,
-                        entryItems.get(4)
-                ).expression()),
-                () -> assertEquals("v2", assertInstanceOf(
-                        OpaqueExprValueItem.class,
-                        entryItems.get(4)
-                ).resultValueId()),
-                () -> assertEquals("v2", stopNode.returnValueIdOrNull()),
-                () -> assertEquals(0, straightLineContext.targetFunction().getBasicBlockCount()),
-                () -> assertTrue(straightLineContext.targetFunction().getEntryBlockId().isEmpty()),
+                () -> assertEquals(10, items.size()),
+                () -> assertEquals(List.of(), firstSeed.operandValueIds()),
+                () -> assertEquals("helper", firstHelper.callableName()),
+                () -> assertEquals(List.of("v0"), firstHelper.operandValueIds()),
+                () -> assertEquals("build", buildCall.callableName()),
+                () -> assertEquals(List.of("v1"), buildCall.operandValueIds()),
+                () -> assertEquals("payloads", payloadsSubscript.memberNameOrNull()),
+                () -> assertEquals(List.of("v2", "v4"), payloadsSubscript.operandValueIds()),
+                () -> assertEquals(fetchStep, fetchCall.anchor()),
+                () -> assertEquals(List.of("v5", "v7"), fetchCall.operandValueIds()),
+                () -> assertEquals(valueStep, valueRead.anchor()),
+                () -> assertEquals(List.of("v8"), valueRead.operandValueIds()),
+                () -> assertEquals("v9", stopNode.returnValueIdOrNull()),
+                () -> assertEquals(0, linearContext.targetFunction().getBasicBlockCount()),
+                () -> assertTrue(linearContext.targetFunction().getEntryBlockId().isEmpty()),
                 () -> assertNull(structuredContext.frontendCfgGraphOrNull()),
                 () -> assertNull(structuredContext.frontendCfgRegionOrNull(structuredContext.loweringRoot())),
                 () -> assertNull(propertyContext.frontendCfgGraphOrNull()),

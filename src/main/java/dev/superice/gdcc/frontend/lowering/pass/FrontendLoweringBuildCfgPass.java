@@ -12,10 +12,11 @@ import org.jetbrains.annotations.NotNull;
 
 /// Frontend CFG graph publication pass.
 ///
-/// Phase 3 only materializes the straight-line executable-body subset into the new frontend CFG
-/// graph. Structured bodies still wait for later migration steps, so this pass intentionally skips
-/// those functions after validating the shared shell-only invariants. Legacy `FrontendLoweringCfgPass`
-/// remains in the default pipeline as a temporary metadata-only fallback for that broader surface.
+/// The current implementation materializes the linear executable-body subset into the new frontend
+/// CFG graph with recursive value-op expansion for lowering-ready expressions. Structured bodies
+/// still wait for later migration steps, so this pass intentionally skips those functions after
+/// validating the shared shell-only invariants. Legacy `FrontendLoweringCfgPass` remains in the
+/// default pipeline as a temporary metadata-only fallback for that broader surface.
 public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass {
     @Override
     public void run(@NotNull FrontendLoweringContext context) {
@@ -51,7 +52,7 @@ public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass 
             return;
         }
 
-        var build = new FrontendCfgGraphBuilder().buildStraightLineExecutableBody(rootBlock);
+        var build = new FrontendCfgGraphBuilder().buildStraightLineExecutableBody(rootBlock, functionContext.analysisData());
         functionContext.publishFrontendCfgGraph(build.graph());
         functionContext.publishFrontendCfgRegion(rootBlock, build.rootRegion());
     }

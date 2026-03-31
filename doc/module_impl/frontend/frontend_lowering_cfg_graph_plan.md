@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施中（第 1、2、3、4 阶段已完成；structured control-flow、显式 `and` / `or` 短路构图、recursive `buildValue(...)` 与 body lowering 仍待迁移）
+- 状态：实施中（第 1、2、3、4、5 阶段已完成；structured control-flow、显式 `and` / `or` 短路构图与 body lowering 仍待迁移）
 - 更新时间：2026-03-30
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
@@ -396,12 +396,12 @@ frontend CFG builder 需要显式维护 loop stack。
 - `FunctionLoweringContext` 已新增：
   - per-function `frontendCfgGraph` carrier
   - AST identity keyed `frontendCfgRegions` side table
-- 当前默认 pipeline 已开始通过 `FrontendLoweringBuildCfgPass` 为 phase-3 straight-line executable body 发布 frontend CFG graph；在显式 value-op 层与 structured control-flow 迁移完成前，structured executable body 仍仅保留 legacy `cfgNodeBlocks` 过渡骨架。
+- 当前默认 pipeline 已开始通过 `FrontendLoweringBuildCfgPass` 为线性 executable body 发布 frontend CFG graph；在 structured control-flow 迁移完成前，structured executable body 仍仅保留 legacy `cfgNodeBlocks` 过渡骨架。
 - 已有单元测试锚定：
   - duplicate graph / region publish fail-fast
   - region lookup 继续按 AST identity 工作
   - graph / region 不会跨 function context 泄漏
-  - default pipeline 会为 phase-3 straight-line executable body 发布新 graph，而 legacy CFG pass 继续不会误发布新 graph
+  - default pipeline 会为线性 executable body 发布新 graph，而 legacy CFG pass 继续不会误发布新 graph
 
 ### 4.3 第三步：把 `SequenceNode.items` 升级为 frontend 线性 value-op 层
 
@@ -450,9 +450,9 @@ frontend CFG builder 需要显式维护 loop stack。
   - `CallItem`
   - `CastItem`
   - `TypeTestItem`
-- phase-3 straight-line builder 已不再依赖 `EvalExprItem + StatementItem` 的隐式配对来表达 local `var` 的执行语义：
+- 当前线性 builder 已不再依赖 `EvalExprItem + StatementItem` 的隐式配对来表达 local `var` 的执行语义：
   - `pass` 只保留为纯 `SourceAnchorItem`
-  - discarded expression / return value 目前先落为 `OpaqueExprValueItem`
+  - discarded expression / return value 通过 `OpaqueExprValueItem` 保留 generic expression root，同时显式记录已 lower child operand ids
   - local declaration commit 通过 `LocalDeclarationItem` 显式消费 initializer value id
 - 对于没有 initializer 的 local `var`，builder 仍会发布显式 declaration-commit item，而不会退回 generic statement passthrough。
 - 已有单元测试锚定：
@@ -464,7 +464,7 @@ frontend CFG builder 需要显式维护 loop stack。
     - declaration-without-initializer 仍发布显式 commit item
     - reachable unsupported statement fail-fast
   - `FrontendLoweringBuildCfgPassTest` / `FrontendLoweringPassManagerTest`
-    - default pipeline 已对齐到 `SourceAnchorItem + OpaqueExprValueItem + LocalDeclarationItem` 的当前 contract
+    - default pipeline 已对齐到“线性 graph + 显式 value-op operand/result id” 的当前 contract
 
 ### 4.4 第四步：补齐 `resolvedCalls()` 的 bare `CallExpression` published 面
 
@@ -551,6 +551,42 @@ frontend CFG builder 需要显式维护 loop stack。
   - 不允许 child 表达式已经产生 value id，但父 item 仍缺少显式 operand 引用
   - 不允许 declaration / assignment 继续依赖 raw statement AST 才能恢复真实执行顺序
   - 不得因为引入 value-op 层而破坏 AST-keyed region side table 的 contract
+
+当前状态（2026-03-30）：
+
+- 已完成。
+- `FrontendCfgGraphBuilder` 已升级为递归线性 value builder，并直接消费 compile-ready `analysisData`：
+  - bare/global `CallExpression`
+  - `AttributeExpression` 的 property / call / attribute-subscript step
+  - plain `SubscriptExpression`
+  - statement-position `AssignmentExpression`
+  - `CastExpression` / `TypeTestExpression` 的预留 item 接线位
+- generic `IdentifierExpression` / `LiteralExpression` / `SelfExpression` / unary / binary 当前继续落为 `OpaqueExprValueItem`，但已不再是“整棵子树黑盒”：
+  - item 现在显式保存 `operandValueIds`
+  - nested special op child 会先发布 value id，再由 generic root item 显式消费
+- 当前 item contract 已同步增强为：
+  - `OpaqueExprValueItem`：显式 child operand ids
+  - `CallItem`：`callAnchor + callableName + receiver/argument value ids`
+  - `MemberLoadItem`：`memberAnchor + memberName + base/result value ids`
+  - `SubscriptLoadItem`：`subscriptAnchor + optional memberName + base/argument/result value ids`
+  - `AssignmentItem`：`targetOperandValueIds + rhsValueId + optional resultValueIdOrNull`
+- assignment target prefix 已单独走 target-specific value path：
+  - 因为左值前缀并不总是出现在 ordinary `expressionTypes()` published 面中
+  - builder 现在会在 assignment target lowering 中显式求值 receiver/index 前缀，而不会错误要求所有左值前缀都已有 ordinary expression fact
+- `FrontendLoweringBuildCfgPass` 已改为把 per-function `analysisData` 传入 builder，使 build pass 与 compile-ready published fact contract 对齐。
+- 已有单元测试锚定：
+  - `FrontendCfgGraphTest`
+    - expanded item anchor / operand / result contract
+  - `FrontendCfgGraphBuilderTest`
+    - nested bare-call + attribute-subscript + attribute-call + property-read expansion
+    - explicit declaration commit / assignment commit shape
+    - declaration-without-initializer explicit commit
+    - missing published call fact fail-fast
+    - reachable unsupported statement fail-fast
+  - `FrontendLoweringBuildCfgPassTest`
+    - default pipeline 发布 phase-5 线性 graph 形状并保持 shell-only LIR
+  - `FrontendLoweringPassManagerTest`
+    - manager 默认 pipeline 已对齐到显式 operand/result id 的线性 graph contract
 
 ### 4.6 第六步：在显式 value-op 层上完成结构控制流与短路
 

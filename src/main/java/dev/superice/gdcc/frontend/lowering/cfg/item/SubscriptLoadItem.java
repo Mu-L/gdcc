@@ -1,9 +1,9 @@
 package dev.superice.gdcc.frontend.lowering.cfg.item;
 
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
-import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.Node;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -13,15 +13,21 @@ import java.util.Objects;
 ///
 /// The item separates the already-materialized base value from the already-materialized index
 /// arguments, preserving source order through `argumentValueIds` while still publishing one explicit
-/// `resultValueId` for downstream control-flow and lowering steps.
+/// `resultValueId` for downstream control-flow and lowering steps. `memberNameOrNull` is populated
+/// only for `AttributeSubscriptStep`, where the step also carries the property name whose value is
+/// indexed.
 public record SubscriptLoadItem(
-        @NotNull Expression expression,
+        @NotNull Node subscriptAnchor,
+        @Nullable String memberNameOrNull,
         @NotNull String baseValueId,
         @NotNull List<String> argumentValueIds,
         @NotNull String resultValueId
 ) implements ValueOpItem {
     public SubscriptLoadItem {
-        Objects.requireNonNull(expression, "expression must not be null");
+        Objects.requireNonNull(subscriptAnchor, "subscriptAnchor must not be null");
+        memberNameOrNull = memberNameOrNull == null
+                ? null
+                : FrontendCfgItemSupport.requireNonBlank(memberNameOrNull, "memberNameOrNull");
         baseValueId = FrontendCfgGraph.validateValueId(baseValueId, "baseValueId");
         argumentValueIds = FrontendCfgItemSupport.copyValueIds(argumentValueIds, "argumentValueIds");
         resultValueId = FrontendCfgGraph.validateValueId(resultValueId, "resultValueId");
@@ -29,7 +35,7 @@ public record SubscriptLoadItem(
 
     @Override
     public @NotNull Node anchor() {
-        return expression;
+        return subscriptAnchor;
     }
 
     @Override

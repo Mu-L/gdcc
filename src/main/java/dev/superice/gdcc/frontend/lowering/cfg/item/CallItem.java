@@ -1,7 +1,6 @@
 package dev.superice.gdcc.frontend.lowering.cfg.item;
 
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
-import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.Node;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -14,15 +13,19 @@ import java.util.Objects;
 ///
 /// `receiverValueIdOrNull` is absent for bare, static, or utility calls. When present it is placed
 /// before `argumentValueIds` in `operandValueIds()` so later lowering can consume operands in source
-/// call order without reconstructing the receiver shape from the original AST.
+/// call order without reconstructing the receiver shape from the original AST. `callAnchor` is either
+/// the bare `CallExpression` root or the owning `AttributeCallStep`, and `callableName` freezes the
+/// semantic route name that later lowering should use instead of re-reading the callee subtree.
 public record CallItem(
-        @NotNull Expression expression,
+        @NotNull Node callAnchor,
+        @NotNull String callableName,
         @Nullable String receiverValueIdOrNull,
         @NotNull List<String> argumentValueIds,
         @NotNull String resultValueId
 ) implements ValueOpItem {
     public CallItem {
-        Objects.requireNonNull(expression, "expression must not be null");
+        Objects.requireNonNull(callAnchor, "callAnchor must not be null");
+        callableName = FrontendCfgItemSupport.requireNonBlank(callableName, "callableName");
         receiverValueIdOrNull = FrontendCfgItemSupport.validateOptionalValueId(
                 receiverValueIdOrNull,
                 "receiverValueIdOrNull"
@@ -33,7 +36,7 @@ public record CallItem(
 
     @Override
     public @NotNull Node anchor() {
-        return expression;
+        return callAnchor;
     }
 
     @Override
