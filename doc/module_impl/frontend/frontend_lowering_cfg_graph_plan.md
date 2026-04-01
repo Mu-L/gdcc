@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：实施中（第 1、2、3、4、5、6 阶段已完成；显式 `and` / `or` 短路构图与 body lowering 仍待迁移）
-- 更新时间：2026-03-31
+- 状态：实施中（第 1、2、3、4、5、6 阶段已完成；共享表达式构图内核、显式 `and` / `or` 短路构图与 body lowering 仍待迁移）
+- 更新时间：2026-04-01
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
   - `src/main/java/dev/superice/gdcc/frontend/lowering/cfg/**`
@@ -645,7 +645,7 @@ frontend CFG builder 需要显式维护 loop stack。
   - loop stack 已固定 `continue -> conditionEntryId`、`break -> exitId`
 - `break` / `continue` 在没有 active loop frame 时继续按 invariant fail-fast，而不是 silent recovery。
 - `ConditionalExpression` 继续 compile-block；第六步不会因为已能表达 branch region 就提前解封它。
-- 第七步边界继续保持不变：
+- 第八步边界继续保持不变：
   - `and` / `or` 仍由 compile-only gate 封口
   - builder 内部仍保留 dedicated short-circuit entry，并在当前阶段 fail-fast 标注“未实现”
 - 已有单元测试锚定：
@@ -659,7 +659,71 @@ frontend CFG builder 需要显式维护 loop stack。
   - `FrontendLoweringPassManagerTest`
     - 默认 pipeline 同时保留新 frontend CFG graph 与 legacy `cfgNodeBlocks` metadata overlay
 
-### 4.7 第七步：显式实现 `and` / `or` 的短路构图步骤
+### 4.7 第七步：提取共享表达式构图内核并冻结 value / condition / merge 合同
+
+实施内容：
+
+- 在 `FrontendCfgGraphBuilder` 内部提取共享表达式构图内核；保持它是 builder 私有实现，不新增独立 public pass、public API 或“只有一个实现”的额外抽象层。
+- `conditionEntryId` 的合同必须升级为“condition subgraph 的稳定入口节点”，而不是“唯一前置 `SequenceNode`”；后续 consumer 与测试都不得再假设 `conditionEntryId -> SequenceNode.nextId() -> BranchNode`。
+- `buildCondition(...)` 必须改为 entry-oriented contract：
+  - 返回“条件子图入口”一类的内部状态
+  - 不再把“1 个 `SequenceNode` 紧跟 1 个 `BranchNode`”编码进 `ConditionBuild`
+- `buildValue(...)` 必须从“只向当前 `ArrayList<SequenceItem>` 追加 item 并返回 `resultValueId`”升级为 continuation-aware contract；最小 builder 内部状态至少需要能同时承载：
+  - 当前可写 continuation / current sequence
+  - 表达式最终 result value id
+- 建议的最小私有内部形状：
+  - `BuildCursor` / 等价私有状态：持有当前可写 `OpenSequence`
+  - `ValueBuild` / 等价私有状态：返回 continuation + `resultValueId`
+  - `ConditionBuild` / 等价私有状态：返回 condition subgraph `entryId`
+  - 这些都应保持为 `FrontendCfgGraphBuilder` 私有细节，而不是扩成新的跨文件公共模型
+- value context 与 condition context 必须共用同一套递归表达式构图规则，而不是维护两套会继续漂移的 special-case 树：
+  - ordinary eager expression 继续走线性 value-op
+  - `not` 复用条件翻转
+  - `and` / `or` 复用短路控制流展开
+  - future `ConditionalExpression` 复用同一套 condition-entry + branch-result-merge 基础设施
+- 引入显式 branch-result write / merge item（命名可按实现最终定稿），用于：
+  - value-context `and` / `or` 在短路路径与继续求值路径上把 `true` / `false` 写入共享结果 value id
+  - future `ConditionalExpression` 在 true-arm / false-arm 上把 arm result 写入同一个共享结果 value id
+- `call(...)`、member、subscript、assignment 等父级 consumer 必须继续保持单向 contract：
+  - child 先发布 value id
+  - parent 只消费 child value id
+  - 不允许 parent item 直接回看 child AST 以恢复控制流或值合流语义
+- 现有 structured CFG 测试必须同步改成“锚定 region / reachability / published value contract”，而不是锚定固定两节点形状：
+  - 允许 condition region 内存在多个 `SequenceNode` / `BranchNode`
+  - 继续要求 `conditionEntryId`、`mergeId`、`exitId`、`then/bodyEntryId` 稳定可达
+- 在这一步完成前继续维持 compile gate：
+  - `and` / `or` 继续 compile-block
+  - `ConditionalExpression` 继续 compile-block
+  - 共享表达式构图内核先完成重构，不得通过 eager fallback 提前偷跑新语义
+
+验收细则：
+
+- happy path：
+  - `buildCondition(...)` 与 `buildValue(...)` 共享同一套表达式递归入口，不再维护两套独立 special-case 逻辑
+  - `conditionEntryId` 可以稳定代表多节点 condition subgraph 的入口，而不是固定两节点模板
+  - value builder 能在不丢失 continuation 的前提下，为 future `and` / `or` / `ConditionalExpression` 预留统一结果 slot 与 merge continuation
+  - nested value context 中，父 item 始终只消费 child result value id：
+    - `call(a and b)`
+    - `arr[a or b]`
+    - `obj.m(flag ? x : y)`
+    - nested member / call / subscript / assignment 参数
+    都不会退回“直接抓 child AST”的旧路由
+- negative path：
+  - 不允许测试继续把 `conditionEntryId` 固定断言为 `SequenceNode`，且 `nextId()` 必然是 `BranchNode`
+  - 不允许继续把 `ConditionBuild`、region 注释或 build helper 编码成“condition region = 1 个 sequence + 1 个 branch”
+  - 不允许 `buildValue(...)` 在需要控制流的表达式上继续依赖“只追加到当前 `items` 容器”的线性假设
+  - 不允许 future `ConditionalExpression` 因共享内核缺失而再次引入第三套表达式构图路径
+
+当前状态（2026-04-01）：
+
+- 尚未实现。
+- 当前仓库已经确认存在两个必须先消除的隐含假设：
+  - `buildConditionIntoSequence(...)` 把 condition region 固定成“前置 `SequenceNode` + 后继 `BranchNode`”
+  - `buildValue(...)` 及其 helper 默认假设表达式构图永远只在线性 `items` 容器内发生
+- 若不先完成这一步，第八步 short-circuit 落地后仍会在 value context、nested `and` / `or` 与 future `ConditionalExpression` 上继续出现合同漂移。
+- 因此第七步的目标不是直接解封语义，而是先冻结共享表达式构图内核，使第八步 short-circuit 与 future `ConditionalExpression` 都复用同一套基础设施。
+
+### 4.8 第八步：显式实现 `and` / `or` 的短路构图步骤
 
 实施内容：
 
@@ -708,9 +772,9 @@ frontend CFG builder 需要显式维护 loop stack。
 - 但当前仓库已经显式冻结了过渡边界：
   - `FrontendCompileCheckAnalyzer` 会把 compile surface 上的 `and` / `or` 直接作为 compile-only blocker 报错
   - `FrontendCfgGraphBuilder` 不再把它们归入普通 eager `BinaryExpression` 路由，而是走 dedicated short-circuit entry 并 fail-fast 标注未实现
-- 这条过渡边界的目的不是“长期禁止 `and` / `or`”，而是在第七步真正落地前，防止线性 value-op 层继续错误地把 short-circuit 语义塌缩成单个 eager binary item。
+- 这条过渡边界的目的不是“长期禁止 `and` / `or`”，而是在第八步真正落地前，防止线性 value-op 层继续错误地把 short-circuit 语义塌缩成单个 eager binary item。
 
-### 4.8 第八步：实现 `FrontendLoweringBodyInsnPass`，只消费 frontend CFG 与 published facts
+### 4.9 第九步：实现 `FrontendLoweringBodyInsnPass`，只消费 frontend CFG 与 published facts
 
 实施内容：
 
@@ -743,7 +807,7 @@ frontend CFG builder 需要显式维护 loop stack。
   - 不允许 lowering 自己补做语义路由推导来绕过缺失的 published fact
   - 在 body lowering 未闭环前，不得偷偷向 `LirFunctionDef` 写半成品 block
 
-### 4.9 第九步：移除 legacy block-bundle 与过渡 pass
+### 4.10 第十步：移除 legacy block-bundle 与过渡 pass
 
 实施内容：
 
