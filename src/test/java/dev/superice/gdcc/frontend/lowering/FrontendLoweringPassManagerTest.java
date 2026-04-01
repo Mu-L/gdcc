@@ -190,20 +190,23 @@ class FrontendLoweringPassManagerTest {
 
         assertAll(
                 () -> assertFalse(diagnostics.hasErrors()),
-                () -> assertFalse(executableContext.hasFrontendCfgGraph()),
+                () -> assertTrue(executableContext.hasFrontendCfgGraph()),
                 () -> assertTrue(executableContext.hasCfgNodeBlocks(rootBlock)),
                 () -> assertInstanceOf(
                         FunctionLoweringContext.BlockCfgNodeBlocks.class,
                         executableContext.requireCfgNodeBlocks(rootBlock)
                 ),
-                () -> assertNull(executableContext.frontendCfgGraphOrNull()),
-                () -> assertNull(executableContext.frontendCfgRegionOrNull(rootBlock)),
+                () -> assertNotNull(executableContext.frontendCfgGraphOrNull()),
+                () -> assertInstanceOf(
+                        FrontendCfgRegion.BlockRegion.class,
+                        executableContext.requireFrontendCfgRegion(rootBlock)
+                ),
                 () -> assertTrue(executableContext.hasCfgNodeBlocks(outerIf)),
                 () -> assertInstanceOf(
                         FunctionLoweringContext.IfCfgNodeBlocks.class,
                         executableContext.requireCfgNodeBlocks(outerIf)
                 ),
-                () -> assertNull(executableContext.frontendCfgRegionOrNull(outerIf)),
+                () -> assertNotNull(executableContext.frontendCfgRegionOrNull(outerIf)),
                 () -> assertFalse(propertyContext.hasFrontendCfgGraph()),
                 () -> assertNull(propertyContext.frontendCfgGraphOrNull()),
                 () -> assertNull(propertyContext.cfgNodeBlocksOrNull(propertyContext.loweringRoot())),
@@ -219,7 +222,7 @@ class FrontendLoweringPassManagerTest {
     }
 
     @Test
-    void lowerToContextPublishesFrontendCfgGraphForStraightLineExecutableBodies() throws Exception {
+    void lowerToContextPublishesFrontendCfgGraphForExecutableBodies() throws Exception {
         var diagnostics = new DiagnosticManager();
         var manager = new FrontendLoweringPassManager();
         var module = parseModule(
@@ -277,7 +280,14 @@ class FrontendLoweringPassManagerTest {
                 straightLineContext.requireFrontendCfgRegion(rootBlock)
         );
         var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("seq_0"));
-        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode("stop_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode("stop_1"));
+        var branchyFunction = requireFunctionDeclaration(module.units().getFirst().ast(), "branchy");
+        var structuredBlock = branchyFunction.body();
+        var structuredRootRegion = assertInstanceOf(
+                FrontendCfgRegion.BlockRegion.class,
+                structuredContext.requireFrontendCfgRegion(structuredBlock)
+        );
+        var structuredGraph = structuredContext.requireFrontendCfgGraph();
         var binaryValue = assertInstanceOf(
                 OpaqueExprValueItem.class,
                 entryNode.items().get(3)
@@ -285,14 +295,14 @@ class FrontendLoweringPassManagerTest {
 
         assertAll(
                 () -> assertFalse(diagnostics.hasErrors()),
-                () -> assertEquals(List.of("seq_0", "stop_0"), graph.nodeIds()),
+                () -> assertEquals(List.of("seq_0", "stop_1"), graph.nodeIds()),
                 () -> assertEquals("seq_0", rootRegion.entryId()),
                 () -> assertEquals(5, entryNode.items().size()),
                 () -> assertSame(expressionStatement.expression(), binaryValue.expression()),
                 () -> assertEquals(List.of("v0", "v1"), binaryValue.operandValueIds()),
                 () -> assertEquals("v3", stopNode.returnValueIdOrNull()),
-                () -> assertNull(structuredContext.frontendCfgGraphOrNull()),
-                () -> assertNull(structuredContext.frontendCfgRegionOrNull(structuredContext.loweringRoot())),
+                () -> assertEquals(structuredGraph.entryNodeId(), structuredRootRegion.entryId()),
+                () -> assertNotNull(structuredContext.frontendCfgGraphOrNull()),
                 () -> assertNull(propertyContext.frontendCfgGraphOrNull()),
                 () -> assertEquals(0, straightLineContext.targetFunction().getBasicBlockCount()),
                 () -> assertTrue(straightLineContext.targetFunction().getEntryBlockId().isEmpty()),

@@ -18,7 +18,7 @@ import java.util.Objects;
 /// - `BranchNode` keeps the source condition root and value id without forcing bool normalization
 /// - `SequenceNode` carries linear source evaluation items instead of already-lowered instructions
 ///
-/// The graph is expected to be fully connected when it is published into a
+/// The graph is expected to be self-contained when it is published into a
 /// `FunctionLoweringContext`, so the constructor validates entry/successor references eagerly.
 public record FrontendCfgGraph(
         @NotNull String entryNodeId,

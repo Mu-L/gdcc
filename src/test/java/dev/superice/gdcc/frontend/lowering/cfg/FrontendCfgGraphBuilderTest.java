@@ -7,6 +7,10 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendElifRegion;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendIfRegion;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendWhileRegion;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
@@ -23,15 +27,18 @@ import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdparser.frontend.ast.WhileStatement;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -42,36 +49,34 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendCfgGraphBuilderTest {
     @Test
-    void buildStraightLineExecutableBodyRejectsReachableUnsupportedStatement() throws Exception {
+    void buildExecutableBodyFailsFastForBreakWithoutLoopFrame() throws Exception {
         var analyzed = analyzeFunction(
-                "cfg_builder_unsupported.gd",
+                "cfg_builder_break_without_loop.gd",
                 """
-                        class_name CfgBuilderUnsupported
+                        class_name CfgBuilderBreakWithoutLoop
                         extends RefCounted
                         
-                        func ping(flag: bool) -> void:
-                            if flag:
-                                pass
+                        func ping() -> void:
+                            break
                         """,
                 "ping",
-                Map.of("CfgBuilderUnsupported", "RuntimeCfgBuilderUnsupported")
+                Map.of("CfgBuilderBreakWithoutLoop", "RuntimeCfgBuilderBreakWithoutLoop")
         );
 
         var rootBlock = analyzed.function().body();
         var exception = assertThrows(
                 IllegalStateException.class,
-                () -> new FrontendCfgGraphBuilder().buildStraightLineExecutableBody(rootBlock, analyzed.analysisData())
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData())
         );
 
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
-                () -> assertFalse(FrontendCfgGraphBuilder.supportsStraightLineExecutableBody(rootBlock)),
-                () -> assertTrue(exception.getMessage().contains("IfStatement"), exception.getMessage())
+                () -> assertTrue(exception.getMessage().contains("loop frame"), exception.getMessage())
         );
     }
 
     @Test
-    void buildStraightLineExecutableBodyStopsScanningAfterReachableReturn() throws Exception {
+    void buildExecutableBodyStopsScanningAfterReachableReturn() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_terminal_return.gd",
                 """
@@ -88,20 +93,20 @@ class FrontendCfgGraphBuilderTest {
         );
 
         var rootBlock = analyzed.function().body();
-        var build = new FrontendCfgGraphBuilder().buildStraightLineExecutableBody(rootBlock, analyzed.analysisData());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
         var graph = build.graph();
         var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("seq_0"));
-        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode("stop_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode("stop_1"));
         var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
         var returnValue = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().getFirst());
+        var rootRegion = assertInstanceOf(FrontendCfgRegion.BlockRegion.class, build.regions().get(rootBlock));
 
         assertAll(
-                () -> assertTrue(FrontendCfgGraphBuilder.supportsStraightLineExecutableBody(rootBlock)),
-                () -> assertEquals(List.of("seq_0", "stop_0"), graph.nodeIds()),
+                () -> assertEquals(List.of("seq_0", "stop_1"), graph.nodeIds()),
                 () -> assertEquals(1, entryNode.items().size()),
-                () -> assertEquals("stop_0", entryNode.nextId()),
+                () -> assertEquals("stop_1", entryNode.nextId()),
                 () -> assertEquals("v0", stopNode.returnValueIdOrNull()),
-                () -> assertEquals("seq_0", build.rootRegion().entryId()),
+                () -> assertEquals("seq_0", rootRegion.entryId()),
                 () -> assertEquals(List.of(), returnValue.operandValueIds()),
                 () -> assertEquals("v0", returnValue.resultValueId()),
                 () -> assertEquals(returnStatement.value(), returnValue.expression())
@@ -109,7 +114,7 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
-    void buildStraightLineExecutableBodyRecursivelyExpandsNestedCallsSubscriptsAndMemberReads() throws Exception {
+    void buildExecutableBodyRecursivelyExpandsNestedCallsSubscriptsAndMemberReads() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_nested_chain.gd",
                 """
@@ -136,10 +141,10 @@ class FrontendCfgGraphBuilderTest {
         );
 
         var rootBlock = analyzed.function().body();
-        var build = new FrontendCfgGraphBuilder().buildStraightLineExecutableBody(rootBlock, analyzed.analysisData());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
         var graph = build.graph();
         var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("seq_0"));
-        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode("stop_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode("stop_1"));
         var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
         var returnExpression = assertInstanceOf(AttributeExpression.class, returnStatement.value());
         var buildCall = assertInstanceOf(CallExpression.class, returnExpression.base());
@@ -207,7 +212,7 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
-    void buildStraightLineExecutableBodyKeepsDeclarationAndAssignmentCommitsExplicit() throws Exception {
+    void buildExecutableBodyKeepsDeclarationAndAssignmentCommitsExplicit() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_assignment_commit.gd",
                 """
@@ -232,10 +237,10 @@ class FrontendCfgGraphBuilderTest {
         );
 
         var rootBlock = analyzed.function().body();
-        var build = new FrontendCfgGraphBuilder().buildStraightLineExecutableBody(rootBlock, analyzed.analysisData());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
         var graph = build.graph();
         var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("seq_0"));
-        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode("stop_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode("stop_1"));
 
         var localDeclaration = assertInstanceOf(VariableDeclaration.class, rootBlock.statements().getFirst());
         var localInitializer = assertInstanceOf(BinaryExpression.class, localDeclaration.value());
@@ -304,7 +309,7 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
-    void buildStraightLineExecutableBodyKeepsDeclarationCommitExplicitWhenInitializerIsMissing() throws Exception {
+    void buildExecutableBodyKeepsDeclarationCommitExplicitWhenInitializerIsMissing() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_declaration_without_initializer.gd",
                 """
@@ -323,7 +328,7 @@ class FrontendCfgGraphBuilderTest {
         );
 
         var rootBlock = analyzed.function().body();
-        var build = new FrontendCfgGraphBuilder().buildStraightLineExecutableBody(rootBlock, analyzed.analysisData());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
         var graph = build.graph();
         var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("seq_0"));
         var declaration = assertInstanceOf(LocalDeclarationItem.class, entryNode.items().getFirst());
@@ -339,7 +344,7 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
-    void buildStraightLineExecutableBodyFailsFastWhenPublishedCallFactIsMissing() throws Exception {
+    void buildExecutableBodyFailsFastWhenPublishedCallFactIsMissing() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_missing_call_fact.gd",
                 """
@@ -363,14 +368,14 @@ class FrontendCfgGraphBuilderTest {
 
         var exception = assertThrows(
                 IllegalStateException.class,
-                () -> new FrontendCfgGraphBuilder().buildStraightLineExecutableBody(rootBlock, analyzed.analysisData())
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData())
         );
 
         assertTrue(exception.getMessage().contains("resolvedCalls()"), exception.getMessage());
     }
 
     @Test
-    void buildStraightLineExecutableBodyFailsFastForShortCircuitBinaryBeforeEagerChildLowering() throws Exception {
+    void buildExecutableBodyFailsFastForShortCircuitBinaryBeforeEagerChildLowering() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_short_circuit_binary.gd",
                 """
@@ -395,7 +400,7 @@ class FrontendCfgGraphBuilderTest {
 
         var exception = assertThrows(
                 IllegalStateException.class,
-                () -> new FrontendCfgGraphBuilder().buildStraightLineExecutableBody(rootBlock, analyzed.analysisData())
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData())
         );
 
         assertAll(
@@ -403,6 +408,225 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertTrue(exception.getMessage().contains("short-circuit"), exception.getMessage()),
                 () -> assertTrue(exception.getMessage().contains("'and'"), exception.getMessage()),
                 () -> assertFalse(exception.getMessage().contains("resolvedCalls()"), exception.getMessage())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesIfElifElseRegionsAndSharedMerge() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_if_elif_else.gd",
+                """
+                        class_name CfgBuilderIfElifElse
+                        extends RefCounted
+                        
+                        func ping(flag: bool, other: bool, payload: int) -> int:
+                            if flag:
+                                payload + 1
+                            elif other:
+                                return payload
+                            else:
+                                pass
+                            return payload + 2
+                        """,
+                "ping",
+                Map.of("CfgBuilderIfElifElse", "RuntimeCfgBuilderIfElifElse")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var outerIf = assertInstanceOf(IfStatement.class, rootBlock.statements().getFirst());
+        var elifClause = outerIf.elifClauses().getFirst();
+        var elseBody = Objects.requireNonNull(outerIf.elseBody(), "elseBody must not be null");
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+
+        var rootRegion = assertInstanceOf(FrontendCfgRegion.BlockRegion.class, build.regions().get(rootBlock));
+        var ifRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(outerIf));
+        var elifRegion = assertInstanceOf(FrontendElifRegion.class, build.regions().get(elifClause));
+        var thenBlockRegion = assertInstanceOf(FrontendCfgRegion.BlockRegion.class, build.regions().get(outerIf.body()));
+        var elseBlockRegion = assertInstanceOf(FrontendCfgRegion.BlockRegion.class, build.regions().get(elseBody));
+        var thenEntry = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode(ifRegion.thenEntryId()));
+        var mergeEntry = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode(ifRegion.mergeId()));
+        var conditionEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(ifRegion.conditionEntryId())
+        );
+        var conditionBranch = assertInstanceOf(
+                FrontendCfgGraph.BranchNode.class,
+                graph.requireNode(conditionEntry.nextId())
+        );
+        var elifConditionEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(elifRegion.conditionEntryId())
+        );
+        var elifConditionBranch = assertInstanceOf(
+                FrontendCfgGraph.BranchNode.class,
+                graph.requireNode(elifConditionEntry.nextId())
+        );
+        var elifBodyEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(elifRegion.bodyEntryId())
+        );
+        var elseEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(elifRegion.nextClauseOrMergeId())
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(ifRegion.conditionEntryId(), rootRegion.entryId()),
+                () -> assertEquals(thenEntry.id(), conditionBranch.trueTargetId()),
+                () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), conditionBranch.falseTargetId()),
+                () -> assertEquals(elifRegion.conditionEntryId(), ifRegion.elseOrNextClauseEntryId()),
+                () -> assertEquals(elifBodyEntry.id(), elifConditionBranch.trueTargetId()),
+                () -> assertEquals(elseEntry.id(), elifConditionBranch.falseTargetId()),
+                () -> assertEquals(elseEntry.id(), elifRegion.nextClauseOrMergeId()),
+                () -> assertEquals(thenEntry.id(), thenBlockRegion.entryId()),
+                () -> assertEquals(elseEntry.id(), elseBlockRegion.entryId()),
+                () -> assertEquals(ifRegion.mergeId(), thenEntry.nextId()),
+                () -> assertEquals(ifRegion.mergeId(), elseEntry.nextId()),
+                () -> assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode(elifBodyEntry.nextId())),
+                () -> assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode(mergeEntry.nextId()))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesWhileRegionAndLoopControlEdges() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_while_loop_control.gd",
+                """
+                        class_name CfgBuilderWhileLoopControl
+                        extends RefCounted
+                        
+                        func ping(flag: bool, stop_now: bool, skip_now: bool, payload: int) -> int:
+                            while flag:
+                                if stop_now:
+                                    break
+                                if skip_now:
+                                    continue
+                                payload + 1
+                            return payload
+                        """,
+                "ping",
+                Map.of("CfgBuilderWhileLoopControl", "RuntimeCfgBuilderWhileLoopControl")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var whileStatement = assertInstanceOf(WhileStatement.class, rootBlock.statements().getFirst());
+        var breakIf = assertInstanceOf(IfStatement.class, whileStatement.body().statements().getFirst());
+        var continueIf = assertInstanceOf(IfStatement.class, whileStatement.body().statements().get(1));
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+
+        var rootRegion = assertInstanceOf(FrontendCfgRegion.BlockRegion.class, build.regions().get(rootBlock));
+        var whileRegion = assertInstanceOf(FrontendWhileRegion.class, build.regions().get(whileStatement));
+        var breakIfRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(breakIf));
+        var continueIfRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(continueIf));
+        var conditionEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(whileRegion.conditionEntryId())
+        );
+        var conditionBranch = assertInstanceOf(
+                FrontendCfgGraph.BranchNode.class,
+                graph.requireNode(conditionEntry.nextId())
+        );
+        var breakThenEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(breakIfRegion.thenEntryId())
+        );
+        var continueThenEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(continueIfRegion.thenEntryId())
+        );
+        var bodyTail = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(continueIfRegion.mergeId())
+        );
+        var exitEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(whileRegion.exitId())
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(whileRegion.conditionEntryId(), rootRegion.entryId()),
+                () -> assertEquals(whileRegion.bodyEntryId(), conditionBranch.trueTargetId()),
+                () -> assertEquals(whileRegion.exitId(), conditionBranch.falseTargetId()),
+                () -> assertEquals(whileRegion.exitId(), breakThenEntry.nextId()),
+                () -> assertEquals(whileRegion.conditionEntryId(), continueThenEntry.nextId()),
+                () -> assertEquals(whileRegion.conditionEntryId(), bodyTail.nextId()),
+                () -> assertEquals(breakIfRegion.mergeId(), breakIfRegion.elseOrNextClauseEntryId()),
+                () -> assertEquals(continueIfRegion.mergeId(), continueIfRegion.elseOrNextClauseEntryId()),
+                () -> assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode(exitEntry.nextId()))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyDoesNotPublishLexicalRemainderAfterFullyTerminatingIfChain() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_terminating_if_chain.gd",
+                """
+                        class_name CfgBuilderTerminatingIfChain
+                        extends RefCounted
+                        
+                        func ping(flag: bool, payload: int) -> int:
+                            if flag:
+                                return payload
+                            else:
+                                return payload + 1
+                            payload + 2
+                        """,
+                "ping",
+                Map.of("CfgBuilderTerminatingIfChain", "RuntimeCfgBuilderTerminatingIfChain")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var outerIf = assertInstanceOf(IfStatement.class, rootBlock.statements().getFirst());
+        var trailingExpression = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().get(1)).expression();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+        var ifRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(outerIf));
+
+        var containsTrailingExpression = graph.nodes().values().stream()
+                .filter(FrontendCfgGraph.SequenceNode.class::isInstance)
+                .map(FrontendCfgGraph.SequenceNode.class::cast)
+                .flatMap(node -> node.items().stream())
+                .filter(OpaqueExprValueItem.class::isInstance)
+                .map(OpaqueExprValueItem.class::cast)
+                .anyMatch(item -> item.expression() == trailingExpression);
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode(ifRegion.mergeId())),
+                () -> assertFalse(containsTrailingExpression)
+        );
+    }
+
+    @Test
+    void buildExecutableBodyFailsFastForContinueWithoutLoopFrame() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_continue_without_loop.gd",
+                """
+                        class_name CfgBuilderContinueWithoutLoop
+                        extends RefCounted
+                        
+                        func ping() -> void:
+                            continue
+                        """,
+                "ping",
+                Map.of("CfgBuilderContinueWithoutLoop", "RuntimeCfgBuilderContinueWithoutLoop")
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(
+                        analyzed.function().body(),
+                        analyzed.analysisData()
+                )
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertTrue(exception.getMessage().contains("loop frame"), exception.getMessage())
         );
     }
 

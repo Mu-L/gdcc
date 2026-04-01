@@ -12,12 +12,12 @@ import org.jetbrains.annotations.NotNull;
 
 /// Frontend CFG graph publication pass.
 ///
-/// The current implementation materializes the linear executable-body subset into the new frontend
-/// CFG graph with recursive value-op expansion for lowering-ready expressions. Structured bodies and
-/// short-circuit `and` / `or` still wait for later migration steps, so this pass intentionally skips
-/// only the former and relies on the compile gate to keep the latter out of compile-ready lowering.
-/// Legacy `FrontendLoweringCfgPass` remains in the default pipeline as a temporary metadata-only
-/// fallback for that broader surface.
+/// The current implementation materializes compile-ready executable bodies into the new frontend CFG
+/// graph, including structured `if` / `elif` / `while` regions and loop-control edges for
+/// `break` / `continue`. Short-circuit `and` / `or` still wait for the next migration step, so the
+/// compile gate continues to keep those roots out of compile-ready lowering. Legacy
+/// `FrontendLoweringCfgPass` remains in the default pipeline only as a transitional metadata overlay
+/// until the old block-bundle surface is deleted.
 public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass {
     @Override
     public void run(@NotNull FrontendLoweringContext context) {
@@ -49,13 +49,9 @@ public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass 
             throw new IllegalStateException(describeContext(functionContext) + " must expose a Block loweringRoot");
         }
         validateShellOnlyTarget(functionContext);
-        if (!FrontendCfgGraphBuilder.supportsStraightLineExecutableBody(rootBlock)) {
-            return;
-        }
-
-        var build = new FrontendCfgGraphBuilder().buildStraightLineExecutableBody(rootBlock, functionContext.analysisData());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, functionContext.analysisData());
         functionContext.publishFrontendCfgGraph(build.graph());
-        functionContext.publishFrontendCfgRegion(rootBlock, build.rootRegion());
+        build.regions().forEach(functionContext::publishFrontendCfgRegion);
     }
 
     private void validateTargetFunctionMembership(

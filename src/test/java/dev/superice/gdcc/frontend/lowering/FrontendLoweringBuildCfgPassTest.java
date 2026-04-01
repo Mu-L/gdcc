@@ -7,6 +7,7 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendIfRegion;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringBuildCfgPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringClassSkeletonPass;
@@ -19,6 +20,7 @@ import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -37,7 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendLoweringBuildCfgPassTest {
     @Test
-    void runPublishesFrontendCfgGraphForLinearExecutableBodiesAndKeepsLirShellOnly() throws Exception {
+    void runPublishesFrontendCfgGraphForExecutableBodiesAndKeepsLirShellOnly() throws Exception {
         var prepared = prepareContext(
                 "build_cfg_linear_value_ops.gd",
                 """
@@ -95,6 +97,9 @@ class FrontendLoweringBuildCfgPassTest {
         var returnExpression = assertInstanceOf(AttributeExpression.class, returnStatement.value());
         var fetchStep = assertInstanceOf(AttributeCallStep.class, returnExpression.steps().get(1));
         var valueStep = assertInstanceOf(AttributePropertyStep.class, returnExpression.steps().get(2));
+        var branchyFunction = requireFunctionDeclaration(prepared.module().units().getFirst().ast(), "branchy");
+        var branchyBlock = branchyFunction.body();
+        var branchyIf = assertInstanceOf(IfStatement.class, branchyBlock.statements().getFirst());
 
         var graph = linearContext.requireFrontendCfgGraph();
         var blockRegion = assertInstanceOf(
@@ -102,7 +107,7 @@ class FrontendLoweringBuildCfgPassTest {
                 linearContext.requireFrontendCfgRegion(pingBlock)
         );
         var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("seq_0"));
-        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode("stop_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode("stop_1"));
         var items = entryNode.items();
         var firstSeed = assertInstanceOf(OpaqueExprValueItem.class, items.get(0));
         var firstHelper = assertInstanceOf(CallItem.class, items.get(1));
@@ -111,12 +116,34 @@ class FrontendLoweringBuildCfgPassTest {
         var fetchCall = assertInstanceOf(CallItem.class, items.get(8));
         var valueRead = assertInstanceOf(MemberLoadItem.class, items.get(9));
 
+        var structuredGraph = structuredContext.requireFrontendCfgGraph();
+        var structuredRootRegion = assertInstanceOf(
+                FrontendCfgRegion.BlockRegion.class,
+                structuredContext.requireFrontendCfgRegion(branchyBlock)
+        );
+        var structuredIfRegion = assertInstanceOf(
+                FrontendIfRegion.class,
+                structuredContext.requireFrontendCfgRegion(branchyIf)
+        );
+        var structuredEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                structuredGraph.requireNode(structuredRootRegion.entryId())
+        );
+        var structuredBranch = assertInstanceOf(
+                FrontendCfgGraph.BranchNode.class,
+                structuredGraph.requireNode(structuredEntry.nextId())
+        );
+        var structuredMerge = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                structuredGraph.requireNode(structuredIfRegion.mergeId())
+        );
+
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
-                () -> assertEquals(List.of("seq_0", "stop_0"), graph.nodeIds()),
+                () -> assertEquals(List.of("seq_0", "stop_1"), graph.nodeIds()),
                 () -> assertEquals("seq_0", graph.entryNodeId()),
                 () -> assertEquals("seq_0", blockRegion.entryId()),
-                () -> assertEquals("stop_0", entryNode.nextId()),
+                () -> assertEquals("stop_1", entryNode.nextId()),
                 () -> assertEquals(10, items.size()),
                 () -> assertEquals(List.of(), firstSeed.operandValueIds()),
                 () -> assertEquals("helper", firstHelper.callableName()),
@@ -132,8 +159,12 @@ class FrontendLoweringBuildCfgPassTest {
                 () -> assertEquals("v9", stopNode.returnValueIdOrNull()),
                 () -> assertEquals(0, linearContext.targetFunction().getBasicBlockCount()),
                 () -> assertTrue(linearContext.targetFunction().getEntryBlockId().isEmpty()),
-                () -> assertNull(structuredContext.frontendCfgGraphOrNull()),
-                () -> assertNull(structuredContext.frontendCfgRegionOrNull(structuredContext.loweringRoot())),
+                () -> assertEquals(structuredRootRegion.entryId(), structuredGraph.entryNodeId()),
+                () -> assertEquals(structuredIfRegion.conditionEntryId(), structuredRootRegion.entryId()),
+                () -> assertEquals(structuredIfRegion.thenEntryId(), structuredBranch.trueTargetId()),
+                () -> assertEquals(structuredIfRegion.elseOrNextClauseEntryId(), structuredBranch.falseTargetId()),
+                () -> assertEquals(structuredIfRegion.mergeId(), structuredMerge.id()),
+                () -> assertEquals("stop_0", structuredMerge.nextId()),
                 () -> assertNull(propertyContext.frontendCfgGraphOrNull()),
                 () -> assertNull(propertyContext.frontendCfgRegionOrNull(propertyContext.loweringRoot())),
                 () -> assertEquals(0, propertyContext.targetFunction().getBasicBlockCount()),

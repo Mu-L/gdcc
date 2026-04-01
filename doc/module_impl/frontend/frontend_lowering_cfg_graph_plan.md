@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施中（第 1、2、3、4、5 阶段已完成；structured control-flow、显式 `and` / `or` 短路构图与 body lowering 仍待迁移）
+- 状态：实施中（第 1、2、3、4、5、6 阶段已完成；显式 `and` / `or` 短路构图与 body lowering 仍待迁移）
 - 更新时间：2026-03-31
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
@@ -396,12 +396,12 @@ frontend CFG builder 需要显式维护 loop stack。
 - `FunctionLoweringContext` 已新增：
   - per-function `frontendCfgGraph` carrier
   - AST identity keyed `frontendCfgRegions` side table
-- 当前默认 pipeline 已开始通过 `FrontendLoweringBuildCfgPass` 为线性 executable body 发布 frontend CFG graph；在 structured control-flow 迁移完成前，structured executable body 仍仅保留 legacy `cfgNodeBlocks` 过渡骨架。
+- 当前默认 pipeline 已开始通过 `FrontendLoweringBuildCfgPass` 为 compile-ready executable body 发布 frontend CFG graph；legacy `cfgNodeBlocks` 当前只保留为过渡期 metadata overlay。
 - 已有单元测试锚定：
   - duplicate graph / region publish fail-fast
   - region lookup 继续按 AST identity 工作
   - graph / region 不会跨 function context 泄漏
-  - default pipeline 会为线性 executable body 发布新 graph，而 legacy CFG pass 继续不会误发布新 graph
+  - default pipeline 会为 compile-ready executable body 发布新 graph，而 legacy CFG pass 继续不会误发布新 graph
 
 ### 4.3 第三步：把 `SequenceNode.items` 升级为 frontend 线性 value-op 层
 
@@ -464,7 +464,7 @@ frontend CFG builder 需要显式维护 loop stack。
     - declaration-without-initializer 仍发布显式 commit item
     - reachable unsupported statement fail-fast
   - `FrontendLoweringBuildCfgPassTest` / `FrontendLoweringPassManagerTest`
-    - default pipeline 已对齐到“线性 graph + 显式 value-op operand/result id” 的当前 contract
+    - default pipeline 已对齐到“显式 value-op operand/result id + frontend CFG graph” 的当前 contract
 
 ### 4.4 第四步：补齐 `resolvedCalls()` 的 bare `CallExpression` published 面
 
@@ -590,11 +590,11 @@ frontend CFG builder 需要显式维护 loop stack。
     - short-circuit special path 在 builder 内部 fail-fast，而不是 eager lower child
     - reachable unsupported statement fail-fast
   - `FrontendLoweringBuildCfgPassTest`
-    - default pipeline 发布 phase-5 线性 graph 形状并保持 shell-only LIR
+    - default pipeline 发布 phase-5 递归 value-op graph 形状并保持 shell-only LIR
   - `FrontendLoweringAnalysisPassTest`
     - compile-ready lowering pipeline 会在 analysis pass 因 short-circuit compile blocker 提前停止
   - `FrontendLoweringPassManagerTest`
-    - manager 默认 pipeline 已对齐到显式 operand/result id 的线性 graph contract
+    - manager 默认 pipeline 已对齐到显式 operand/result id 的 frontend CFG graph contract
 
 ### 4.6 第六步：在显式 value-op 层上完成结构控制流与短路
 
@@ -624,13 +624,40 @@ frontend CFG builder 需要显式维护 loop stack。
   - nested `if` / `while`
     都有稳定 graph shape 与 region 映射
   - `if payload:` / `while payload:` 存在显式条件前置区域
-  - `var x = a and b`、`return a or b`、`call(a and b)` 都走短路控制流，不会 eager 求值两侧
   - `continue` 稳定回到当前 loop 的 condition entry；`break` 稳定跳到当前 loop exit
 - negative path：
   - empty branch body 不得漏建 merge / exit
   - fully-terminating branch chain 后不得错误挂接 lexical remainder
   - 没有 loop frame 时遇到 `break` / `continue` 必须 fail-fast
   - 不得因为 frontend CFG 已能表达分支就提前解封 `ConditionalExpression`
+
+当前状态（2026-03-31）：
+
+- 已完成。
+- `FrontendCfgGraphBuilder` 已从 phase-5 的递归 value builder 升级为 executable-body CFG builder：
+  - `buildExecutableBody(...)` 统一构建 straight-line 与 structured executable body
+  - `buildCondition(...)` 负责显式 condition-evaluation-region，并把前置 value-op / `SequenceNode` 接到后续 `BranchNode`
+- `FrontendLoweringBuildCfgPass` 现已对 compile-ready executable body 一律发布 frontend CFG graph，而不再把 structured body 留给 legacy path 单独兜底。
+- 当前 structured CFG contract 已落稳：
+  - `if` / `elif` / `while` 都会按 AST identity 发布 region
+  - empty branch body 会把 body entry alias 到 merge / exit，而不会漏建目标 continuation
+  - fully-terminating `if` chain 不再把 lexical remainder 错挂到可达路径
+  - loop stack 已固定 `continue -> conditionEntryId`、`break -> exitId`
+- `break` / `continue` 在没有 active loop frame 时继续按 invariant fail-fast，而不是 silent recovery。
+- `ConditionalExpression` 继续 compile-block；第六步不会因为已能表达 branch region 就提前解封它。
+- 第七步边界继续保持不变：
+  - `and` / `or` 仍由 compile-only gate 封口
+  - builder 内部仍保留 dedicated short-circuit entry，并在当前阶段 fail-fast 标注“未实现”
+- 已有单元测试锚定：
+  - `FrontendCfgGraphBuilderTest`
+    - `if / elif / else` region / merge / lexical remainder contract
+    - `while` condition-entry、`break` / `continue` loop target
+    - break/continue-without-loop-frame negative path
+    - short-circuit binary 继续 fail-fast，而不会 eager lower child
+  - `FrontendLoweringBuildCfgPassTest`
+    - build pass 会同时为 linear 与 structured executable body 发布 frontend CFG graph，并保持 shell-only LIR
+  - `FrontendLoweringPassManagerTest`
+    - 默认 pipeline 同时保留新 frontend CFG graph 与 legacy `cfgNodeBlocks` metadata overlay
 
 ### 4.7 第七步：显式实现 `and` / `or` 的短路构图步骤
 

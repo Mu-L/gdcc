@@ -6,7 +6,8 @@ import org.jetbrains.annotations.NotNull;
 /// Region for one `while` loop.
 ///
 /// The region separates the loop's structural anchors:
-/// - `conditionEntryId` is typically the loop `BranchNode` that decides whether the body runs
+/// - `conditionEntryId` is the first node of the loop condition-evaluation region, typically a
+///   `SequenceNode` that computes the condition value before the loop branch
 /// - `bodyEntryId` is the first node of the loop body, usually a `SequenceNode`
 /// - `exitId` is the first node after the loop, or a `StopNode`-like exit when control flow does
 ///   not fall through normally

@@ -23,7 +23,7 @@
 
 - public lowering 输入固定为 `FrontendModule`
 - lowering 内部统一走 `FrontendSemanticAnalyzer.analyzeForCompile(...)`
-- default pipeline 已稳定产出 `LirModule(skeleton/shell-only)`、function lowering context scaffold，以及带显式 operand/result value-op 的线性 executable body frontend CFG graph
+- default pipeline 已稳定产出 `LirModule(skeleton/shell-only)`、function lowering context scaffold，以及带显式 operand/result value-op、structured region 与 loop-control edge 的 executable body frontend CFG graph
 - compile-only gate 仍负责拦截当前未打通 lowering/backend 的 surface；其中 `and` / `or` 已从普通 eager binary lowering 路由中移出，并在 dedicated short-circuit CFG path 落地前继续显式封口
 
 后续工程应在这条稳定链路之上继续推进，不要回退到“先手工做一份分析结果再喂 lowering”的分叉入口。

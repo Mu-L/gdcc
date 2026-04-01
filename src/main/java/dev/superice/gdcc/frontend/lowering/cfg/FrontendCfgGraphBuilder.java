@@ -12,7 +12,11 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.TypeTestItem;
 import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendElifRegion;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendIfRegion;
+import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendWhileRegion;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
+import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import dev.superice.gdcc.frontend.sema.FrontendMemberResolutionStatus;
@@ -24,12 +28,16 @@ import dev.superice.gdparser.frontend.ast.AttributeStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.Block;
+import dev.superice.gdparser.frontend.ast.BreakStatement;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
+import dev.superice.gdparser.frontend.ast.ContinueStatement;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
+import dev.superice.gdparser.frontend.ast.ElifClause;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PassStatement;
@@ -40,120 +48,284 @@ import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdparser.frontend.ast.WhileStatement;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 
-/// Frontend CFG builder for the current linear executable-body subset.
+/// Frontend CFG builder for one compile-ready executable body.
 ///
-/// The accepted statement shape is still deliberately small:
-/// - empty blocks
-/// - `pass`
-/// - `ExpressionStatement`
-/// - local `var`
-/// - `ReturnStatement`
+/// The graph stays frontend-only:
+/// - `SequenceNode` holds explicit source-level value-op items
+/// - `BranchNode` keeps the original condition root and published condition value id
+/// - `StopNode` marks function termination or a synthetic fully-terminated merge anchor
 ///
-/// Within that linear statement surface, the builder now recursively expands value evaluation for
-/// call/member/subscript/assignment roots and explicit child operands. Short-circuit `and` / `or`
-/// are already reserved for a dedicated control-flow path and therefore remain explicit
-/// compile-blockers until that path lands. This keeps sequence item data-flow aligned with source
-/// evaluation order without silently reintroducing eager short-circuit bugs.
+/// This builder now owns structured executable control flow for the current MVP statement surface:
+/// - straight-line statements and local `var`
+/// - `if` / `elif` / `else`
+/// - `while`
+/// - loop-local `break` / `continue`
+///
+/// Short-circuit `and` / `or` remain outside this step. They still fail fast here so compile-only
+/// blockers cannot silently collapse them back into eager binary value ops.
 public final class FrontendCfgGraphBuilder {
     private @Nullable FrontendAnalysisData analysisData;
-    private @Nullable ArrayList<SequenceItem> items;
+    private @Nullable LinkedHashMap<String, FrontendCfgGraph.NodeDef> nodes;
+    private @Nullable FrontendAstSideTable<FrontendCfgRegion> regions;
+    private final @NotNull ArrayDeque<LoopFrame> loopStack = new ArrayDeque<>();
     private int nextSequenceIndex;
+    private int nextBranchIndex;
     private int nextStopIndex;
     private int nextValueIndex;
 
-    /// Cheap preflight for the default pipeline.
+    /// Builds one executable-body frontend CFG graph plus every AST-keyed region published inside it.
     ///
-    /// The build pass uses this helper to decide whether the new linear builder can fully own the
-    /// current executable body, or whether the function must temporarily stay on the legacy
-    /// metadata-only path for structured control-flow publication.
-    ///
-    /// The scan intentionally stops at the first reachable `return`. Anything after that point is
-    /// lexical remainder and must not veto the current linear shape, because the builder never
-    /// attempts to materialize unreachable siblings.
-    public static boolean supportsStraightLineExecutableBody(@NotNull Block rootBlock) {
-        Objects.requireNonNull(rootBlock, "rootBlock must not be null");
-        for (var statement : rootBlock.statements()) {
-            if (!isSupportedStraightLineStatement(statement)) {
-                return false;
-            }
-            if (statement instanceof ReturnStatement) {
-                return true;
-            }
-        }
-        return true;
-    }
-
-    /// Builds the current linear graph for one executable-body root.
-    ///
-    /// The resulting sequence preserves explicit evaluation order:
-    /// - generic expression roots still use `OpaqueExprValueItem`, but now consume any already-built
-    ///   child operand ids instead of hiding nested special operations inside one opaque subtree
-    /// - bare call / attribute call / property load / subscript / assignment each emit dedicated
-    ///   value-op items
-    /// - local declaration and assignment commits remain separate from the value computation that
-    ///   feeds them
-    ///
-    /// Reaching an unsupported statement or expression here means the caller bypassed the expected
-    /// compile-ready preflight contract, so the builder fails fast instead of publishing a partial
-    /// graph.
-    public @NotNull ExecutableBodyBuild buildStraightLineExecutableBody(
+    /// The builder consumes only compile-ready frontend facts. Reaching an unsupported statement or a
+    /// missing lowering-ready side-table entry here therefore indicates a pipeline contract violation,
+    /// and the builder fails fast instead of publishing a partial graph.
+    public @NotNull ExecutableBodyBuild buildExecutableBody(
             @NotNull Block rootBlock,
             @NotNull FrontendAnalysisData analysisData
     ) {
         Objects.requireNonNull(rootBlock, "rootBlock must not be null");
         this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
-        items = new ArrayList<>();
+        nodes = new LinkedHashMap<>();
+        regions = new FrontendAstSideTable<>();
+        loopStack.clear();
         nextSequenceIndex = 0;
+        nextBranchIndex = 0;
         nextStopIndex = 0;
         nextValueIndex = 0;
 
-        String returnValueId = null;
-        for (var statement : rootBlock.statements()) {
-            switch (statement) {
-                case PassStatement passStatement -> requireItems().add(new SourceAnchorItem(passStatement));
-                case ExpressionStatement expressionStatement ->
-                        buildExpressionStatement(expressionStatement.expression());
-                case VariableDeclaration variableDeclaration when variableDeclaration.kind() == DeclarationKind.VAR -> {
-                    var initializer = variableDeclaration.value();
-                    var initializerValueId = initializer == null
-                            ? null
-                            : buildValue(initializer, nextVariableValueId(variableDeclaration.name()));
-                    requireItems().add(new LocalDeclarationItem(variableDeclaration, initializerValueId));
-                }
-                case ReturnStatement returnStatement -> {
-                    var returnValue = returnStatement.value();
-                    if (returnValue != null) {
-                        returnValueId = buildValue(returnValue, null);
-                    }
-                    var graph = buildGraph(requireItems(), returnValueId);
-                    return new ExecutableBodyBuild(graph, new FrontendCfgRegion.BlockRegion(graph.entryNodeId()));
-                }
-                default -> throw unsupportedReachableStatement(statement);
-            }
+        var fallthroughStopId = publishStopNode(null);
+        var rootBuild = buildBlock(rootBlock, fallthroughStopId);
+        var entryId = rootBuild.entryId();
+        if (entryId.equals(fallthroughStopId)) {
+            entryId = publishSequenceNode(List.of(), fallthroughStopId);
+            requireRegions().put(rootBlock, new FrontendCfgRegion.BlockRegion(entryId));
+        } else if (!isNodeReferenced(fallthroughStopId)) {
+            requireNodes().remove(fallthroughStopId);
         }
 
-        var graph = buildGraph(requireItems(), null);
-        return new ExecutableBodyBuild(graph, new FrontendCfgRegion.BlockRegion(graph.entryNodeId()));
+        return new ExecutableBodyBuild(
+                new FrontendCfgGraph(entryId, orderNodes(entryId)),
+                copyRegions(requireRegions())
+        );
     }
 
-    /// Expression statements either discard one ordinary value result or commit an assignment.
-    ///
-    /// Assignment roots stay as commit-only items because the current compile-ready surface does not
-    /// allow assignment expressions to flow into an outer value consumer.
-    private void buildExpressionStatement(@NotNull Expression expression) {
+    private @NotNull BlockBuild buildBlock(@NotNull Block block, @NotNull String continuationId) {
+        var state = new BlockState();
+        for (var statement : block.statements()) {
+            if (!state.reachable()) {
+                break;
+            }
+            processStatement(state, statement);
+        }
+
+        var entryId = finalizeBlockState(state, continuationId);
+        requireRegions().put(block, new FrontendCfgRegion.BlockRegion(entryId));
+        return new BlockBuild(entryId, state.reachable());
+    }
+
+    private void processStatement(@NotNull BlockState state, @NotNull Statement statement) {
+        switch (statement) {
+            case PassStatement passStatement ->
+                    requireCurrentSequence(state).items().add(new SourceAnchorItem(passStatement));
+            case ExpressionStatement expressionStatement -> buildExpressionStatement(
+                    requireCurrentSequence(state).items(),
+                    expressionStatement.expression()
+            );
+            case VariableDeclaration variableDeclaration when variableDeclaration.kind() == DeclarationKind.VAR ->
+                    buildLocalDeclaration(requireCurrentSequence(state).items(), variableDeclaration);
+            case ReturnStatement returnStatement -> processReturnStatement(state, returnStatement);
+            case IfStatement ifStatement -> processIfStatement(state, ifStatement);
+            case WhileStatement whileStatement -> processWhileStatement(state, whileStatement);
+            case BreakStatement breakStatement ->
+                    processLoopJump(state, breakStatement, requireLoopFrame().breakTargetId());
+            case ContinueStatement continueStatement -> processLoopJump(
+                    state,
+                    continueStatement,
+                    requireLoopFrame().continueTargetId()
+            );
+            default -> throw unsupportedReachableStatement(statement);
+        }
+    }
+
+    private void buildLocalDeclaration(
+            @NotNull ArrayList<SequenceItem> items,
+            @NotNull VariableDeclaration variableDeclaration
+    ) {
+        var initializer = variableDeclaration.value();
+        var initializerValueId = initializer == null
+                ? null
+                : buildValue(items, initializer, nextVariableValueId(variableDeclaration.name()));
+        items.add(new LocalDeclarationItem(variableDeclaration, initializerValueId));
+    }
+
+    private void buildExpressionStatement(
+            @NotNull ArrayList<SequenceItem> items,
+            @NotNull Expression expression
+    ) {
         requireLoweringReadyExpressionType(expression);
         switch (expression) {
-            case AssignmentExpression assignmentExpression -> buildAssignmentCommit(assignmentExpression);
-            default -> buildValue(expression, null);
+            case AssignmentExpression assignmentExpression -> buildAssignmentCommit(items, assignmentExpression);
+            default -> buildValue(items, expression, null);
         }
+    }
+
+    private void processReturnStatement(@NotNull BlockState state, @NotNull ReturnStatement returnStatement) {
+        var sequence = requireCurrentSequence(state);
+        var returnValue = returnStatement.value();
+        var returnValueId = returnValue == null ? null : buildValue(sequence.items(), returnValue, null);
+        closeCurrentSequence(state, publishStopNode(returnValueId));
+        state.setReachable(false);
+    }
+
+    private void processLoopJump(@NotNull BlockState state, @NotNull Statement statement, @NotNull String targetId) {
+        var sequence = requireCurrentSequence(state);
+        sequence.items().add(new SourceAnchorItem(statement));
+        closeCurrentSequence(state, targetId);
+        state.setReachable(false);
+    }
+
+    private void processIfStatement(@NotNull BlockState state, @NotNull IfStatement ifStatement) {
+        var mergeSequence = new OpenSequence(nextSequenceId());
+        var thenBuild = buildBlock(ifStatement.body(), mergeSequence.id());
+        var falseBuild = buildIfFalseChain(ifStatement.elifClauses(), ifStatement.elseBody(), mergeSequence.id());
+        var conditionBuild = buildCondition(ifStatement.condition(), thenBuild.entryId(), falseBuild.entryId());
+        attachStructuredEntry(state, conditionBuild.entryId());
+
+        var fallsThrough = thenBuild.fallsThrough() || falseBuild.fallsThrough();
+        var mergeId = fallsThrough ? mergeSequence.id() : publishStopNode(null);
+        requireRegions().put(
+                ifStatement,
+                new FrontendIfRegion(
+                        conditionBuild.entryId(),
+                        thenBuild.entryId(),
+                        falseBuild.entryId(),
+                        mergeId
+                )
+        );
+
+        if (fallsThrough) {
+            state.setCurrentSequence(mergeSequence);
+            state.setReachable(true);
+            return;
+        }
+        state.setCurrentSequence(null);
+        state.setReachable(false);
+    }
+
+    private @NotNull ClauseBuild buildIfFalseChain(
+            @NotNull List<ElifClause> elifClauses,
+            @Nullable Block elseBody,
+            @NotNull String mergeTargetId
+    ) {
+        if (!elifClauses.isEmpty()) {
+            return buildElifChain(elifClauses, 0, elseBody, mergeTargetId);
+        }
+        if (elseBody != null) {
+            var elseBuild = buildBlock(elseBody, mergeTargetId);
+            return new ClauseBuild(elseBuild.entryId(), elseBuild.fallsThrough());
+        }
+        return new ClauseBuild(mergeTargetId, true);
+    }
+
+    private @NotNull ClauseBuild buildElifChain(
+            @NotNull List<ElifClause> elifClauses,
+            int clauseIndex,
+            @Nullable Block elseBody,
+            @NotNull String mergeTargetId
+    ) {
+        if (clauseIndex >= elifClauses.size()) {
+            if (elseBody != null) {
+                var elseBuild = buildBlock(elseBody, mergeTargetId);
+                return new ClauseBuild(elseBuild.entryId(), elseBuild.fallsThrough());
+            }
+            return new ClauseBuild(mergeTargetId, true);
+        }
+
+        var elifClause = elifClauses.get(clauseIndex);
+        var nextClause = buildElifChain(elifClauses, clauseIndex + 1, elseBody, mergeTargetId);
+        var bodyBuild = buildBlock(elifClause.body(), mergeTargetId);
+        var conditionBuild = buildCondition(elifClause.condition(), bodyBuild.entryId(), nextClause.entryId());
+        requireRegions().put(
+                elifClause,
+                new FrontendElifRegion(
+                        conditionBuild.entryId(),
+                        bodyBuild.entryId(),
+                        nextClause.entryId()
+                )
+        );
+        return new ClauseBuild(conditionBuild.entryId(), bodyBuild.fallsThrough() || nextClause.fallsThrough());
+    }
+
+    private void processWhileStatement(@NotNull BlockState state, @NotNull WhileStatement whileStatement) {
+        var exitSequence = new OpenSequence(nextSequenceId());
+        var conditionSequence = new OpenSequence(nextSequenceId());
+        loopStack.push(new LoopFrame(conditionSequence.id(), exitSequence.id()));
+        BlockBuild bodyBuild;
+        try {
+            bodyBuild = buildBlock(whileStatement.body(), conditionSequence.id());
+        } finally {
+            loopStack.pop();
+        }
+
+        var conditionBuild = buildConditionIntoSequence(
+                conditionSequence,
+                whileStatement.condition(),
+                bodyBuild.entryId(),
+                exitSequence.id()
+        );
+        attachStructuredEntry(state, conditionBuild.entryId());
+        requireRegions().put(
+                whileStatement,
+                new FrontendWhileRegion(
+                        conditionBuild.entryId(),
+                        bodyBuild.entryId(),
+                        exitSequence.id()
+                )
+        );
+        state.setCurrentSequence(exitSequence);
+        state.setReachable(true);
+    }
+
+    private void attachStructuredEntry(@NotNull BlockState state, @NotNull String structuredEntryId) {
+        if (state.currentSequenceOrNull() == null) {
+            state.setEntryIdIfMissing(structuredEntryId);
+            return;
+        }
+        closeCurrentSequence(state, structuredEntryId);
+    }
+
+    private @NotNull ConditionBuild buildCondition(
+            @NotNull Expression condition,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        return buildConditionIntoSequence(new OpenSequence(nextSequenceId()), condition, trueTargetId, falseTargetId);
+    }
+
+    private @NotNull ConditionBuild buildConditionIntoSequence(
+            @NotNull OpenSequence conditionSequence,
+            @NotNull Expression condition,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var conditionValueId = buildValue(conditionSequence.items(), condition, null);
+        var branchId = nextBranchId();
+        publishSequenceNode(conditionSequence.id(), conditionSequence.items(), branchId);
+        requireNodes().put(
+                branchId,
+                new FrontendCfgGraph.BranchNode(branchId, condition, conditionValueId, trueTargetId, falseTargetId)
+        );
+        return new ConditionBuild(conditionSequence.id(), branchId);
     }
 
     /// Recursively materializes one lowering-ready value and returns the published frontend-local id.
@@ -164,40 +336,49 @@ public final class FrontendCfgGraphBuilder {
     /// Short-circuit `and` / `or` no longer share that generic eager route; they are intercepted by
     /// a dedicated unimplemented path so compile-blocked sources cannot accidentally regress into one
     /// linear binary item.
-    private @NotNull String buildValue(@NotNull Expression expression, @Nullable String preferredResultValueId) {
+    private @NotNull String buildValue(
+            @NotNull ArrayList<SequenceItem> items,
+            @NotNull Expression expression,
+            @Nullable String preferredResultValueId
+    ) {
         requireLoweringReadyExpressionType(expression);
         return switch (expression) {
             case AssignmentExpression _ -> throw new IllegalStateException(
                     "Assignment expressions do not produce a lowering-ready value in the current compile surface"
             );
             case AttributeExpression attributeExpression -> buildAttributeExpressionValue(
+                    items,
                     attributeExpression,
                     preferredResultValueId
             );
-            case CallExpression callExpression -> buildBareCallValue(callExpression, preferredResultValueId);
+            case CallExpression callExpression -> buildBareCallValue(items, callExpression, preferredResultValueId);
             case SubscriptExpression subscriptExpression -> buildPlainSubscriptValue(
+                    items,
                     subscriptExpression,
                     preferredResultValueId
             );
-            case CastExpression castExpression -> buildCastValue(castExpression, preferredResultValueId);
+            case CastExpression castExpression -> buildCastValue(items, castExpression, preferredResultValueId);
             case TypeTestExpression typeTestExpression ->
-                    buildTypeTestValue(typeTestExpression, preferredResultValueId);
+                    buildTypeTestValue(items, typeTestExpression, preferredResultValueId);
             case UnaryExpression unaryExpression -> emitOpaqueValue(
+                    items,
                     unaryExpression,
-                    List.of(buildValue(unaryExpression.operand(), null)),
+                    List.of(buildValue(items, unaryExpression.operand(), null)),
                     preferredResultValueId
             );
             case BinaryExpression binaryExpression when isShortCircuitBinaryExpression(binaryExpression) ->
                     buildShortCircuitBinaryValue(binaryExpression);
             case BinaryExpression binaryExpression -> emitOpaqueValue(
+                    items,
                     binaryExpression,
                     List.of(
-                            buildValue(binaryExpression.left(), null),
-                            buildValue(binaryExpression.right(), null)
+                            buildValue(items, binaryExpression.left(), null),
+                            buildValue(items, binaryExpression.right(), null)
                     ),
                     preferredResultValueId
             );
             case IdentifierExpression _, LiteralExpression _, SelfExpression _ -> emitOpaqueValue(
+                    items,
                     expression,
                     List.of(),
                     preferredResultValueId
@@ -209,16 +390,18 @@ public final class FrontendCfgGraphBuilder {
     /// Attribute chains are expanded step by step so later lowering receives explicit intermediate
     /// value ids instead of having to rerun chain reduction over the full outer expression root.
     private @NotNull String buildAttributeExpressionValue(
+            @NotNull ArrayList<SequenceItem> items,
             @NotNull AttributeExpression attributeExpression,
             @Nullable String preferredResultValueId
     ) {
         if (attributeExpression.steps().isEmpty()) {
             throw new IllegalStateException("AttributeExpression must contain at least one step");
         }
-        var currentValueId = buildValue(attributeExpression.base(), null);
+        var currentValueId = buildValue(items, attributeExpression.base(), null);
         for (var stepIndex = 0; stepIndex < attributeExpression.steps().size(); stepIndex++) {
             var step = attributeExpression.steps().get(stepIndex);
             currentValueId = applyAttributeStep(
+                    items,
                     currentValueId,
                     step,
                     stepIndex + 1 == attributeExpression.steps().size() ? preferredResultValueId : null
@@ -233,6 +416,7 @@ public final class FrontendCfgGraphBuilder {
     /// invocation remains a separate future route, so a non-identifier callee is treated as a
     /// protocol violation instead of being silently dropped from operand ordering.
     private @NotNull String buildBareCallValue(
+            @NotNull ArrayList<SequenceItem> items,
             @NotNull CallExpression callExpression,
             @Nullable String preferredResultValueId
     ) {
@@ -243,9 +427,9 @@ public final class FrontendCfgGraphBuilder {
             );
         }
         var publishedCall = requireLoweringReadyCall(callExpression);
-        var argumentValueIds = buildArgumentValues(callExpression.arguments());
+        var argumentValueIds = buildArgumentValues(items, callExpression.arguments());
         var resultValueId = chooseResultValueId(preferredResultValueId);
-        requireItems().add(new CallItem(
+        items.add(new CallItem(
                 callExpression,
                 publishedCall.callableName(),
                 null,
@@ -258,13 +442,14 @@ public final class FrontendCfgGraphBuilder {
     /// Plain subscripts first materialize their base and arguments, then commit one explicit indexed
     /// read item that consumes those operand ids.
     private @NotNull String buildPlainSubscriptValue(
+            @NotNull ArrayList<SequenceItem> items,
             @NotNull SubscriptExpression subscriptExpression,
             @Nullable String preferredResultValueId
     ) {
-        var baseValueId = buildValue(subscriptExpression.base(), null);
-        var argumentValueIds = buildArgumentValues(subscriptExpression.arguments());
+        var baseValueId = buildValue(items, subscriptExpression.base(), null);
+        var argumentValueIds = buildArgumentValues(items, subscriptExpression.arguments());
         var resultValueId = chooseResultValueId(preferredResultValueId);
-        requireItems().add(new SubscriptLoadItem(
+        items.add(new SubscriptLoadItem(
                 subscriptExpression,
                 null,
                 baseValueId,
@@ -276,14 +461,15 @@ public final class FrontendCfgGraphBuilder {
 
     /// Cast expressions are still compile-blocked by the default pipeline, but the item contract is
     /// already wired so targeted builder tests and later compile-surface expansion do not require a
-    /// structural rewrite of the linear graph model.
+    /// structural rewrite of the frontend CFG surface.
     private @NotNull String buildCastValue(
+            @NotNull ArrayList<SequenceItem> items,
             @NotNull CastExpression castExpression,
             @Nullable String preferredResultValueId
     ) {
-        var operandValueId = buildValue(castExpression.value(), null);
+        var operandValueId = buildValue(items, castExpression.value(), null);
         var resultValueId = chooseResultValueId(preferredResultValueId);
-        requireItems().add(new CastItem(
+        items.add(new CastItem(
                 castExpression,
                 operandValueId,
                 resultValueId
@@ -295,12 +481,13 @@ public final class FrontendCfgGraphBuilder {
     /// casts. They remain compile-blocked today, but the CFG item surface is ready for that future
     /// migration.
     private @NotNull String buildTypeTestValue(
+            @NotNull ArrayList<SequenceItem> items,
             @NotNull TypeTestExpression typeTestExpression,
             @Nullable String preferredResultValueId
     ) {
-        var operandValueId = buildValue(typeTestExpression.value(), null);
+        var operandValueId = buildValue(items, typeTestExpression.value(), null);
         var resultValueId = chooseResultValueId(preferredResultValueId);
-        requireItems().add(new TypeTestItem(
+        items.add(new TypeTestItem(
                 typeTestExpression,
                 operandValueId,
                 resultValueId
@@ -311,9 +498,9 @@ public final class FrontendCfgGraphBuilder {
     /// `and` / `or` never belong to the generic eager binary route.
     ///
     /// Their final lowering must allocate a shared result slot, branch on the left operand, and only
-    /// materialize the right operand on the non-short-circuit path. The current linear-only builder
-    /// cannot express that graph shape yet, so reaching this helper means the compile gate was
-    /// bypassed and we must fail before any child operand is eagerly lowered.
+    /// materialize the right operand on the non-short-circuit path. Reaching this helper therefore
+    /// means the compile gate was bypassed and we must fail before any child operand is eagerly
+    /// lowered.
     private @NotNull String buildShortCircuitBinaryValue(@NotNull BinaryExpression binaryExpression) {
         throw new IllegalStateException(
                 "Binary operator '"
@@ -326,10 +513,13 @@ public final class FrontendCfgGraphBuilder {
     ///
     /// The returned operand list on `AssignmentItem` therefore starts with any already-evaluated
     /// target receiver/index operands, then appends the RHS value id as the final consumed operand.
-    private void buildAssignmentCommit(@NotNull AssignmentExpression assignmentExpression) {
-        var targetOperandValueIds = buildAssignmentTargetOperands(assignmentExpression.left());
-        var rhsValueId = buildValue(assignmentExpression.right(), null);
-        requireItems().add(new AssignmentItem(
+    private void buildAssignmentCommit(
+            @NotNull ArrayList<SequenceItem> items,
+            @NotNull AssignmentExpression assignmentExpression
+    ) {
+        var targetOperandValueIds = buildAssignmentTargetOperands(items, assignmentExpression.left());
+        var rhsValueId = buildValue(items, assignmentExpression.right(), null);
+        items.add(new AssignmentItem(
                 assignmentExpression,
                 targetOperandValueIds,
                 rhsValueId,
@@ -342,14 +532,17 @@ public final class FrontendCfgGraphBuilder {
     /// The target AST itself remains on `AssignmentItem`, but any child expressions with real
     /// evaluation order, such as chain prefixes or subscript arguments, are materialized here so
     /// later lowering does not need to recurse back into the target subtree to discover them.
-    private @NotNull List<String> buildAssignmentTargetOperands(@NotNull Expression targetExpression) {
+    private @NotNull List<String> buildAssignmentTargetOperands(
+            @NotNull ArrayList<SequenceItem> items,
+            @NotNull Expression targetExpression
+    ) {
         return switch (targetExpression) {
             case IdentifierExpression _ -> List.of();
-            case AttributeExpression attributeExpression -> buildAttributeTargetOperands(attributeExpression);
+            case AttributeExpression attributeExpression -> buildAttributeTargetOperands(items, attributeExpression);
             case SubscriptExpression subscriptExpression -> {
                 var operands = new ArrayList<String>(1 + subscriptExpression.arguments().size());
-                operands.add(buildAssignmentTargetValue(subscriptExpression.base()));
-                operands.addAll(buildArgumentValues(subscriptExpression.arguments()));
+                operands.add(buildAssignmentTargetValue(items, subscriptExpression.base()));
+                operands.addAll(buildArgumentValues(items, subscriptExpression.arguments()));
                 yield List.copyOf(operands);
             }
             default -> throw unsupportedReachableAssignmentTarget(targetExpression);
@@ -364,14 +557,17 @@ public final class FrontendCfgGraphBuilder {
     /// - `obj.items[i] = rhs` publishes the receiver value for `obj` plus the index operand ids
     /// - `obj.a().items[i] = rhs` first builds `obj.a()` as explicit prefix value-ops, then exports
     ///   the final target receiver/index operands
-    private @NotNull List<String> buildAttributeTargetOperands(@NotNull AttributeExpression attributeExpression) {
+    private @NotNull List<String> buildAttributeTargetOperands(
+            @NotNull ArrayList<SequenceItem> items,
+            @NotNull AttributeExpression attributeExpression
+    ) {
         if (attributeExpression.steps().isEmpty()) {
             throw new IllegalStateException("AttributeExpression assignment target must contain at least one step");
         }
 
-        var currentValueId = buildAssignmentTargetValue(attributeExpression.base());
+        var currentValueId = buildAssignmentTargetValue(items, attributeExpression.base());
         for (var stepIndex = 0; stepIndex + 1 < attributeExpression.steps().size(); stepIndex++) {
-            currentValueId = applyAttributeStep(currentValueId, attributeExpression.steps().get(stepIndex), null);
+            currentValueId = applyAttributeStep(items, currentValueId, attributeExpression.steps().get(stepIndex), null);
         }
 
         var finalStep = attributeExpression.steps().getLast();
@@ -380,13 +576,13 @@ public final class FrontendCfgGraphBuilder {
             case AttributeSubscriptStep attributeSubscriptStep -> {
                 var operands = new ArrayList<String>(1 + attributeSubscriptStep.arguments().size());
                 operands.add(currentValueId);
-                operands.addAll(buildArgumentValues(attributeSubscriptStep.arguments()));
+                operands.addAll(buildArgumentValues(items, attributeSubscriptStep.arguments()));
                 yield List.copyOf(operands);
             }
             default -> throw new IllegalStateException(
                     "Assignment target step '"
                             + finalStep.getClass().getSimpleName()
-                            + "' is not supported by the current linear frontend CFG contract"
+                            + "' is not supported by the current frontend CFG contract"
             );
         };
     }
@@ -399,15 +595,20 @@ public final class FrontendCfgGraphBuilder {
     /// materializes the receiver value. This helper therefore falls back to a target-specific value
     /// path for those prefixes while still reusing ordinary `buildValue(...)` whenever a lowering-ready
     /// expression fact actually exists.
-    private @NotNull String buildAssignmentTargetValue(@NotNull Expression expression) {
+    private @NotNull String buildAssignmentTargetValue(
+            @NotNull ArrayList<SequenceItem> items,
+            @NotNull Expression expression
+    ) {
         if (hasLoweringReadyExpressionType(expression)) {
-            return buildValue(expression, null);
+            return buildValue(items, expression, null);
         }
         return switch (expression) {
-            case IdentifierExpression _, SelfExpression _ -> emitOpaqueValue(expression, List.of(), null);
-            case AttributeExpression attributeExpression -> buildAssignmentTargetAttributeValue(attributeExpression);
-            case SubscriptExpression subscriptExpression -> buildAssignmentTargetSubscriptValue(subscriptExpression);
-            case CallExpression callExpression -> buildBareCallValue(callExpression, null);
+            case IdentifierExpression _, SelfExpression _ -> emitOpaqueValue(items, expression, List.of(), null);
+            case AttributeExpression attributeExpression ->
+                    buildAssignmentTargetAttributeValue(items, attributeExpression);
+            case SubscriptExpression subscriptExpression ->
+                    buildAssignmentTargetSubscriptValue(items, subscriptExpression);
+            case CallExpression callExpression -> buildBareCallValue(items, callExpression, null);
             default -> throw new IllegalStateException(
                     "Assignment target value "
                             + expression.getClass().getSimpleName()
@@ -416,22 +617,28 @@ public final class FrontendCfgGraphBuilder {
         };
     }
 
-    private @NotNull String buildAssignmentTargetAttributeValue(@NotNull AttributeExpression attributeExpression) {
+    private @NotNull String buildAssignmentTargetAttributeValue(
+            @NotNull ArrayList<SequenceItem> items,
+            @NotNull AttributeExpression attributeExpression
+    ) {
         if (attributeExpression.steps().isEmpty()) {
             throw new IllegalStateException("AttributeExpression target value must contain at least one step");
         }
-        var currentValueId = buildAssignmentTargetValue(attributeExpression.base());
+        var currentValueId = buildAssignmentTargetValue(items, attributeExpression.base());
         for (var step : attributeExpression.steps()) {
-            currentValueId = applyAttributeStep(currentValueId, step, null);
+            currentValueId = applyAttributeStep(items, currentValueId, step, null);
         }
         return currentValueId;
     }
 
-    private @NotNull String buildAssignmentTargetSubscriptValue(@NotNull SubscriptExpression subscriptExpression) {
-        var baseValueId = buildAssignmentTargetValue(subscriptExpression.base());
-        var argumentValueIds = buildArgumentValues(subscriptExpression.arguments());
+    private @NotNull String buildAssignmentTargetSubscriptValue(
+            @NotNull ArrayList<SequenceItem> items,
+            @NotNull SubscriptExpression subscriptExpression
+    ) {
+        var baseValueId = buildAssignmentTargetValue(items, subscriptExpression.base());
+        var argumentValueIds = buildArgumentValues(items, subscriptExpression.arguments());
         var resultValueId = chooseResultValueId(null);
-        requireItems().add(new SubscriptLoadItem(
+        items.add(new SubscriptLoadItem(
                 subscriptExpression,
                 null,
                 baseValueId,
@@ -447,6 +654,7 @@ public final class FrontendCfgGraphBuilder {
     /// the receiver value id arrives from the previous chain segment, step-local arguments are built
     /// before the item is appended, and the returned value id becomes the receiver for the next step.
     private @NotNull String applyAttributeStep(
+            @NotNull ArrayList<SequenceItem> items,
             @NotNull String receiverValueId,
             @NotNull AttributeStep step,
             @Nullable String preferredResultValueId
@@ -455,7 +663,7 @@ public final class FrontendCfgGraphBuilder {
             case AttributePropertyStep attributePropertyStep -> {
                 var publishedMember = requireLoweringReadyMember(attributePropertyStep);
                 var resultValueId = chooseResultValueId(preferredResultValueId);
-                requireItems().add(new MemberLoadItem(
+                items.add(new MemberLoadItem(
                         attributePropertyStep,
                         publishedMember.memberName(),
                         receiverValueId,
@@ -465,9 +673,9 @@ public final class FrontendCfgGraphBuilder {
             }
             case AttributeCallStep attributeCallStep -> {
                 var publishedCall = requireLoweringReadyCall(attributeCallStep);
-                var argumentValueIds = buildArgumentValues(attributeCallStep.arguments());
+                var argumentValueIds = buildArgumentValues(items, attributeCallStep.arguments());
                 var resultValueId = chooseResultValueId(preferredResultValueId);
-                requireItems().add(new CallItem(
+                items.add(new CallItem(
                         attributeCallStep,
                         publishedCall.callableName(),
                         receiverValueId,
@@ -477,9 +685,9 @@ public final class FrontendCfgGraphBuilder {
                 yield resultValueId;
             }
             case AttributeSubscriptStep attributeSubscriptStep -> {
-                var argumentValueIds = buildArgumentValues(attributeSubscriptStep.arguments());
+                var argumentValueIds = buildArgumentValues(items, attributeSubscriptStep.arguments());
                 var resultValueId = chooseResultValueId(preferredResultValueId);
-                requireItems().add(new SubscriptLoadItem(
+                items.add(new SubscriptLoadItem(
                         attributeSubscriptStep,
                         attributeSubscriptStep.name(),
                         receiverValueId,
@@ -489,15 +697,18 @@ public final class FrontendCfgGraphBuilder {
                 yield resultValueId;
             }
             default -> throw new IllegalStateException(
-                    "Unsupported attribute step in linear frontend CFG builder: " + step.getClass().getSimpleName()
+                    "Unsupported attribute step in frontend CFG builder: " + step.getClass().getSimpleName()
             );
         };
     }
 
-    private @NotNull List<String> buildArgumentValues(@NotNull List<Expression> arguments) {
+    private @NotNull List<String> buildArgumentValues(
+            @NotNull ArrayList<SequenceItem> items,
+            @NotNull List<Expression> arguments
+    ) {
         var valueIds = new ArrayList<String>(arguments.size());
         for (var argument : arguments) {
-            valueIds.add(buildValue(argument, null));
+            valueIds.add(buildValue(items, argument, null));
         }
         return List.copyOf(valueIds);
     }
@@ -505,36 +716,140 @@ public final class FrontendCfgGraphBuilder {
     /// Generic opaque items still exist as a bridge for simple expression forms whose exact lowering
     /// will be finalized later, but they no longer hide nested child evaluation order.
     private @NotNull String emitOpaqueValue(
+            @NotNull ArrayList<SequenceItem> items,
             @NotNull Expression expression,
             @NotNull List<String> operandValueIds,
             @Nullable String preferredResultValueId
     ) {
         var resultValueId = chooseResultValueId(preferredResultValueId);
-        requireItems().add(new OpaqueExprValueItem(expression, operandValueIds, resultValueId));
+        items.add(new OpaqueExprValueItem(expression, operandValueIds, resultValueId));
         return resultValueId;
     }
 
-    /// Materializes the minimal linear topology.
-    ///
-    /// Keeping this in one helper ensures the entry sequence, terminal stop, and deterministic node
-    /// ids stay uniform across empty functions, fallthrough functions, and early-return functions.
-    private @NotNull FrontendCfgGraph buildGraph(
-            @NotNull List<SequenceItem> items,
-            @Nullable String returnValueIdOrNull
-    ) {
-        var entryId = nextSequenceId();
-        var stopId = nextStopId();
-        var nodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>(2);
-        nodes.put(entryId, new FrontendCfgGraph.SequenceNode(entryId, items, stopId));
-        nodes.put(stopId, new FrontendCfgGraph.StopNode(stopId, returnValueIdOrNull));
-        return new FrontendCfgGraph(entryId, nodes);
+    private @NotNull String finalizeBlockState(@NotNull BlockState state, @NotNull String continuationId) {
+        if (state.reachable()) {
+            closeCurrentSequence(state, continuationId);
+            return state.entryIdOrNull() == null ? continuationId : state.entryIdOrNull();
+        }
+        var entryId = state.entryIdOrNull();
+        if (entryId == null) {
+            throw new IllegalStateException("Structured block terminated before publishing an entry node");
+        }
+        return entryId;
     }
 
-    private @NotNull ArrayList<SequenceItem> requireItems() {
-        if (items == null) {
-            throw new IllegalStateException("Sequence item buffer has not been initialized");
+    private void closeCurrentSequence(@NotNull BlockState state, @NotNull String nextId) {
+        var currentSequence = state.currentSequenceOrNull();
+        if (currentSequence == null) {
+            return;
         }
-        return items;
+        if (!currentSequence.items().isEmpty()) {
+            publishSequenceNode(currentSequence.id(), currentSequence.items(), nextId);
+        } else if (Objects.equals(state.entryIdOrNull(), currentSequence.id())) {
+            state.setEntryId(nextId);
+        } else {
+            publishSequenceNode(currentSequence.id(), List.of(), nextId);
+        }
+        state.setCurrentSequence(null);
+    }
+
+    private @NotNull OpenSequence requireCurrentSequence(@NotNull BlockState state) {
+        var currentSequence = state.currentSequenceOrNull();
+        if (currentSequence != null) {
+            return currentSequence;
+        }
+        var created = new OpenSequence(nextSequenceId());
+        state.setEntryIdIfMissing(created.id());
+        state.setCurrentSequence(created);
+        return created;
+    }
+
+    private @NotNull LinkedHashMap<String, FrontendCfgGraph.NodeDef> orderNodes(@NotNull String entryId) {
+        var ordered = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        var visited = new LinkedHashSet<String>();
+        visitNode(entryId, visited, ordered);
+        for (var entry : requireNodes().entrySet()) {
+            ordered.putIfAbsent(entry.getKey(), entry.getValue());
+        }
+        return ordered;
+    }
+
+    private void visitNode(
+            @NotNull String nodeId,
+            @NotNull LinkedHashSet<String> visited,
+            @NotNull LinkedHashMap<String, FrontendCfgGraph.NodeDef> ordered
+    ) {
+        if (!visited.add(nodeId)) {
+            return;
+        }
+        var node = requireNodes().get(nodeId);
+        if (node == null) {
+            throw new IllegalStateException("Frontend CFG node has not been published: " + nodeId);
+        }
+        ordered.put(nodeId, node);
+        switch (node) {
+            case FrontendCfgGraph.SequenceNode(_, _, var nextId) -> visitNode(nextId, visited, ordered);
+            case FrontendCfgGraph.BranchNode(_, _, _, var trueTargetId, var falseTargetId) -> {
+                visitNode(trueTargetId, visited, ordered);
+                visitNode(falseTargetId, visited, ordered);
+            }
+            case FrontendCfgGraph.StopNode _ -> {
+            }
+        }
+    }
+
+    private boolean isNodeReferenced(@NotNull String nodeId) {
+        for (var node : requireNodes().values()) {
+            switch (node) {
+                case FrontendCfgGraph.SequenceNode(_, _, var nextId) -> {
+                    if (nextId.equals(nodeId)) {
+                        return true;
+                    }
+                }
+                case FrontendCfgGraph.BranchNode(_, _, _, var trueTargetId, var falseTargetId) -> {
+                    if (trueTargetId.equals(nodeId) || falseTargetId.equals(nodeId)) {
+                        return true;
+                    }
+                }
+                case FrontendCfgGraph.StopNode _ -> {
+                }
+            }
+        }
+        return false;
+    }
+
+    private @NotNull String publishSequenceNode(@NotNull List<SequenceItem> items, @NotNull String nextId) {
+        var sequenceId = nextSequenceId();
+        publishSequenceNode(sequenceId, items, nextId);
+        return sequenceId;
+    }
+
+    private void publishSequenceNode(
+            @NotNull String sequenceId,
+            @NotNull List<SequenceItem> items,
+            @NotNull String nextId
+    ) {
+        requireNodes().put(sequenceId, new FrontendCfgGraph.SequenceNode(sequenceId, items, nextId));
+    }
+
+    private @NotNull String publishStopNode(@Nullable String returnValueIdOrNull) {
+        var stopId = nextStopId();
+        requireNodes().put(stopId, new FrontendCfgGraph.StopNode(stopId, returnValueIdOrNull));
+        return stopId;
+    }
+
+    private @NotNull FrontendAstSideTable<FrontendCfgRegion> requireRegions() {
+        if (regions == null) {
+            throw new IllegalStateException("Frontend CFG regions have not been initialized");
+        }
+        return regions;
+    }
+
+    private @NotNull LinkedHashMap<String, FrontendCfgGraph.NodeDef> requireNodes() {
+        if (nodes == null) {
+            throw new IllegalStateException("Frontend CFG nodes have not been initialized");
+        }
+        return nodes;
     }
 
     private @NotNull FrontendAnalysisData requireAnalysisData() {
@@ -544,10 +859,22 @@ public final class FrontendCfgGraphBuilder {
         return analysisData;
     }
 
+    private @NotNull LoopFrame requireLoopFrame() {
+        var loopFrame = loopStack.peek();
+        if (loopFrame == null) {
+            throw new IllegalStateException("Loop control statement requires an active loop frame");
+        }
+        return loopFrame;
+    }
+
     /// Sequence ids are lexical-order scoped to one build so tests can assert exact graph shape
     /// without leaking counters across functions.
     private @NotNull String nextSequenceId() {
         return "seq_" + nextSequenceIndex++;
+    }
+
+    private @NotNull String nextBranchId() {
+        return "branch_" + nextBranchIndex++;
     }
 
     /// Stop ids share the same per-function deterministic contract as sequence ids.
@@ -584,16 +911,6 @@ public final class FrontendCfgGraphBuilder {
         } catch (IllegalArgumentException _) {
             return null;
         }
-    }
-
-    /// Returns whether the given statement can still be represented by the current single-sequence
-    /// model before the first reachable terminator.
-    private static boolean isSupportedStraightLineStatement(@NotNull Statement statement) {
-        return switch (statement) {
-            case PassStatement _, ExpressionStatement _, ReturnStatement _ -> true;
-            case VariableDeclaration variableDeclaration -> variableDeclaration.kind() == DeclarationKind.VAR;
-            default -> false;
-        };
     }
 
     /// Compile-ready lowering must only see expressions whose type facts already stabilized to a
@@ -672,41 +989,130 @@ public final class FrontendCfgGraphBuilder {
         return publishedMember;
     }
 
-    /// Reaching this path means a caller asked the linear builder to materialize a statement that
-    /// needs a richer CFG shape than the current executable-body contract provides.
     private static @NotNull IllegalStateException unsupportedReachableStatement(@NotNull Statement statement) {
         return new IllegalStateException(
-                "Linear frontend CFG builder reached an unsupported reachable statement: "
+                "Frontend CFG builder reached an unsupported reachable statement: "
                         + statement.getClass().getSimpleName()
         );
     }
 
     private static @NotNull IllegalStateException unsupportedReachableExpression(@NotNull Expression expression) {
         return new IllegalStateException(
-                "Linear frontend CFG builder reached an unsupported lowering-ready expression: "
+                "Frontend CFG builder reached an unsupported lowering-ready expression: "
                         + expression.getClass().getSimpleName()
         );
     }
 
     private static @NotNull IllegalStateException unsupportedReachableAssignmentTarget(@NotNull Expression targetExpression) {
         return new IllegalStateException(
-                "Linear frontend CFG builder reached an unsupported assignment target expression: "
+                "Frontend CFG builder reached an unsupported assignment target expression: "
                         + targetExpression.getClass().getSimpleName()
         );
     }
 
-    /// Build product for one executable-body root.
-    ///
-    /// The builder returns both artifacts together because later passes typically need:
-    /// - the graph itself for node/value traversal
-    /// - the root `BlockRegion` for AST-keyed region publication back into `FunctionLoweringContext`
+    private static @NotNull FrontendAstSideTable<FrontendCfgRegion> copyRegions(
+            @NotNull FrontendAstSideTable<FrontendCfgRegion> regions
+    ) {
+        var copied = new FrontendAstSideTable<FrontendCfgRegion>();
+        copied.putAll(regions);
+        return copied;
+    }
+
     public record ExecutableBodyBuild(
             @NotNull FrontendCfgGraph graph,
-            @NotNull FrontendCfgRegion.BlockRegion rootRegion
+            @NotNull FrontendAstSideTable<FrontendCfgRegion> regions
     ) {
         public ExecutableBodyBuild {
             Objects.requireNonNull(graph, "graph must not be null");
-            Objects.requireNonNull(rootRegion, "rootRegion must not be null");
+            regions = copyRegions(Objects.requireNonNull(regions, "regions must not be null"));
+        }
+    }
+
+    private record ConditionBuild(
+            @NotNull String entryId,
+            @NotNull String branchId
+    ) {
+        private ConditionBuild {
+            Objects.requireNonNull(entryId, "entryId must not be null");
+            Objects.requireNonNull(branchId, "branchId must not be null");
+        }
+    }
+
+    private record ClauseBuild(
+            @NotNull String entryId,
+            boolean fallsThrough
+    ) {
+        private ClauseBuild {
+            Objects.requireNonNull(entryId, "entryId must not be null");
+        }
+    }
+
+    private record BlockBuild(
+            @NotNull String entryId,
+            boolean fallsThrough
+    ) {
+        private BlockBuild {
+            Objects.requireNonNull(entryId, "entryId must not be null");
+        }
+    }
+
+    private record OpenSequence(
+            @NotNull String id,
+            @NotNull ArrayList<SequenceItem> items
+    ) {
+        private OpenSequence(@NotNull String id) {
+            this(id, new ArrayList<>());
+        }
+
+        private OpenSequence {
+            Objects.requireNonNull(id, "id must not be null");
+            Objects.requireNonNull(items, "items must not be null");
+        }
+    }
+
+    private record LoopFrame(
+            @NotNull String continueTargetId,
+            @NotNull String breakTargetId
+    ) {
+        private LoopFrame {
+            Objects.requireNonNull(continueTargetId, "continueTargetId must not be null");
+            Objects.requireNonNull(breakTargetId, "breakTargetId must not be null");
+        }
+    }
+
+    private static final class BlockState {
+        private @Nullable String entryId;
+        private @Nullable OpenSequence currentSequence;
+        private boolean reachable = true;
+
+        private @Nullable String entryIdOrNull() {
+            return entryId;
+        }
+
+        private void setEntryId(@NotNull String entryId) {
+            this.entryId = Objects.requireNonNull(entryId, "entryId must not be null");
+        }
+
+        private void setEntryIdIfMissing(@NotNull String entryId) {
+            if (this.entryId == null) {
+                this.entryId = Objects.requireNonNull(entryId, "entryId must not be null");
+            }
+        }
+
+        private @Nullable OpenSequence currentSequenceOrNull() {
+            return currentSequence;
+        }
+
+        private void setCurrentSequence(@Nullable OpenSequence currentSequence) {
+            this.currentSequence = currentSequence;
+        }
+
+        private boolean reachable() {
+            return reachable;
+        }
+
+        private void setReachable(boolean reachable) {
+            this.reachable = reachable;
         }
     }
 }

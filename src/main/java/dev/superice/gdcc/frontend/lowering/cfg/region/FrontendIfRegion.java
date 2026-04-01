@@ -6,7 +6,8 @@ import org.jetbrains.annotations.NotNull;
 /// Region for one `if` statement.
 ///
 /// The region names four stable anchors inside the graph:
-/// - `conditionEntryId` is typically the `BranchNode` that evaluates the `if` condition
+/// - `conditionEntryId` is the first node of the condition-evaluation region, typically a
+///   `SequenceNode` that computes the source condition value before the following branch split
 /// - `thenEntryId` is the first node of the `then` body, usually a `SequenceNode`
 /// - `elseOrNextClauseEntryId` is the first node of the `else` body or chained `elif` clause
 /// - `mergeId` is the fallthrough join after the full `if` chain, or a `StopNode`-like exit when
