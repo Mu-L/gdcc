@@ -5,8 +5,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / expr-typing / type-check / exception 诊断链路已落地）
-- 更新时间：2026-03-20
+- 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / expr-typing / type-check / loop-control / compile-check / exception 诊断链路已落地）
+- 更新时间：2026-04-01
 - 适用范围：
     - `src/main/java/dev/superice/gdcc/frontend/diagnostic/**`
     - `src/main/java/dev/superice/gdcc/frontend/parse/**`
@@ -15,6 +15,7 @@
 - 关联文档：
     - `doc/module_impl/common_rules.md`
     - `doc/module_impl/frontend/scope_architecture_refactor_plan.md`
+    - `doc/module_impl/frontend/frontend_loop_control_flow_analyzer_implementation.md`
     - `doc/module_impl/frontend/frontend_compile_check_analyzer_implementation.md`
     - `doc/analysis/frontend_semantic_analyzer_research_report.md`
 
@@ -192,6 +193,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.discarded_expression`
 - `sema.type_check`
 - `sema.type_hint`
+- `sema.loop_control_flow`
 - `sema.unsupported_annotation`
 - `sema.compile_check`
 
@@ -225,6 +227,13 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.type_hint`
   - type-check analyzer 对 property `:=` / 未声明显式类型 property 发出的手动显式类型提醒 warning
   - 该 warning 只提示建议的显式类型，不表示 property metadata 已被推导或回写
+- `sema.loop_control_flow`
+  - shared `FrontendLoopControlFlowAnalyzer` 对非法 `break` / `continue` 发出的 source-level error
+  - 当前固定用于：
+    - loop 之外的 `break`
+    - loop 之外的 `continue`
+    - nested function / constructor / lambda 不继承外层 loop depth 的非法 loop control
+  - 该 category 属于 shared semantic，而不是 compile-only final gate
 - `sema.compile_check`
   - compile-only `FrontendCompileCheckAnalyzer` 对进入 lowering 前仍不可编译的 surface 发出的最终 error
   - 同时覆盖：
@@ -301,8 +310,9 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - 调用 `FrontendChainBindingAnalyzer.analyze(...)` 发布 `resolvedMembers()` / `resolvedCalls()`
     - 调用 `FrontendExprTypeAnalyzer.analyze(...)` 发布 `expressionTypes()` 并补齐 expression-only diagnostics / discarded-expression warning
     - 调用 `FrontendTypeCheckAnalyzer.analyze(...)` 对 ordinary local / class property / return typed contract 发出 `sema.type_check`，并对 property hint 发出 `sema.type_hint`
+    - 调用 `FrontendLoopControlFlowAnalyzer.analyze(...)` 对非法 `break` / `continue` 发出 `sema.loop_control_flow`
     - 每个 phase 结束后都再次 `updateDiagnostics(...)`，把阶段边界快照刷新到最新 shared manager 状态
-- `analyzeForCompile(...)` 在共享 8 phase 之后追加：
+- `analyzeForCompile(...)` 在共享 9 phase 之后追加：
     - 调用 `FrontendCompileCheckAnalyzer.analyze(...)`
     - 再次 `updateDiagnostics(...)`，把 compile-only final gate 的诊断写回最终边界快照
 - 共享 `analyze(...)` 的结果当前仍只是 frontend semantic snapshot，不应直接视为 lowering-ready
@@ -339,10 +349,14 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - `export` / `onready` retention 语义稳定
     - unsupported property annotation 会发 error，且仍保留 side-table 事实
 - `FrontendSemanticAnalyzerFrameworkTest`
-    - analyzer 返回共享 `FrontendAnalysisData`
-    - parse->analyze shared pipeline 不重复导入 parse diagnostics
-    - `FrontendAnalysisData` / `FrontendModuleSkeleton` 的 snapshot 在阶段后保持稳定
-    - `analyzeForCompile(...)` 与共享 `analyze(...)` 的 lowering-readiness 边界被显式锁定
+  - analyzer 返回共享 `FrontendAnalysisData`
+  - parse->analyze shared pipeline 不重复导入 parse diagnostics
+  - `FrontendAnalysisData` / `FrontendModuleSkeleton` 的 snapshot 在阶段后保持稳定
+  - `analyzeForCompile(...)` 与共享 `analyze(...)` 的 lowering-readiness 边界被显式锁定
+- `FrontendLoopControlFlowAnalyzerTest`
+  - shared semantic 会对非法 `break` / `continue` 发出 `sema.loop_control_flow`
+  - 合法 `while` / `for` loop body 不会误报 loop-control error
+  - nested lambda 会切断外层 loop depth
 - `FrontendCompileCheckAnalyzerTest`
     - compile-only gate 会显式封口 `assert` 与当前暂不 lowering 的表达式形态
     - compile surface 上的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 会被补成最终 compile blocker

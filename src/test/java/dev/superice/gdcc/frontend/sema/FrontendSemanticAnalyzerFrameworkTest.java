@@ -10,6 +10,7 @@ import dev.superice.gdcc.frontend.sema.analyzer.FrontendChainBindingAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendCompileCheckAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendExprTypeAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendAnnotationUsageAnalyzer;
+import dev.superice.gdcc.frontend.sema.analyzer.FrontendLoopControlFlowAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendTopBindingAnalyzer;
@@ -531,6 +532,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var probeExprTypeAnalyzer = new RecordingExprTypeAnalyzer();
         var probeAnnotationUsageAnalyzer = new RecordingAnnotationUsageAnalyzer();
         var probeTypeCheckAnalyzer = new RecordingTypeCheckAnalyzer();
+        var probeLoopControlFlowAnalyzer = new RecordingLoopControlFlowAnalyzer();
         var analyzer = new FrontendSemanticAnalyzer(
                 new FrontendClassSkeletonBuilder(),
                 probeScopeAnalyzer,
@@ -539,7 +541,8 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 probeChainBindingAnalyzer,
                 probeExprTypeAnalyzer,
                 probeAnnotationUsageAnalyzer,
-                probeTypeCheckAnalyzer
+                probeTypeCheckAnalyzer,
+                probeLoopControlFlowAnalyzer
         );
 
         var result = analyzeModule(analyzer, "test_module", List.of(unit), registry, diagnostics);
@@ -576,6 +579,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(probeTypeCheckAnalyzer.preTypeCheckDiagnosticsMatchedManager);
         assertTrue(probeTypeCheckAnalyzer.stableExpressionTypesReferencePreserved);
         assertTrue(probeTypeCheckAnalyzer.expressionTypesRemainPublishedAfterTypeCheck);
+        assertTrue(probeLoopControlFlowAnalyzer.invoked);
+        assertTrue(probeLoopControlFlowAnalyzer.typeCheckBoundaryPublished);
+        assertTrue(probeLoopControlFlowAnalyzer.preLoopControlFlowDiagnosticsMatchedManager);
         assertEquals(probeScopeAnalyzer.preScopeDiagnostics.size() + 1, probeVariableAnalyzer.preVariableDiagnostics.size());
         assertTrue(probeVariableAnalyzer.preVariableDiagnostics.asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.scope_phase_probe")
@@ -615,7 +621,14 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(probeTypeCheckAnalyzer.preTypeCheckDiagnostics.asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.annotation_usage_phase_probe")
         ));
-        assertEquals(probeTypeCheckAnalyzer.preTypeCheckDiagnostics.size() + 1, result.diagnostics().size());
+        assertEquals(
+                probeTypeCheckAnalyzer.preTypeCheckDiagnostics.size() + 1,
+                probeLoopControlFlowAnalyzer.preLoopControlFlowDiagnostics.size()
+        );
+        assertTrue(probeLoopControlFlowAnalyzer.preLoopControlFlowDiagnostics.asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.type_check_phase_probe")
+        ));
+        assertEquals(probeLoopControlFlowAnalyzer.preLoopControlFlowDiagnostics.size() + 1, result.diagnostics().size());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.scope_phase_probe")
         ));
@@ -634,7 +647,10 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.annotation_usage_phase_probe")
         ));
-        assertEquals("sema.type_check_phase_probe", result.diagnostics().getLast().category());
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.type_check_phase_probe")
+        ));
+        assertEquals("sema.loop_control_flow_phase_probe", result.diagnostics().getLast().category());
         assertEquals(probeScopeAnalyzer.preScopeDiagnostics, result.moduleSkeleton().diagnostics());
         assertEquals(result.diagnostics(), diagnostics.snapshot());
         assertTrue(result.symbolBindings().isEmpty());
@@ -644,7 +660,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void analyzeForCompileRunsCompileGateAfterTypeCheckWhileAnalyzeStaysCompileCheckFree() throws Exception {
+    void analyzeForCompileRunsCompileGateAfterLoopControlWhileAnalyzeStaysCompileCheckFree() throws Exception {
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", "compile_check_phase_probe.gd"), """
                 class_name CompileCheckPhaseProbe
@@ -656,6 +672,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 
         var sharedDiagnostics = new DiagnosticManager();
+        var sharedLoopControlProbe = new RecordingLoopControlFlowAnalyzer();
         var sharedProbe = new RecordingCompileCheckAnalyzer();
         var sharedAnalyzer = new FrontendSemanticAnalyzer(
                 new FrontendClassSkeletonBuilder(),
@@ -666,15 +683,20 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 new FrontendExprTypeAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
+                sharedLoopControlProbe,
                 sharedProbe
         );
         var sharedResult = analyzeModule(sharedAnalyzer, "test_module", List.of(unit), registry, sharedDiagnostics);
 
+        assertTrue(sharedLoopControlProbe.invoked);
+        assertTrue(sharedLoopControlProbe.preLoopControlFlowDiagnosticsMatchedManager);
         assertFalse(sharedProbe.invoked);
+        assertEquals(1, diagnosticsByCategory(sharedResult.diagnostics(), "sema.loop_control_flow_phase_probe").size());
         assertTrue(diagnosticsByCategory(sharedResult.diagnostics(), "sema.compile_check_phase_probe").isEmpty());
         assertEquals(sharedDiagnostics.snapshot(), sharedResult.diagnostics());
 
         var compileDiagnostics = new DiagnosticManager();
+        var compileLoopControlProbe = new RecordingLoopControlFlowAnalyzer();
         var compileProbe = new RecordingCompileCheckAnalyzer();
         var compileAnalyzer = new FrontendSemanticAnalyzer(
                 new FrontendClassSkeletonBuilder(),
@@ -685,6 +707,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 new FrontendExprTypeAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
+                compileLoopControlProbe,
                 compileProbe
         );
         var compileResult = analyzeModuleForCompile(
@@ -695,9 +718,12 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 compileDiagnostics
         );
 
+        assertTrue(compileLoopControlProbe.invoked);
+        assertTrue(compileLoopControlProbe.preLoopControlFlowDiagnosticsMatchedManager);
         assertTrue(compileProbe.invoked);
         assertTrue(compileProbe.preCompileCheckDiagnosticsMatchedManager);
-        assertTrue(compileProbe.typeCheckBoundaryPublished);
+        assertTrue(compileProbe.loopControlBoundaryPublished);
+        assertEquals(1, diagnosticsByCategory(compileResult.diagnostics(), "sema.loop_control_flow_phase_probe").size());
         assertEquals("sema.compile_check_phase_probe", compileResult.diagnostics().getLast().category());
         assertEquals(1, diagnosticsByCategory(compileResult.diagnostics(), "sema.compile_check_phase_probe").size());
         assertEquals(compileDiagnostics.snapshot(), compileResult.diagnostics());
@@ -1407,9 +1433,40 @@ class FrontendSemanticAnalyzerFrameworkTest {
         }
     }
 
-    private static final class RecordingCompileCheckAnalyzer extends FrontendCompileCheckAnalyzer {
+    private static final class RecordingLoopControlFlowAnalyzer extends FrontendLoopControlFlowAnalyzer {
         private boolean invoked;
         private boolean typeCheckBoundaryPublished;
+        private boolean preLoopControlFlowDiagnosticsMatchedManager;
+        private DiagnosticSnapshot preLoopControlFlowDiagnostics;
+
+        @Override
+        public void analyze(
+                @NotNull FrontendAnalysisData analysisData,
+                @NotNull DiagnosticManager diagnosticManager
+        ) {
+            invoked = true;
+            preLoopControlFlowDiagnostics = analysisData.diagnostics();
+            preLoopControlFlowDiagnosticsMatchedManager =
+                    preLoopControlFlowDiagnostics.equals(diagnosticManager.snapshot());
+            typeCheckBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+                    .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
+                    && analysisData.symbolBindings().isEmpty()
+                    && analysisData.resolvedMembers().isEmpty()
+                    && analysisData.resolvedCalls().isEmpty()
+                    && analysisData.expressionTypes().isEmpty();
+            super.analyze(analysisData, diagnosticManager);
+            diagnosticManager.warning(
+                    "sema.loop_control_flow_phase_probe",
+                    "loop-control phase probe diagnostic",
+                    null,
+                    null
+            );
+        }
+    }
+
+    private static final class RecordingCompileCheckAnalyzer extends FrontendCompileCheckAnalyzer {
+        private boolean invoked;
+        private boolean loopControlBoundaryPublished;
         private boolean preCompileCheckDiagnosticsMatchedManager;
 
         @Override
@@ -1420,7 +1477,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
             invoked = true;
             var preCompileCheckDiagnostics = analysisData.diagnostics();
             preCompileCheckDiagnosticsMatchedManager = preCompileCheckDiagnostics.equals(diagnosticManager.snapshot());
-            typeCheckBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+            loopControlBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
                     .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
                     && analysisData.symbolBindings().isEmpty()
                     && analysisData.resolvedMembers().isEmpty()
