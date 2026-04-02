@@ -497,15 +497,14 @@ class FrontendCfgGraphBuilderTest {
                 ifRegion.conditionEntryId(),
                 Set.of(conditionBranch.trueTargetId(), conditionBranch.falseTargetId())
         );
+        var conditionProducers = requireReachableValueProducersForBranch(graph, ifRegion.conditionEntryId(), conditionBranch);
 
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
                 () -> assertEquals(ifRegion.conditionEntryId(), rootRegion.entryId()),
                 () -> assertSame(helperCall, conditionBranch.conditionRoot()),
-                () -> assertSame(
-                        conditionBranch.conditionRoot(),
-                        requireValueProducerForBranch(graph, ifRegion.conditionEntryId(), conditionBranch).anchor()
-                ),
+                () -> assertEquals(1, conditionProducers.size()),
+                () -> assertSame(conditionBranch.conditionRoot(), conditionProducers.getFirst().anchor()),
                 () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), conditionBranch.trueTargetId()),
                 () -> assertEquals(ifRegion.thenEntryId(), conditionBranch.falseTargetId()),
                 () -> assertTrue(conditionItems.stream()
@@ -574,23 +573,25 @@ class FrontendCfgGraphBuilderTest {
                 FrontendCfgGraph.SequenceNode.class,
                 graph.requireNode(elifRegion.nextClauseOrMergeId())
         );
+        var conditionProducers = requireReachableValueProducersForBranch(graph, ifRegion.conditionEntryId(), conditionBranch);
+        var elifConditionProducers = requireReachableValueProducersForBranch(
+                graph,
+                elifRegion.conditionEntryId(),
+                elifConditionBranch
+        );
 
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
                 () -> assertEquals(ifRegion.conditionEntryId(), rootRegion.entryId()),
                 () -> assertSame(outerIf.condition(), conditionBranch.conditionRoot()),
-                () -> assertSame(
-                        conditionBranch.conditionRoot(),
-                        requireValueProducerForBranch(graph, ifRegion.conditionEntryId(), conditionBranch).anchor()
-                ),
+                () -> assertEquals(1, conditionProducers.size()),
+                () -> assertSame(conditionBranch.conditionRoot(), conditionProducers.getFirst().anchor()),
                 () -> assertEquals(thenEntry.id(), conditionBranch.trueTargetId()),
                 () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), conditionBranch.falseTargetId()),
                 () -> assertEquals(elifRegion.conditionEntryId(), ifRegion.elseOrNextClauseEntryId()),
                 () -> assertSame(elifClause.condition(), elifConditionBranch.conditionRoot()),
-                () -> assertSame(
-                        elifConditionBranch.conditionRoot(),
-                        requireValueProducerForBranch(graph, elifRegion.conditionEntryId(), elifConditionBranch).anchor()
-                ),
+                () -> assertEquals(1, elifConditionProducers.size()),
+                () -> assertSame(elifConditionBranch.conditionRoot(), elifConditionProducers.getFirst().anchor()),
                 () -> assertEquals(elifBodyEntry.id(), elifConditionBranch.trueTargetId()),
                 () -> assertEquals(elseEntry.id(), elifConditionBranch.falseTargetId()),
                 () -> assertEquals(elseEntry.id(), elifRegion.nextClauseOrMergeId()),
@@ -657,15 +658,14 @@ class FrontendCfgGraphBuilderTest {
                 FrontendCfgGraph.SequenceNode.class,
                 graph.requireNode(whileRegion.exitId())
         );
+        var conditionProducers = requireReachableValueProducersForBranch(graph, whileRegion.conditionEntryId(), conditionBranch);
 
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
                 () -> assertEquals(whileRegion.conditionEntryId(), rootRegion.entryId()),
                 () -> assertSame(whileStatement.condition(), conditionBranch.conditionRoot()),
-                () -> assertSame(
-                        conditionBranch.conditionRoot(),
-                        requireValueProducerForBranch(graph, whileRegion.conditionEntryId(), conditionBranch).anchor()
-                ),
+                () -> assertEquals(1, conditionProducers.size()),
+                () -> assertSame(conditionBranch.conditionRoot(), conditionProducers.getFirst().anchor()),
                 () -> assertEquals(whileRegion.bodyEntryId(), conditionBranch.trueTargetId()),
                 () -> assertEquals(whileRegion.exitId(), conditionBranch.falseTargetId()),
                 () -> assertEquals(whileRegion.exitId(), breakThenEntry.nextId()),
@@ -810,19 +810,20 @@ class FrontendCfgGraphBuilderTest {
         return List.copyOf(items);
     }
 
-    private static @NotNull ValueOpItem requireValueProducerForBranch(
+    private static @NotNull List<ValueOpItem> requireReachableValueProducersForBranch(
             @NotNull FrontendCfgGraph graph,
             @NotNull String entryId,
             @NotNull FrontendCfgGraph.BranchNode branchNode
     ) {
-        return collectReachableItemsBeforeTargets(graph, entryId, Set.of(branchNode.id())).stream()
+        var producers = collectReachableItemsBeforeTargets(graph, entryId, Set.of(branchNode.id())).stream()
                 .filter(ValueOpItem.class::isInstance)
                 .map(ValueOpItem.class::cast)
                 .filter(item -> branchNode.conditionValueId().equals(item.resultValueIdOrNull()))
-                .findFirst()
-                .orElseThrow(() -> new AssertionError(
-                        "Missing producer for branch condition value " + branchNode.conditionValueId()
-                ));
+                .toList();
+        if (producers.isEmpty()) {
+            throw new AssertionError("Missing producer for branch condition value " + branchNode.conditionValueId());
+        }
+        return producers;
     }
 
     private static @NotNull AnalyzedFunction analyzeFunction(

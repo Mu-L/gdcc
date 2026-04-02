@@ -20,6 +20,8 @@ import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import dev.superice.gdcc.frontend.sema.FrontendMemberResolutionStatus;
+import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
+import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -1061,7 +1063,7 @@ public final class FrontendCfgGraphBuilder {
         }
     }
 
-    private @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedCall requireLoweringReadyCall(@NotNull Node callAnchor) {
+    private @NotNull FrontendResolvedCall requireLoweringReadyCall(@NotNull Node callAnchor) {
         var publishedCall = requireAnalysisData().resolvedCalls().get(callAnchor);
         if (publishedCall == null) {
             throw new IllegalStateException(
@@ -1080,7 +1082,7 @@ public final class FrontendCfgGraphBuilder {
         return publishedCall;
     }
 
-    private @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedMember requireLoweringReadyMember(
+    private @NotNull FrontendResolvedMember requireLoweringReadyMember(
             @NotNull AttributePropertyStep attributePropertyStep
     ) {
         var publishedMember = requireAnalysisData().resolvedMembers().get(attributePropertyStep);

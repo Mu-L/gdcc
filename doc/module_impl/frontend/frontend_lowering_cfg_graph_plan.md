@@ -735,9 +735,11 @@ frontend CFG builder 需要显式维护 loop stack。
   - `frontend_rules.md` 与 `frontend_lowering_plan.md` 已同步 condition-entry 合同与 shared-expression-core 当前事实
 - `BranchNode.conditionRoot` 的严格合同已冻结为“当前 branch 直接测试的 condition fragment root”，具体规则如下：
   - 它必须与 `conditionValueId` 的直接 producer subtree 对齐，而不是仅仅记录外围 `if` / `while` 的原始 condition root
+  - 它绑定的是 direct producer subtree，而不是“可从整个 condition region 里唯一反推出来的某一个 producer item”
   - `conditionEntryId` 继续负责整个 condition subgraph 入口；`conditionRoot` 只负责当前这个 branch 的 immediate tested fragment
   - `not x` 若通过 target flip 实现，则 branch 必须保留 `x` 作为 `conditionRoot`，而不是 `not x`
   - future `a and b` / `a or b` / `a or (b and c)` 中，多个 `BranchNode` 必须分别持有 `a`、`b`、`c` 这类被实际测试的 fragment，而不是都重复外层复合表达式 root
+  - future short-circuit lowering 中，每个 `BranchNode.conditionValueId` 都必须保持为该 fragment 自己计算出的 branch-local 独立 value id，而不是 value-context branch-result merge 的共享结果槽
 - 例子：
   - `if flag:` 的 branch 保留 `flag`
   - `if not helper(seed):` 的 branch 保留 `helper(seed)`，同时通过 true/false target 交换表达逻辑翻转
@@ -767,6 +769,10 @@ frontend CFG builder 需要显式维护 loop stack。
   - 生成短路分支节点
   - 在短路路径与继续求右操作数路径上分别写入 `true` / `false`
   - 汇合到统一 continuation，并把结果 value id 交还父级调用者
+- 额外实现约束：
+  - 每个 short-circuit `BranchNode.conditionValueId` 都必须是当前 `conditionRoot` fragment-local 直接产出的独立 value id
+  - branch-local condition value id 与 value-context `and` / `or` 的 outward-facing merged result value id 必须严格分离；后者允许多条互斥路径写入，前者不得复用该共享结果槽
+  - consumer / 测试不得再把 `conditionValueId` 当作“从整个 condition subgraph 中反推唯一 producer item”的句柄；需要锚定 fragment root 或 reaching producer set
 - 这一步必须覆盖所有 value context 消费点，而不是只覆盖顶层赋值/返回：
   - `var x = a and b`
   - `return a or b`

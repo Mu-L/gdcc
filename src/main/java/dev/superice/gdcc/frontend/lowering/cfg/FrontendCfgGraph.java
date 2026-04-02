@@ -77,6 +77,8 @@ public record FrontendCfgGraph(
     ///
     /// `conditionRoot` is the immediate tested condition fragment for this split: it must be the
     /// AST expression root whose evaluation directly published `conditionValueId`.
+    /// This aligns the branch with the producer subtree, not with a uniquely recoverable producer
+    /// item found by scanning the whole condition region.
     /// That means it may differ from the outer source-level condition root of the owning `if` /
     /// `elif` / `while` region:
     /// - plain `if flag` branches keep `flag`
@@ -84,9 +86,11 @@ public record FrontendCfgGraph(
     ///   instead of materializing a separate `not ...` value
     /// - future short-circuit `if a and b` keeps `a` on the first branch and `b` on the second
     ///
-    /// `conditionValueId` is the value already computed by the reachable condition region before
-    /// this branch. It may still be a non-bool source value; truthiness normalization is deferred
-    /// to frontend CFG -> LIR lowering.
+    /// `conditionValueId` is the fragment-local value already computed by the reachable condition
+    /// region before this branch. Future short-circuit lowering must keep each branch on its own
+    /// fragment-local value id instead of reusing any outward-facing merged result slot from a
+    /// branch-result merge expression. It may still be a non-bool source value; truthiness
+    /// normalization is deferred to frontend CFG -> LIR lowering.
     public record BranchNode(
             @NotNull String id,
             @NotNull Expression conditionRoot,
