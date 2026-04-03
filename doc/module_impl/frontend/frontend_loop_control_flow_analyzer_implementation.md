@@ -16,7 +16,7 @@
   - `doc/module_impl/frontend/frontend_rules.md`
   - `doc/module_impl/frontend/diagnostic_manager.md`
   - `doc/module_impl/frontend/frontend_compile_check_analyzer_implementation.md`
-  - `doc/module_impl/frontend/frontend_lowering_cfg_graph_plan.md`
+  - `doc/module_impl/frontend/frontend_lowering_cfg_pass_implementation.md`
 - 明确非目标：
   - 不在这里实现 `break` / `continue` 的 lowering
   - 不在这里修改 compile-only `FrontendCompileCheckAnalyzer` 的职责边界
@@ -34,7 +34,7 @@
 - 源码中的非法 `break` / `continue` 可能在 frontend shared analyze 阶段完全静默
 - 这类非法节点会继续进入 compile-only 路径，并在 lowering/CFG builder 中以 invariant fail-fast 的形式暴露
 
-`frontend_lowering_cfg_graph_plan.md` 已明确记录当前 lowering 合同：
+`frontend_lowering_cfg_pass_implementation.md` 已明确记录当前 lowering 合同：
 
 - `continue` 必须跳回当前 loop 的 `conditionEntryId`
 - `break` 必须跳到当前 loop 的 `exitId`

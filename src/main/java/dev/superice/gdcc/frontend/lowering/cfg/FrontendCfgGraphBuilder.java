@@ -71,7 +71,7 @@ import java.util.Objects;
 /// - `BranchNode` keeps the condition fragment root and published condition value id
 /// - `StopNode` marks function termination or a synthetic fully-terminated merge anchor
 ///
-/// This builder now owns structured executable control flow for the current MVP statement surface:
+/// This builder owns structured executable control flow for the current supported statement surface:
 /// - straight-line statements and local `var`
 /// - `if` / `elif` / `else`
 /// - `while`
@@ -382,7 +382,7 @@ public final class FrontendCfgGraphBuilder {
     /// concrete value being tested:
     /// - plain condition roots keep themselves
     /// - `not x` strips the wrapper and only swaps true/false targets
-    /// - future short-circuit branches will publish separate roots for `a`, `b`, ... instead of
+    /// - short-circuit branches publish separate roots for `a`, `b`, ... instead of
     ///   repeating the outer `a and b` / `a or b` shell on every split
     private @NotNull ConditionBuild publishConditionBranch(
             @NotNull String entryId,
@@ -497,7 +497,7 @@ public final class FrontendCfgGraphBuilder {
     /// Bare call lowering consumes the published `resolvedCalls()` fact directly.
     ///
     /// The current compile-ready contract only permits bare/global/static calls here. Callable-value
-    /// invocation remains a separate future route, so a non-identifier callee is treated as a
+    /// invocation stays outside the accepted lowering surface, so a non-identifier callee is treated as a
     /// protocol violation instead of being silently dropped from operand ordering.
     private @NotNull ValueBuild buildBareCallValue(
             @NotNull BuildCursor cursor,
@@ -562,8 +562,8 @@ public final class FrontendCfgGraphBuilder {
     }
 
     /// Type-test expressions share the same “child first, then one explicit result item” contract as
-    /// casts. They remain compile-blocked today, but the CFG item surface is ready for that future
-    /// migration.
+    /// casts. They stay compile-blocked today, but the CFG item surface already preserves the operand /
+    /// result boundary needed when that route is accepted later.
     private @NotNull ValueBuild buildTypeTestValue(
             @NotNull BuildCursor cursor,
             @NotNull TypeTestExpression typeTestExpression,
@@ -1294,7 +1294,7 @@ public final class FrontendCfgGraphBuilder {
 
     /// `entryId` freezes the first node of one expression subgraph while `currentSequence` tracks
     /// the currently writable continuation. Linear expressions keep both on the same sequence;
-    /// future branchy expressions can move only the continuation to a later merge sequence.
+    /// branchy expressions may move only the continuation to a later merge sequence.
     private record BuildCursor(
             @NotNull String entryId,
             @NotNull OpenSequence currentSequence

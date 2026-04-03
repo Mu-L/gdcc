@@ -88,10 +88,10 @@ public record FrontendCfgGraph(
     /// - plain `if flag` branches keep `flag`
     /// - `if not helper(seed)` keeps `helper(seed)`, because the builder flips branch targets
     ///   instead of materializing a separate `not ...` value
-    /// - future short-circuit `if a and b` keeps `a` on the first branch and `b` on the second
+    /// - short-circuit `if a and b` keeps `a` on the first branch and `b` on the second
     ///
     /// `conditionValueId` is the fragment-local value already computed by the reachable condition
-    /// region before this branch. Future short-circuit lowering must keep each branch on its own
+    /// region before this branch. Short-circuit lowering must keep each branch on its own
     /// fragment-local value id instead of reusing any outward-facing merged result slot from a
     /// branch-result merge expression. It may still be a non-bool source value; truthiness
     /// normalization is deferred to frontend CFG -> LIR lowering.
@@ -159,7 +159,7 @@ public record FrontendCfgGraph(
     }
 
     /// Frontend value ids are mostly single-definition, but branch-result merge slots are not:
-    /// short-circuit lowering and future conditional-value lowering may write the same outward-facing
+    /// short-circuit lowering and later conditional-value lowering may write the same outward-facing
     /// result id along multiple mutually-exclusive paths.
     ///
     /// That exception is deliberately narrow. If a value id has more than one producer, every producer
@@ -231,8 +231,8 @@ public record FrontendCfgGraph(
     /// Shared validator for frontend-local value ids.
     ///
     /// Value ids currently follow the same non-null / non-blank rule as node ids, but exposing a
-    /// dedicated helper keeps the call sites semantically explicit and leaves room for future value-id
-    /// specific validation without changing every consumer.
+    /// dedicated helper keeps the call sites semantically explicit and leaves room for later value-id
+/// specific validation without changing every consumer.
     public static @NotNull String validateValueId(@Nullable String id, @NotNull String fieldName) {
         return validateNodeId(id, fieldName);
     }

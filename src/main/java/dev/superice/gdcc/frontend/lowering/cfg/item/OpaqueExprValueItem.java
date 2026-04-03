@@ -8,12 +8,12 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 import java.util.Objects;
 
-/// Transitional value-producing item for generic source expressions.
+/// Value-producing item for generic source expressions that still lower through the opaque route.
 ///
-/// The exact lowering of many simple expression kinds still lives in later phases, but this item no
+/// The exact lowering of many simple expression kinds is handled by `FrontendLoweringBodyInsnPass`, but this item no
 /// longer hides nested special operations as one subtree black box. `operandValueIds` now records the
 /// already-materialized child values in source order, while `expression` keeps the original generic
-/// root so future body lowering can finish the operator-specific materialization without re-lowering
+/// root so body lowering can finish the operator-specific materialization without re-lowering
 /// those children.
 public record OpaqueExprValueItem(
         @NotNull Expression expression,

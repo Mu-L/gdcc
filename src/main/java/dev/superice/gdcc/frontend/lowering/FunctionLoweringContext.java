@@ -29,7 +29,8 @@ public final class FunctionLoweringContext {
     ///
     /// This determines how later passes should interpret the relationship between `sourceOwner`
     /// and `loweringRoot`. The preparation pass currently publishes `EXECUTABLE_BODY` and
-    /// `PROPERTY_INIT`, while `PARAMETER_DEFAULT_INIT` remains a reserved extension slot.
+    /// `PROPERTY_INIT`, while `PARAMETER_DEFAULT_INIT` remains part of the fixed context model but
+    /// is still unpublished in the default pipeline.
     private final @NotNull Kind kind;
 
     /// Source file path that owns this lowering unit.

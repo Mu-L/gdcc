@@ -92,10 +92,9 @@
 
 ## 4. 第二步：迁移到 frontend CFG graph
 
-本步骤的详细实施计划由独立文档维护：
+本步骤的详细实现事实由独立文档维护：
 
-- `frontend_lowering_cfg_graph_plan.md`
-- `frontend_lowering_cfg_pass_plan.md`（legacy 迁移说明）
+- `frontend_lowering_cfg_pass_implementation.md`
 
 目标：
 
@@ -253,6 +252,6 @@
   - `frontend_rules.md`
   - `frontend_compile_check_analyzer_implementation.md`
   - `frontend_lowering_skeleton_pre_pass_implementation.md`
-  - `frontend_lowering_cfg_graph_plan.md`
+  - `frontend_lowering_cfg_pass_implementation.md`
   - 本文档
   - 对应 lowering / backend 测试
