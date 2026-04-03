@@ -29,6 +29,7 @@ import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdSignalType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
@@ -106,7 +107,7 @@ public final class FrontendChainReductionHelper {
     ) {
         public ReductionNote {
             Objects.requireNonNull(anchor, "anchor must not be null");
-            message = requireNonBlank(message, "message");
+            message = StringUtil.requireNonBlank(message, "message");
         }
     }
 
@@ -131,7 +132,7 @@ public final class FrontendChainReductionHelper {
                 } else if (status != Status.BLOCKED && type != null) {
                     throw new IllegalArgumentException("type must be null for non-resolved/non-blocked expression type result");
                 }
-                requireNonBlank(detailReason, "detailReason");
+                StringUtil.requireNonBlank(detailReason, "detailReason");
             }
         }
 
@@ -191,7 +192,7 @@ public final class FrontendChainReductionHelper {
                     throw new IllegalArgumentException("detailReason must be null for resolved receiver state");
                 }
             } else {
-                requireNonBlank(detailReason, "detailReason");
+                StringUtil.requireNonBlank(detailReason, "detailReason");
                 if (status == Status.DYNAMIC && receiverKind != FrontendReceiverKind.DYNAMIC) {
                     throw new IllegalArgumentException("dynamic receiver state must use DYNAMIC receiver kind");
                 }
@@ -266,7 +267,7 @@ public final class FrontendChainReductionHelper {
             if (status == Status.RESOLVED) {
                 throw new IllegalArgumentException("upstream cause cannot be RESOLVED");
             }
-            detailReason = requireNonBlank(detailReason, "detailReason");
+            detailReason = StringUtil.requireNonBlank(detailReason, "detailReason");
         }
     }
 
@@ -305,7 +306,7 @@ public final class FrontendChainReductionHelper {
                     throw new IllegalArgumentException("resolved step trace must publish a member or call suggestion");
                 }
             } else {
-                requireNonBlank(detailReason, "detailReason");
+                StringUtil.requireNonBlank(detailReason, "detailReason");
             }
         }
     }
@@ -372,7 +373,7 @@ public final class FrontendChainReductionHelper {
                 : new UpstreamCause(
                 OptionalInt.empty(),
                 currentReceiver.status(),
-                requireNonBlank(currentReceiver.detailReason(), "currentReceiver.detailReason")
+                StringUtil.requireNonBlank(currentReceiver.detailReason(), "currentReceiver.detailReason")
         );
 
         for (var stepIndex = 0; stepIndex < input.chainExpression().steps().size(); stepIndex++) {
@@ -1166,13 +1167,13 @@ public final class FrontendChainReductionHelper {
             var routeKind = incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META && step.name().equals("new")
                     ? RouteKind.CONSTRUCTOR
                     : incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META
-                    ? RouteKind.STATIC_METHOD
-                    : RouteKind.INSTANCE_METHOD;
+                      ? RouteKind.STATIC_METHOD
+                      : RouteKind.INSTANCE_METHOD;
             var callKind = incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META && step.name().equals("new")
                     ? FrontendCallResolutionKind.CONSTRUCTOR
                     : incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META
-                    ? FrontendCallResolutionKind.STATIC_METHOD
-                    : FrontendCallResolutionKind.INSTANCE_METHOD;
+                      ? FrontendCallResolutionKind.STATIC_METHOD
+                      : FrontendCallResolutionKind.INSTANCE_METHOD;
             return unresolvedCallDependencyTrace(
                     stepIndex,
                     step,
@@ -2300,8 +2301,8 @@ public final class FrontendChainReductionHelper {
         var detailReason = constructors.isEmpty()
                 ? "Type '" + receiverTypeMeta.displayName() + "' exposes no constructors"
                 : "No applicable constructor overload for '" + receiverTypeMeta.displayName() + ".new': "
-                + buildCallableMismatchReason(classRegistry, constructors.getFirst(), argumentTypes)
-                + ". candidates: " + renderCallableSignatures(constructors);
+                  + buildCallableMismatchReason(classRegistry, constructors.getFirst(), argumentTypes)
+                  + ". candidates: " + renderCallableSignatures(constructors);
         return new ConstructorResolution(Status.FAILED, null, ownerKind, detailReason);
     }
 
@@ -2508,14 +2509,6 @@ public final class FrontendChainReductionHelper {
         };
     }
 
-    private static @NotNull String requireNonBlank(@Nullable String value, @NotNull String fieldName) {
-        var text = Objects.requireNonNull(value, fieldName + " must not be null");
-        if (text.isBlank()) {
-            throw new IllegalArgumentException(fieldName + " must not be blank");
-        }
-        return text;
-    }
-
     private record ArgumentResolution(
             @NotNull Status status,
             @NotNull List<GdType> argumentTypes,
@@ -2530,7 +2523,7 @@ public final class FrontendChainReductionHelper {
                     throw new IllegalArgumentException("detailReason must be null for resolved argument resolution");
                 }
             } else {
-                requireNonBlank(detailReason, "detailReason");
+                StringUtil.requireNonBlank(detailReason, "detailReason");
             }
         }
     }
@@ -2548,7 +2541,7 @@ public final class FrontendChainReductionHelper {
                     throw new IllegalArgumentException("detailReason must be null for resolved constructor resolution");
                 }
             } else {
-                requireNonBlank(detailReason, "detailReason");
+                StringUtil.requireNonBlank(detailReason, "detailReason");
             }
         }
     }

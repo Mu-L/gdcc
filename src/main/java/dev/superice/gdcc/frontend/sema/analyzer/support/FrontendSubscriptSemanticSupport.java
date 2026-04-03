@@ -5,6 +5,7 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdContainerType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
@@ -31,7 +32,7 @@ public final class FrontendSubscriptSemanticSupport {
     ) {
         var receiver = Objects.requireNonNull(receiverType, "receiverType must not be null");
         var arguments = List.copyOf(argumentTypes);
-        var description = requireNonBlank(accessDescription, "accessDescription");
+        var description = StringUtil.requireNonBlank(accessDescription, "accessDescription");
 
         if (receiver instanceof GdVariantType) {
             return FrontendExpressionType.dynamic(
@@ -68,13 +69,5 @@ public final class FrontendSubscriptSemanticSupport {
         return FrontendExpressionType.failed(
                 "Receiver type '" + receiver.getTypeName() + "' does not support " + description
         );
-    }
-
-    private static @NotNull String requireNonBlank(@NotNull String value, @NotNull String fieldName) {
-        var text = Objects.requireNonNull(value, fieldName + " must not be null");
-        if (text.isBlank()) {
-            throw new IllegalArgumentException(fieldName + " must not be blank");
-        }
-        return text;
     }
 }

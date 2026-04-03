@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -33,10 +34,10 @@ public record FrontendExpressionType(
                     throw new IllegalArgumentException("detailReason must be null for resolved expression types");
                 }
             }
-            case BLOCKED -> requireNonBlank(detailReason, "detailReason");
+            case BLOCKED -> StringUtil.requireNonBlank(detailReason, "detailReason");
             case DYNAMIC -> {
                 Objects.requireNonNull(publishedType, "publishedType must not be null for dynamic expression types");
-                requireNonBlank(detailReason, "detailReason");
+                StringUtil.requireNonBlank(detailReason, "detailReason");
                 if (!(publishedType instanceof GdVariantType)) {
                     throw new IllegalArgumentException("dynamic expression types must publish Variant");
                 }
@@ -47,7 +48,7 @@ public record FrontendExpressionType(
                             "publishedType must be null for %s expression types".formatted(status)
                     );
                 }
-                requireNonBlank(detailReason, "detailReason");
+                StringUtil.requireNonBlank(detailReason, "detailReason");
             }
         }
     }
@@ -81,13 +82,5 @@ public record FrontendExpressionType(
 
     public static @NotNull FrontendExpressionType unsupported(@NotNull String detailReason) {
         return new FrontendExpressionType(FrontendExpressionTypeStatus.UNSUPPORTED, null, detailReason);
-    }
-
-    private static @NotNull String requireNonBlank(@Nullable String value, @NotNull String fieldName) {
-        var text = Objects.requireNonNull(value, fieldName + " must not be null");
-        if (text.isBlank()) {
-            throw new IllegalArgumentException(fieldName + " must not be blank");
-        }
-        return text;
     }
 }

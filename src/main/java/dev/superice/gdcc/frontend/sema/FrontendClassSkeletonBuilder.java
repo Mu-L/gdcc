@@ -15,6 +15,7 @@ import dev.superice.gdcc.lir.LirSignalDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeTypeMeta;
+import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -176,7 +177,7 @@ public final class FrontendClassSkeletonBuilder {
     }
 
     private @NotNull String resolveClassName(@NotNull Path sourcePath, @Nullable ClassNameStatement classNameStatement) {
-        var className = normalizeHeaderText(classNameStatement != null ? classNameStatement.name() : null);
+        var className = StringUtil.trimToNull(classNameStatement != null ? classNameStatement.name() : null);
         if (className != null) {
             return className;
         }
@@ -190,7 +191,7 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull List<Statement> statements,
             @Nullable ClassNameStatement classNameStatement
     ) {
-        var classNameExtends = normalizeHeaderText(
+        var classNameExtends = StringUtil.trimToNull(
                 classNameStatement != null ? classNameStatement.extendsTarget() : null
         );
         if (classNameExtends != null) {
@@ -198,7 +199,7 @@ public final class FrontendClassSkeletonBuilder {
         }
         for (var statement : statements) {
             if (statement instanceof ExtendsStatement extendsStatement) {
-                var extendsTarget = normalizeHeaderText(extendsStatement.target());
+                var extendsTarget = StringUtil.trimToNull(extendsStatement.target());
                 if (extendsTarget != null) {
                     return extendsTarget;
                 }
@@ -677,7 +678,6 @@ public final class FrontendClassSkeletonBuilder {
     /// Discovery is intentionally tolerant: malformed inner declarations publish diagnostics and
     /// become rejected subtree roots immediately, while valid siblings continue to be discovered in
     /// the same source unit.
-    @SuppressWarnings("DeconstructionCanBeUsed")
     private void discoverInnerClassHeaders(
             @NotNull FrontendSourceUnit unit,
             @NotNull List<Statement> statements,
@@ -694,7 +694,7 @@ public final class FrontendClassSkeletonBuilder {
                 continue;
             }
 
-            var innerClassName = normalizeHeaderText(classDeclaration.name());
+            var innerClassName = StringUtil.trimToNull(classDeclaration.name());
             if (innerClassName == null) {
                 diagnosticManager.error(
                         "sema.class_skeleton",
@@ -708,7 +708,7 @@ public final class FrontendClassSkeletonBuilder {
                         classDeclaration,
                         null,
                         null,
-                        normalizeHeaderText(classDeclaration.extendsTarget()),
+                        StringUtil.trimToNull(classDeclaration.extendsTarget()),
                         FrontendRange.fromAstRange(classDeclaration.range())
                 ));
                 rejectedSubtreeRoots.add(classDeclaration);
@@ -722,7 +722,7 @@ public final class FrontendClassSkeletonBuilder {
                     classDeclaration,
                     innerClassName,
                     parentCanonicalName + "$" + innerClassName,
-                    normalizeHeaderText(classDeclaration.extendsTarget()),
+                    StringUtil.trimToNull(classDeclaration.extendsTarget()),
                     FrontendRange.fromAstRange(classDeclaration.range()),
                     false
             );
@@ -1399,14 +1399,6 @@ public final class FrontendClassSkeletonBuilder {
                 || trimmed.contains("\\");
     }
 
-    private @Nullable String normalizeHeaderText(@Nullable String text) {
-        if (text == null) {
-            return null;
-        }
-        var trimmed = text.trim();
-        return trimmed.isEmpty() ? null : trimmed;
-    }
-
     /// Top-level canonical-name mapping is frozen once at the module boundary and applied during
     /// header discovery so duplicate/canonical/conflict validation all see the final identity.
     private @NotNull String resolveTopLevelCanonicalName(
@@ -1427,11 +1419,11 @@ public final class FrontendClassSkeletonBuilder {
     private @NotNull String describeClassHeaderOrigin(@NotNull MutableClassHeader discoveredHeader) {
         var classKind = discoveredHeader.isTopLevel()
                 ? discoveredHeader.sourceName().equals(discoveredHeader.canonicalName())
-                ? "top-level class '" + discoveredHeader.sourceName() + "'"
-                : "top-level class source '" + discoveredHeader.sourceName()
-                + "' (canonical '" + discoveredHeader.canonicalName() + "')"
+                  ? "top-level class '" + discoveredHeader.sourceName() + "'"
+                  : "top-level class source '" + discoveredHeader.sourceName()
+                    + "' (canonical '" + discoveredHeader.canonicalName() + "')"
                 : "inner class '" + discoveredHeader.sourceName()
-                + "' (canonical '" + discoveredHeader.canonicalName() + "')";
+                  + "' (canonical '" + discoveredHeader.canonicalName() + "')";
         return discoveredHeader.unit().path() + " (" + classKind + ")";
     }
 

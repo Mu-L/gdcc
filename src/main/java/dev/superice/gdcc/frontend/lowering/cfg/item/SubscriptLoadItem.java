@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.lowering.cfg.item;
 
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
+import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.Node;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -27,7 +28,7 @@ public record SubscriptLoadItem(
         Objects.requireNonNull(subscriptAnchor, "subscriptAnchor must not be null");
         memberNameOrNull = memberNameOrNull == null
                 ? null
-                : FrontendCfgItemSupport.requireNonBlank(memberNameOrNull, "memberNameOrNull");
+                : StringUtil.requireNonBlank(memberNameOrNull, "memberNameOrNull");
         baseValueId = FrontendCfgGraph.validateValueId(baseValueId, "baseValueId");
         argumentValueIds = FrontendCfgItemSupport.copyValueIds(argumentValueIds, "argumentValueIds");
         resultValueId = FrontendCfgGraph.validateValueId(resultValueId, "resultValueId");

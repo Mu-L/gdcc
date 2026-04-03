@@ -16,14 +16,6 @@ final class FrontendCfgItemSupport {
         return id == null ? null : FrontendCfgGraph.validateValueId(id, fieldName);
     }
 
-    static @NotNull String requireNonBlank(@Nullable String text, @NotNull String fieldName) {
-        var value = Objects.requireNonNull(text, fieldName + " must not be null");
-        if (value.isBlank()) {
-            throw new IllegalArgumentException(fieldName + " must not be blank");
-        }
-        return value;
-    }
-
     static @NotNull List<String> copyValueIds(@Nullable List<String> ids, @NotNull String fieldName) {
         var source = Objects.requireNonNull(ids, fieldName + " must not be null");
         var copied = new ArrayList<String>(source.size());

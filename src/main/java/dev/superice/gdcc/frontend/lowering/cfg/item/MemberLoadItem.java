@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.lowering.cfg.item;
 
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
+import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.Node;
 import org.jetbrains.annotations.NotNull;
 
@@ -20,7 +21,7 @@ public record MemberLoadItem(
 ) implements ValueOpItem {
     public MemberLoadItem {
         Objects.requireNonNull(memberAnchor, "memberAnchor must not be null");
-        memberName = FrontendCfgItemSupport.requireNonBlank(memberName, "memberName");
+        memberName = StringUtil.requireNonBlank(memberName, "memberName");
         baseValueId = FrontendCfgGraph.validateValueId(baseValueId, "baseValueId");
         resultValueId = FrontendCfgGraph.validateValueId(resultValueId, "resultValueId");
     }

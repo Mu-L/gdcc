@@ -31,6 +31,7 @@ import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVectorType;
+import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -63,24 +64,24 @@ public final class FrontendBodyLoweringSupport {
     }
 
     public static @NotNull String cfgTempSlotId(@NotNull String valueId) {
-        return "cfg_tmp_" + requireNonBlank(valueId, "valueId");
+        return "cfg_tmp_" + StringUtil.requireNonBlank(valueId, "valueId");
     }
 
     public static @NotNull String mergeSlotId(@NotNull String valueId) {
-        return "cfg_merge_" + requireNonBlank(valueId, "valueId");
+        return "cfg_merge_" + StringUtil.requireNonBlank(valueId, "valueId");
     }
 
     public static @NotNull String sourceLocalSlotId(@NotNull VariableDeclaration declaration) {
         Objects.requireNonNull(declaration, "declaration must not be null");
-        return requireNonBlank(declaration.name(), "declaration.name()");
+        return StringUtil.requireNonBlank(declaration.name(), "declaration.name()");
     }
 
     public static @NotNull String conditionVariantSlotId(@NotNull String valueId) {
-        return "cfg_cond_variant_" + requireNonBlank(valueId, "valueId");
+        return "cfg_cond_variant_" + StringUtil.requireNonBlank(valueId, "valueId");
     }
 
     public static @NotNull String conditionBoolSlotId(@NotNull String valueId) {
-        return "cfg_cond_bool_" + requireNonBlank(valueId, "valueId");
+        return "cfg_cond_bool_" + StringUtil.requireNonBlank(valueId, "valueId");
     }
 
     public enum OpaqueExprHandling {
@@ -102,7 +103,7 @@ public final class FrontendBodyLoweringSupport {
     ) {
         public OpaqueExprPolicy {
             Objects.requireNonNull(handling, "handling must not be null");
-            detail = requireNonBlank(detail, "detail");
+            detail = StringUtil.requireNonBlank(detail, "detail");
         }
     }
 
@@ -112,9 +113,9 @@ public final class FrontendBodyLoweringSupport {
             @Nullable String boolSlotId
     ) {
         public ConditionBranchMaterialization {
-            branchInputSlotId = requireNonBlank(branchInputSlotId, "branchInputSlotId");
-            variantSlotId = validateOptionalNonBlank(variantSlotId, "variantSlotId");
-            boolSlotId = validateOptionalNonBlank(boolSlotId, "boolSlotId");
+            branchInputSlotId = StringUtil.requireNonBlank(branchInputSlotId, "branchInputSlotId");
+            variantSlotId = StringUtil.requireNullableNonBlank(variantSlotId, "variantSlotId");
+            boolSlotId = StringUtil.requireNullableNonBlank(boolSlotId, "boolSlotId");
         }
     }
 
@@ -124,9 +125,9 @@ public final class FrontendBodyLoweringSupport {
             @NotNull String falseConstantSlotId
     ) {
         public ShortCircuitBooleanMaterialization {
-            mergeSlotId = requireNonBlank(mergeSlotId, "mergeSlotId");
-            trueConstantSlotId = requireNonBlank(trueConstantSlotId, "trueConstantSlotId");
-            falseConstantSlotId = requireNonBlank(falseConstantSlotId, "falseConstantSlotId");
+            mergeSlotId = StringUtil.requireNonBlank(mergeSlotId, "mergeSlotId");
+            trueConstantSlotId = StringUtil.requireNonBlank(trueConstantSlotId, "trueConstantSlotId");
+            falseConstantSlotId = StringUtil.requireNonBlank(falseConstantSlotId, "falseConstantSlotId");
         }
     }
 
@@ -238,10 +239,10 @@ public final class FrontendBodyLoweringSupport {
     ) {
         Objects.requireNonNull(function, "function must not be null");
         Objects.requireNonNull(block, "block must not be null");
-        conditionValueId = requireNonBlank(conditionValueId, "conditionValueId");
+        conditionValueId = StringUtil.requireNonBlank(conditionValueId, "conditionValueId");
         Objects.requireNonNull(conditionType, "conditionType must not be null");
-        trueBlockId = requireNonBlank(trueBlockId, "trueBlockId");
-        falseBlockId = requireNonBlank(falseBlockId, "falseBlockId");
+        trueBlockId = StringUtil.requireNonBlank(trueBlockId, "trueBlockId");
+        falseBlockId = StringUtil.requireNonBlank(falseBlockId, "falseBlockId");
 
         var sourceSlotId = cfgTempSlotId(conditionValueId);
         ensureVariable(function, sourceSlotId, conditionType);
@@ -278,8 +279,8 @@ public final class FrontendBodyLoweringSupport {
         Objects.requireNonNull(function, "function must not be null");
         Objects.requireNonNull(trueBlock, "trueBlock must not be null");
         Objects.requireNonNull(falseBlock, "falseBlock must not be null");
-        mergedResultValueId = requireNonBlank(mergedResultValueId, "mergedResultValueId");
-        mergeBlockId = requireNonBlank(mergeBlockId, "mergeBlockId");
+        mergedResultValueId = StringUtil.requireNonBlank(mergedResultValueId, "mergedResultValueId");
+        mergeBlockId = StringUtil.requireNonBlank(mergeBlockId, "mergeBlockId");
 
         var mergeSlotId = mergeSlotId(mergedResultValueId);
         var trueConstantSlotId = cfgTempSlotId(mergedResultValueId + "_true");
@@ -454,7 +455,8 @@ public final class FrontendBodyLoweringSupport {
         var publishedType = analysisData.expressionTypes().get(Objects.requireNonNull(anchor, "anchor must not be null"));
         if (publishedType == null) {
             throw new IllegalStateException(
-                    "Missing published expression type for " + requireNonBlank(anchorDescription, "anchorDescription")
+                    "Missing published expression type for "
+                            + StringUtil.requireNonBlank(anchorDescription, "anchorDescription")
             );
         }
         if (publishedType.publishedType() != null) {
@@ -463,7 +465,7 @@ public final class FrontendBodyLoweringSupport {
         var detailReason = publishedType.detailReason();
         var detailSuffix = detailReason == null || detailReason.isBlank() ? "" : ": " + detailReason;
         throw new IllegalStateException(
-                requireNonBlank(anchorDescription, "anchorDescription")
+                StringUtil.requireNonBlank(anchorDescription, "anchorDescription")
                         + " is not lowering-ready because its published expression type is "
                         + publishedType.status()
                         + detailSuffix
@@ -485,7 +487,7 @@ public final class FrontendBodyLoweringSupport {
             @NotNull SequencedMap<String, GdType> resolvedValueTypes,
             @NotNull String valueId
     ) {
-        var resolvedType = resolvedValueTypes.get(requireNonBlank(valueId, "valueId"));
+        var resolvedType = resolvedValueTypes.get(StringUtil.requireNonBlank(valueId, "valueId"));
         if (resolvedType == null) {
             throw new IllegalStateException("Missing previously resolved value type for '" + valueId + "'");
         }
@@ -497,7 +499,7 @@ public final class FrontendBodyLoweringSupport {
             @NotNull String variableId,
             @NotNull GdType expectedType
     ) {
-        var actualVariableId = requireNonBlank(variableId, "variableId");
+        var actualVariableId = StringUtil.requireNonBlank(variableId, "variableId");
         var actualExpectedType = Objects.requireNonNull(expectedType, "expectedType must not be null");
         var existing = function.getVariableById(actualVariableId);
         if (existing == null) {
@@ -538,15 +540,4 @@ public final class FrontendBodyLoweringSupport {
         };
     }
 
-    private static @NotNull String requireNonBlank(@Nullable String value, @NotNull String fieldName) {
-        var text = Objects.requireNonNull(value, fieldName + " must not be null");
-        if (text.isBlank()) {
-            throw new IllegalArgumentException(fieldName + " must not be blank");
-        }
-        return text;
-    }
-
-    private static @Nullable String validateOptionalNonBlank(@Nullable String value, @NotNull String fieldName) {
-        return value == null ? null : requireNonBlank(value, fieldName);
-    }
 }

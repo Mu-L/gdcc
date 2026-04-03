@@ -11,3 +11,9 @@
 
 - 纯校验函数应使用能直接表达“只做校验”的名字，例如 `validateXxx(...)`、`checkXxx(...)`；不要把这类函数命名成 `requireXxx(...)`。
 - `requireXxx(...)` 更适合“读取并保证存在”的 helper，例如缺失时抛错并返回已存在对象；如果函数本身不承担读取/获取语义，就不要使用 `require` 前缀。
+
+## 字符串处理约定
+
+- 与当前模块语义无关的纯字符串处理必须统一复用 `dev.superice.gdcc.util.StringUtil`，例如 non-blank 校验、trim/null/empty 归一化、多行片段规范化、按行拆分；不要在 `frontend` 等业务类里再定义同构 private helper。
+- 如果多个 helper 只是在 `null`、`blank`、`trim` 的处理细节上略有差异，应优先合并成少量统一的 `StringUtil` API，并直接更新调用点，不要保留平行实现。
+- 只有当字符串分支本身承载模块规则时，才保留在业务模块内部，例如根据 `extends` 文本判断是否命中 path-based superclass 这种 frontend 语义判定。

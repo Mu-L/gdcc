@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.lowering.cfg.item;
 
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
+import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.Node;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -25,7 +26,7 @@ public record CallItem(
 ) implements ValueOpItem {
     public CallItem {
         Objects.requireNonNull(callAnchor, "callAnchor must not be null");
-        callableName = FrontendCfgItemSupport.requireNonBlank(callableName, "callableName");
+        callableName = StringUtil.requireNonBlank(callableName, "callableName");
         receiverValueIdOrNull = FrontendCfgItemSupport.validateOptionalValueId(
                 receiverValueIdOrNull,
                 "receiverValueIdOrNull"

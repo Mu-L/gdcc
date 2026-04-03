@@ -26,6 +26,7 @@ import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -630,10 +631,10 @@ public final class FrontendExpressionSemanticSupport {
                 );
             }
             var detailReason = Objects.requireNonNull(overloadSelection.detailReason(), "detailReason must not be null");
-                return rootOutcome(
-                        FrontendExpressionType.failed(detailReason),
-                        failedBareCall(bareCallee, bareCallRoute, argumentTypes, detailReason)
-                );
+            return rootOutcome(
+                    FrontendExpressionType.failed(detailReason),
+                    failedBareCall(bareCallee, bareCallRoute, argumentTypes, detailReason)
+            );
         }
         if (functionResult.isBlocked()) {
             var overloadSelection = selectCallableOverload(functionResult.requireValue(), argumentTypes);
@@ -673,8 +674,8 @@ public final class FrontendExpressionSemanticSupport {
         var detailReason = overloadSet.isEmpty()
                 ? "Bare call resolves to an empty overload set"
                 : "No applicable overload for bare call: "
-                + buildCallableMismatchReason(overloadSet.getFirst(), argumentTypes)
-                + ". candidates: " + renderCallableSignatures(overloadSet);
+                  + buildCallableMismatchReason(overloadSet.getFirst(), argumentTypes)
+                  + ". candidates: " + renderCallableSignatures(overloadSet);
         return new CallableOverloadSelection(null, detailReason);
     }
 
@@ -700,7 +701,8 @@ public final class FrontendExpressionSemanticSupport {
                     FrontendReceiverKind.TYPE_META,
                     null
             );
-            default -> new BareCallRoute(FrontendCallResolutionKind.UNKNOWN, FrontendReceiverKind.UNKNOWN, receiverType);
+            default ->
+                    new BareCallRoute(FrontendCallResolutionKind.UNKNOWN, FrontendReceiverKind.UNKNOWN, receiverType);
         };
     }
 
@@ -856,7 +858,7 @@ public final class FrontendExpressionSemanticSupport {
             if (classOperator == null || classOperator.operator() != operator) {
                 continue;
             }
-            if (!normalizeTypeName(classOperator.rightType()).isEmpty()) {
+            if (!StringUtil.trimToEmpty(classOperator.rightType()).isEmpty()) {
                 continue;
             }
             var returnType = parseOperatorReturnType(classOperator);
@@ -902,12 +904,12 @@ public final class FrontendExpressionSemanticSupport {
         if (builtinClass == null) {
             return null;
         }
-        var normalizedRightType = normalizeTypeName(operatorOperandTypeName(rightType));
+        var normalizedRightType = StringUtil.trimToEmpty(operatorOperandTypeName(rightType));
         for (var classOperator : builtinClass.operators()) {
             if (classOperator == null || classOperator.operator() != operator) {
                 continue;
             }
-            var metadataRightType = normalizeTypeName(classOperator.rightType());
+            var metadataRightType = StringUtil.trimToEmpty(classOperator.rightType());
             if (metadataRightType.isEmpty() || !metadataRightType.equals(normalizedRightType)) {
                 continue;
             }
@@ -934,15 +936,11 @@ public final class FrontendExpressionSemanticSupport {
     }
 
     private @Nullable GdType parseOperatorReturnType(@NotNull ExtensionBuiltinClass.ClassOperator classOperator) {
-        var returnTypeName = normalizeTypeName(classOperator.returnType());
+        var returnTypeName = StringUtil.trimToEmpty(classOperator.returnType());
         if (returnTypeName.isEmpty()) {
             return null;
         }
         return classRegistry.tryResolveDeclaredType(returnTypeName);
-    }
-
-    private static @NotNull String normalizeTypeName(@Nullable String typeName) {
-        return typeName == null ? "" : typeName.trim();
     }
 
     private boolean canOmitTrailingParameters(

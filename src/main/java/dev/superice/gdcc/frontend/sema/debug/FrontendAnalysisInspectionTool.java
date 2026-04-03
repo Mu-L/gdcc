@@ -34,6 +34,7 @@ import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -991,11 +992,11 @@ public final class FrontendAnalysisInspectionTool {
 
         public @NotNull Snippet snippet(@NotNull FrontendRange range) {
             var raw = slice(range.startByte(), range.endByte());
-            var normalized = normalizeSnippet(raw);
+            var normalized = StringUtil.normalizeIndentedSnippet(raw);
             if (!normalized.contains("\n") && normalized.length() <= 120) {
                 return new Snippet(true, normalized, List.of());
             }
-            return new Snippet(false, null, splitSnippetLines(normalized));
+            return new Snippet(false, null, StringUtil.splitLines(normalized));
         }
 
         private @NotNull String slice(int startByte, int endByte) {
@@ -1040,35 +1041,5 @@ public final class FrontendAnalysisInspectionTool {
             return 4;
         }
 
-        private static @NotNull String normalizeSnippet(@NotNull String rawSnippet) {
-            var normalized = rawSnippet.replace("\r\n", "\n").replace('\r', '\n').strip();
-            if (normalized.isEmpty()) {
-                return rawSnippet.trim();
-            }
-            var lines = normalized.lines().toList();
-            var commonIndent = Integer.MAX_VALUE;
-            for (var line : lines) {
-                if (line.isBlank()) {
-                    continue;
-                }
-                var indent = 0;
-                while (indent < line.length() && Character.isWhitespace(line.charAt(indent))) {
-                    indent++;
-                }
-                commonIndent = Math.min(commonIndent, indent);
-            }
-            if (commonIndent == Integer.MAX_VALUE || commonIndent == 0) {
-                return normalized;
-            }
-            var strippedLines = new ArrayList<String>(lines.size());
-            for (var line : lines) {
-                strippedLines.add(line.isBlank() ? "" : line.substring(Math.min(commonIndent, line.length())));
-            }
-            return String.join("\n", strippedLines);
-        }
-
-        private static @NotNull List<String> splitSnippetLines(@NotNull String snippet) {
-            return snippet.lines().toList();
-        }
     }
 }

@@ -18,6 +18,7 @@ import dev.superice.gdcc.scope.ScopeValueKind;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
+import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
@@ -84,7 +85,7 @@ public final class FrontendAssignmentSemanticSupport {
                 }
                 case DYNAMIC -> {
                     Objects.requireNonNull(slotType, "slotType must not be null for dynamic assignment targets");
-                    requireNonBlank(detailReason, "detailReason");
+                    StringUtil.requireNonBlank(detailReason, "detailReason");
                     if (!(slotType instanceof GdVariantType)) {
                         throw new IllegalArgumentException("dynamic assignment targets must publish Variant");
                     }
@@ -95,7 +96,7 @@ public final class FrontendAssignmentSemanticSupport {
                                 "slotType must be null for %s assignment targets".formatted(status)
                         );
                     }
-                    requireNonBlank(detailReason, "detailReason");
+                    StringUtil.requireNonBlank(detailReason, "detailReason");
                 }
             }
         }
@@ -335,9 +336,9 @@ public final class FrontendAssignmentSemanticSupport {
         var publishedBinding = symbolBindings.get(identifierExpression);
         var detailReason = publishedBinding == null || publishedBinding.kind() == FrontendBindingKind.UNKNOWN
                 ? "No published assignment-target binding fact is available for identifier '"
-                + identifierExpression.name() + "'"
+                  + identifierExpression.name() + "'"
                 : "Published assignment-target binding '" + identifierExpression.name()
-                + "' is no longer visible";
+                  + "' is no longer visible";
         return AssignmentTargetResult.failed(AssignmentTargetKind.IDENTIFIER, false, detailReason);
     }
 
@@ -809,13 +810,6 @@ public final class FrontendAssignmentSemanticSupport {
             @NotNull FrontendExpressionType expressionType
     ) {
         return expressionResult(expressionType, true);
-    }
-
-    private static void requireNonBlank(@Nullable String value, @NotNull String fieldName) {
-        var text = Objects.requireNonNull(value, fieldName + " must not be null");
-        if (text.isBlank()) {
-            throw new IllegalArgumentException(fieldName + " must not be blank");
-        }
     }
 
     private record CallArgumentResolution(

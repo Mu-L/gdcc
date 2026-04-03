@@ -8,6 +8,7 @@ import dev.superice.gdcc.scope.ScopeLookupResult;
 import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.scope.resolver.ScopeTypeResolver;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -152,12 +153,8 @@ public record FrontendModuleSkeleton(
                     entry.getValue(),
                     "topLevelCanonicalNameMap value must not be null"
             );
-            if (sourceName.isBlank()) {
-                throw new IllegalArgumentException("topLevelCanonicalNameMap key must not be blank");
-            }
-            if (canonicalName.isBlank()) {
-                throw new IllegalArgumentException("topLevelCanonicalNameMap value must not be blank");
-            }
+            StringUtil.requireNonBlank(sourceName, "topLevelCanonicalNameMap key");
+            StringUtil.requireNonBlank(canonicalName, "topLevelCanonicalNameMap value");
             frozenEntries.put(sourceName, canonicalName);
         }
         return Collections.unmodifiableMap(frozenEntries);
