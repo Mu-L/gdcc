@@ -21,6 +21,7 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -621,6 +622,41 @@ class FrontendCompileCheckAnalyzerTest {
         assertEquals(FrontendRange.fromAstRange(bareCall.range()), compileDiagnostics.getFirst().range());
         assertTrue(compileDiagnostics.getFirst().message().contains("Call expression 'helper(...)'"));
         assertTrue(compileDiagnostics.getFirst().message().contains("not accessible in the current context"));
+    }
+
+    @Test
+    void analyzeUsesCompileGateForUnsupportedPublishedAttributeSubscriptStepFacts() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_attribute_subscript_step.gd", """
+                class_name CompileCheckAttributeSubscriptStep
+                extends RefCounted
+                
+                class Worker:
+                    var payloads: Dictionary[int, int]
+                
+                func ping(worker: Worker, seed: int):
+                    var value = worker.payloads[seed]
+                """);
+        var pingFunction = findFunction(preparedInput.unit().ast().statements(), "ping");
+        var valueDeclaration = findVariable(pingFunction.body().statements(), "value");
+        var payloadsStep = findNode(
+                valueDeclaration.value(),
+                AttributeSubscriptStep.class,
+                step -> step.name().equals("payloads")
+        );
+
+        assertTrue(diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.type_check").isEmpty());
+        preparedInput.analysisData().expressionTypes().put(
+                payloadsStep,
+                FrontendExpressionType.unsupported("synthetic unsupported attribute subscript step")
+        );
+
+        runCompileCheck(preparedInput);
+
+        var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
+        assertEquals(1, compileDiagnostics.size());
+        assertEquals(FrontendRange.fromAstRange(payloadsStep.range()), compileDiagnostics.getFirst().range());
+        assertTrue(compileDiagnostics.getFirst().message().contains("Subscript step 'payloads[...]'"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("synthetic unsupported attribute subscript step"));
     }
 
     @Test

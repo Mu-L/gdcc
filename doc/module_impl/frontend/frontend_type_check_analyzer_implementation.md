@@ -252,6 +252,8 @@ condition 当前采用 Godot-compatible source contract：
 - `RESOLVED(int)` condition 不会仅因非 `bool` 被 frontend 拒绝
 - `RESOLVED(Variant)` / `DYNAMIC(Variant)` condition 也不会仅因非 `bool` 被 frontend 拒绝
 - `DEFERRED` / `FAILED` / `BLOCKED` / `UNSUPPORTED` condition 保持 upstream owner
+- compile mode 若仍需在进入 lowering 前拦截这类非 lowering-ready condition / step fact，
+  owner 继续是 `FrontendCompileCheckAnalyzer`，而不是把它们改写成新的 `sema.type_check`
 
 但 downstream 约束仍然存在：
 

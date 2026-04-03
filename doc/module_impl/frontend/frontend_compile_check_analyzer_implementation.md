@@ -231,7 +231,8 @@ compile gate 当前会在 compile surface 上扫描以下已发布事实：
 
 1. member/call published fact 直接锚定到对应 step
 2. expression published fact 默认锚定到 expression 自身
-3. 若 expression 是 `AttributeExpression`，且 final member/call step 已在 compile surface 上发布，则优先回退到 final step
+3. `AttributeSubscriptStep` keyed `expressionTypes()` 直接锚定到 step 自身
+4. 若 expression 是 `AttributeExpression`，且 final member/call step 已在 compile surface 上发布，则优先回退到 final step
 
 这条规则的目标是让 compile-only blocker 尽量贴近未来 lowering 的消费点，并避免：
 
@@ -244,7 +245,8 @@ compile gate 当前会在 compile surface 上扫描以下已发布事实：
 
 compile gate 当前对 shared publication 不变量保持 fail-fast：
 
-- `expressionTypes()` 必须以 `Expression` 为 key
+- `expressionTypes()` 必须以 `Expression` / `AttributePropertyStep` / `AttributeCallStep` /
+  `AttributeSubscriptStep` 为 key
 - `resolvedMembers()` 必须以 `AttributePropertyStep` 为 key
 - `resolvedCalls()` 必须以 `AttributeCallStep` 或 bare `CallExpression` 为 key
 - compile gate 启动前，对每个 source file 都必须已经发布 scope graph

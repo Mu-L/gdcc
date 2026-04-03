@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.lowering;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
+import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringBodyInsnPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringBuildCfgPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringClassSkeletonPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringFunctionPreparationPass;
@@ -17,8 +18,8 @@ import java.util.Objects;
 /// Public frontend lowering entrypoint that executes the fixed lowering pass pipeline.
 ///
 /// The current pipeline consumes a `FrontendModule`, runs compile-ready semantic analysis, and
-/// emits a shell-only `LirModule` while also publishing lowering-local per-function scaffolding
-/// and frontend CFG graphs with explicit value-op operands/results.
+/// emits a `LirModule` whose executable functions already contain frontend-lowered basic blocks,
+/// while property initializer shells remain staged for a later dedicated expression route.
 public final class FrontendLoweringPassManager {
     private final @NotNull List<FrontendLoweringPass> passes;
 
@@ -27,7 +28,8 @@ public final class FrontendLoweringPassManager {
                 new FrontendLoweringAnalysisPass(),
                 new FrontendLoweringClassSkeletonPass(),
                 new FrontendLoweringFunctionPreparationPass(),
-                new FrontendLoweringBuildCfgPass()
+                new FrontendLoweringBuildCfgPass(),
+                new FrontendLoweringBodyInsnPass()
         ));
     }
 

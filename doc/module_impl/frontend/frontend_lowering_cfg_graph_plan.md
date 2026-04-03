@@ -1060,6 +1060,68 @@ frontend CFG builder 需要显式维护 loop stack。
 
 ### 4.12 第十二步：实现 `FrontendLoweringBodyInsnPass`，只消费 frontend CFG 与 published facts
 
+状态：
+
+- 已完成（本轮范围限定为 `EXECUTABLE_BODY`）
+- `PROPERTY_INIT` 继续保持 shell-only，等待 dedicated expression route / property-init CFG surface 闭环
+- `PARAMETER_DEFAULT_INIT` 继续 fail-fast，禁止半成品接入默认 pipeline
+
+本轮产出：
+
+- 新增 `FrontendLoweringBodyInsnPass`
+  - 默认 pipeline 现在按 `analysis -> class skeleton -> function preparation -> build CFG -> body lowering` 执行
+  - pass 只消费：
+    - `frontendCfgGraph`
+    - `analysisData.symbolBindings()`
+    - `analysisData.resolvedMembers()`
+    - `analysisData.resolvedCalls()`
+    - `analysisData.expressionTypes()`
+    - `analysisData.slotTypes()`
+- executable-body materialization 现已打通：
+  - graph node id 直接 materialize 为 `LirBasicBlock.id`
+  - `SequenceNode` 顺序 lower 为 block 内 instruction
+  - `BranchNode` 统一复用第十一步冻结的 bool-only normalization 合同
+  - `StopNode` lower 为 `ReturnInsn`
+- attribute-subscript lowering contract 已补齐：
+  - `FrontendExprTypeAnalyzer` 会把 `AttributeCallStep` / `AttributePropertyStep` /
+    `AttributeSubscriptStep` 作为 AST key 发布到 `analysisData.expressionTypes()`
+  - `FrontendBodyLoweringSupport` 读取 `AttributeSubscriptStep` 的 published expression type，
+    不再保留“step type 尚未发布”的临时 fail-fast 分支
+  - 若有人绕过 compile gate 直接进入 body lowering，且 step fact 仍停留在
+    `FAILED` / `UNSUPPORTED` / 其他无 `publishedType` 状态，body pass 现在会抛出携带
+    step 名称、published status 与 detail reason 的异常；正常 compile 路径仍要求由
+    `FrontendCompileCheckAnalyzer` 在 lowering 前先行拦截
+- 局部变量 / slot materialization 合同已在真实 lowering 中落地：
+  - ordinary temp value id -> `cfg_tmp_<valueId>`
+  - merge result value id -> `cfg_merge_<valueId>`
+  - source-level local variable -> 源码名
+  - instance executable function 若 skeleton 尚未显式带 `self` parameter，则 body pass 会先补出同名 local slot，供 bare instance call / bare property access / `self` expression 复用
+- 当前已接通的 item / expression lowering surface：
+  - `SourceAnchorItem`
+  - `LocalDeclarationItem`
+  - `BoolConstantItem`
+  - `MergeValueItem`
+  - `OpaqueExprValueItem` 中的 identifier / literal / self / eager unary / eager binary
+  - `CallItem`
+  - `MemberLoadItem`
+  - `SubscriptLoadItem`（本轮只支持单 key operand）
+  - `AssignmentItem`
+- 明确保留的 fail-fast 边界：
+  - `CastItem`
+  - `TypeTestItem`
+  - constructor route
+  - multi-key subscript lowering
+  - 任何缺失 published fact 的 call/member/value type 路径
+- 新增 / 更新测试锚点：
+  - `FrontendLoweringBodyInsnPassTest`
+    - executable body 真实 materialize 为 basic block + instruction
+    - value-context `and/or` 必须 lower 为 branch + `LiteralBoolInsn` + merge-slot `AssignInsn`
+    - executable context 缺失 frontend CFG graph 时 fail-fast
+    - `PARAMETER_DEFAULT_INIT` 进入 body pass 时 fail-fast
+  - `FrontendLoweringPassManagerTest`
+    - 默认 pipeline 现在会 materialize executable body
+    - property initializer context 仍保持 shell-only
+
 实施内容：
 
 - 引入 `FrontendLoweringBodyInsnPass`

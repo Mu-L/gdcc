@@ -26,6 +26,7 @@ import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
@@ -49,72 +50,72 @@ import java.util.LinkedHashMap;
 import java.util.Objects;
 import java.util.SequencedMap;
 
-final class FrontendBodyLoweringSupport {
+public final class FrontendBodyLoweringSupport {
     private FrontendBodyLoweringSupport() {
     }
 
-    static @NotNull String cfgTempSlotId(@NotNull String valueId) {
+    public static @NotNull String cfgTempSlotId(@NotNull String valueId) {
         return "cfg_tmp_" + requireNonBlank(valueId, "valueId");
     }
 
-    static @NotNull String mergeSlotId(@NotNull String valueId) {
+    public static @NotNull String mergeSlotId(@NotNull String valueId) {
         return "cfg_merge_" + requireNonBlank(valueId, "valueId");
     }
 
-    static @NotNull String sourceLocalSlotId(@NotNull VariableDeclaration declaration) {
+    public static @NotNull String sourceLocalSlotId(@NotNull VariableDeclaration declaration) {
         Objects.requireNonNull(declaration, "declaration must not be null");
         return requireNonBlank(declaration.name(), "declaration.name()");
     }
 
-    static @NotNull String conditionVariantSlotId(@NotNull String valueId) {
+    public static @NotNull String conditionVariantSlotId(@NotNull String valueId) {
         return "cfg_cond_variant_" + requireNonBlank(valueId, "valueId");
     }
 
-    static @NotNull String conditionBoolSlotId(@NotNull String valueId) {
+    public static @NotNull String conditionBoolSlotId(@NotNull String valueId) {
         return "cfg_cond_bool_" + requireNonBlank(valueId, "valueId");
     }
 
-    enum OpaqueExprHandling {
+    public enum OpaqueExprHandling {
         HANDLE_NOW,
         DEFER,
         REJECT
     }
 
-    record OpaqueExprPolicy(
+    public record OpaqueExprPolicy(
             @NotNull OpaqueExprHandling handling,
             @NotNull String detail
     ) {
-        OpaqueExprPolicy {
+        public OpaqueExprPolicy {
             Objects.requireNonNull(handling, "handling must not be null");
             detail = requireNonBlank(detail, "detail");
         }
     }
 
-    record ConditionBranchMaterialization(
+    public record ConditionBranchMaterialization(
             @NotNull String branchInputSlotId,
             @Nullable String variantSlotId,
             @Nullable String boolSlotId
     ) {
-        ConditionBranchMaterialization {
+        public ConditionBranchMaterialization {
             branchInputSlotId = requireNonBlank(branchInputSlotId, "branchInputSlotId");
             variantSlotId = validateOptionalNonBlank(variantSlotId, "variantSlotId");
             boolSlotId = validateOptionalNonBlank(boolSlotId, "boolSlotId");
         }
     }
 
-    record ShortCircuitBooleanMaterialization(
+    public record ShortCircuitBooleanMaterialization(
             @NotNull String mergeSlotId,
             @NotNull String trueConstantSlotId,
             @NotNull String falseConstantSlotId
     ) {
-        ShortCircuitBooleanMaterialization {
+        public ShortCircuitBooleanMaterialization {
             mergeSlotId = requireNonBlank(mergeSlotId, "mergeSlotId");
             trueConstantSlotId = requireNonBlank(trueConstantSlotId, "trueConstantSlotId");
             falseConstantSlotId = requireNonBlank(falseConstantSlotId, "falseConstantSlotId");
         }
     }
 
-    static @NotNull GdType requireSourceLocalSlotType(
+    public static @NotNull GdType requireSourceLocalSlotType(
             @NotNull FrontendAnalysisData analysisData,
             @NotNull VariableDeclaration declaration
     ) {
@@ -129,7 +130,7 @@ final class FrontendBodyLoweringSupport {
         return slotType;
     }
 
-    static @NotNull SequencedMap<String, GdType> collectCfgValueSlotTypes(
+    public static @NotNull SequencedMap<String, GdType> collectCfgValueSlotTypes(
             @NotNull FrontendCfgGraph graph,
             @NotNull FrontendAnalysisData analysisData
     ) {
@@ -152,7 +153,7 @@ final class FrontendBodyLoweringSupport {
         return valueTypes;
     }
 
-    static @NotNull OpaqueExprPolicy classifyOpaqueExpression(@NotNull Expression expression) {
+    public static @NotNull OpaqueExprPolicy classifyOpaqueExpression(@NotNull Expression expression) {
         Objects.requireNonNull(expression, "expression must not be null");
         return switch (expression) {
             case IdentifierExpression _, LiteralExpression _, SelfExpression _ -> new OpaqueExprPolicy(
@@ -192,7 +193,7 @@ final class FrontendBodyLoweringSupport {
         };
     }
 
-    static @NotNull ConditionBranchMaterialization emitConditionBranch(
+    public static @NotNull ConditionBranchMaterialization emitConditionBranch(
             @NotNull LirFunctionDef function,
             @NotNull LirBasicBlock block,
             @NotNull String conditionValueId,
@@ -232,7 +233,7 @@ final class FrontendBodyLoweringSupport {
         return new ConditionBranchMaterialization(sourceSlotId, variantSlotId, boolSlotId);
     }
 
-    static @NotNull ShortCircuitBooleanMaterialization emitShortCircuitBooleanMaterialization(
+    public static @NotNull ShortCircuitBooleanMaterialization emitShortCircuitBooleanMaterialization(
             @NotNull LirFunctionDef function,
             @NotNull LirBasicBlock trueBlock,
             @NotNull LirBasicBlock falseBlock,
@@ -307,14 +308,11 @@ final class FrontendBodyLoweringSupport {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull Expression expression
     ) {
-        var publishedType = analysisData.expressionTypes()
-                .get(Objects.requireNonNull(expression, "expression must not be null"));
-        if (publishedType == null || publishedType.publishedType() == null) {
-            throw new IllegalStateException(
-                    "Missing published expression type for " + expression.getClass().getSimpleName()
-            );
-        }
-        return publishedType.publishedType();
+        return requireLoweringReadyExpressionType(
+                analysisData,
+                Objects.requireNonNull(expression, "expression must not be null"),
+                expression.getClass().getSimpleName()
+        );
     }
 
     private static @NotNull GdType requireCallReturnType(
@@ -352,8 +350,41 @@ final class FrontendBodyLoweringSupport {
         if (subscriptLoadItem.anchor() instanceof Expression expression) {
             return requireExpressionType(analysisData, expression);
         }
+        if (subscriptLoadItem.anchor() instanceof AttributeSubscriptStep attributeSubscriptStep) {
+            return requireLoweringReadyExpressionType(
+                    analysisData,
+                    attributeSubscriptStep,
+                    "AttributeSubscriptStep '" + attributeSubscriptStep.name() + "[...]'"
+            );
+        }
+        throw new IllegalStateException("Unsupported subscript anchor: " + subscriptLoadItem.anchor().getClass().getSimpleName());
+    }
+
+    /// Lowering may be invoked from tests, incremental tooling, or other non-compile-gated flows. When
+    /// a published expression fact exists but is still FAILED/UNSUPPORTED/etc, surface that exact status
+    /// and reason instead of collapsing it into an unhelpful “missing type” failure.
+    private static @NotNull GdType requireLoweringReadyExpressionType(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull Node anchor,
+            @NotNull String anchorDescription
+    ) {
+        var publishedType = analysisData.expressionTypes().get(Objects.requireNonNull(anchor, "anchor must not be null"));
+        if (publishedType == null) {
+            throw new IllegalStateException(
+                    "Missing published expression type for " + requireNonBlank(anchorDescription, "anchorDescription")
+            );
+        }
+        if (publishedType.publishedType() != null) {
+            return publishedType.publishedType();
+        }
+        var detailReason = publishedType.detailReason();
+        var detailSuffix = detailReason == null || detailReason.isBlank() ? "" : ": " + detailReason;
         throw new IllegalStateException(
-                "AttributeSubscriptStep result types are not published as standalone expression facts yet"
+                requireNonBlank(anchorDescription, "anchorDescription")
+                        + " is not lowering-ready because its published expression type is "
+                        + publishedType.status()
+                        + detailSuffix
+                        + ". FrontendCompileCheckAnalyzer should have blocked this before body lowering."
         );
     }
 

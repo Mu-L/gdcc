@@ -360,6 +360,13 @@
 - 它不再 hardcode unsupported
 - 可以继续 exact suffix
 - 也能作为 chain-local dependency 的一等节点支撑 outer call exact resolution
+- `FrontendExprTypeAnalyzer.resolveAttributeExpressionType(...)` 会把每个 attribute step 本身作为
+  `analysisData.expressionTypes()` 的 AST key 发布：
+  - `AttributePropertyStep` / `AttributeCallStep` 优先复用已发布的 `resolvedMembers()` /
+    `resolvedCalls()` 结果
+  - `AttributeSubscriptStep` 直接桥接 step trace 的 outgoing receiver / status
+  - `UPSTREAM_BLOCKED` suffix step 明确发布为 `BLOCKED(null)`，避免把上游幸存类型误写成当前 step 的精确结果
+- 因此 lowering 等下游现在可以直接读取 `AttributeSubscriptStep` 的 published fact，而不需要重跑 chain reduction
 
 ### 4.4 assignment
 

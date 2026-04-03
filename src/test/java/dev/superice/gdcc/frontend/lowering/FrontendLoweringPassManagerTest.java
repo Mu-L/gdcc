@@ -102,7 +102,7 @@ class FrontendLoweringPassManagerTest {
     }
 
     @Test
-    void lowerCompileReadyModuleReturnsSerializableSkeletonOnlyLirModule() throws Exception {
+    void lowerCompileReadyModuleReturnsSerializableLirModuleWithExecutableBodies() throws Exception {
         var diagnostics = new DiagnosticManager();
         var lowered = new FrontendLoweringPassManager().lower(
                 parseModule(
@@ -143,12 +143,12 @@ class FrontendLoweringPassManagerTest {
         assertTrue(xml.contains("name=\"count\""), xml);
         assertTrue(xml.contains("type=\"int\""), xml);
         assertTrue(xml.contains("name=\"_field_init_count\""), xml);
-        assertFalse(xml.contains("<basic_block id="), xml);
-        assertFalse(xml.contains("<basic_blocks entry="), xml);
+        assertTrue(xml.contains("<basic_block id="), xml);
+        assertTrue(xml.contains("<basic_blocks entry="), xml);
     }
 
     @Test
-    void lowerToContextPublishesFrontendCfgGraphAndKeepsPublishedLirShellOnly() throws Exception {
+    void lowerToContextPublishesFrontendCfgGraphAndMaterializesExecutableBodies() throws Exception {
         var diagnostics = new DiagnosticManager();
         var manager = new FrontendLoweringPassManager();
         var module = parseModule(
@@ -204,15 +204,15 @@ class FrontendLoweringPassManagerTest {
                 () -> assertNotNull(executableContext.frontendCfgRegionOrNull(outerIf)),
                 () -> assertFalse(propertyContext.hasFrontendCfgGraph()),
                 () -> assertNull(propertyContext.frontendCfgGraphOrNull()),
-                () -> assertEquals(0, executableContext.targetFunction().getBasicBlockCount()),
-                () -> assertTrue(executableContext.targetFunction().getEntryBlockId().isEmpty()),
+                () -> assertTrue(executableContext.targetFunction().getBasicBlockCount() > 0),
+                () -> assertFalse(executableContext.targetFunction().getEntryBlockId().isEmpty()),
                 () -> assertEquals(0, propertyContext.targetFunction().getBasicBlockCount()),
                 () -> assertTrue(propertyContext.targetFunction().getEntryBlockId().isEmpty())
         );
 
         var xml = new DomLirSerializer().serializeToString(lowered);
-        assertFalse(xml.contains("<basic_block id="), xml);
-        assertFalse(xml.contains("<basic_blocks entry="), xml);
+        assertTrue(xml.contains("<basic_block id="), xml);
+        assertTrue(xml.contains("<basic_blocks entry="), xml);
     }
 
     @Test
@@ -298,8 +298,8 @@ class FrontendLoweringPassManagerTest {
                 () -> assertEquals(structuredGraph.entryNodeId(), structuredRootRegion.entryId()),
                 () -> assertNotNull(structuredContext.frontendCfgGraphOrNull()),
                 () -> assertNull(propertyContext.frontendCfgGraphOrNull()),
-                () -> assertEquals(0, straightLineContext.targetFunction().getBasicBlockCount()),
-                () -> assertTrue(straightLineContext.targetFunction().getEntryBlockId().isEmpty()),
+                () -> assertTrue(straightLineContext.targetFunction().getBasicBlockCount() > 0),
+                () -> assertFalse(straightLineContext.targetFunction().getEntryBlockId().isEmpty()),
                 () -> assertEquals(0, propertyContext.targetFunction().getBasicBlockCount()),
                 () -> assertTrue(propertyContext.targetFunction().getEntryBlockId().isEmpty())
         );

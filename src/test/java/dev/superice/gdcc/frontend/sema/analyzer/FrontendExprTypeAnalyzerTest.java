@@ -13,7 +13,10 @@ import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -1419,6 +1422,101 @@ class FrontendExprTypeAnalyzerTest {
         assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
+    }
+
+    @Test
+    void analyzePublishesAttributeStepTypesForCallPropertyAndSubscriptChains() throws Exception {
+        var analyzed = analyze(
+                "expr_type_attribute_step_publication.gd",
+                """
+                        class_name ExprTypeAttributeStepPublication
+                        extends RefCounted
+                        
+                        var payloads: Dictionary[int, ExprTypeAttributeStepPublication]
+                        var text: String
+                        var value: int
+                        
+                        func fetch(seed: int) -> ExprTypeAttributeStepPublication:
+                            return self
+                        
+                        func ping(seed: int, dynamic_host):
+                            self.fetch(seed).value
+                            self.payloads[seed].value
+                            dynamic_host.payloads[seed]
+                            self.payloads["bad"]
+                            self.text[0]
+                        """,
+                registryWithKeyedStringBuiltin()
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var statements = pingFunction.body().statements();
+        var callChain = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(0)).expression()
+        );
+        var resolvedSubscriptChain = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(1)).expression()
+        );
+        var dynamicSubscriptChain = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(2)).expression()
+        );
+        var failedSubscriptChain = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(3)).expression()
+        );
+        var unsupportedSubscriptChain = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(4)).expression()
+        );
+
+        var fetchStep = assertInstanceOf(AttributeCallStep.class, callChain.steps().getFirst());
+        var fetchedValueStep = assertInstanceOf(AttributePropertyStep.class, callChain.steps().get(1));
+        var resolvedSubscriptStep = assertInstanceOf(AttributeSubscriptStep.class, resolvedSubscriptChain.steps().getFirst());
+        var resolvedValueStep = assertInstanceOf(AttributePropertyStep.class, resolvedSubscriptChain.steps().get(1));
+        var dynamicSubscriptStep = assertInstanceOf(AttributeSubscriptStep.class, dynamicSubscriptChain.steps().getFirst());
+        var failedSubscriptStep = assertInstanceOf(AttributeSubscriptStep.class, failedSubscriptChain.steps().getFirst());
+        var unsupportedSubscriptStep = assertInstanceOf(
+                AttributeSubscriptStep.class,
+                unsupportedSubscriptChain.steps().getFirst()
+        );
+
+        var fetchStepType = analyzed.analysisData().expressionTypes().get(fetchStep);
+        assertNotNull(fetchStepType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, fetchStepType.status());
+        assertEquals("ExprTypeAttributeStepPublication", fetchStepType.publishedType().getTypeName());
+
+        var fetchedValueStepType = analyzed.analysisData().expressionTypes().get(fetchedValueStep);
+        assertNotNull(fetchedValueStepType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, fetchedValueStepType.status());
+        assertEquals("int", fetchedValueStepType.publishedType().getTypeName());
+
+        var resolvedSubscriptStepType = analyzed.analysisData().expressionTypes().get(resolvedSubscriptStep);
+        assertNotNull(resolvedSubscriptStepType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, resolvedSubscriptStepType.status());
+        assertEquals("ExprTypeAttributeStepPublication", resolvedSubscriptStepType.publishedType().getTypeName());
+
+        var resolvedValueStepType = analyzed.analysisData().expressionTypes().get(resolvedValueStep);
+        assertNotNull(resolvedValueStepType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, resolvedValueStepType.status());
+        assertEquals("int", resolvedValueStepType.publishedType().getTypeName());
+
+        var dynamicSubscriptStepType = analyzed.analysisData().expressionTypes().get(dynamicSubscriptStep);
+        assertNotNull(dynamicSubscriptStepType);
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, dynamicSubscriptStepType.status());
+        assertEquals(GdVariantType.VARIANT, dynamicSubscriptStepType.publishedType());
+
+        var failedSubscriptStepType = analyzed.analysisData().expressionTypes().get(failedSubscriptStep);
+        assertNotNull(failedSubscriptStepType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, failedSubscriptStepType.status());
+        assertTrue(failedSubscriptStepType.detailReason().contains("not assignable"));
+
+        var unsupportedSubscriptStepType = analyzed.analysisData().expressionTypes().get(unsupportedSubscriptStep);
+        assertNotNull(unsupportedSubscriptStepType);
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, unsupportedSubscriptStepType.status());
+        assertTrue(unsupportedSubscriptStepType.detailReason().contains("keyed access metadata"));
     }
 
     @Test

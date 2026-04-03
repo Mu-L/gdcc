@@ -629,6 +629,9 @@ public class FrontendExprTypeAnalyzer {
                 }
             }
 
+            var reduced = reduceAttributeExpression(attributeExpression);
+            publishAttributeStepExpressionTypes(reduced);
+
             var finalStep = attributeExpression.steps().getLast();
             if (finalStep instanceof AttributePropertyStep) {
                 var publishedMember = analysisData.resolvedMembers().get(finalStep);
@@ -643,7 +646,6 @@ public class FrontendExprTypeAnalyzer {
                 }
             }
 
-            var reduced = reduceAttributeExpression(attributeExpression);
             if (reduced == null) {
                 return FrontendExpressionType.failed(
                         "No receiver fact is available for attribute expression rooted at "
@@ -651,6 +653,40 @@ public class FrontendExprTypeAnalyzer {
                 );
             }
             return FrontendChainStatusBridge.toPublishedExpressionType(reduced);
+        }
+
+        /// Attribute chain steps are first-class lowering anchors. Publish each step itself into
+        /// `expressionTypes()` so downstream consumers can read the same semantic outcome without
+        /// replaying chain reduction or guessing the type of `AttributeSubscriptStep`.
+        private void publishAttributeStepExpressionTypes(
+                @Nullable FrontendChainReductionHelper.ReductionResult reduced
+        ) {
+            if (reduced == null) {
+                return;
+            }
+            for (var trace : reduced.stepTraces()) {
+                var publishedType = resolvePublishedAttributeStepType(trace);
+                expressionTypes.put(trace.step(), publishedType);
+            }
+        }
+
+        private @NotNull FrontendExpressionType resolvePublishedAttributeStepType(
+                @NotNull FrontendChainReductionHelper.StepTrace trace
+        ) {
+            if (trace.suggestedMember() != null) {
+                return FrontendChainStatusBridge.toPublishedExpressionType(trace.suggestedMember());
+            }
+            if (trace.suggestedCall() != null) {
+                return FrontendChainStatusBridge.toPublishedExpressionType(trace.suggestedCall());
+            }
+            if (trace.status() == FrontendChainReductionHelper.Status.BLOCKED
+                    && trace.routeKind() == FrontendChainReductionHelper.RouteKind.UPSTREAM_BLOCKED) {
+                return FrontendExpressionType.blocked(
+                        null,
+                        Objects.requireNonNull(trace.detailReason(), "detailReason must not be null")
+                );
+            }
+            return FrontendChainStatusBridge.toPublishedExpressionType(trace.outgoingReceiver());
         }
 
         private @Nullable FrontendChainReductionHelper.ReductionResult reduceAttributeExpression(

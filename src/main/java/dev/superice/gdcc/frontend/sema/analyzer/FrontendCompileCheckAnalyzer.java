@@ -23,6 +23,7 @@ import dev.superice.gdparser.frontend.ast.ASTWalker;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.Block;
@@ -490,19 +491,19 @@ public class FrontendCompileCheckAnalyzer {
 
         private void scanExpressionTypeCompileBlocks() {
             for (var entry : expressionTypes.entrySet()) {
-                var expression = requireExpression(entry.getKey());
+                var anchor = requireExpressionTypeAnchor(entry.getKey());
                 var publishedType = Objects.requireNonNull(entry.getValue(), "publishedType must not be null");
-                if (!isCompileBlocking(publishedType.status()) || !compileSurfaceNodes.contains(expression)) {
+                if (!isCompileBlocking(publishedType.status()) || !compileSurfaceNodes.contains(anchor)) {
                     continue;
                 }
-                var anchor = compileAnchorForExpression(expression);
-                if (!compileSurfaceNodes.contains(anchor)) {
+                var compileAnchor = compileAnchorForExpressionType(anchor);
+                if (!compileSurfaceNodes.contains(compileAnchor)) {
                     continue;
                 }
                 reportCompileBlock(
-                        anchor,
+                        compileAnchor,
                         publishedCompileBlockedMessage(
-                                describeExpression(expression),
+                                describeExpressionTypeAnchor(anchor),
                                 publishedType.status(),
                                 publishedType.detailReason()
                         )
@@ -589,11 +590,21 @@ public class FrontendCompileCheckAnalyzer {
             return expression;
         }
 
-        private static @NotNull Expression requireExpression(@NotNull Node node) {
+        private @NotNull Node compileAnchorForExpressionType(@NotNull Node node) {
             if (node instanceof Expression expression) {
-                return expression;
+                return compileAnchorForExpression(expression);
             }
-            throw new IllegalStateException("expressionTypes must be keyed by expression nodes");
+            return node;
+        }
+
+        private static @NotNull Node requireExpressionTypeAnchor(@NotNull Node node) {
+            if (node instanceof Expression
+                    || node instanceof AttributePropertyStep
+                    || node instanceof AttributeCallStep
+                    || node instanceof AttributeSubscriptStep) {
+                return node;
+            }
+            throw new IllegalStateException("expressionTypes must be keyed by expression nodes or attribute steps");
         }
 
         private static @NotNull AttributePropertyStep requireAttributePropertyStep(@NotNull Node node) {
@@ -614,6 +625,21 @@ public class FrontendCompileCheckAnalyzer {
             return switch (Objects.requireNonNull(expression, "expression must not be null")) {
                 case AttributeExpression _ -> "Attribute expression";
                 default -> "Expression";
+            };
+        }
+
+        private static @NotNull String describeExpressionTypeAnchor(@NotNull Node node) {
+            return switch (Objects.requireNonNull(node, "node must not be null")) {
+                case AttributePropertyStep attributePropertyStep ->
+                        "Member access '" + attributePropertyStep.name() + "'";
+                case AttributeCallStep attributeCallStep ->
+                        "Call step '" + attributeCallStep.name() + "(...)'";
+                case AttributeSubscriptStep attributeSubscriptStep ->
+                        "Subscript step '" + attributeSubscriptStep.name() + "[...]'";
+                case Expression expression -> describeExpression(expression);
+                default -> throw new IllegalStateException(
+                        "unexpected expressionTypes anchor: " + node.getClass().getSimpleName()
+                );
             };
         }
 
