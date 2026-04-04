@@ -18,6 +18,8 @@ import dev.superice.gdcc.lir.insn.AssignInsn;
 import dev.superice.gdcc.lir.insn.CallGlobalInsn;
 import dev.superice.gdcc.lir.insn.CallMethodInsn;
 import dev.superice.gdcc.lir.insn.CallStaticMethodInsn;
+import dev.superice.gdcc.lir.insn.ConstructBuiltinInsn;
+import dev.superice.gdcc.lir.insn.ConstructObjectInsn;
 import dev.superice.gdcc.lir.insn.LineNumberInsn;
 import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
 import dev.superice.gdcc.lir.insn.LiteralStringNameInsn;
@@ -324,10 +326,32 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                             arguments
                     ));
                 }
-                case CONSTRUCTOR -> throw session.unsupportedSequenceItem(
-                        node,
-                        "constructor route lowering is not implemented yet"
-                );
+                case CONSTRUCTOR -> {
+                    var constructorResultType = Objects.requireNonNull(
+                            resolvedCall.returnType(),
+                            "resolved constructor call must carry a result type"
+                    );
+                    switch (constructorResultType) {
+                        // Builtin/container constructors materialize directly from the published call route.
+                        case dev.superice.gdcc.type.GdObjectType _ -> {
+                            block.appendNonTerminatorInstruction(new ConstructObjectInsn(
+                                    resultSlotId,
+                                    session.requireClassName(constructorResultType)
+                            ));
+                            // GDCC constructors still need a follow-up `_init(...)` invocation.
+                            if (session.shouldInvokeInitAfterObjectConstruction(resolvedCall)) {
+                                block.appendNonTerminatorInstruction(new CallMethodInsn(
+                                        null,
+                                        "_init",
+                                        resultSlotId,
+                                        arguments
+                                ));
+                            }
+                        }
+                        default ->
+                                block.appendNonTerminatorInstruction(new ConstructBuiltinInsn(resultSlotId, arguments));
+                    }
+                }
                 case UNKNOWN, DYNAMIC_FALLBACK -> throw session.unsupportedSequenceItem(
                         node,
                         "call route is not lowering-ready: " + resolvedCall.callKind()

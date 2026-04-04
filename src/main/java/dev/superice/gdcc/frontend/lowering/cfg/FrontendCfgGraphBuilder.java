@@ -19,6 +19,8 @@ import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendIfRegion;
 import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendWhileRegion;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
+import dev.superice.gdcc.frontend.sema.FrontendBinding;
+import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import dev.superice.gdcc.frontend.sema.FrontendMemberResolutionStatus;
@@ -481,6 +483,11 @@ public final class FrontendCfgGraphBuilder {
         if (attributeExpression.steps().isEmpty()) {
             throw new IllegalStateException("AttributeExpression must contain at least one step");
         }
+        if (attributeExpression.base() instanceof IdentifierExpression identifierExpression
+                && analysisData.symbolBindings().get(identifierExpression) instanceof FrontendBinding binding
+                && binding.kind() == FrontendBindingKind.TYPE_META) {
+            return buildTypeMetaHeadAttributeExpressionValue(cursor, attributeExpression, preferredResultValueId);
+        }
         var currentBuild = buildValue(cursor, attributeExpression.base(), null);
         for (var stepIndex = 0; stepIndex < attributeExpression.steps().size(); stepIndex++) {
             var step = attributeExpression.steps().get(stepIndex);
@@ -494,11 +501,62 @@ public final class FrontendCfgGraphBuilder {
         return currentBuild;
     }
 
+    /// Type-meta chain heads such as `Node.new()` or `Worker.build(...)` do not materialize the
+    /// head identifier as a runtime value. The first call step therefore starts directly from the
+    /// published static/constructor call fact with a null receiver slot, and only subsequent steps
+    /// consume the constructed/called result as an ordinary value.
+    private @NotNull ValueBuild buildTypeMetaHeadAttributeExpressionValue(
+            @NotNull BuildCursor cursor,
+            @NotNull AttributeExpression attributeExpression,
+            @Nullable String preferredResultValueId
+    ) {
+        if (!(attributeExpression.steps().getFirst() instanceof AttributeCallStep firstCallStep)) {
+            throw new IllegalStateException(
+                    "Type-meta attribute head '" + attributeExpression.base()
+                            + "' currently requires a call step to enter lowering"
+            );
+        }
+        var currentBuild = buildTypeMetaHeadCallStep(cursor, firstCallStep, attributeExpression.steps().size() == 1
+                ? preferredResultValueId
+                : null);
+        for (var stepIndex = 1; stepIndex < attributeExpression.steps().size(); stepIndex++) {
+            var step = attributeExpression.steps().get(stepIndex);
+            currentBuild = applyAttributeStep(
+                    currentBuild.cursor(),
+                    currentBuild.resultValueId(),
+                    step,
+                    stepIndex + 1 == attributeExpression.steps().size() ? preferredResultValueId : null
+            );
+        }
+        return currentBuild;
+    }
+
+    private @NotNull ValueBuild buildTypeMetaHeadCallStep(
+            @NotNull BuildCursor cursor,
+            @NotNull AttributeCallStep attributeCallStep,
+            @Nullable String preferredResultValueId
+    ) {
+        var publishedCall = requireLoweringReadyCall(attributeCallStep);
+        var argumentsBuild = buildArgumentValues(cursor, attributeCallStep.arguments());
+        var resultValueId = chooseResultValueId(preferredResultValueId);
+        argumentsBuild.cursor().currentSequence().items().add(new CallItem(
+                attributeCallStep,
+                publishedCall.callableName(),
+                null,
+                argumentsBuild.valueIds(),
+                resultValueId
+        ));
+        return new ValueBuild(argumentsBuild.cursor(), resultValueId);
+    }
+
     /// Bare call lowering consumes the published `resolvedCalls()` fact directly.
     ///
-    /// The current compile-ready contract only permits bare/global/static calls here. Callable-value
-    /// invocation stays outside the accepted lowering surface, so a non-identifier callee is treated as a
-    /// protocol violation instead of being silently dropped from operand ordering.
+    /// The current compile-ready contract permits:
+    /// - ordinary bare/global/static calls
+    /// - bare builtin direct constructors such as `Vector3i(...)`
+    ///
+    /// Callable-value invocation stays outside the accepted lowering surface, so a non-identifier callee
+    /// is treated as a protocol violation instead of being silently dropped from operand ordering.
     private @NotNull ValueBuild buildBareCallValue(
             @NotNull BuildCursor cursor,
             @NotNull CallExpression callExpression,

@@ -3,6 +3,7 @@ package dev.superice.gdcc.frontend.sema.analyzer.support;
 import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendBinding;
+import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
@@ -19,6 +20,7 @@ import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeOwnerKind;
+import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdCallableType;
@@ -208,6 +210,14 @@ public final class FrontendExpressionSemanticSupport {
             boolean finalizeWindow
     ) {
         if (callExpression.callee() instanceof IdentifierExpression bareCallee) {
+            var bareBinding = symbolBindings.get(bareCallee);
+            if (bareBinding != null && bareBinding.kind() == FrontendBindingKind.TYPE_META) {
+                var argumentResolution = resolveCallArgumentTypes(callExpression.arguments(), nestedResolver, finalizeWindow);
+                if (argumentResolution.issue() != null) {
+                    return propagated(argumentResolution.issue());
+                }
+                return resolveBareTypeMetaConstructorCallExpression(bareCallee, argumentResolution.argumentTypes());
+            }
             var calleeType = nestedResolver.resolve(bareCallee, finalizeWindow);
             if (calleeType.status() != FrontendExpressionTypeStatus.RESOLVED
                     && !shouldContinueBlockedBareCallResolution(bareCallee, calleeType)) {
@@ -238,6 +248,58 @@ public final class FrontendExpressionSemanticSupport {
                 "Direct invocation of callable values is not implemented yet unless the callee is a bare identifier"
         )
                 : FrontendExpressionType.failed("Call target does not resolve to a callable value"));
+    }
+
+    /// Bare builtin direct constructors are the one intentional exception to the ordinary
+    /// "type-meta is not a value" rule used by identifier typing.
+    ///
+    /// This path keeps object construction strict:
+    /// - builtin types may use `Vector3i(...)`, `Array(...)`, ...
+    /// - object types must continue to use `TypeName.new(...)`
+    private @NotNull ExpressionSemanticResult resolveBareTypeMetaConstructorCallExpression(
+            @NotNull IdentifierExpression bareCallee,
+            @NotNull List<GdType> argumentTypes
+    ) {
+        var receiverState = headReceiverSupportSupplier.get().resolveTypeMetaReceiver(bareCallee);
+        if (receiverState.status() != FrontendChainReductionHelper.Status.RESOLVED) {
+            return rootOutcome(switch (receiverState.status()) {
+                case UNSUPPORTED -> FrontendExpressionType.unsupported(
+                        Objects.requireNonNull(receiverState.detailReason(), "detailReason must not be null")
+                );
+                case FAILED, BLOCKED, DEFERRED, DYNAMIC -> FrontendExpressionType.failed(
+                        Objects.requireNonNull(receiverState.detailReason(), "detailReason must not be null")
+                );
+                case RESOLVED ->
+                        throw new IllegalStateException("resolved receiver state unexpectedly missing type-meta metadata");
+            });
+        }
+        var receiverTypeMeta = Objects.requireNonNull(
+                receiverState.receiverTypeMeta(),
+                "resolved type-meta constructor call must carry receiverTypeMeta"
+        );
+        if (receiverTypeMeta.kind() != dev.superice.gdcc.scope.ScopeTypeMetaKind.BUILTIN) {
+            return rootOutcome(FrontendExpressionType.failed(
+                    "Type-meta bare call '" + bareCallee.name()
+                            + "(...)' is not a builtin direct constructor; use '" + bareCallee.name()
+                            + ".new(...)' or a static route instead"
+            ));
+        }
+
+        var resolution = FrontendConstructorResolutionSupport.resolveConstructor(classRegistry, receiverTypeMeta, argumentTypes);
+        return switch (resolution.status()) {
+            case RESOLVED -> rootOutcome(
+                    FrontendExpressionType.resolved(receiverTypeMeta.instanceType()),
+                    resolvedBareConstructorCall(bareCallee, receiverTypeMeta, argumentTypes, resolution)
+            );
+            case FAILED -> rootOutcome(
+                    FrontendExpressionType.failed(
+                            Objects.requireNonNull(resolution.detailReason(), "detailReason must not be null")
+                    ),
+                    failedBareConstructorCall(bareCallee, receiverTypeMeta, argumentTypes, resolution)
+            );
+            default ->
+                    throw new IllegalStateException("unexpected bare constructor resolution status: " + resolution.status());
+        };
     }
 
     /// A blocked bare identifier callee may still be a valid bare-call winner:
@@ -759,6 +821,42 @@ public final class FrontendExpressionSemanticSupport {
                 argumentTypes,
                 null,
                 detailReason
+        );
+    }
+
+    private @NotNull FrontendResolvedCall resolvedBareConstructorCall(
+            @NotNull IdentifierExpression bareCallee,
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull List<GdType> argumentTypes,
+            @NotNull FrontendConstructorResolutionSupport.Resolution resolution
+    ) {
+        return FrontendResolvedCall.resolved(
+                bareCallee.name(),
+                FrontendCallResolutionKind.CONSTRUCTOR,
+                FrontendReceiverKind.TYPE_META,
+                resolution.ownerKind(),
+                receiverTypeMeta.instanceType(),
+                receiverTypeMeta.instanceType(),
+                argumentTypes,
+                resolution.declarationSite()
+        );
+    }
+
+    private @NotNull FrontendResolvedCall failedBareConstructorCall(
+            @NotNull IdentifierExpression bareCallee,
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull List<GdType> argumentTypes,
+            @NotNull FrontendConstructorResolutionSupport.Resolution resolution
+    ) {
+        return FrontendResolvedCall.failed(
+                bareCallee.name(),
+                FrontendCallResolutionKind.CONSTRUCTOR,
+                FrontendReceiverKind.TYPE_META,
+                resolution.ownerKind(),
+                receiverTypeMeta.instanceType(),
+                argumentTypes,
+                resolution.declarationSite(),
+                Objects.requireNonNull(resolution.detailReason(), "detailReason must not be null")
         );
     }
 

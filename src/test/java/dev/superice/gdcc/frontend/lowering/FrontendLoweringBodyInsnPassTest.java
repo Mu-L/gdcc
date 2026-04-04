@@ -3,6 +3,7 @@ package dev.superice.gdcc.frontend.lowering;
 import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
+import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
@@ -13,6 +14,7 @@ import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringFunctionPreparat
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
+import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirInstruction;
@@ -20,6 +22,8 @@ import dev.superice.gdcc.lir.insn.AssignInsn;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.CallGlobalInsn;
 import dev.superice.gdcc.lir.insn.CallMethodInsn;
+import dev.superice.gdcc.lir.insn.ConstructBuiltinInsn;
+import dev.superice.gdcc.lir.insn.ConstructObjectInsn;
 import dev.superice.gdcc.lir.insn.GoIfInsn;
 import dev.superice.gdcc.lir.insn.GotoInsn;
 import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
@@ -39,6 +43,7 @@ import dev.superice.gdcc.lir.insn.VariantSetKeyedInsn;
 import dev.superice.gdcc.lir.insn.VariantSetNamedInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
+import dev.superice.gdparser.frontend.ast.Node;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
@@ -677,6 +682,147 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runMaterializesBuiltinAndObjectConstructorsFromPublishedConstructorRoutes() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_constructor_routes.gd",
+                """
+                        class_name BodyInsnConstructorRoutes
+                        extends RefCounted
+                        
+                        class Worker:
+                            func _init(value: int):
+                                pass
+                        
+                        func build_vector() -> Vector3i:
+                            return Vector3i(1, 2, 3)
+                        
+                        func build_array(source: Array) -> Array:
+                            return Array(source)
+                        
+                        func build_node() -> Node:
+                            return Node.new()
+                        
+                        func build_worker(box: Variant) -> Worker:
+                            return Worker.new(box)
+                        """,
+                Map.of("BodyInsnConstructorRoutes", "RuntimeBodyInsnConstructorRoutes"),
+                true
+        );
+        var buildVectorContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConstructorRoutes",
+                "build_vector"
+        );
+        var buildArrayContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConstructorRoutes",
+                "build_array"
+        );
+        var buildNodeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConstructorRoutes",
+                "build_node"
+        );
+        var buildWorkerContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConstructorRoutes",
+                "build_worker"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var vectorInstructions = allInstructions(buildVectorContext.targetFunction());
+        var arrayInstructions = allInstructions(buildArrayContext.targetFunction());
+        var nodeInstructions = allInstructions(buildNodeContext.targetFunction());
+        var workerInstructions = allInstructions(buildWorkerContext.targetFunction());
+
+        var vectorConstructInsn = requireOnlyInstruction(buildVectorContext.targetFunction(), ConstructBuiltinInsn.class);
+        var arrayConstructInsn = requireOnlyInstruction(buildArrayContext.targetFunction(), ConstructBuiltinInsn.class);
+        var nodeConstructInsn = requireOnlyInstruction(buildNodeContext.targetFunction(), ConstructObjectInsn.class);
+        var workerConstructInsn = requireOnlyInstruction(buildWorkerContext.targetFunction(), ConstructObjectInsn.class);
+        var workerInitInsn = requireOnlyInstruction(buildWorkerContext.targetFunction(), CallMethodInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, countInstructions(vectorInstructions, ConstructBuiltinInsn.class)),
+                () -> assertEquals(3, vectorConstructInsn.args().size()),
+                () -> assertEquals(1, countInstructions(arrayInstructions, ConstructBuiltinInsn.class)),
+                () -> assertEquals(1, arrayConstructInsn.args().size()),
+                () -> assertEquals(1, countInstructions(nodeInstructions, ConstructObjectInsn.class)),
+                () -> assertEquals("Node", nodeConstructInsn.className()),
+                () -> assertEquals(0, countInstructions(nodeInstructions, CallMethodInsn.class)),
+                () -> assertEquals(1, countInstructions(workerInstructions, ConstructObjectInsn.class)),
+                () -> assertTrue(workerConstructInsn.className().contains("Worker")),
+                () -> assertEquals("_init", workerInitInsn.methodName()),
+                () -> assertEquals(workerConstructInsn.resultId(), workerInitInsn.objectId()),
+                () -> assertEquals(0, countInstructions(workerInstructions, PackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(workerInstructions, UnpackVariantInsn.class)),
+                () -> assertTrue(unpackResultIds(workerInstructions).contains(onlyVariableOperandId(workerInitInsn.args())))
+        );
+    }
+
+    @Test
+    void runFailsFastWhenParameterizedConstructorLosesCallableSignatureMetadata() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_constructor_missing_signature.gd",
+                """
+                        class_name BodyInsnConstructorMissingSignature
+                        extends RefCounted
+                        
+                        class Worker:
+                            func _init(value: int):
+                                pass
+                        
+                        func build_worker(box: Variant) -> Worker:
+                            return Worker.new(box)
+                        """,
+                Map.of("BodyInsnConstructorMissingSignature", "RuntimeBodyInsnConstructorMissingSignature"),
+                true
+        );
+        var buildWorkerContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConstructorMissingSignature",
+                "build_worker"
+        );
+        var callAnchor = requireSingleCallAnchor(buildWorkerContext.requireFrontendCfgGraph());
+        var originalResolvedCall = prepared.context().requireAnalysisData().resolvedCalls().get(callAnchor);
+        assertNotNull(originalResolvedCall);
+
+        prepared.context().requireAnalysisData().resolvedCalls().put(
+                callAnchor,
+                FrontendResolvedCall.resolved(
+                        originalResolvedCall.callableName(),
+                        originalResolvedCall.callKind(),
+                        originalResolvedCall.receiverKind(),
+                        originalResolvedCall.ownerKind(),
+                        originalResolvedCall.receiverType(),
+                        originalResolvedCall.returnType(),
+                        originalResolvedCall.argumentTypes(),
+                        new Object()
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("callable signature metadata"), exception.getMessage()),
+                () -> assertTrue(
+                        exception.getMessage().contains("required for argument materialization"),
+                        exception.getMessage()
+                ),
+                () -> assertFalse(exception.getMessage().contains("call route is not lowering-ready"), exception.getMessage())
+        );
+    }
+
+    @Test
     void runKeepsGenericSubscriptInstructionsWhenOnlyVariantKeyKindIsKnown() throws Exception {
         var prepared = prepareContext(
                 "body_insn_subscript_variant_key.gd",
@@ -945,6 +1091,22 @@ class FrontendLoweringBodyInsnPassTest {
         }
         assertEquals(1, mergeValueIds.size());
         return mergeValueIds.stream().toList().getFirst();
+    }
+
+    private static @NotNull Node requireSingleCallAnchor(@NotNull FrontendCfgGraph graph) {
+        var anchors = new ArrayList<Node>();
+        for (var nodeId : graph.nodeIds()) {
+            if (!(graph.requireNode(nodeId) instanceof FrontendCfgGraph.SequenceNode(_, var items, _))) {
+                continue;
+            }
+            for (var item : items) {
+                if (item instanceof CallItem callItem) {
+                    anchors.add(callItem.anchor());
+                }
+            }
+        }
+        assertEquals(1, anchors.size());
+        return anchors.getFirst();
     }
 
     private static @NotNull AttributeSubscriptStep requireSingleAttributeSubscriptStep(@NotNull FrontendCfgGraph graph) {

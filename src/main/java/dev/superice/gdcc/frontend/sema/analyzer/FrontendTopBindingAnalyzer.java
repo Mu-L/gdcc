@@ -860,6 +860,20 @@ public class FrontendTopBindingAnalyzer {
                         publishFunctionBinding(identifierExpression, functionResult.requireValue(), false);
                 case FOUND_BLOCKED -> publishFunctionBinding(identifierExpression, functionResult.requireValue(), true);
                 case NOT_FOUND -> {
+                    var typeMetaResult = moduleSkeleton.resolveSourceFacingTypeMeta(
+                            currentScope,
+                            identifierExpression.name(),
+                            currentRestriction
+                    );
+                    if (typeMetaResult.isAllowed() && supportsTopLevelTypeMeta(typeMetaResult.requireValue())) {
+                        publishBinding(
+                                identifierExpression,
+                                identifierExpression.name(),
+                                FrontendBindingKind.TYPE_META,
+                                typeMetaResult.requireValue().declaration()
+                        );
+                        return;
+                    }
                     publishBinding(identifierExpression, identifierExpression.name(), FrontendBindingKind.UNKNOWN, null);
                     reportBindingError(
                             identifierExpression,

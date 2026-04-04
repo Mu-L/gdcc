@@ -16,6 +16,8 @@ import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
+import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdcc.type.GdVariantType;
@@ -38,6 +40,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Predicate;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -101,10 +104,10 @@ class FrontendChainBindingAnalyzerTest {
                         class Worker:
                             func _init(value: int):
                                 pass
-                            
+                        
                             static func build_count(value: int):
                                 return 1
-                            
+                        
                             func consume(value: int):
                                 return 1
                         
@@ -708,6 +711,147 @@ class FrontendChainBindingAnalyzerTest {
         var callDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution");
         assertEquals(1, callDiagnostics.size());
         assertTrue(callDiagnostics.getFirst().message().contains("Instance-style syntax resolved to static method"));
+    }
+
+    @Test
+    void analyzePublishesBareBuiltinAndObjectNewConstructorsOnSharedCallSurface() throws Exception {
+        var analyzed = analyze(
+                "constructor_surface_routes.gd",
+                """
+                        class_name ConstructorSurfaceRoutes
+                        extends RefCounted
+                        
+                        class Worker:
+                            func _init(value: int):
+                                pass
+                        
+                        func ping(seed):
+                            Array()
+                            Vector3i(1, 2, 3)
+                            Node.new()
+                            Worker.new(seed)
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var arrayCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("Array")
+        );
+        var vectorCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("Vector3i")
+        );
+        var newSteps = findNodes(pingFunction, AttributeCallStep.class, step -> step.name().equals("new"));
+        assertEquals(2, newSteps.size());
+        var nodeNewStep = newSteps.getFirst();
+        var workerNewStep = newSteps.getLast();
+
+        var resolvedArray = analyzed.analysisData().resolvedCalls().get(arrayCall);
+        var resolvedVector = analyzed.analysisData().resolvedCalls().get(vectorCall);
+        var resolvedNode = analyzed.analysisData().resolvedCalls().get(nodeNewStep);
+        var resolvedWorker = analyzed.analysisData().resolvedCalls().get(workerNewStep);
+
+        assertAll(
+                () -> assertNotNull(resolvedArray),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedArray.status()),
+                () -> assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedArray.callKind()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, resolvedArray.receiverKind()),
+                () -> assertEquals(List.of(), resolvedArray.argumentTypes()),
+                () -> assertNotNull(resolvedVector),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedVector.status()),
+                () -> assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedVector.callKind()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, resolvedVector.receiverKind()),
+                () -> assertEquals(
+                        List.of("int", "int", "int"),
+                        resolvedVector.argumentTypes().stream().map(type -> type.getTypeName()).toList()
+                ),
+                () -> assertNotNull(resolvedNode),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedNode.status()),
+                () -> assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedNode.callKind()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, resolvedNode.receiverKind()),
+                () -> assertEquals(List.of(), resolvedNode.argumentTypes()),
+                () -> assertNotNull(resolvedWorker),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedWorker.status()),
+                () -> assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedWorker.callKind()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, resolvedWorker.receiverKind()),
+                () -> assertEquals(List.of(GdVariantType.VARIANT), resolvedWorker.argumentTypes())
+        );
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeKeepsBareBuiltinConstructorOverloadAmbiguityFailClosed() throws Exception {
+        var analyzed = analyze(
+                "ambiguous_builtin_constructor_route.gd",
+                """
+                        class_name AmbiguousBuiltinConstructorRoute
+                        extends RefCounted
+                        
+                        func ping(seed):
+                            String(seed)
+                        """,
+                registryWithAmbiguousStringConstructors()
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var stringCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("String")
+        );
+
+        var failedType = analyzed.analysisData().expressionTypes().get(stringCall);
+        var failedCall = analyzed.analysisData().resolvedCalls().get(stringCall);
+
+        assertAll(
+                () -> assertNotNull(failedType),
+                () -> assertEquals(FrontendExpressionTypeStatus.FAILED, failedType.status()),
+                () -> assertTrue(failedType.detailReason().contains("Ambiguous constructor overload")),
+                () -> assertNotNull(failedCall),
+                () -> assertEquals(FrontendCallResolutionStatus.FAILED, failedCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, failedCall.callKind()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, failedCall.receiverKind()),
+                () -> assertTrue(failedCall.detailReason().contains("Ambiguous constructor overload"))
+        );
+    }
+
+    @Test
+    void analyzeKeepsNonInstantiableEngineConstructorFailureReasonPrecise() throws Exception {
+        var analyzed = analyze(
+                "non_instantiable_engine_constructor_route.gd",
+                """
+                        class_name NonInstantiableEngineConstructorRoute
+                        extends RefCounted
+                        
+                        func ping():
+                            Node.new()
+                        """,
+                registryWithNonInstantiableNode()
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var nodeNewStep = findNode(
+                pingFunction,
+                AttributeCallStep.class,
+                step -> step.name().equals("new")
+        );
+
+        var failedCall = analyzed.analysisData().resolvedCalls().get(nodeNewStep);
+
+        assertAll(
+                () -> assertNotNull(failedCall),
+                () -> assertEquals(FrontendCallResolutionStatus.FAILED, failedCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, failedCall.callKind()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, failedCall.receiverKind()),
+                () -> assertTrue(failedCall.detailReason().contains("Node")),
+                () -> assertTrue(failedCall.detailReason().contains("is not instantiable"))
+        );
     }
 
     @Test
@@ -1425,6 +1569,87 @@ class FrontendChainBindingAnalyzerTest {
                 api.singletons(),
                 api.nativeStructures()
         ));
+    }
+
+    private static @NotNull ClassRegistry registryWithAmbiguousStringConstructors() throws Exception {
+        var api = ExtensionApiLoader.loadDefault();
+        var patchedBuiltins = api.builtinClasses().stream()
+                .map(FrontendChainBindingAnalyzerTest::withAmbiguousStringConstructors)
+                .toList();
+        return new ClassRegistry(new ExtensionAPI(
+                api.header(),
+                api.builtinClassSizes(),
+                api.builtinClassMemberOffsets(),
+                api.globalEnums(),
+                api.utilityFunctions(),
+                patchedBuiltins,
+                api.classes(),
+                api.singletons(),
+                api.nativeStructures()
+        ));
+    }
+
+    private static @NotNull ClassRegistry registryWithNonInstantiableNode() throws Exception {
+        var api = ExtensionApiLoader.loadDefault();
+        var patchedClasses = api.classes().stream()
+                .map(FrontendChainBindingAnalyzerTest::withNonInstantiableNode)
+                .toList();
+        return new ClassRegistry(new ExtensionAPI(
+                api.header(),
+                api.builtinClassSizes(),
+                api.builtinClassMemberOffsets(),
+                api.globalEnums(),
+                api.utilityFunctions(),
+                api.builtinClasses(),
+                patchedClasses,
+                api.singletons(),
+                api.nativeStructures()
+        ));
+    }
+
+    private static @NotNull ExtensionBuiltinClass withAmbiguousStringConstructors(@NotNull ExtensionBuiltinClass builtinClass) {
+        if (!builtinClass.name().equals("String")) {
+            return builtinClass;
+        }
+        return new ExtensionBuiltinClass(
+                builtinClass.name(),
+                builtinClass.isKeyed(),
+                builtinClass.operators(),
+                builtinClass.methods(),
+                builtinClass.enums(),
+                List.of(
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                0,
+                                List.of(new ExtensionFunctionArgument("value", "int", null, null))
+                        ),
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                1,
+                                List.of(new ExtensionFunctionArgument("value", "String", null, null))
+                        )
+                ),
+                builtinClass.properties(),
+                builtinClass.constants()
+        );
+    }
+
+    private static @NotNull ExtensionGdClass withNonInstantiableNode(@NotNull ExtensionGdClass gdClass) {
+        if (!gdClass.name().equals("Node")) {
+            return gdClass;
+        }
+        return new ExtensionGdClass(
+                gdClass.name(),
+                gdClass.isRefcounted(),
+                false,
+                gdClass.inherits(),
+                gdClass.apiType(),
+                gdClass.enums(),
+                gdClass.methods(),
+                gdClass.signals(),
+                gdClass.properties(),
+                gdClass.constants()
+        );
     }
 
     private static @NotNull ExtensionBuiltinClass withKeyedStringBuiltin(@NotNull ExtensionBuiltinClass builtinClass) {

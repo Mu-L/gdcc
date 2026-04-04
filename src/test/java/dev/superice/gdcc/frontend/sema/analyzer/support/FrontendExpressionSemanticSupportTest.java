@@ -214,6 +214,77 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
+    void resolveCallExpressionTypePublishesBuiltinDirectConstructorsAndRejectsBareObjectConstructors()
+            throws Exception {
+        var analyzed = analyze(
+                "expression_semantic_support_direct_constructors.gd",
+                """
+                        class_name ExpressionSemanticSupportDirectConstructors
+                        extends RefCounted
+                        
+                        func ping() -> void:
+                            Array()
+                            Vector3i(1, 2, 3)
+                            Node()
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var arrayCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("Array")
+        );
+        var vectorCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("Vector3i")
+        );
+        var nodeCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("Node")
+        );
+
+        var arrayResult = support.resolveCallExpressionType(arrayCall, publishedResolver, true, false);
+        var vectorResult = support.resolveCallExpressionType(vectorCall, publishedResolver, true, false);
+        var nodeResult = support.resolveCallExpressionType(nodeCall, publishedResolver, true, false);
+
+        assertAll(
+                () -> assertTrue(arrayResult.rootOwnsOutcome()),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, arrayResult.expressionType().status()),
+                () -> assertEquals("Array", arrayResult.expressionType().publishedType().getTypeName()),
+                () -> assertNotNull(arrayResult.publishedCallOrNull()),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, arrayResult.publishedCallOrNull().status()),
+                () -> assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, arrayResult.publishedCallOrNull().callKind()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, arrayResult.publishedCallOrNull().receiverKind()),
+                () -> assertEquals(List.of(), arrayResult.publishedCallOrNull().argumentTypes()),
+                () -> assertNotNull(arrayResult.publishedCallOrNull().declarationSite()),
+                () -> assertTrue(vectorResult.rootOwnsOutcome()),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, vectorResult.expressionType().status()),
+                () -> assertEquals("Vector3i", vectorResult.expressionType().publishedType().getTypeName()),
+                () -> assertNotNull(vectorResult.publishedCallOrNull()),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, vectorResult.publishedCallOrNull().status()),
+                () -> assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, vectorResult.publishedCallOrNull().callKind()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, vectorResult.publishedCallOrNull().receiverKind()),
+                () -> assertEquals(
+                        List.of("int", "int", "int"),
+                        vectorResult.publishedCallOrNull().argumentTypes().stream().map(type -> type.getTypeName()).toList()
+                ),
+                () -> assertNotNull(vectorResult.publishedCallOrNull().declarationSite()),
+                () -> assertTrue(nodeResult.rootOwnsOutcome()),
+                () -> assertEquals(FrontendExpressionTypeStatus.FAILED, nodeResult.expressionType().status()),
+                () -> assertTrue(nodeResult.expressionType().detailReason().contains("Node.new(...)")),
+                () -> assertNull(nodeResult.publishedCallOrNull())
+        );
+    }
+
+    @Test
     void resolveCallExpressionTypeAcceptsStableVariantSourcesAtFixedParameterBoundaries() throws Exception {
         var analyzed = analyze(
                 "expression_semantic_support_variant_calls.gd",

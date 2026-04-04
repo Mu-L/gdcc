@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（executable-body CFG build / body lowering 已落地；property initializer 与 parameter default 仍保持 staged）
-- 更新时间：2026-04-03
+- 更新时间：2026-04-04
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
   - `src/main/java/dev/superice/gdcc/frontend/lowering/cfg/**`
@@ -401,7 +401,7 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
 
 - `CastItem`
 - `TypeTestItem`
-- constructor route
+- constructor materialization
 - multi-key subscript lowering
 - 缺失 published fact 的 call/member/value type 路径
 
@@ -429,6 +429,14 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
 - value-context 与 condition-context 的 `and` / `or` / `not`
 - callable-local slot type published contract
 - bare `CallExpression` 的正式 `resolvedCalls()` published 面
+
+需要额外澄清的一点是：
+
+- semantic surface 已经正式发布 attribute-step `ClassName.new(...)` 的 `FrontendResolvedCall(callKind = CONSTRUCTOR)` 事实，因此 compile gate 当前并不会把这条 route 作为“尚未识别的 surface”拦住
+- 当前真正未闭合的是 constructor materialization：
+  - body lowering 仍对 `CONSTRUCTOR` fail-fast
+  - bare direct constructor（例如 `Array(...)`、`Vector3i(1, 2, 3)`）还没有进入同一条 published call surface
+- 因此“constructor route 当前阶段完全不支持”并不是准确的事实描述；更准确的表述应当是“constructor 语义路由已就绪，但 executable-body lowering / backend 闭合仍待补齐”
 
 当前仍然保持封口或 staged 的部分包括：
 
@@ -514,3 +522,198 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
 - `frontend_loop_control_flow_analyzer_implementation.md`
 - `diagnostic_manager.md`
 - 本文档
+
+---
+
+## 12. Constructor Lowering 实施计划
+
+本节用于收口当前 constructor 支持面的不一致：compile-ready semantic surface 已经允许 `.new(...)` constructor fact 进入 lowering，但 body lowering 仍显式拒绝；同时 direct builtin constructor 还没有进入正式 published call surface。目标是把 executable body 中的 constructor 调用闭合为一条完整链路，而不是继续让 compile gate、CFG、body lowering、backend 各自维护半套事实。
+
+### 12.1 背景与问题拆分
+
+当前缺口实际上分成两类：
+
+- attribute constructor route
+  - 例如 `Worker.new(...)`、`Node.new()`
+  - `FrontendChainReductionHelper` 已能发布 `FrontendResolvedCall(callKind = CONSTRUCTOR)`，但 `FrontendSequenceItemInsnLoweringProcessors.FrontendCallInsnLoweringProcessor` 仍直接抛出 “constructor route lowering is not implemented yet”
+- bare direct constructor route
+  - 例如 `Array(...)`、`Dictionary(...)`、`Vector3i(1, 2, 3)`、`Color(1, 0, 0, 1)`
+  - 当前 bare call 语义仍按 ordinary function overload 处理，没有把 bare `TYPE_META` callee 视为 constructor head，因此这类写法尚未进入与 `.new(...)` 相同的 published `resolvedCalls()` surface
+
+此外，constructor lowering 还跨越 frontend/backend 边界：
+
+- LIR 已有 `ConstructBuiltinInsn` 与 `ConstructObjectInsn`
+- C backend 已能消费 `ConstructBuiltinInsn`
+- `ConstructObjectInsn` 虽然存在于 LIR opcode 面与文档中，但当前 `ConstructInsnGen` 尚未接通 `CONSTRUCT_OBJECT`
+
+因此，本计划必须同时定义 semantic publication、CFG/body lowering materialization 与 backend 闭合，不能只修一个 `switch` 分支。
+
+### 12.2 目标合同
+
+本轮完成后，executable body 中的 constructor 调用应统一满足以下合同：
+
+- `.new(...)` 与 bare direct constructor 都通过正式 `FrontendResolvedCall` surface 进入 lowering
+- 两种语法入口都继续复用现有 `CallItem`
+  - 不新增专用 constructor CFG item
+  - CFG 只负责冻结 operand 顺序、anchor 与 result value id
+- body lowering 根据已发布的 constructor metadata 直接选择 LIR 指令族
+  - builtin target -> `ConstructBuiltinInsn`
+  - object target -> `ConstructObjectInsn`
+  - gdcc class 且命中显式 `_init(...)` 时，在 object construct 之后补一条 `_init` 调用
+- ordinary call 的 owner 边界保持不变
+  - constructor 不伪装成 static/instance method
+  - body lowering 不重跑 overload 选择，不反推语义
+
+本轮 scope 仅覆盖 compile-ready `EXECUTABLE_BODY`。`PROPERTY_INIT` / `PARAMETER_DEFAULT_INIT` 仍按现有 staged 计划保留，不借 constructor 支持顺带打开。
+
+### 12.3 第一步：统一 published constructor call surface
+
+- 状态：已完成（2026-04-04）
+- 已落地产出：
+  - bare callee binding 现在允许在函数查找失败后回退到 `TYPE_META`，使 `Array(...)`、`Vector3i(...)` 等 builtin direct constructor 能进入正式 constructor route
+  - `.new(...)` 与 bare builtin direct constructor 统一复用 `FrontendConstructorResolutionSupport` 做 constructor overload 选择与 detail reason 生成
+  - published constructor metadata 继续收口在现有 `FrontendResolvedCall` / `declarationSite` 合同上，zero-arg engine/default constructor 不再强制伪装成 `FunctionDef`
+
+需要完成的工作：
+
+1. 扩展 bare direct constructor 的语义入口
+   - 在 bare `CallExpression` 语义处理中，把 bare callee 绑定为 `TYPE_META` 的情况识别为 constructor route，而不是继续走 ordinary function lookup
+   - `Array(...)`、`Vector3i(...)`、`Color(...)` 等 builtin direct constructor 与 object-type bare constructor 都要复用同一套 constructor resolution，而不是新增一套 bare-only overload 规则
+2. 保持 `.new(...)` 与 bare direct constructor 使用统一的 `FrontendResolvedCall.callKind() == CONSTRUCTOR`
+   - 两条语法入口允许使用不同 anchor：
+     - `.new(...)` -> `AttributeCallStep`
+     - bare direct constructor -> `CallExpression`
+   - 但 downstream 不得再把 syntax shape 当成 route kind
+3. 冻结 constructor published metadata 的最小必需面
+   - lowering 至少需要稳定拿到：
+     - constructed target type
+     - fixed parameter types
+     - declaration site / owner metadata
+     - 是否命中 gdcc `_init`
+   - 不允许再依赖“declarationSite 一定是 `FunctionDef`”这种只对部分 constructor 成立的前提
+
+实施要求：
+
+- 优先在现有 `FrontendResolvedCall` / `declarationSite` contract 上补齐 constructor 元数据消费能力，避免为了 constructor 单独复制一套 call side table
+- 若现有 `declarationSite` 不能无歧义表达 builtin / engine / gdcc constructor 所需信息，应补一个面向 lowering 的最小 metadata carrier，但必须保持私有且贴近 lowering 邻域，不能在 public model 层引入只服务一个消费者的空泛抽象
+
+验收细则：
+
+- `FrontendExpressionSemanticSupportTest`
+  - direct builtin constructor 正向样本：
+    - `Array()`
+    - `Vector3i(1, 2, 3)`
+  - object `.new(...)` 正向样本：
+    - `Node.new()`
+    - gdcc `Worker.new(1)`
+- `FrontendChainBindingAnalyzerTest`
+  - bare direct constructor 与 `.new(...)` 都发布 `callKind = CONSTRUCTOR`
+  - ambiguous builtin constructor 继续 fail-closed
+  - non-instantiable engine class 继续失败并保留精确 detail reason
+
+### 12.4 第二步：补齐 body lowering 的 constructor materialization
+
+- 状态：已完成（2026-04-04）
+- 已落地产出：
+  - `FrontendCfgGraphBuilder` 已接通 type-meta chain head call materialization，`Node.new()` / `Worker.new(...)` 不再把 type-meta base 误当运行时值去求值
+  - `FrontendLoweringBodyInsnPass` 已根据 published constructor metadata 正式发出 `ConstructBuiltinInsn` / `ConstructObjectInsn`
+  - gdcc `_init(...)` constructor 已在 object construct 后追加 `_init` 调用，并继续复用现有 fixed-parameter boundary `(un)pack` 规则
+  - 缺失 callable signature metadata 的带参 constructor route 现在会以明确的 publication-contract 错误 fail-fast
+
+需要完成的工作：
+
+1. 让 `FrontendCallInsnLoweringProcessor` 正式接通 `CONSTRUCTOR`
+   - 继续通过 `session.materializeCallArguments(...)` 做 fixed-parameter boundary materialization
+   - constructor route 不得绕过现有 `(un)pack` 规则
+2. 在 `FrontendBodyLoweringSession` 中补 constructor-aware signature consumption
+   - 现有 `requireResolvedCallableSignature(...)` 只能处理 `FunctionDef`，需要替换为 constructor-aware 的 metadata 读取路径
+   - 该路径必须能统一覆盖：
+     - builtin constructor metadata
+     - engine object zero-arg constructor
+     - gdcc `_init(...)`
+3. 按 target family 选择实际 LIR：
+   - builtin target：
+     - 发 `ConstructBuiltinInsn(result, args)`
+     - 不再伪装成 `CallGlobalInsn` 或 `CallStaticMethodInsn`
+   - object target：
+     - 先发 `ConstructObjectInsn(result, className)`
+     - 若命中 gdcc `_init(...)`，再发 `CallMethodInsn(null, "_init", result, args)`
+     - 若是 engine object zero-arg route，则只发 `ConstructObjectInsn`
+
+需要特别校准的点：
+
+- gdcc class `.new(...)` 是否可以直接把 class name 交给 `construct_object`
+  - 若引擎能通过已注册的 extension class 正常回调到 `create_instance`，则直接沿用 `ConstructObjectInsn(className)`
+  - 若不能，则需要在 backend 引入 dedicated gdcc-object construction helper，但这不改变 frontend lowering contract；frontend 仍只发布“构造一个 object target”的统一 LIR 意图
+- builtin `Array` / `Dictionary` direct constructor 不应退化为 zero-arg 专用路径
+  - direct source-level constructor 必须允许带 runtime argument
+  - typed container 的具体 C 构造策略继续留给 backend `CBuiltinBuilder` 按 result type 决定
+
+验收细则：
+
+- `FrontendLoweringBodyInsnPassTest`
+  - `Vector3i(1, 2, 3)` lower 为 `ConstructBuiltinInsn`
+  - `Array(source)` lower 为 `ConstructBuiltinInsn`
+  - `Node.new()` lower 为 `ConstructObjectInsn`
+  - gdcc `Worker.new(1)` lower 为 `ConstructObjectInsn` + `_init` method call
+  - fixed constructor parameter 仍插入必要的 `PackVariantInsn` / `UnpackVariantInsn`
+- negative path
+  - 缺失 constructor metadata 时继续 fail-fast，异常消息必须指出是 constructor publication contract 缺失，而不是笼统 “call route is not lowering-ready”
+
+### 12.5 第三步：补齐 backend `CONSTRUCT_OBJECT`
+
+需要完成的工作：
+
+1. 在 `ConstructInsnGen` 中注册并实现 `CONSTRUCT_OBJECT`
+   - 根据 `ConstructObjectInsn.className` 生成 object construction 代码
+   - 复用现有 object ownership / refcount 规则，不新增另一套 lifecycle 约定
+2. 验证 gdcc class 与 native/engine class 的 object construction 行为
+   - `RefCounted` 派生对象的 owned contract 必须保持正确
+   - 非 instantiable class 必须在更早阶段被 frontend semantic 拦下，不把 backend 变成语义兜底
+3. 若 gdcc class object construction 需要 special helper 才能正确走 extension registration callback，应把 helper 收口在 backend，不把这层差异泄漏回 frontend lowering
+
+验收细则：
+
+- `CConstructInsnGenTest`
+  - 新增 `ConstructObjectInsn` unit tests
+  - 覆盖 engine/native object class 与 refcounted object class
+- `FrontendLoweringToCProjectBuilderIntegrationTest`
+  - 新增 frontend 全链路 compile test，验证 constructor lowering 产物可成功 build 为 native library
+- Godot engine integration test
+  - 参考现有 `GodotGdextensionTestRunner` / engine test 形态，至少覆盖：
+    - `Vector3i(1, 2, 3)` 在引擎内返回分量正确
+    - `Node.new()` 返回非 null object
+    - gdcc `Worker.new(1)` 调用后可观测到 `_init` 初始化结果
+
+### 12.6 第四步：同步 compile-ready surface 与事实源描述
+
+需要完成的工作：
+
+1. 更新本文档中的“当前支持面与保留封口”
+   - constructor 不再以“整体 route 不支持”的表述存在
+   - 改为区分：
+     - published constructor semantic surface
+     - direct builtin constructor publication
+     - body/backend materialization 是否闭合
+2. 同步相关事实源
+   - `frontend_lowering_plan.md`
+   - `frontend_chain_binding_expr_type_implementation.md`
+   - `frontend_compile_check_analyzer_implementation.md`
+   - 若 backend 实现发生变化，还需同步 `gdcc_low_ir.md` / `gdcc_c_backend.md` 与 backend implementation docs
+
+验收细则：
+
+- 文档中的 compile-ready surface、fail-fast gap、测试锚点三处描述必须彼此一致
+- 不再出现“一处文档宣称 constructor 已 compile-ready，另一处仍写当前阶段整体 unsupported”的冲突
+
+### 12.7 建议提交顺序
+
+为了避免再次出现“上游已放行、下游仍拒绝”的半开状态，建议按以下顺序落地：
+
+1. semantic publication contract
+2. body lowering constructor branch
+3. backend `CONSTRUCT_OBJECT`
+4. integration / engine tests
+5. factsource 文档统一收口
+
+其中第 1 步与第 2 步之间不应产生可进入默认 compile pipeline 但必定在 lowering 中抛错的中间提交；如果需要分提交，compile gate 或测试选择必须保证每个提交都处于自洽状态。

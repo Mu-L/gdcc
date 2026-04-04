@@ -335,9 +335,12 @@ public final class FrontendBodyLoweringSession {
     ) {
         Objects.requireNonNull(block, "block must not be null");
         Objects.requireNonNull(item, "item must not be null");
-        var callable = requireResolvedCallableSignature(resolvedCall);
-        var parameterTypes = callBoundaryParameterTypes(callable, resolvedCall.callKind());
         var argumentValueIds = item.argumentValueIds();
+        if (argumentValueIds.isEmpty()) {
+            return List.of();
+        }
+        var callable = requireBoundaryCallableSignature(resolvedCall);
+        var parameterTypes = callBoundaryParameterTypes(callable, resolvedCall.callKind());
         if (!callable.isVararg() && argumentValueIds.size() > parameterTypes.size()) {
             throw new IllegalStateException(
                     "Resolved call '" + resolvedCall.callableName() + "' provides "
@@ -487,7 +490,10 @@ public final class FrontendBodyLoweringSession {
                 + boundaryMaterializationCounter++;
     }
 
-    private @NotNull FunctionDef requireResolvedCallableSignature(@NotNull FrontendResolvedCall resolvedCall) {
+    /// Constructor routes such as `Node.new()` may intentionally publish class metadata instead of a
+    /// synthetic zero-arg callable. We therefore demand a callable signature only when some actual
+    /// argument values still need fixed-parameter boundary materialization.
+    private @NotNull FunctionDef requireBoundaryCallableSignature(@NotNull FrontendResolvedCall resolvedCall) {
         var declarationSite = Objects.requireNonNull(
                 Objects.requireNonNull(resolvedCall, "resolvedCall must not be null").declarationSite(),
                 "Resolved call must carry declaration metadata"
@@ -495,9 +501,15 @@ public final class FrontendBodyLoweringSession {
         return switch (declarationSite) {
             case FunctionDef functionDef -> functionDef;
             default -> throw new IllegalStateException(
-                    "Resolved call '" + resolvedCall.callableName() + "' does not carry callable signature metadata"
+                    "Resolved call '" + resolvedCall.callableName()
+                            + "' does not carry callable signature metadata required for argument materialization"
             );
         };
+    }
+
+    boolean shouldInvokeInitAfterObjectConstruction(@NotNull FrontendResolvedCall resolvedCall) {
+        return resolvedCall.declarationSite() instanceof FunctionDef functionDef
+                && functionDef.getName().equals("_init");
     }
 
     /// Call instructions materialize the receiver separately, so any frontend-facing signature

@@ -13,7 +13,6 @@ import dev.superice.gdcc.gdextension.ExtensionGlobalEnum;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.FunctionDef;
-import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.ScopeOwnerKind;
 import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.scope.ScopeValueKind;
@@ -47,7 +46,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.OptionalInt;
-import java.util.StringJoiner;
 import java.util.regex.Pattern;
 
 /// Local left-to-right chain reduction helper used before the published chain analyzer exists.
@@ -1356,34 +1354,31 @@ public final class FrontendChainReductionHelper {
             boolean finalizeRetryUsed
     ) {
         var receiverTypeMeta = Objects.requireNonNull(incomingReceiver.receiverTypeMeta(), "receiverTypeMeta must not be null");
-        var resolution = resolveConstructor(classRegistry, receiverTypeMeta, argumentTypes);
+        var resolution = FrontendConstructorResolutionSupport.resolveConstructor(classRegistry, receiverTypeMeta, argumentTypes);
         return switch (resolution.status()) {
-            case RESOLVED -> {
-                var declarationSite = resolution.constructor() != null ? resolution.constructor() : receiverTypeMeta.declaration();
-                yield new StepTrace(
-                        stepIndex,
-                        step,
-                        StepKind.CALL,
-                        RouteKind.CONSTRUCTOR,
-                        incomingReceiver,
-                        Status.RESOLVED,
-                        ReceiverState.resolvedInstance(receiverTypeMeta.instanceType()),
-                        null,
-                        null,
-                        FrontendResolvedCall.resolved(
-                                step.name(),
-                                FrontendCallResolutionKind.CONSTRUCTOR,
-                                FrontendReceiverKind.TYPE_META,
-                                resolution.ownerKind(),
-                                incomingReceiver.receiverType(),
-                                receiverTypeMeta.instanceType(),
-                                argumentTypes,
-                                declarationSite
-                        ),
-                        finalizeRetryUsed,
-                        null
-                );
-            }
+            case RESOLVED -> new StepTrace(
+                    stepIndex,
+                    step,
+                    StepKind.CALL,
+                    RouteKind.CONSTRUCTOR,
+                    incomingReceiver,
+                    Status.RESOLVED,
+                    ReceiverState.resolvedInstance(receiverTypeMeta.instanceType()),
+                    null,
+                    null,
+                    FrontendResolvedCall.resolved(
+                            step.name(),
+                            FrontendCallResolutionKind.CONSTRUCTOR,
+                            FrontendReceiverKind.TYPE_META,
+                            resolution.ownerKind(),
+                            incomingReceiver.receiverType(),
+                            receiverTypeMeta.instanceType(),
+                            argumentTypes,
+                            resolution.declarationSite()
+                    ),
+                    finalizeRetryUsed,
+                    null
+            );
             case FAILED -> new StepTrace(
                     stepIndex,
                     step,
@@ -1401,30 +1396,7 @@ public final class FrontendChainReductionHelper {
                             resolution.ownerKind(),
                             incomingReceiver.receiverType(),
                             argumentTypes,
-                            resolution.constructor() != null ? resolution.constructor() : receiverTypeMeta.declaration(),
-                            Objects.requireNonNull(resolution.detailReason())
-                    ),
-                    finalizeRetryUsed,
-                    Objects.requireNonNull(resolution.detailReason())
-            );
-            case UNSUPPORTED -> new StepTrace(
-                    stepIndex,
-                    step,
-                    StepKind.CALL,
-                    RouteKind.CONSTRUCTOR,
-                    incomingReceiver,
-                    Status.UNSUPPORTED,
-                    ReceiverState.unsupportedFrom(incomingReceiver, Objects.requireNonNull(resolution.detailReason())),
-                    null,
-                    null,
-                    FrontendResolvedCall.unsupported(
-                            step.name(),
-                            FrontendCallResolutionKind.CONSTRUCTOR,
-                            FrontendReceiverKind.TYPE_META,
-                            resolution.ownerKind(),
-                            incomingReceiver.receiverType(),
-                            argumentTypes,
-                            resolution.constructor() != null ? resolution.constructor() : receiverTypeMeta.declaration(),
+                            resolution.declarationSite(),
                             Objects.requireNonNull(resolution.detailReason())
                     ),
                     finalizeRetryUsed,
@@ -2174,263 +2146,6 @@ public final class FrontendChainReductionHelper {
         return null;
     }
 
-    private static @NotNull ConstructorResolution resolveConstructor(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull ScopeTypeMeta receiverTypeMeta,
-            @NotNull List<GdType> argumentTypes
-    ) {
-        return switch (receiverTypeMeta.kind()) {
-            case GLOBAL_ENUM -> new ConstructorResolution(
-                    Status.FAILED,
-                    null,
-                    null,
-                    "Type meta '" + receiverTypeMeta.displayName() + "' does not support constructor calls"
-            );
-            case ENGINE_CLASS -> resolveEngineConstructor(receiverTypeMeta, argumentTypes);
-            case GDCC_CLASS -> resolveGdccConstructor(classRegistry, receiverTypeMeta, argumentTypes);
-            case BUILTIN -> resolveBuiltinConstructor(classRegistry, receiverTypeMeta, argumentTypes);
-        };
-    }
-
-    private static @NotNull ConstructorResolution resolveEngineConstructor(
-            @NotNull ScopeTypeMeta receiverTypeMeta,
-            @NotNull List<GdType> argumentTypes
-    ) {
-        if (!(receiverTypeMeta.declaration() instanceof ExtensionGdClass engineClass)) {
-            return new ConstructorResolution(
-                    Status.FAILED,
-                    null,
-                    ScopeOwnerKind.ENGINE,
-                    "Engine constructor receiver '" + receiverTypeMeta.displayName() + "' has malformed declaration metadata"
-            );
-        }
-        if (!engineClass.isInstantiable()) {
-            return new ConstructorResolution(
-                    Status.FAILED,
-                    null,
-                    ScopeOwnerKind.ENGINE,
-                    "Engine class '" + receiverTypeMeta.displayName() + "' is not instantiable"
-            );
-        }
-        if (!argumentTypes.isEmpty()) {
-            return new ConstructorResolution(
-                    Status.FAILED,
-                    null,
-                    ScopeOwnerKind.ENGINE,
-                    "Engine class constructor '" + receiverTypeMeta.displayName() + ".new' accepts no arguments"
-            );
-        }
-        return new ConstructorResolution(Status.RESOLVED, null, ScopeOwnerKind.ENGINE, null);
-    }
-
-    private static @NotNull ConstructorResolution resolveGdccConstructor(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull ScopeTypeMeta receiverTypeMeta,
-            @NotNull List<GdType> argumentTypes
-    ) {
-        var classDef = resolveDeclaredClass(classRegistry, receiverTypeMeta);
-        if (classDef == null) {
-            return new ConstructorResolution(
-                    Status.FAILED,
-                    null,
-                    ScopeOwnerKind.GDCC,
-                    "Constructor receiver '" + receiverTypeMeta.displayName() + "' has unavailable class metadata"
-            );
-        }
-        var constructors = classDef.getFunctions().stream()
-                .filter(function -> function.getName().equals("_init") && !function.isStatic())
-                .toList();
-        if (constructors.isEmpty()) {
-            if (argumentTypes.isEmpty()) {
-                return new ConstructorResolution(Status.RESOLVED, null, ScopeOwnerKind.GDCC, null);
-            }
-            return new ConstructorResolution(
-                    Status.FAILED,
-                    null,
-                    ScopeOwnerKind.GDCC,
-                    "Class '" + receiverTypeMeta.displayName() + "' has no matching constructor overload for "
-                            + renderArgumentTypes(argumentTypes)
-            );
-        }
-        return chooseConstructor(classRegistry, receiverTypeMeta, constructors, argumentTypes, ScopeOwnerKind.GDCC);
-    }
-
-    private static @NotNull ConstructorResolution resolveBuiltinConstructor(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull ScopeTypeMeta receiverTypeMeta,
-            @NotNull List<GdType> argumentTypes
-    ) {
-        var builtinClass = resolveBuiltinStaticOwner(classRegistry, receiverTypeMeta);
-        if (builtinClass == null) {
-            return new ConstructorResolution(
-                    Status.FAILED,
-                    null,
-                    ScopeOwnerKind.BUILTIN,
-                    "Builtin constructor receiver '" + receiverTypeMeta.displayName() + "' is not backed by builtin metadata"
-            );
-        }
-        if (builtinClass.constructors().isEmpty()) {
-            return new ConstructorResolution(
-                    Status.FAILED,
-                    null,
-                    ScopeOwnerKind.BUILTIN,
-                    "Builtin type '" + receiverTypeMeta.displayName() + "' has no constructor metadata"
-            );
-        }
-        return chooseConstructor(
-                classRegistry,
-                receiverTypeMeta,
-                builtinClass.constructors(),
-                argumentTypes,
-                ScopeOwnerKind.BUILTIN
-        );
-    }
-
-    private static @NotNull ConstructorResolution chooseConstructor(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull ScopeTypeMeta receiverTypeMeta,
-            @NotNull List<? extends FunctionDef> constructors,
-            @NotNull List<GdType> argumentTypes,
-            @NotNull ScopeOwnerKind ownerKind
-    ) {
-        var applicable = constructors.stream()
-                .filter(constructor -> matchesCallableArguments(classRegistry, constructor, argumentTypes))
-                .toList();
-        if (applicable.size() == 1) {
-            return new ConstructorResolution(Status.RESOLVED, applicable.getFirst(), ownerKind, null);
-        }
-        if (applicable.size() > 1) {
-            return new ConstructorResolution(
-                    Status.FAILED,
-                    null,
-                    ownerKind,
-                    "Ambiguous constructor overload for '" + receiverTypeMeta.displayName() + ".new': "
-                            + renderCallableSignatures(applicable)
-            );
-        }
-        var detailReason = constructors.isEmpty()
-                ? "Type '" + receiverTypeMeta.displayName() + "' exposes no constructors"
-                : "No applicable constructor overload for '" + receiverTypeMeta.displayName() + ".new': "
-                  + buildCallableMismatchReason(classRegistry, constructors.getFirst(), argumentTypes)
-                  + ". candidates: " + renderCallableSignatures(constructors);
-        return new ConstructorResolution(Status.FAILED, null, ownerKind, detailReason);
-    }
-
-    private static boolean matchesCallableArguments(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull FunctionDef callable,
-            @NotNull List<GdType> argumentTypes
-    ) {
-        var parameters = callable.getParameters();
-        var fixedCount = parameters.size();
-        var providedCount = argumentTypes.size();
-        if (providedCount < fixedCount && !canOmitTrailingParameters(parameters, providedCount)) {
-            return false;
-        }
-        if (!callable.isVararg() && providedCount > fixedCount) {
-            return false;
-        }
-        var fixedPrefixCount = Math.min(providedCount, fixedCount);
-        for (var index = 0; index < fixedPrefixCount; index++) {
-            if (!FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
-                    classRegistry,
-                    argumentTypes.get(index),
-                    parameters.get(index).getType()
-            )) {
-                return false;
-            }
-        }
-        if (!callable.isVararg()) {
-            return true;
-        }
-        // Constructor vararg tails follow the same Variant-packing rule as ordinary calls.
-        return true;
-    }
-
-    private static @NotNull String buildCallableMismatchReason(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull FunctionDef callable,
-            @NotNull List<GdType> argumentTypes
-    ) {
-        var parameters = callable.getParameters();
-        var fixedCount = parameters.size();
-        var providedCount = argumentTypes.size();
-        if (providedCount < fixedCount && !canOmitTrailingParameters(parameters, providedCount)) {
-            var missingParameterIndex = firstMissingRequiredParameter(parameters, providedCount);
-            return "missing required parameter #" + (missingParameterIndex + 1) + " ('"
-                    + parameters.get(missingParameterIndex).getName() + "')";
-        }
-        if (!callable.isVararg() && providedCount > fixedCount) {
-            return "expected " + fixedCount + " arguments, got " + providedCount;
-        }
-        var fixedPrefixCount = Math.min(providedCount, fixedCount);
-        for (var index = 0; index < fixedPrefixCount; index++) {
-            var argumentType = argumentTypes.get(index);
-            var parameter = parameters.get(index);
-            if (!FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
-                    classRegistry,
-                    argumentType,
-                    parameter.getType()
-            )) {
-                return "argument #" + (index + 1) + " of type '" + argumentType.getTypeName()
-                        + "' is not assignable to parameter '" + parameter.getName()
-                        + "' of type '" + parameter.getType().getTypeName() + "'";
-            }
-        }
-        return "no compatible signature found";
-    }
-
-    private static boolean canOmitTrailingParameters(
-            @NotNull List<? extends ParameterDef> parameters,
-            int providedCount
-    ) {
-        for (var index = providedCount; index < parameters.size(); index++) {
-            if (parameters.get(index).getDefaultValueFunc() == null) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static int firstMissingRequiredParameter(
-            @NotNull List<? extends ParameterDef> parameters,
-            int providedCount
-    ) {
-        for (var index = providedCount; index < parameters.size(); index++) {
-            if (parameters.get(index).getDefaultValueFunc() == null) {
-                return index;
-            }
-        }
-        return providedCount;
-    }
-
-    private static @NotNull String renderCallableSignatures(@NotNull List<? extends FunctionDef> callables) {
-        var joiner = new StringJoiner("; ");
-        for (var callable : callables) {
-            joiner.add(renderCallableSignature(callable));
-        }
-        return joiner.toString();
-    }
-
-    private static @NotNull String renderCallableSignature(@NotNull FunctionDef callable) {
-        var argsJoiner = new StringJoiner(", ");
-        for (var parameter : callable.getParameters()) {
-            argsJoiner.add(parameter.getType().getTypeName());
-        }
-        if (callable.isVararg()) {
-            argsJoiner.add("...");
-        }
-        return callable.getName() + "(" + argsJoiner + ")";
-    }
-
-    private static @NotNull String renderArgumentTypes(@NotNull List<GdType> argumentTypes) {
-        var joiner = new StringJoiner(", ", "(", ")");
-        for (var argumentType : argumentTypes) {
-            joiner.add(argumentType.getTypeName());
-        }
-        return joiner.toString();
-    }
-
     private static @Nullable ClassDef resolveDeclaredClass(
             @NotNull ClassRegistry classRegistry,
             @NotNull ScopeTypeMeta receiverTypeMeta
@@ -2546,21 +2261,4 @@ public final class FrontendChainReductionHelper {
         }
     }
 
-    private record ConstructorResolution(
-            @NotNull Status status,
-            @Nullable FunctionDef constructor,
-            @Nullable ScopeOwnerKind ownerKind,
-            @Nullable String detailReason
-    ) {
-        private ConstructorResolution {
-            Objects.requireNonNull(status, "status must not be null");
-            if (status == Status.RESOLVED) {
-                if (detailReason != null) {
-                    throw new IllegalArgumentException("detailReason must be null for resolved constructor resolution");
-                }
-            } else {
-                StringUtil.requireNonBlank(detailReason, "detailReason");
-            }
-        }
-    }
 }
