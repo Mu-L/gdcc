@@ -400,6 +400,24 @@ frontend sema 不负责：
 
 把 frontend 里“target `Variant` 需要 pack，stable `Variant` source 需要 unpack，其余回退 strict assignability”的规则统一收口。
 
+### 当前状态
+
+- 状态：已完成（2026-04-04）
+- 已落地产出：
+  - 新增 `FrontendVariantBoundaryCompatibility`，以 `Decision` 枚举统一表达 `ALLOW_DIRECT` / `ALLOW_WITH_PACK` / `ALLOW_WITH_UNPACK` / `REJECT`
+  - `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)` 已改为复用该 helper，`DYNAMIC` target 仍保留在 assignment helper 内部处理
+  - `FrontendExpressionSemanticSupport` 的 bare/global/static fixed-parameter 匹配与 mismatch reason 已切到同一规则
+  - `FrontendChainReductionHelper` 的 constructor fixed-parameter 匹配与 mismatch reason 已切到同一规则
+- 已补测试锚点：
+  - `FrontendVariantBoundaryCompatibilityTest`
+  - `FrontendAssignmentSemanticSupportTest`
+  - `FrontendExpressionSemanticSupportTest`
+  - `FrontendTypeCheckAnalyzerTest`
+- 本步确认仍保持 strict 的负向约束：
+  - `int -> float` 不放宽
+  - 非 `Variant` 边界的普通类型不匹配仍失败
+  - backend/global 的 `ClassRegistry.checkAssignable(...)` 没有被修改
+
 ### 建议实施内容
 
 - 在 frontend sema 邻域新增一个共享 helper，职责严格限定为：
@@ -442,6 +460,22 @@ frontend sema 不负责：
 ### 目标
 
 让 bare/global/static/instance/constructor 的 fixed-parameter 匹配都承认 stable `Variant` source -> concrete target。
+
+### 当前状态
+
+- 状态：已完成（2026-04-04）
+- 已落地产出：
+  - bare/global/static call 现在直接走第一步 shared helper
+  - `ScopeMethodResolver` 新增 predicate-aware 的 fixed-parameter applicability 入口；原 strict 默认入口保持不变
+  - frontend chain instance/static method 路径现在向 `ScopeMethodResolver` 传入 `Variant` boundary-aware predicate
+  - constructor overload 选择已复用同一 shared helper
+- 已补测试锚点：
+  - `ScopeMethodResolverTest` 明确锚定“frontend 新入口可接受 stable Variant source，而默认 strict 入口不变”
+  - `FrontendChainReductionHelperTest` 覆盖 instance/static/constructor 的 stable `Variant` source 正向样本，以及 constructor ambiguity 的 fail-closed
+  - `FrontendChainBindingAnalyzerTest` 覆盖 analyzer 级别的 instance/static/constructor 集成路径
+- 本步确认的负向约束：
+  - stable `Variant` source 导致多个 overload 同时可接受时，仍按 ambiguity / fail-closed 处理
+  - backend 继续使用 strict resolver 默认路径，不会因为 frontend 放宽而被动改变
 
 ### 建议实施内容
 

@@ -745,8 +745,9 @@ public final class FrontendAssignmentSemanticSupport {
     /// Public frontend assignment compatibility check for already-resolved concrete slots.
     ///
     /// This API intentionally stays narrower than assignment semantic resolution:
-    /// - exact `Variant` slots accept any source type
-    /// - all other slots fall back to `ClassRegistry.checkAssignable(...)`
+    /// - exact `Variant` targets accept any stable source
+    /// - stable `Variant` sources may flow into concrete targets
+    /// - all other pairs stay on the strict shared assignability contract
     ///
     /// Assignment-specific routes such as `DYNAMIC` targets stay encapsulated in this helper and do
     /// not leak into the public API.
@@ -754,10 +755,11 @@ public final class FrontendAssignmentSemanticSupport {
             @NotNull GdType slotType,
             @NotNull GdType valueType
     ) {
-        var targetSlotType = Objects.requireNonNull(slotType, "slotType must not be null");
-        var assignedValueType = Objects.requireNonNull(valueType, "valueType must not be null");
-        return targetSlotType instanceof GdVariantType
-                || classRegistry.checkAssignable(assignedValueType, targetSlotType);
+        return FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                classRegistry,
+                Objects.requireNonNull(valueType, "valueType must not be null"),
+                Objects.requireNonNull(slotType, "slotType must not be null")
+        );
     }
 
     private @Nullable FrontendExpressionType resolveAssignmentCompatibilityIssue(

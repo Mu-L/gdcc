@@ -146,8 +146,8 @@ class FrontendChainReductionHelperTest {
                 registry,
                 (expression, finalizeWindow) -> expression == seed
                         ? (finalizeWindow
-                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdIntType.INT)
-                        : FrontendChainReductionHelper.ExpressionTypeResult.deferred("seed type pending"))
+                           ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdIntType.INT)
+                           : FrontendChainReductionHelper.ExpressionTypeResult.deferred("seed type pending"))
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
         ));
 
@@ -206,9 +206,9 @@ class FrontendChainReductionHelperTest {
     }
 
     @Test
-    void reduceUsesDynamicArgumentVariantToContinueExactCallResolution() {
+    void reduceUsesDynamicVariantArgumentToContinueExactInstanceCallResolution() {
         var worker = newClass("Worker");
-        worker.addFunction(newMethod("consume", GdStringType.STRING, false, GdVariantType.VARIANT));
+        worker.addFunction(newMethod("consume", GdStringType.STRING, false, GdIntType.INT));
         var registry = newRegistry(List.of(stringBuiltinWithLength()), List.of(worker));
         var seed = identifier("seed");
         var chain = chain(identifier("worker"), call("consume", seed), property("length"));
@@ -227,6 +227,31 @@ class FrontendChainReductionHelperTest {
         var consumeCall = result.stepTraces().getFirst().suggestedCall();
         assertNotNull(consumeCall);
         assertEquals(List.of(GdVariantType.VARIANT), consumeCall.argumentTypes());
+    }
+
+    @Test
+    void reduceUsesExactVariantArgumentToResolveStaticTypeMetaCall() {
+        var worker = newClass("Worker");
+        worker.addFunction(newMethod("build", GdStringType.STRING, true, GdIntType.INT));
+        var registry = newRegistry(List.of(), List.of(worker));
+        var seed = identifier("seed");
+        var chain = chain(identifier("Worker"), call("build", seed));
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(typeMeta("Worker")),
+                registry,
+                (expression, finalizeWindow) -> expression == seed
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdVariantType.VARIANT)
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status());
+        assertEquals(FrontendChainReductionHelper.RouteKind.STATIC_METHOD, result.stepTraces().getFirst().routeKind());
+        var buildCall = result.stepTraces().getFirst().suggestedCall();
+        assertNotNull(buildCall);
+        assertEquals(FrontendCallResolutionKind.STATIC_METHOD, buildCall.callKind());
+        assertEquals(List.of(GdVariantType.VARIANT), buildCall.argumentTypes());
     }
 
     @Test
@@ -567,6 +592,54 @@ class FrontendChainReductionHelperTest {
     }
 
     @Test
+    void reduceUsesVariantArgumentToResolveBuiltinConstructor() {
+        var registry = newRegistry(List.of(stringBuiltinWithLengthAndIntConstructor()), List.of());
+        var chain = chain(identifier("String"), call("new", identifier("seed")), property("length"));
+        var constructorStep = assertInstanceOf(AttributeCallStep.class, chain.steps().getFirst());
+        var constructorArgument = constructorStep.arguments().getFirst();
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("String", GdStringType.STRING, ScopeTypeMetaKind.BUILTIN, null, false)
+                ),
+                registry,
+                (expression, finalizeWindow) -> expression == constructorArgument
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdVariantType.VARIANT)
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status());
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().get(1).status());
+        var constructorCall = result.stepTraces().getFirst().suggestedCall();
+        assertNotNull(constructorCall);
+        assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, constructorCall.callKind());
+        assertEquals(List.of(GdVariantType.VARIANT), constructorCall.argumentTypes());
+    }
+
+    @Test
+    void reduceKeepsVariantDrivenConstructorOverloadSelectionFailClosedWhenAmbiguous() {
+        var registry = newRegistry(List.of(stringBuiltinWithAmbiguousConstructors()), List.of());
+        var chain = chain(identifier("String"), call("new", identifier("seed")));
+        var constructorStep = assertInstanceOf(AttributeCallStep.class, chain.steps().getFirst());
+        var constructorArgument = constructorStep.arguments().getFirst();
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("String", GdStringType.STRING, ScopeTypeMetaKind.BUILTIN, null, false)
+                ),
+                registry,
+                (expression, finalizeWindow) -> expression == constructorArgument
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdVariantType.VARIANT)
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, result.stepTraces().getFirst().status());
+        assertTrue(result.stepTraces().getFirst().detailReason().contains("Ambiguous constructor overload"));
+    }
+
+    @Test
     void reduceResolvesGdccDefaultConstructorWithoutExplicitInitFunction() {
         var worker = newClass("Worker");
         worker.addProperty(new LirPropertyDef("payload", GdStringType.STRING));
@@ -838,6 +911,30 @@ class FrontendChainReductionHelperTest {
                         0,
                         List.of(new ExtensionFunctionArgument("value", "int", null, null))
                 )),
+                List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionBuiltinClass stringBuiltinWithAmbiguousConstructors() {
+        return new ExtensionBuiltinClass(
+                "String",
+                false,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                0,
+                                List.of(new ExtensionFunctionArgument("value", "int", null, null))
+                        ),
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                1,
+                                List.of(new ExtensionFunctionArgument("value", "String", null, null))
+                        )
+                ),
                 List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
                 List.of()
         );

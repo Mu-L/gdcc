@@ -294,6 +294,10 @@ class FrontendAssignmentSemanticSupportTest {
                 GdVariantType.VARIANT,
                 GdIntType.INT
         ));
+        assertTrue(support.checkAssignmentCompatible(
+                GdIntType.INT,
+                GdVariantType.VARIANT
+        ));
         assertTrue(!support.checkAssignmentCompatible(
                 GdFloatType.FLOAT,
                 GdIntType.INT
@@ -371,6 +375,56 @@ class FrontendAssignmentSemanticSupportTest {
         assertEquals(FrontendExpressionTypeStatus.FAILED, strictImplicitConversionFailure.expressionType().status());
         assertTrue(strictImplicitConversionFailure.expressionType().detailReason().contains("not assignable"));
         assertTrue(strictImplicitConversionFailure.expressionType().detailReason().contains("float"));
+    }
+
+    @Test
+    void resolveAssignmentExpressionTypeAcceptsStableVariantSourcesForConcreteTargets() throws Exception {
+        var analyzed = analyze(
+                "assignment_semantic_support_variant_source.gd",
+                """
+                        class_name AssignmentSemanticSupportVariantSource
+                        extends RefCounted
+                        
+                        func ping(any_value: Variant, dynamic_value):
+                            var int_slot: int = 0
+                            int_slot = any_value
+                            int_slot = dynamic_value.ping().length
+                            int_slot = "x"
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+
+        var exactVariantSource = support.resolveAssignmentExpressionType(
+                assignments.get(0),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        var dynamicVariantSource = support.resolveAssignmentExpressionType(
+                assignments.get(1),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        var strictMismatch = support.resolveAssignmentExpressionType(
+                assignments.get(2),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+
+        for (var successfulResult : List.of(exactVariantSource, dynamicVariantSource)) {
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, successfulResult.expressionType().status());
+            assertEquals(GdVoidType.VOID, successfulResult.expressionType().publishedType());
+        }
+
+        assertTrue(strictMismatch.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, strictMismatch.expressionType().status());
+        assertTrue(strictMismatch.expressionType().detailReason().contains("String"));
+        assertTrue(strictMismatch.expressionType().detailReason().contains("int"));
     }
 
     private @NotNull FrontendAssignmentSemanticSupport createSupport(

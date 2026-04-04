@@ -1237,7 +1237,12 @@ public final class FrontendChainReductionHelper {
                 request.classRegistry(),
                 receiverTypeMeta,
                 step.name(),
-                argumentTypes
+                argumentTypes,
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                        request.classRegistry(),
+                        sourceType,
+                        targetType
+                )
         );
         return switch (result) {
             case ScopeMethodResolver.Resolved resolved -> resolvedCallTrace(
@@ -1444,7 +1449,12 @@ public final class FrontendChainReductionHelper {
                 classRegistry,
                 Objects.requireNonNull(incomingReceiver.receiverType(), "receiverType must not be null"),
                 step.name(),
-                argumentTypes
+                argumentTypes,
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                        classRegistry,
+                        sourceType,
+                        targetType
+                )
         );
         return switch (result) {
             case ScopeMethodResolver.Resolved resolved -> {
@@ -2322,7 +2332,11 @@ public final class FrontendChainReductionHelper {
         }
         var fixedPrefixCount = Math.min(providedCount, fixedCount);
         for (var index = 0; index < fixedPrefixCount; index++) {
-            if (!classRegistry.checkAssignable(argumentTypes.get(index), parameters.get(index).getType())) {
+            if (!FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                    classRegistry,
+                    argumentTypes.get(index),
+                    parameters.get(index).getType()
+            )) {
                 return false;
             }
         }
@@ -2353,7 +2367,11 @@ public final class FrontendChainReductionHelper {
         for (var index = 0; index < fixedPrefixCount; index++) {
             var argumentType = argumentTypes.get(index);
             var parameter = parameters.get(index);
-            if (!classRegistry.checkAssignable(argumentType, parameter.getType())) {
+            if (!FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                    classRegistry,
+                    argumentType,
+                    parameter.getType()
+            )) {
                 return "argument #" + (index + 1) + " of type '" + argumentType.getTypeName()
                         + "' is not assignable to parameter '" + parameter.getName()
                         + "' of type '" + parameter.getType().getTypeName() + "'";

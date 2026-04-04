@@ -213,6 +213,46 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
+    void resolveCallExpressionTypeAcceptsStableVariantSourcesAtFixedParameterBoundaries() throws Exception {
+        var analyzed = analyze(
+                "expression_semantic_support_variant_calls.gd",
+                """
+                        class_name ExpressionSemanticSupportVariantCalls
+                        extends RefCounted
+                        
+                        func take_i(value: int) -> int:
+                            return value
+                        
+                        func take_any(value) -> int:
+                            return 1
+                        
+                        func ping(any_value: Variant, worker):
+                            take_i(any_value)
+                            take_i(worker.ping().length)
+                            take_any(1)
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var calls = findNodes(findFunction(analyzed.ast(), "ping"), CallExpression.class, _ -> true);
+
+        var exactVariantCall = support.resolveCallExpressionType(calls.get(0), publishedResolver, true, false);
+        var dynamicVariantCall = support.resolveCallExpressionType(calls.get(1), publishedResolver, true, false);
+        var packToVariantCall = support.resolveCallExpressionType(calls.get(2), publishedResolver, true, false);
+
+        for (var result : List.of(exactVariantCall, dynamicVariantCall, packToVariantCall)) {
+            assertTrue(result.rootOwnsOutcome());
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, result.expressionType().status());
+            assertNotNull(result.publishedCallOrNull());
+        }
+
+        assertEquals(List.of(GdVariantType.VARIANT), exactVariantCall.publishedCallOrNull().argumentTypes());
+        assertEquals(List.of(GdVariantType.VARIANT), dynamicVariantCall.publishedCallOrNull().argumentTypes());
+        assertEquals(List.of(GdIntType.INT), packToVariantCall.publishedCallOrNull().argumentTypes());
+    }
+
+    @Test
     void resolveSubscriptExpressionTypePublishesResolvedAndDynamicOutcomes() throws Exception {
         var analyzed = analyze(
                 "expression_semantic_support_subscript.gd",
@@ -677,6 +717,17 @@ class FrontendExpressionSemanticSupportTest {
         var ambiguousSelection = support.selectCallableOverload(ambiguous, List.of(GdIntType.INT));
         assertTrue(ambiguousSelection.selected() == null);
         assertTrue(ambiguousSelection.detailReason().contains("Ambiguous bare call overload"));
+
+        var variantAmbiguous = List.of(
+                newCallable("helper", GdIntType.INT, GdIntType.INT),
+                newCallable("helper", GdIntType.INT, GdStringType.STRING)
+        );
+        var variantAmbiguousSelection = support.selectCallableOverload(
+                variantAmbiguous,
+                List.of(GdVariantType.VARIANT)
+        );
+        assertTrue(variantAmbiguousSelection.selected() == null);
+        assertTrue(variantAmbiguousSelection.detailReason().contains("Ambiguous bare call overload"));
 
         var emptySelection = support.selectCallableOverload(List.of(), List.of(GdIntType.INT));
         assertTrue(emptySelection.selected() == null);

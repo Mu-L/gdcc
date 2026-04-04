@@ -397,8 +397,10 @@ class FrontendTypeCheckAnalyzerTest {
                 
                 static func ping(worker):
                     var accepts_variant: Variant = 1
+                    var exact_variant_source: int = accepts_variant
                     var strict_float: float = 1
                     var dynamic_variant: Variant = worker.ping().length
+                    var dynamic_int: int = worker.ping().length
                     var inferred := 1
                     var skipped_blocked: int = self.payload
                     var skipped_deferred: int = 1 + 2
@@ -415,8 +417,16 @@ class FrontendTypeCheckAnalyzerTest {
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                requireInitializerType(pingFunction.body().statements(), "exact_variant_source", preparedInput).status()
+        );
+        assertEquals(
                 FrontendExpressionTypeStatus.DYNAMIC,
                 requireInitializerType(pingFunction.body().statements(), "dynamic_variant", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.DYNAMIC,
+                requireInitializerType(pingFunction.body().statements(), "dynamic_int", preparedInput).status()
         );
         assertEquals(
                 FrontendExpressionTypeStatus.BLOCKED,
@@ -465,7 +475,11 @@ class FrontendTypeCheckAnalyzerTest {
                     static func make():
                         return "value"
                 
+                    static func make_count():
+                        return 1
+                
                 var accepts_variant: Variant = 1
+                var accepts_variant_source: int = Worker.make_count()
                 var wrong_type: int = "x"
                 var inferred_int := 1
                 var missing_type = 1
@@ -486,6 +500,10 @@ class FrontendTypeCheckAnalyzerTest {
                 preparedInput.diagnosticManager()
         );
 
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                requireInitializerType(preparedInput.unit().ast(), "accepts_variant_source", preparedInput).status()
+        );
         assertEquals(
                 FrontendExpressionTypeStatus.BLOCKED,
                 requireInitializerType(preparedInput.unit().ast(), "skipped_blocked", preparedInput).status()
@@ -621,6 +639,12 @@ class FrontendTypeCheckAnalyzerTest {
                 func accepts_variant_bare() -> Variant:
                     return
                 
+                func accepts_exact_variant_source(value: Variant) -> int:
+                    return value
+                
+                func accepts_dynamic_variant_source(worker) -> int:
+                    return worker.ping().length
+                
                 func rejects_bare() -> int:
                     return
                 
@@ -663,6 +687,26 @@ class FrontendTypeCheckAnalyzerTest {
                 diagnostic.message().contains("returns 'void'")
                         && diagnostic.message().contains("return expr")
         ));
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                Objects.requireNonNull(
+                        preparedInput.analysisData().expressionTypes().get(
+                                findNode(findFunction(preparedInput.unit().ast(), "accepts_exact_variant_source"),
+                                        dev.superice.gdparser.frontend.ast.ReturnStatement.class,
+                                        ignored -> true).value()
+                        )
+                ).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.DYNAMIC,
+                Objects.requireNonNull(
+                        preparedInput.analysisData().expressionTypes().get(
+                                findNode(findFunction(preparedInput.unit().ast(), "accepts_dynamic_variant_source"),
+                                        dev.superice.gdparser.frontend.ast.ReturnStatement.class,
+                                        ignored -> true).value()
+                        )
+                ).status()
+        );
 
         assertEquals(
                 FrontendExpressionTypeStatus.FAILED,

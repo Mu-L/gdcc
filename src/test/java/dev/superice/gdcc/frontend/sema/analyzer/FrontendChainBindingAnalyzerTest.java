@@ -91,6 +91,55 @@ class FrontendChainBindingAnalyzerTest {
     }
 
     @Test
+    void analyzeAcceptsStableVariantSourcesForInstanceStaticAndConstructorCalls() throws Exception {
+        var analyzed = analyze(
+                "variant_call_routes.gd",
+                """
+                        class_name VariantCallRoutes
+                        extends RefCounted
+                        
+                        class Worker:
+                            func _init(value: int):
+                                pass
+                            
+                            static func build_count(value: int):
+                                return 1
+                            
+                            func consume(value: int):
+                                return 1
+                        
+                        func ping(seed):
+                            Worker.new(seed.anything()).consume(seed.anything())
+                            Worker.build_count(seed.anything())
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var instanceStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var staticStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1));
+        var consumeStep = findNode(instanceStatement, AttributeCallStep.class, step -> step.name().equals("consume"));
+        var workerNewStep = findNode(instanceStatement, AttributeCallStep.class, step -> step.name().equals("new"));
+        var buildStep = findNode(staticStatement, AttributeCallStep.class, step -> step.name().equals("build_count"));
+
+        var resolvedConsume = analyzed.analysisData().resolvedCalls().get(consumeStep);
+        assertNotNull(resolvedConsume);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedConsume.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedConsume.callKind());
+
+        var resolvedWorkerConstructor = analyzed.analysisData().resolvedCalls().get(workerNewStep);
+        assertNotNull(resolvedWorkerConstructor);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedWorkerConstructor.status());
+        assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedWorkerConstructor.callKind());
+
+        var resolvedBuild = analyzed.analysisData().resolvedCalls().get(buildStep);
+        assertNotNull(resolvedBuild);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedBuild.status());
+        assertEquals(FrontendCallResolutionKind.STATIC_METHOD, resolvedBuild.callKind());
+
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
     void analyzeResolvesMappedTopLevelStaticCallAcrossSourceUnitsViaCallerSideRemap() throws Exception {
         var diagnostics = new DiagnosticManager();
         var parserService = new GdScriptParserService();

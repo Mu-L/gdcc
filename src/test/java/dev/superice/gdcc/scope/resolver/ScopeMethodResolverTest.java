@@ -1,5 +1,6 @@
 package dev.superice.gdcc.scope.resolver;
 
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ScopeOwnerKind;
@@ -360,6 +361,68 @@ class ScopeMethodResolverTest {
         assertEquals(ScopeOwnerKind.ENGINE, resolved.method().ownerKind());
         assertEquals("Node", resolved.method().ownerClass().getName());
         assertTrue(resolved.method().isStatic());
+    }
+
+    @Test
+    @DisplayName("shared method resolver should keep strict default path but allow frontend Variant boundary instance calls")
+    void resolveInstanceMethodShouldKeepStrictDefaultWhileFrontendPathAcceptsVariantSource() {
+        var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithAcceptCount())), List.of());
+
+        var strictResult = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("Node"),
+                "accept_count",
+                List.of(GdVariantType.VARIANT)
+        );
+        var strictFailure = assertInstanceOf(ScopeMethodResolver.Failed.class, strictResult);
+        assertEquals(ScopeMethodResolver.FailureKind.NO_APPLICABLE_OVERLOAD, strictFailure.kind());
+
+        var frontendResult = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("Node"),
+                "accept_count",
+                List.of(GdVariantType.VARIANT),
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                        registry,
+                        sourceType,
+                        targetType
+                )
+        );
+        var frontendResolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, frontendResult);
+        assertEquals("Node", frontendResolved.method().ownerClass().getName());
+        assertEquals("int", frontendResolved.method().parameters().getFirst().type().getTypeName());
+    }
+
+    @Test
+    @DisplayName("shared method resolver should keep strict default path but allow frontend Variant boundary static calls")
+    void resolveStaticMethodShouldKeepStrictDefaultWhileFrontendPathAcceptsVariantSource() {
+        var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithStaticAcceptCount())), List.of());
+        var nodeTypeMeta = registry.resolveTypeMeta("Node");
+
+        var strictResult = ScopeMethodResolver.resolveStaticMethod(
+                registry,
+                nodeTypeMeta,
+                "accept_count",
+                List.of(GdVariantType.VARIANT)
+        );
+        var strictFailure = assertInstanceOf(ScopeMethodResolver.Failed.class, strictResult);
+        assertEquals(ScopeMethodResolver.FailureKind.NO_APPLICABLE_OVERLOAD, strictFailure.kind());
+
+        var frontendResult = ScopeMethodResolver.resolveStaticMethod(
+                registry,
+                nodeTypeMeta,
+                "accept_count",
+                List.of(GdVariantType.VARIANT),
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                        registry,
+                        sourceType,
+                        targetType
+                )
+        );
+        var frontendResolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, frontendResult);
+        assertEquals("Node", frontendResolved.method().ownerClass().getName());
+        assertTrue(frontendResolved.method().isStatic());
+        assertEquals("int", frontendResolved.method().parameters().getFirst().type().getTypeName());
     }
 
     @Test
@@ -742,6 +805,32 @@ class ScopeMethodResolverTest {
                 "core",
                 List.of(),
                 List.of(make),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static ExtensionGdClass nodeClassWithStaticAcceptCount() {
+        var method = new ExtensionGdClass.ClassMethod(
+                "accept_count",
+                false,
+                false,
+                true,
+                false,
+                0L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("count", "int", null, null))
+        );
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(method),
                 List.of(),
                 List.of(),
                 List.of()
