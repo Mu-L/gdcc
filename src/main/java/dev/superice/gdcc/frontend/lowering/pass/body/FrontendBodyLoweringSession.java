@@ -18,10 +18,13 @@ import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirInstruction;
+import dev.superice.gdcc.lir.insn.PackVariantInsn;
+import dev.superice.gdcc.lir.insn.UnpackVariantInsn;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
@@ -59,6 +62,7 @@ public final class FrontendBodyLoweringSession {
             assignmentTargetProcessors;
     private final @NotNull FrontendInsnLoweringProcessorRegistry<Node, AssignmentTargetLoweringContext>
             attributeStepProcessors;
+    private int boundaryMaterializationCounter;
 
     public FrontendBodyLoweringSession(@NotNull FunctionLoweringContext functionContext) {
         this.functionContext = Objects.requireNonNull(functionContext, "functionContext must not be null");
@@ -231,6 +235,49 @@ public final class FrontendBodyLoweringSession {
         return FrontendBodyLoweringSupport.cfgTempSlotId(item.resultValueId());
     }
 
+    @NotNull LirFunctionDef targetFunction() {
+        return function;
+    }
+
+    /// Materializes one already-approved ordinary `Variant` boundary into an explicit LIR slot.
+    ///
+    /// This helper deliberately stays narrower than condition normalization:
+    /// - concrete -> `Variant` inserts `PackVariantInsn`
+    /// - stable `Variant` -> concrete inserts `UnpackVariantInsn`
+    /// - all remaining pairs stay direct because semantic analysis already decided legality
+    ///
+    /// Later assignment/call/return processors should route all ordinary boundary writes through
+    /// this helper instead of duplicating ad-hoc `instanceof GdVariantType` branches.
+    @NotNull String materializeVariantBoundaryValue(
+            @NotNull LirBasicBlock block,
+            @NotNull String sourceSlotId,
+            @NotNull GdType sourceType,
+            @NotNull GdType targetType,
+            @NotNull String boundaryUse
+    ) {
+        Objects.requireNonNull(block, "block must not be null");
+        var sourceSlot = StringUtil.requireNonBlank(sourceSlotId, "sourceSlotId");
+        var source = Objects.requireNonNull(sourceType, "sourceType must not be null");
+        var target = Objects.requireNonNull(targetType, "targetType must not be null");
+        var use = StringUtil.requireNonBlank(boundaryUse, "boundaryUse");
+        if (target instanceof GdVariantType) {
+            if (source instanceof GdVariantType) {
+                return sourceSlot;
+            }
+            var packedSlotId = nextBoundaryMaterializationSlotId(use, "pack");
+            ensureVariable(packedSlotId, GdVariantType.VARIANT);
+            block.appendNonTerminatorInstruction(new PackVariantInsn(packedSlotId, sourceSlot));
+            return packedSlotId;
+        }
+        if (source instanceof GdVariantType) {
+            var unpackedSlotId = nextBoundaryMaterializationSlotId(use, "unpack");
+            ensureVariable(unpackedSlotId, target);
+            block.appendNonTerminatorInstruction(new UnpackVariantInsn(unpackedSlotId, sourceSlot));
+            return unpackedSlotId;
+        }
+        return sourceSlot;
+    }
+
     @NotNull List<LirInstruction.Operand> variableOperands(@NotNull List<String> valueIds) {
         var operands = new ArrayList<LirInstruction.Operand>(valueIds.size());
         for (var valueId : valueIds) {
@@ -337,6 +384,18 @@ public final class FrontendBodyLoweringSession {
             var block = requireBlock(nodeId);
             cfgNodeProcessors.lower(this, block, graph.requireNode(nodeId), null);
         }
+    }
+
+    private @NotNull String nextBoundaryMaterializationSlotId(
+            @NotNull String boundaryUse,
+            @NotNull String operation
+    ) {
+        return "cfg_boundary_"
+                + StringUtil.requireNonBlank(boundaryUse, "boundaryUse")
+                + "_"
+                + StringUtil.requireNonBlank(operation, "operation")
+                + "_"
+                + boundaryMaterializationCounter++;
     }
 
     private static @NotNull Set<String> collectMergeValueIds(@NotNull FrontendCfgGraph graph) {

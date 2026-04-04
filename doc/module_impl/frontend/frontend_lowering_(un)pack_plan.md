@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施前计划
+- 状态：实施中（第 1 / 2 / 3 步已完成）
 - 更新时间：2026-04-04
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -508,6 +508,19 @@ frontend sema 不负责：
 ### 目标
 
 把 pack / unpack 的插入统一收口到 `FrontendBodyLoweringSession` 内部，而不是散落在各个 processor 中。
+
+### 当前状态
+
+- 状态：已完成（2026-04-04）
+- 已落地产出：
+  - `FrontendBodyLoweringSession` 新增 ordinary boundary helper `materializeVariantBoundaryValue(...)`
+  - helper 统一承载三类动作：direct / `PackVariantInsn` / `UnpackVariantInsn`
+  - helper 的 temp 命名已收口在 session 内部递增计数器，不把命名细节暴露成下游 contract
+- 已补测试锚点：
+  - `FrontendBodyLoweringSessionTest`
+- 本步确认的边界：
+  - condition normalization 继续保留在 `FrontendCfgNodeInsnLoweringProcessors`，没有和 ordinary boundary helper 机械合并
+  - helper 当前只负责 materialization，不重复承担 sema legality 或 strict assignability 的判定
 
 ### 建议实施内容
 
