@@ -33,7 +33,6 @@ import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -382,6 +381,58 @@ class FrontendTypeCheckAnalyzerTest {
                 1,
                 null
         );
+    }
+
+    @Test
+    void analyzeReportsParameterizedGdccConstructorDeclarationAsSemanticError() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_parameterized_gdcc_constructor.gd", """
+                class_name TypeCheckParameterizedCtor
+                extends RefCounted
+                
+                class Worker:
+                    func _init(value: int):
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var typeCheckDiagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        );
+
+        assertEquals(1, typeCheckDiagnostics.size());
+        assertTrue(typeCheckDiagnostics.getFirst().message().contains("supports only zero parameters"));
+        assertTrue(typeCheckDiagnostics.getFirst().message().contains("Worker._init(...)"));
+        assertEquals(Path.of("tmp", "type_check_parameterized_gdcc_constructor.gd"), typeCheckDiagnostics.getFirst().sourcePath());
+        assertNotNull(typeCheckDiagnostics.getFirst().range());
+    }
+
+    @Test
+    void analyzeDoesNotReportZeroArgGdccConstructorDeclaration() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_zero_arg_gdcc_constructor.gd", """
+                class_name TypeCheckZeroArgCtor
+                extends RefCounted
+                
+                class Worker:
+                    func _init():
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        assertTrue(diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        ).isEmpty());
     }
 
     @Test

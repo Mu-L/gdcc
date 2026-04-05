@@ -150,9 +150,11 @@ void ${classDef.name}_class_constructor(${classDef.name}* self) {
     <#list classDef.properties as property>
         self->${property.name} = ${classDef.name}_${property.initFunc}(self);
     </#list>
-    <#if classDef.hasFunction("_init")>
-        ${classDef.name}__init(self);
-    </#if>
+    <#list classDef.functions as function>
+        <#if function.name == "_init" && !function.static && function.parameters?size == 1>
+            ${classDef.name}__init(self);
+        </#if>
+    </#list>
 }
 
 void ${classDef.name}_class_destructor(${classDef.name}* self) {

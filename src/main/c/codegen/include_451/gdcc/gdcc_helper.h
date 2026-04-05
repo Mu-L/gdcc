@@ -312,4 +312,18 @@ static godot_Variant godot_Variant_call(
     return ret;
 }
 
+// External explicit GDCC RefCounted construction may need to delay POSTINITIALIZE until after
+// the raw reference count has been established.
+static GDExtensionObjectPtr gdcc_ref_counted_init_raw(GDExtensionObjectPtr obj, bool initialize) {
+    if (obj == NULL) {
+        return NULL;
+    }
+    godot_RefCounted* rc = obj;
+    godot_RefCounted_init_ref(rc);
+    if (initialize) {
+        godot_Object_notification(obj, godot_Object_NOTIFICATION_POSTINITIALIZE(), false);
+    }
+    return obj;
+}
+
 #endif //GDCC_HELPER_H

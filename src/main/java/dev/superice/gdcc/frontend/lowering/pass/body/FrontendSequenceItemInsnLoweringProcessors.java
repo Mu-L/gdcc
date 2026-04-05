@@ -333,21 +333,10 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     );
                     switch (constructorResultType) {
                         // Builtin/container constructors materialize directly from the published call route.
-                        case dev.superice.gdcc.type.GdObjectType _ -> {
-                            block.appendNonTerminatorInstruction(new ConstructObjectInsn(
-                                    resultSlotId,
-                                    session.requireClassName(constructorResultType)
-                            ));
-                            // GDCC constructors still need a follow-up `_init(...)` invocation.
-                            if (session.shouldInvokeInitAfterObjectConstruction(resolvedCall)) {
-                                block.appendNonTerminatorInstruction(new CallMethodInsn(
-                                        null,
-                                        "_init",
-                                        resultSlotId,
-                                        arguments
-                                ));
-                            }
-                        }
+                        case dev.superice.gdcc.type.GdObjectType _ -> block.appendNonTerminatorInstruction(new ConstructObjectInsn(
+                                resultSlotId,
+                                session.requireClassName(constructorResultType)
+                        ));
                         default ->
                                 block.appendNonTerminatorInstruction(new ConstructBuiltinInsn(resultSlotId, arguments));
                     }

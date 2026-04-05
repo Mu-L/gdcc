@@ -13,6 +13,7 @@ import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirModule;
+import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
@@ -363,6 +364,77 @@ public class CCodegenTest {
         var leafCreateInstanceBody = resolveCreateInstanceBody(cCode, "GDLeafNode");
         assertEquals(1, countOccurrences(leafCreateInstanceBody, "godot_object_set_instance("));
         assertEquals(1, countOccurrences(leafCreateInstanceBody, "godot_object_set_instance_binding("));
+    }
+
+    @Test
+    public void createInstanceKeepsRawNativeConstructionForBothRefCountedAndPlainGdccClasses() throws Exception {
+        var countedClass = new LirClassDef("GDCountedWorker", "RefCounted");
+        var plainClass = new LirClassDef("GDPlainObject", "Object");
+        var module = new LirModule("ref_counted_create_instance_module", List.of(countedClass, plainClass));
+
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var cCode = new String(files.getFirst().contentWriter());
+
+        var countedBody = resolveCreateInstanceBody(cCode, "GDCountedWorker");
+        var plainBody = resolveCreateInstanceBody(cCode, "GDPlainObject");
+
+        assertTrue(
+                countedBody.contains("godot_classdb_construct_object2(GD_STATIC_SN(u8\"RefCounted\"))"),
+                countedBody
+        );
+        assertTrue(
+                plainBody.contains("godot_classdb_construct_object2(GD_STATIC_SN(u8\"Object\"))"),
+                plainBody
+        );
+        assertFalse(countedBody.contains("gdcc_ref_counted_init_raw("), countedBody);
+        assertFalse(plainBody.contains("gdcc_ref_counted_init_raw("), plainBody);
+    }
+
+    @Test
+    void classConstructorShouldOnlyAutoInvokeZeroArgInit() throws Exception {
+        var workerClass = new LirClassDef("GDWorkerNode", "Node");
+        var init = new LirFunctionDef("_init");
+        init.setReturnType(GdVoidType.VOID);
+        init.addParameter(new LirParameterDef("self", new GdObjectType("GDWorkerNode"), null, init));
+        init.addParameter(new LirParameterDef("value", GdIntType.INT, null, init));
+        var initEntry = new LirBasicBlock("entry");
+        init.addBasicBlock(initEntry);
+        initEntry.setTerminator(new ReturnInsn(null));
+        init.setEntryBlockId("entry");
+        workerClass.addFunction(init);
+
+        var zeroArgClass = new LirClassDef("GDZeroArgNode", "Node");
+        var zeroArgInit = new LirFunctionDef("_init");
+        zeroArgInit.setReturnType(GdVoidType.VOID);
+        zeroArgInit.addParameter(new LirParameterDef("self", new GdObjectType("GDZeroArgNode"), null, zeroArgInit));
+        var zeroArgEntry = new LirBasicBlock("entry");
+        zeroArgInit.addBasicBlock(zeroArgEntry);
+        zeroArgEntry.setTerminator(new ReturnInsn(null));
+        zeroArgInit.setEntryBlockId("entry");
+        zeroArgClass.addFunction(zeroArgInit);
+
+        var module = new LirModule("constructor_init_codegen_module", List.of(workerClass, zeroArgClass));
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var cCode = new String(files.getFirst().contentWriter());
+
+        assertFalse(cCode.contains("GDWorkerNode__init(self);"), cCode);
+        assertTrue(cCode.contains("GDZeroArgNode__init(self);"), cCode);
     }
 
     private static String resolveConstructTarget(String cCode, String className) {

@@ -690,7 +690,7 @@ class FrontendLoweringBodyInsnPassTest {
                         extends RefCounted
                         
                         class Worker:
-                            func _init(value: int):
+                            func _init():
                                 pass
                         
                         func build_vector() -> Vector3i:
@@ -702,8 +702,8 @@ class FrontendLoweringBodyInsnPassTest {
                         func build_node() -> Node:
                             return Node.new()
                         
-                        func build_worker(box: Variant) -> Worker:
-                            return Worker.new(box)
+                        func build_worker() -> Worker:
+                            return Worker.new()
                         """,
                 Map.of("BodyInsnConstructorRoutes", "RuntimeBodyInsnConstructorRoutes"),
                 true
@@ -744,7 +744,6 @@ class FrontendLoweringBodyInsnPassTest {
         var arrayConstructInsn = requireOnlyInstruction(buildArrayContext.targetFunction(), ConstructBuiltinInsn.class);
         var nodeConstructInsn = requireOnlyInstruction(buildNodeContext.targetFunction(), ConstructObjectInsn.class);
         var workerConstructInsn = requireOnlyInstruction(buildWorkerContext.targetFunction(), ConstructObjectInsn.class);
-        var workerInitInsn = requireOnlyInstruction(buildWorkerContext.targetFunction(), CallMethodInsn.class);
 
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
@@ -757,39 +756,33 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(0, countInstructions(nodeInstructions, CallMethodInsn.class)),
                 () -> assertEquals(1, countInstructions(workerInstructions, ConstructObjectInsn.class)),
                 () -> assertTrue(workerConstructInsn.className().contains("Worker")),
-                () -> assertEquals("_init", workerInitInsn.methodName()),
-                () -> assertEquals(workerConstructInsn.resultId(), workerInitInsn.objectId()),
+                () -> assertEquals(0, countInstructions(workerInstructions, CallMethodInsn.class)),
                 () -> assertEquals(0, countInstructions(workerInstructions, PackVariantInsn.class)),
-                () -> assertEquals(1, countInstructions(workerInstructions, UnpackVariantInsn.class)),
-                () -> assertTrue(unpackResultIds(workerInstructions).contains(onlyVariableOperandId(workerInitInsn.args())))
+                () -> assertEquals(0, countInstructions(workerInstructions, UnpackVariantInsn.class))
         );
     }
 
     @Test
-    void runFailsFastWhenParameterizedConstructorLosesCallableSignatureMetadata() throws Exception {
+    void runFailsFastWhenParameterizedBuiltinConstructorLosesCallableSignatureMetadata() throws Exception {
         var prepared = prepareContext(
                 "body_insn_constructor_missing_signature.gd",
                 """
                         class_name BodyInsnConstructorMissingSignature
                         extends RefCounted
                         
-                        class Worker:
-                            func _init(value: int):
-                                pass
-                        
-                        func build_worker(box: Variant) -> Worker:
-                            return Worker.new(box)
+                        func build_vector(x: int, y: int, z: int) -> Vector3i:
+                            return Vector3i(x, y, z)
                         """,
                 Map.of("BodyInsnConstructorMissingSignature", "RuntimeBodyInsnConstructorMissingSignature"),
                 true
         );
-        var buildWorkerContext = requireContext(
+        var buildVectorContext = requireContext(
                 prepared.context().requireFunctionLoweringContexts(),
                 FunctionLoweringContext.Kind.EXECUTABLE_BODY,
                 "RuntimeBodyInsnConstructorMissingSignature",
-                "build_worker"
+                "build_vector"
         );
-        var callAnchor = requireSingleCallAnchor(buildWorkerContext.requireFrontendCfgGraph());
+        var callAnchor = requireSingleCallAnchor(buildVectorContext.requireFrontendCfgGraph());
         var originalResolvedCall = prepared.context().requireAnalysisData().resolvedCalls().get(callAnchor);
         assertNotNull(originalResolvedCall);
 

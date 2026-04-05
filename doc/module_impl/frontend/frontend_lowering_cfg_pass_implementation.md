@@ -559,7 +559,8 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
 - body lowering 根据已发布的 constructor metadata 直接选择 LIR 指令族
   - builtin target -> `ConstructBuiltinInsn`
   - object target -> `ConstructObjectInsn`
-  - gdcc class 且命中显式 `_init(...)` 时，在 object construct 之后补一条 `_init` 调用
+  - gdcc custom class constructor route 只表达“构造 object target”这一 lowering 意图，不在 lowering 中追加 `_init(...)` 调用
+  - 零参数 `_init(self)` 若存在，由 runtime postinitialize / class constructor path 自动触发；带参 `_init(...)` 必须在语义阶段与 compile gate 双重 fail-closed
 - ordinary call 的 owner 边界保持不变
   - constructor 不伪装成 static/instance method
   - body lowering 不重跑 overload 选择，不反推语义
@@ -589,7 +590,7 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
      - constructed target type
      - fixed parameter types
      - declaration site / owner metadata
-     - 是否命中 gdcc `_init`
+     - 是否属于 compile-ready 的 zero-arg object creation route
    - 不允许再依赖“declarationSite 一定是 `FunctionDef`”这种只对部分 constructor 成立的前提
 
 实施要求：
@@ -605,20 +606,20 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
     - `Vector3i(1, 2, 3)`
   - object `.new(...)` 正向样本：
     - `Node.new()`
-    - gdcc `Worker.new(1)`
+    - gdcc `Worker.new()`
 - `FrontendChainBindingAnalyzerTest`
   - bare direct constructor 与 `.new(...)` 都发布 `callKind = CONSTRUCTOR`
-  - ambiguous builtin constructor 继续 fail-closed
+  - builtin constructor 会先按 applicability 过滤，再按“更具体者优先”排序；若仍无法稳定区分，则继续以语义诊断 fail-closed，而不是异常下沉
   - non-instantiable engine class 继续失败并保留精确 detail reason
 
 ### 12.4 第二步：补齐 body lowering 的 constructor materialization
 
 - 状态：已完成（2026-04-04）
 - 已落地产出：
-  - `FrontendCfgGraphBuilder` 已接通 type-meta chain head call materialization，`Node.new()` / `Worker.new(...)` 不再把 type-meta base 误当运行时值去求值
+  - `FrontendCfgGraphBuilder` 已接通 type-meta chain head call materialization，`Node.new()` / `Worker.new()` 不再把 type-meta base 误当运行时值去求值
   - `FrontendLoweringBodyInsnPass` 已根据 published constructor metadata 正式发出 `ConstructBuiltinInsn` / `ConstructObjectInsn`
-  - gdcc `_init(...)` constructor 已在 object construct 后追加 `_init` 调用，并继续复用现有 fixed-parameter boundary `(un)pack` 规则
-  - 缺失 callable signature metadata 的带参 constructor route 现在会以明确的 publication-contract 错误 fail-fast
+  - builtin direct constructor 继续通过 callable signature metadata 做 fixed-parameter boundary materialization；gdcc custom class constructor 则收紧为零参数实例创建，不再发 `_init(...)` follow-up
+  - 缺失 callable signature metadata 的带参 builtin constructor route 现在会以明确的 publication-contract 错误 fail-fast
 
 需要完成的工作：
 
@@ -629,16 +630,15 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
    - 现有 `requireResolvedCallableSignature(...)` 只能处理 `FunctionDef`，需要替换为 constructor-aware 的 metadata 读取路径
    - 该路径必须能统一覆盖：
      - builtin constructor metadata
-     - engine object zero-arg constructor
-     - gdcc `_init(...)`
+      - engine object zero-arg constructor
 3. 按 target family 选择实际 LIR：
    - builtin target：
      - 发 `ConstructBuiltinInsn(result, args)`
      - 不再伪装成 `CallGlobalInsn` 或 `CallStaticMethodInsn`
    - object target：
-     - 先发 `ConstructObjectInsn(result, className)`
-     - 若命中 gdcc `_init(...)`，再发 `CallMethodInsn(null, "_init", result, args)`
-     - 若是 engine object zero-arg route，则只发 `ConstructObjectInsn`
+      - 先发 `ConstructObjectInsn(result, className)`
+      - engine object 与 gdcc custom object 的零参数创建都只发 `ConstructObjectInsn`
+      - gdcc 带参 constructor route 在 compile gate 前就必须 fail-closed，不能下沉到 lowering
 
 需要特别校准的点：
 
@@ -655,12 +655,21 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
   - `Vector3i(1, 2, 3)` lower 为 `ConstructBuiltinInsn`
   - `Array(source)` lower 为 `ConstructBuiltinInsn`
   - `Node.new()` lower 为 `ConstructObjectInsn`
-  - gdcc `Worker.new(1)` lower 为 `ConstructObjectInsn` + `_init` method call
-  - fixed constructor parameter 仍插入必要的 `PackVariantInsn` / `UnpackVariantInsn`
+  - gdcc `Worker.new()` lower 为 `ConstructObjectInsn`
+  - gdcc custom object constructor 不再追加 `_init` method call
 - negative path
   - 缺失 constructor metadata 时继续 fail-fast，异常消息必须指出是 constructor publication contract 缺失，而不是笼统 “call route is not lowering-ready”
 
 ### 12.5 第三步：补齐 backend `CONSTRUCT_OBJECT`
+
+- 状态：已完成（2026-04-04）
+- 已落地产出：
+  - `ConstructInsnGen` 已注册并实现 `CONSTRUCT_OBJECT`，对 engine class 直调 `godot_new_XXX()`；对非 `RefCounted` gdcc class 直调 `XXX_class_create_instance(NULL, true)`
+  - 对确定继承 `RefCounted` 的 gdcc class，外部 C constructor call site 现在改为 `XXX_class_create_instance(NULL, false)` 后再执行 `gdcc_ref_counted_init_raw(..., true)`；`*_class_create_instance(...)` 自身保持原始 native object create/bind helper，不内嵌这一步
+  - 通过引擎函数或 GDScript 创建继承 `RefCounted` 的 gdcc class 时，引用计数初始化继续由 Godot 自身创建路径负责；frontend/backend 不在共享的 `*_class_create_instance(...)` helper 中重复执行该初始化
+  - backend 继续复用既有 object slot write / ptr conversion / ownership consume 语义，不单独分叉 gdcc vs engine object lifecycle
+  - frontend executable function shell 现在会在 preparation pass 注入前置 `self` 参数，使 frontend-lowered GDCC instance method / constructor 与 backend 既有调用约定重新对齐
+  - runtime class constructor 只会自动触发零参数 `_init(self)`；带参 custom constructor route 已在 frontend compile gate 回退为不支持
 
 需要完成的工作：
 
@@ -678,14 +687,21 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
   - 新增 `ConstructObjectInsn` unit tests
   - 覆盖 engine/native object class 与 refcounted object class
 - `FrontendLoweringToCProjectBuilderIntegrationTest`
-  - 新增 frontend 全链路 compile test，验证 constructor lowering 产物可成功 build 为 native library
+  - 新增 frontend 全链路 compile + runtime test，验证 builtin direct constructor、engine constructor、gdcc zero-arg custom constructor、`Object`-typed custom object local route 都可在真实引擎中运行
 - Godot engine integration test
   - 参考现有 `GodotGdextensionTestRunner` / engine test 形态，至少覆盖：
     - `Vector3i(1, 2, 3)` 在引擎内返回分量正确
-    - `Node.new()` 返回非 null object
-    - gdcc `Worker.new(1)` 调用后可观测到 `_init` 初始化结果
+    - `Node.new()` 在引擎内可被真实构造并可观测到 `get_class() == "Node"`
+    - gdcc `Worker.new()` 调用后可观测到零参数 `_init` / class constructor 初始化结果
+    - custom object 构造结果可进入 `Object` typed route 并继续执行 engine-side instance method
 
 ### 12.6 第四步：同步 compile-ready surface 与事实源描述
+
+- 状态：已完成（2026-04-04）
+- 已落地产出：
+  - constructor route 的事实源已收口为：builtin direct constructor、engine zero-arg `.new()`、gdcc zero-arg `.new()` 均闭合；gdcc 带参 constructor 则在 semantic / compile gate 双重 fail-closed
+  - frontend factsource 已明确：`.new(...)` 与 bare builtin direct constructor 共享 `FrontendResolvedCall(callKind = CONSTRUCTOR)` surface，body lowering 负责选 `ConstructBuiltinInsn` / `ConstructObjectInsn`，backend 负责消费 object construction
+  - 相关事实源已同步到 chain-binding / compile-check / LIR / C backend 文档，避免继续出现 “compile-ready 已放行但 backend 仍整体 unsupported” 的互相矛盾描述
 
 需要完成的工作：
 
@@ -705,6 +721,59 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
 
 - 文档中的 compile-ready surface、fail-fast gap、测试锚点三处描述必须彼此一致
 - 不再出现“一处文档宣称 constructor 已 compile-ready，另一处仍写当前阶段整体 unsupported”的冲突
+
+### 12.7 2026-04-05 后续硬化与一致性收口
+
+- 状态：已完成（2026-04-05）
+- 调查结论：
+  - `FrontendCompileCheckAnalyzer` 仍保留“gdcc 带参 constructor route 专用 compile gate 兜底”，但这只能阻止 compile mode 下沉，不能替代 declaration-level 语义错误
+  - 当前 `12.2 目标合同` 仍保留“gdcc class 且命中显式 `_init(...)` 时补 follow-up call”的旧表述，已与 `12.4`、测试和实际实现冲突
+  - 当前 backend 对 gdcc `RefCounted` 自定义类的显式 C 构造虽然已使用外部 `gdcc_ref_counted_init_raw(...)`，但若 shared create helper 仍先发 `POSTINITIALIZE`，就会形成“先跑 class constructor，再初始化 refcount”的隐藏时序问题
+  - `FrontendConstructorResolutionSupport.chooseConstructor(...)` 目前仍是“applicable 过滤后，`size() > 1` 直接报歧义”的 fail-closed 基线，尚未具备“更具体者优先”的排序能力
+
+已落地产出：
+
+1. 语义阶段显式拒绝 gdcc 带参 `_init(...)`
+   - 在共享语义分析阶段，对 gdcc 自定义类中声明了一个或多个参数的 `_init` 直接发错误诊断
+   - 诊断锚点前移到 declaration 本身，不再依赖 `.new(...)` 调用站点或 compile gate 才暴露
+   - compile gate 对 parameterized constructor route 的兜底继续保留，用于防回归
+2. 修正 12.2 / 12.4 的合同一致性
+   - 删除了“lowering 阶段补 `_init(...)` follow-up call”的旧描述
+   - constructor lowering contract 已明确收口为 `ConstructBuiltinInsn` / `ConstructObjectInsn`
+   - 零参数 `_init(self)` 属于 runtime postinitialize 路径；带参 `_init(...)` 属于 semantic / compile gate 拒绝路径
+3. 修复 gdcc `RefCounted` 自定义类的显式 C 构造时序
+   - 对“生成的 C 代码外部显式创建 gdcc `RefCounted` 对象”的 call site，已改为：
+     - `XXX_class_create_instance(NULL, false)`
+     - `gdcc_ref_counted_init_raw(..., true)`
+   - `*_class_create_instance(...)` 继续保持 shared create/bind helper，不内嵌 `gdcc_ref_counted_init_raw(...)`
+   - 非 `RefCounted` gdcc 对象继续走 `XXX_class_create_instance(NULL, true)`
+   - 通过 Godot 引擎函数或 GDScript 创建继承 `RefCounted` 的 gdcc 类时，引用计数初始化继续由 Godot 自身创建路径负责
+4. 落地 builtin constructor overload 排序策略
+   - `FrontendConstructorResolutionSupport` 不再把“多个 applicable candidate”直接视为歧义
+   - 现在的选择流程为：
+     - 第一步：按参数个数、默认参数可省略性、vararg 资格与 frontend boundary compatibility 做 applicability 过滤
+     - 第二步：在 applicable pool 内比较逐参数转换质量与目标类型具体度，优先更具体的 candidate
+     - 第三步：若仍存在多个 equally-specific candidate，则继续以语义失败 + 诊断信息 fail-closed，而不是抛异常让 lowering/backend 再 fail-fast
+   - 当前转换质量基线与 method-call 选择思路保持一致：
+     - exact/direct 优先于 pack/unpack/null-literal 边界
+     - 更窄的目标类型优先于更宽的目标类型
+     - 非 vararg、较少依赖 trailing default 的 candidate 优先
+
+验收细则：
+
+- 语义阶段
+  - `FrontendTypeCheckAnalyzerTest` 新增 declaration-level negative test，验证带参 gdcc `_init(...)` 即使未被调用也会产生明确错误诊断
+  - 保留正向样本，验证零参数 `_init()` 不会被误报
+- compile gate
+  - `FrontendCompileCheckAnalyzerTest` 继续保留 regression guard，确认即使上游错误地把 route 重新发布为 resolved，compile gate 仍会阻止其进入 lowering
+- backend/codegen
+  - `CConstructInsnGenTest`、`CConstructInsnGenEngineTest`、`FrontendLoweringToCProjectBuilderIntegrationTest` 锚定：
+    - gdcc `RefCounted` 显式 C 构造使用 `create_instance(..., false)` + `gdcc_ref_counted_init_raw(..., true)`
+    - 非 `RefCounted` gdcc 显式构造继续使用 `create_instance(..., true)`
+    - shared `*_class_create_instance(...)` 本体不内嵌 `gdcc_ref_counted_init_raw(...)`
+- 文档
+  - `12.2`、`12.4` 与本章节之间不再出现“lowering 会补 `_init(...)`”和“实际已 fail-closed”并存的冲突
+  - constructor overload 排序策略已被明确记录为当前合同，remaining ambiguity 继续走语义诊断而不是异常 fail-fast
 
 ### 12.7 建议提交顺序
 

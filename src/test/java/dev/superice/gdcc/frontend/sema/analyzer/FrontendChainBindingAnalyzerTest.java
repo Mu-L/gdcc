@@ -94,7 +94,7 @@ class FrontendChainBindingAnalyzerTest {
     }
 
     @Test
-    void analyzeAcceptsStableVariantSourcesForInstanceStaticAndConstructorCalls() throws Exception {
+    void analyzeAcceptsStableVariantSourcesForInstanceAndStaticCallsAfterZeroArgCustomConstruction() throws Exception {
         var analyzed = analyze(
                 "variant_call_routes.gd",
                 """
@@ -102,7 +102,7 @@ class FrontendChainBindingAnalyzerTest {
                         extends RefCounted
                         
                         class Worker:
-                            func _init(value: int):
+                            func _init():
                                 pass
                         
                             static func build_count(value: int):
@@ -112,7 +112,7 @@ class FrontendChainBindingAnalyzerTest {
                                 return 1
                         
                         func ping(seed):
-                            Worker.new(seed.anything()).consume(seed.anything())
+                            Worker.new().consume(seed.anything())
                             Worker.build_count(seed.anything())
                         """
         );
@@ -722,14 +722,14 @@ class FrontendChainBindingAnalyzerTest {
                         extends RefCounted
                         
                         class Worker:
-                            func _init(value: int):
+                            func _init():
                                 pass
                         
-                        func ping(seed):
+                        func ping():
                             Array()
                             Vector3i(1, 2, 3)
                             Node.new()
-                            Worker.new(seed)
+                            Worker.new()
                         """
         );
 
@@ -779,9 +779,39 @@ class FrontendChainBindingAnalyzerTest {
                 () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedWorker.status()),
                 () -> assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedWorker.callKind()),
                 () -> assertEquals(FrontendReceiverKind.TYPE_META, resolvedWorker.receiverKind()),
-                () -> assertEquals(List.of(GdVariantType.VARIANT), resolvedWorker.argumentTypes())
+                () -> assertEquals(List.of(), resolvedWorker.argumentTypes())
         );
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeKeepsParameterizedGdccConstructorsFailClosed() throws Exception {
+        var analyzed = analyze(
+                "parameterized_gdcc_constructor_route.gd",
+                """
+                        class_name ParameterizedGdccConstructorRoute
+                        extends RefCounted
+                        
+                        class Worker:
+                            func _init(value: int):
+                                pass
+                        
+                        func ping(seed):
+                            Worker.new(seed)
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var workerNewStep = findNode(pingFunction, AttributeCallStep.class, step -> step.name().equals("new"));
+        var failedCall = analyzed.analysisData().resolvedCalls().get(workerNewStep);
+
+        assertAll(
+                () -> assertNotNull(failedCall),
+                () -> assertEquals(FrontendCallResolutionStatus.FAILED, failedCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, failedCall.callKind()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, failedCall.receiverKind()),
+                () -> assertTrue(failedCall.detailReason().contains("does not support arguments"), failedCall.detailReason())
+        );
     }
 
     @Test
@@ -818,6 +848,49 @@ class FrontendChainBindingAnalyzerTest {
                 () -> assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, failedCall.callKind()),
                 () -> assertEquals(FrontendReceiverKind.TYPE_META, failedCall.receiverKind()),
                 () -> assertTrue(failedCall.detailReason().contains("Ambiguous constructor overload"))
+        );
+    }
+
+    @Test
+    void analyzePrefersMoreSpecificBareBuiltinConstructorOverVariantFallback() throws Exception {
+        var analyzed = analyze(
+                "specific_builtin_constructor_route.gd",
+                """
+                        class_name SpecificBuiltinConstructorRoute
+                        extends RefCounted
+                        
+                        func ping():
+                            String("seed")
+                        """,
+                registryWithSpecificStringConstructors()
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var stringCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("String")
+        );
+
+        var resolvedType = analyzed.analysisData().expressionTypes().get(stringCall);
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(stringCall);
+
+        assertAll(
+                () -> assertNotNull(resolvedType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, resolvedType.status()),
+                () -> assertNotNull(resolvedCall),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedCall.callKind()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, resolvedCall.receiverKind()),
+                () -> assertInstanceOf(ExtensionBuiltinClass.ConstructorInfo.class, resolvedCall.declarationSite()),
+                () -> assertEquals(
+                        "String",
+                        assertInstanceOf(
+                                ExtensionBuiltinClass.ConstructorInfo.class,
+                                resolvedCall.declarationSite()
+                        ).arguments().getFirst().type()
+                )
         );
     }
 
@@ -1589,6 +1662,24 @@ class FrontendChainBindingAnalyzerTest {
         ));
     }
 
+    private static @NotNull ClassRegistry registryWithSpecificStringConstructors() throws Exception {
+        var api = ExtensionApiLoader.loadDefault();
+        var patchedBuiltins = api.builtinClasses().stream()
+                .map(FrontendChainBindingAnalyzerTest::withSpecificStringConstructors)
+                .toList();
+        return new ClassRegistry(new ExtensionAPI(
+                api.header(),
+                api.builtinClassSizes(),
+                api.builtinClassMemberOffsets(),
+                api.globalEnums(),
+                api.utilityFunctions(),
+                patchedBuiltins,
+                api.classes(),
+                api.singletons(),
+                api.nativeStructures()
+        ));
+    }
+
     private static @NotNull ClassRegistry registryWithNonInstantiableNode() throws Exception {
         var api = ExtensionApiLoader.loadDefault();
         var patchedClasses = api.classes().stream()
@@ -1622,6 +1713,33 @@ class FrontendChainBindingAnalyzerTest {
                                 "String",
                                 0,
                                 List.of(new ExtensionFunctionArgument("value", "int", null, null))
+                        ),
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                1,
+                                List.of(new ExtensionFunctionArgument("value", "String", null, null))
+                        )
+                ),
+                builtinClass.properties(),
+                builtinClass.constants()
+        );
+    }
+
+    private static @NotNull ExtensionBuiltinClass withSpecificStringConstructors(@NotNull ExtensionBuiltinClass builtinClass) {
+        if (!builtinClass.name().equals("String")) {
+            return builtinClass;
+        }
+        return new ExtensionBuiltinClass(
+                builtinClass.name(),
+                builtinClass.isKeyed(),
+                builtinClass.operators(),
+                builtinClass.methods(),
+                builtinClass.enums(),
+                List.of(
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                0,
+                                List.of(new ExtensionFunctionArgument("value", "Variant", null, null))
                         ),
                         new ExtensionBuiltinClass.ConstructorInfo(
                                 "String",

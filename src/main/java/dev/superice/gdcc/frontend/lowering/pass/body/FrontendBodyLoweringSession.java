@@ -507,11 +507,6 @@ public final class FrontendBodyLoweringSession {
         };
     }
 
-    boolean shouldInvokeInitAfterObjectConstruction(@NotNull FrontendResolvedCall resolvedCall) {
-        return resolvedCall.declarationSite() instanceof FunctionDef functionDef
-                && functionDef.getName().equals("_init");
-    }
-
     /// Call instructions materialize the receiver separately, so any frontend-facing signature
     /// metadata that still exposes an implicit `self` parameter must be normalized away here.
     private @NotNull List<GdType> callBoundaryParameterTypes(

@@ -114,6 +114,10 @@ class FrontendLoweringFunctionPreparationPassTest {
         assertSame(outerConstructor.body(), initContext.loweringRoot());
         assertInstanceOf(Block.class, initContext.loweringRoot());
         assertSame(requireFunction(outerClass, "_init"), initContext.targetFunction());
+        assertEquals(2, initContext.targetFunction().getParameterCount());
+        assertEquals("self", initContext.targetFunction().getParameter(0).name());
+        assertEquals("RuntimePreparationOuter", initContext.targetFunction().getParameter(0).type().getTypeName());
+        assertEquals("seed", initContext.targetFunction().getParameter(1).name());
 
         var helperContext = requireContext(
                 contexts,
@@ -137,6 +141,10 @@ class FrontendLoweringFunctionPreparationPassTest {
         assertSame(outerFunction.body(), pingContext.loweringRoot());
         assertInstanceOf(Block.class, pingContext.loweringRoot());
         assertSame(requireFunction(outerClass, "ping"), pingContext.targetFunction());
+        assertEquals(2, pingContext.targetFunction().getParameterCount());
+        assertEquals("self", pingContext.targetFunction().getParameter(0).name());
+        assertEquals("RuntimePreparationOuter", pingContext.targetFunction().getParameter(0).type().getTypeName());
+        assertEquals("value", pingContext.targetFunction().getParameter(1).name());
 
         var pongContext = requireContext(
                 contexts,
@@ -148,6 +156,9 @@ class FrontendLoweringFunctionPreparationPassTest {
         assertSame(innerFunction.body(), pongContext.loweringRoot());
         assertInstanceOf(Block.class, pongContext.loweringRoot());
         assertSame(requireFunction(innerClass, "pong"), pongContext.targetFunction());
+        assertEquals(1, pongContext.targetFunction().getParameterCount());
+        assertEquals("self", pongContext.targetFunction().getParameter(0).name());
+        assertEquals("RuntimePreparationOuter$Inner", pongContext.targetFunction().getParameter(0).type().getTypeName());
 
         var outerPropertyContext = requireContext(
                 contexts,

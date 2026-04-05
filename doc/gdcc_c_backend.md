@@ -210,6 +210,19 @@ Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "000000000000000000000000000000000000
 - For `"..."` and `&"..."`, generate `GD_STATIC_S(u8"...")` and `GD_STATIC_SN(u8"...)` respectively.
 - For `null`, generate `NULL`.
 - For non-object type constructor, generate a c constructor function call, see more details in `gdextension-lite.md`.
+- For object constructor route (`construct_object` / frontend `.new(...)` object target), call
+  `godot_new_XXX()` directly for engine classes, and call generated `XXX_class_create_instance(...)`
+  directly for gdcc classes. For non-`RefCounted` gdcc classes this remains `XXX_class_create_instance(NULL, true)`.
+  When the GDCC target definitely inherits `RefCounted`, generated C constructor call sites must use
+  `XXX_class_create_instance(NULL, false)` first, then wrap that external create call with
+  `gdcc_ref_counted_init_raw(..., true)` before the result enters the existing object slot write /
+  pointer-conversion path. The generated `*_class_create_instance(...)` itself stays a raw native-object
+  allocation/binding helper and
+  must not perform the external RefCounted init on behalf of every caller. When the same GDCC
+  `RefCounted` class is instantiated by Godot engine entry points or by GDScript, Godot itself is
+  responsible for initializing the reference count as part of its own creation path. GDCC custom constructors
+  themselves remain zero-arg only; parameterized custom constructor routes are blocked in frontend
+  compile mode.
 - For `$"..."`, generate NodePath constructor with utf8_chars.
 
 ### Extension Type Metadata Parsing Ownership

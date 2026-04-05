@@ -16,10 +16,14 @@ import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.LirPropertyDef;
+import dev.superice.gdcc.lir.insn.CallMethodInsn;
 import dev.superice.gdcc.lir.insn.ConstructArrayInsn;
 import dev.superice.gdcc.lir.insn.ConstructBuiltinInsn;
 import dev.superice.gdcc.lir.insn.ConstructDictionaryInsn;
+import dev.superice.gdcc.lir.insn.ConstructObjectInsn;
 import dev.superice.gdcc.lir.insn.LiteralFloatInsn;
+import dev.superice.gdcc.lir.insn.LiteralIntInsn;
+import dev.superice.gdcc.lir.insn.LiteralStringInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
@@ -30,6 +34,7 @@ import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdPackedNumericArrayType;
 import dev.superice.gdcc.type.GdPackedStringArrayType;
 import dev.superice.gdcc.type.GdPackedVectorArrayType;
+import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdTransform2DType;
 import dev.superice.gdcc.type.GdType;
@@ -191,6 +196,128 @@ class CConstructInsnGenEngineTest {
     }
 
     @Test
+    @DisplayName("construct_object should support engine and gdcc object lifecycles across refcounted and non-refcounted routes")
+    void constructObjectInsnsShouldRunInRealGodot() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/construct_engine_object");
+        Files.createDirectories(tempDir);
+
+        var projectInfo = new CProjectInfo(
+                "construct_engine_object",
+                GodotVersion.V451,
+                tempDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var builder = new CProjectBuilder();
+        builder.initProject(projectInfo);
+
+        var moduleClasses = newObjectConstructEngineClasses();
+        var constructNodeClass = moduleClasses.getFirst();
+        var module = new LirModule("construct_engine_object_module", moduleClasses);
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+
+        var buildResult = builder.buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), "Compilation should succeed. Build log:\n" + buildResult.buildLog());
+        assertFalse(buildResult.artifacts().isEmpty(), "Compilation should produce extension artifacts.");
+        var entrySource = Files.readString(tempDir.resolve("entry.c"));
+        assertTrue(
+                entrySource.contains("godot_new_Node()"),
+                "Engine non-refcounted object constructor call should be generated."
+        );
+        assertTrue(
+                entrySource.contains("godot_new_RefCounted()"),
+                "Engine RefCounted constructor call should be generated."
+        );
+        assertTrue(
+                entrySource.contains(
+                        "gdcc_object_from_godot_object_ptr(GDConstructRuntimePlainObject_class_create_instance(NULL, true))"
+                ),
+                "GDCC non-refcounted object constructor call should be converted from Godot pointer into gdcc wrapper."
+        );
+        assertTrue(
+                entrySource.contains(
+                        "gdcc_object_from_godot_object_ptr(gdcc_ref_counted_init_raw(GDConstructRuntimeCountedWorker_class_create_instance(NULL, false), true))"
+                ),
+                "GDCC RefCounted object constructor call should be externally wrapped with RefCounted init before gdcc wrapper conversion."
+        );
+        var plainCreateInstanceBody = resolveCreateInstanceBody(entrySource, "GDConstructRuntimePlainObject");
+        var countedCreateInstanceBody = resolveCreateInstanceBody(entrySource, "GDConstructRuntimeCountedWorker");
+        assertFalse(
+                plainCreateInstanceBody.contains("gdcc_ref_counted_init_raw("),
+                "Non-refcounted GDCC create_instance should not initialize RefCounted state.\n" + plainCreateInstanceBody
+        );
+        assertFalse(
+                countedCreateInstanceBody.contains("gdcc_ref_counted_init_raw("),
+                "RefCounted GDCC create_instance itself should remain raw; external C callers own init.\n" + countedCreateInstanceBody
+        );
+        assertTrue(
+                resolveFunctionBody(entrySource, "GDConstructObjectEngineNode_make_engine_node_class_name")
+                        .contains("try_destroy_object($node);"),
+                "Engine non-ref local destroy path should be emitted."
+        );
+        assertTrue(
+                resolveFunctionBody(entrySource, "GDConstructObjectEngineNode_measure_engine_ref_counted_reference_count")
+                        .contains("release_object($ref_counted);"),
+                "Engine RefCounted local release path should be emitted."
+        );
+        assertTrue(
+                resolveFunctionBody(entrySource, "GDConstructObjectEngineNode_make_gdcc_plain_object_label")
+                        .contains("try_destroy_object(gdcc_object_to_godot_object_ptr($plain_object, GDConstructRuntimePlainObject_object_ptr));"),
+                "GDCC plain-object local destroy path should be emitted."
+        );
+        assertTrue(
+                resolveFunctionBody(entrySource, "GDConstructObjectEngineNode_measure_gdcc_counted_worker_reference_count")
+                        .contains("release_object(gdcc_object_to_godot_object_ptr($worker, GDConstructRuntimeCountedWorker_object_ptr));"),
+                "GDCC RefCounted local release path should be emitted."
+        );
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "ConstructObjectNode",
+                        constructNodeClass.getName(),
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(objectConstructTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + combinedOutput);
+        assertTrue(
+                combinedOutput.contains("engine non-ref object construct check passed."),
+                "Engine non-ref object construct check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("engine refcounted construct check passed."),
+                "Engine refcounted construct check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("gdcc non-ref object construct check passed."),
+                "GDCC non-ref object construct check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("gdcc refcounted ping check passed."),
+                "GDCC refcounted ping check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("gdcc refcounted reference count check passed."),
+                "GDCC refcounted reference count check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(combinedOutput.contains("check failed"), "No check should fail.\nOutput:\n" + combinedOutput);
+    }
+
+    @Test
     @DisplayName("default property init path should generate and run Packed*Array field init functions in real engine")
     void defaultPackedPropertyInitShouldRunInRealGodot() throws IOException, InterruptedException {
         if (!hasZig()) {
@@ -297,6 +424,26 @@ class CConstructInsnGenEngineTest {
             clazz.addFunction(newPreparePackedArrayFunction(packedCase.prepareMethodName(), packedCase.type(), selfType));
         }
         return clazz;
+    }
+
+    private static List<LirClassDef> newObjectConstructEngineClasses() {
+        var constructNode = new LirClassDef("GDConstructObjectEngineNode", "Node");
+        constructNode.setSourceFile("construct_engine_object.gd");
+        var constructNodeType = new GdObjectType(constructNode.getName());
+        constructNode.addFunction(newConstructEngineNodeFunction(constructNodeType));
+        constructNode.addFunction(newMeasureEngineRefCountedReferenceCountFunction(constructNodeType));
+        constructNode.addFunction(newConstructGdccPlainObjectLabelFunction(constructNodeType));
+        constructNode.addFunction(newConstructGdccCountedWorkerPingFunction(constructNodeType));
+        constructNode.addFunction(newMeasureGdccCountedWorkerReferenceCountFunction(constructNodeType));
+
+        var plainObjectClass = new LirClassDef("GDConstructRuntimePlainObject", "Object");
+        plainObjectClass.setSourceFile("construct_engine_object_plain.gd");
+        plainObjectClass.addFunction(newPlainObjectLabelFunction(new GdObjectType(plainObjectClass.getName())));
+
+        var countedWorkerClass = new LirClassDef("GDConstructRuntimeCountedWorker", "RefCounted");
+        countedWorkerClass.setSourceFile("construct_engine_object_worker.gd");
+        countedWorkerClass.addFunction(newWorkerPingFunction(new GdObjectType(countedWorkerClass.getName())));
+        return List.of(constructNode, plainObjectClass, countedWorkerClass);
     }
 
     private static LirClassDef newPackedPropertyInitEngineClass() {
@@ -412,6 +559,76 @@ class CConstructInsnGenEngineTest {
         var func = newMethodWithMarker("make_typed_dictionary_prepare", dictionaryType, selfType);
         func.createAndAddVariable("dict", dictionaryType);
         entry(func).appendInstruction(new ReturnInsn("dict"));
+        return func;
+    }
+
+    private static LirFunctionDef newConstructEngineNodeFunction(GdObjectType selfType) {
+        var func = newMethod("make_engine_node_class_name", GdStringType.STRING, selfType);
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+        func.createAndAddVariable("class_name", GdStringType.STRING);
+        entry(func).appendInstruction(new ConstructObjectInsn("node", "Node"));
+        entry(func).appendInstruction(new CallMethodInsn("class_name", "get_class", "node", List.of()));
+        entry(func).appendInstruction(new ReturnInsn("class_name"));
+        return func;
+    }
+
+    private static LirFunctionDef newMeasureEngineRefCountedReferenceCountFunction(GdObjectType selfType) {
+        var refCountedType = new GdObjectType("RefCounted");
+        var func = newMethod("measure_engine_ref_counted_reference_count", GdIntType.INT, selfType);
+        func.createAndAddVariable("ref_counted", refCountedType);
+        func.createAndAddVariable("count", GdIntType.INT);
+        entry(func).appendInstruction(new ConstructObjectInsn("ref_counted", "RefCounted"));
+        entry(func).appendInstruction(new CallMethodInsn("count", "get_reference_count", "ref_counted", List.of()));
+        entry(func).appendInstruction(new ReturnInsn("count"));
+        return func;
+    }
+
+    private static LirFunctionDef newConstructGdccPlainObjectLabelFunction(GdObjectType selfType) {
+        var plainObjectType = new GdObjectType("GDConstructRuntimePlainObject");
+        var func = newMethod("make_gdcc_plain_object_label", GdStringType.STRING, selfType);
+        func.createAndAddVariable("plain_object", plainObjectType);
+        func.createAndAddVariable("label", GdStringType.STRING);
+        entry(func).appendInstruction(new ConstructObjectInsn("plain_object", "GDConstructRuntimePlainObject"));
+        entry(func).appendInstruction(new CallMethodInsn("label", "label", "plain_object", List.of()));
+        entry(func).appendInstruction(new ReturnInsn("label"));
+        return func;
+    }
+
+    private static LirFunctionDef newConstructGdccCountedWorkerPingFunction(GdObjectType selfType) {
+        var workerType = new GdObjectType("GDConstructRuntimeCountedWorker");
+        var func = newMethod("make_gdcc_counted_worker_ping", GdIntType.INT, selfType);
+        func.createAndAddVariable("worker", workerType);
+        func.createAndAddVariable("ping", GdIntType.INT);
+        entry(func).appendInstruction(new ConstructObjectInsn("worker", "GDConstructRuntimeCountedWorker"));
+        entry(func).appendInstruction(new CallMethodInsn("ping", "ping", "worker", List.of()));
+        entry(func).appendInstruction(new ReturnInsn("ping"));
+        return func;
+    }
+
+    private static LirFunctionDef newMeasureGdccCountedWorkerReferenceCountFunction(GdObjectType selfType) {
+        var workerType = new GdObjectType("GDConstructRuntimeCountedWorker");
+        var func = newMethod("measure_gdcc_counted_worker_reference_count", GdIntType.INT, selfType);
+        func.createAndAddVariable("worker", workerType);
+        func.createAndAddVariable("count", GdIntType.INT);
+        entry(func).appendInstruction(new ConstructObjectInsn("worker", "GDConstructRuntimeCountedWorker"));
+        entry(func).appendInstruction(new CallMethodInsn("count", "get_reference_count", "worker", List.of()));
+        entry(func).appendInstruction(new ReturnInsn("count"));
+        return func;
+    }
+
+    private static LirFunctionDef newPlainObjectLabelFunction(GdObjectType selfType) {
+        var func = newMethod("label", GdStringType.STRING, selfType);
+        func.createAndAddVariable("label", GdStringType.STRING);
+        entry(func).appendInstruction(new LiteralStringInsn("label", "plain-worker"));
+        entry(func).appendInstruction(new ReturnInsn("label"));
+        return func;
+    }
+
+    private static LirFunctionDef newWorkerPingFunction(GdObjectType selfType) {
+        var func = newMethod("ping", GdIntType.INT, selfType);
+        func.createAndAddVariable("result", GdIntType.INT);
+        entry(func).appendInstruction(new LiteralIntInsn("result", 7));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -539,6 +756,24 @@ class CConstructInsnGenEngineTest {
         return new LirInstruction.VariableOperand(id);
     }
 
+    private static String resolveCreateInstanceBody(String cCode, String className) {
+        var functionPrefix = "GDExtensionObjectPtr\\s+" + java.util.regex.Pattern.quote(className) + "_class_create_instance";
+        var pattern = java.util.regex.Pattern.compile(functionPrefix + "\\([^)]*\\)\\s*\\{(.*?)return obj;\\s*}", java.util.regex.Pattern.DOTALL);
+        var matcher = pattern.matcher(cCode);
+        assertTrue(matcher.find(), "Missing create_instance body for class " + className);
+        return matcher.group(1);
+    }
+
+    private static String resolveFunctionBody(String cCode, String functionName) {
+        var pattern = java.util.regex.Pattern.compile(
+                java.util.regex.Pattern.quote(functionName) + "\\s*\\([^)]*\\)\\s*\\{(.*?)return _return_val;\\s*}",
+                java.util.regex.Pattern.DOTALL
+        );
+        var matcher = pattern.matcher(cCode);
+        assertTrue(matcher.find(), "Missing function body for " + functionName);
+        return matcher.group(1);
+    }
+
     private static String testScript() {
         return """
                 extends Node
@@ -650,6 +885,50 @@ class CConstructInsnGenEngineTest {
             script.append("    return packed.size() == 1 and ").append(packedCase.firstElementAssertion()).append("\n\n");
         }
         return script.toString();
+    }
+
+    private static String objectConstructTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "ConstructObjectNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var engine_node_class = String(target.call("make_engine_node_class_name"))
+                    if engine_node_class == "Node":
+                        print("engine non-ref object construct check passed.")
+                    else:
+                        push_error("engine non-ref object construct check failed.")
+                
+                    var engine_ref_count = int(target.call("measure_engine_ref_counted_reference_count"))
+                    if engine_ref_count >= 1:
+                        print("engine refcounted construct check passed.")
+                    else:
+                        push_error("engine refcounted construct check failed.")
+                
+                    var plain_label = String(target.call("make_gdcc_plain_object_label"))
+                    if plain_label == "plain-worker":
+                        print("gdcc non-ref object construct check passed.")
+                    else:
+                        push_error("gdcc non-ref object construct check failed.")
+                
+                    var counted_ping = int(target.call("make_gdcc_counted_worker_ping"))
+                    if counted_ping == 7:
+                        print("gdcc refcounted ping check passed.")
+                    else:
+                        push_error("gdcc refcounted ping check failed.")
+                
+                    var counted_ref_count = int(target.call("measure_gdcc_counted_worker_reference_count"))
+                    if counted_ref_count >= 1:
+                        print("gdcc refcounted reference count check passed.")
+                    else:
+                        push_error("gdcc refcounted reference count check failed.")
+                """;
     }
 
     private static String packedPropertyInitTestScript() {

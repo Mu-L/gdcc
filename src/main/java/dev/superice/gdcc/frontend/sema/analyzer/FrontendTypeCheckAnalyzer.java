@@ -64,6 +64,12 @@ public class FrontendTypeCheckAnalyzer {
     private static final @NotNull String TYPE_CHECK_CATEGORY = "sema.type_check";
     private static final @NotNull String TYPE_HINT_CATEGORY = "sema.type_hint";
 
+    private static @NotNull String parameterizedGdccConstructorUnsupportedMessage(@NotNull ClassDef currentClass) {
+        return "GDCC custom class constructor '" + Objects.requireNonNull(currentClass, "currentClass must not be null").getName()
+                + "._init(...)' currently supports only zero parameters; parameterized '_init' would not be honored "
+                + "by the runtime construction path";
+    }
+
     public void analyze(
             @NotNull ClassRegistry classRegistry,
             @NotNull FrontendAnalysisData analysisData,
@@ -394,11 +400,11 @@ public class FrontendTypeCheckAnalyzer {
         var typeRef = variableDeclaration.type();
         var message = FrontendDeclaredTypeSupport.isInferredTypeRef(typeRef)
                 ? "Property '" + variableDeclaration.name()
-                + "' uses ':=' but MVP does not infer property types. Add an explicit type such as '"
-                + explicitTypeSuggestion + "'."
+                  + "' uses ':=' but MVP does not infer property types. Add an explicit type such as '"
+                  + explicitTypeSuggestion + "'."
                 : "Property '" + variableDeclaration.name()
-                + "' has no explicit type and MVP does not infer property types. Add an explicit type such as '"
-                + explicitTypeSuggestion + "'.";
+                  + "' has no explicit type and MVP does not infer property types. Add an explicit type such as '"
+                  + explicitTypeSuggestion + "'.";
         access.diagnosticManager().warning(
                 TYPE_HINT_CATEGORY,
                 message,
@@ -532,6 +538,7 @@ public class FrontendTypeCheckAnalyzer {
             if (isNotPublished(functionDeclaration)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
+            reportParameterizedGdccConstructorIfNeeded(functionDeclaration);
             walkCallableBody(
                     functionDeclaration,
                     functionDeclaration.body(),
@@ -551,6 +558,7 @@ public class FrontendTypeCheckAnalyzer {
             if (isNotPublished(constructorDeclaration)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
+            reportParameterizedGdccConstructorIfNeeded(constructorDeclaration);
             walkCallableBody(
                     constructorDeclaration,
                     constructorDeclaration.body(),
@@ -559,6 +567,39 @@ public class FrontendTypeCheckAnalyzer {
                     false
             );
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
+        }
+
+        /// Parameterized GDCC `_init(...)` definitions are a semantic contract violation, not just a
+        /// compile-mode lowering gap. Report them on the declaration itself so they cannot fail
+        /// silently when no constructor call site is analyzed yet.
+        private void reportParameterizedGdccConstructorIfNeeded(@NotNull ConstructorDeclaration constructorDeclaration) {
+            if (constructorDeclaration.parameters().isEmpty() || currentClass == null) {
+                return;
+            }
+            diagnosticManager.error(
+                    TYPE_CHECK_CATEGORY,
+                    parameterizedGdccConstructorUnsupportedMessage(currentClass),
+                    sourcePath,
+                    FrontendRange.fromAstRange(constructorDeclaration.range())
+            );
+        }
+
+        /// Frontend source still models ordinary `_init` declarations as functions in the common
+        /// path, so the semantic guard must live here as well instead of relying only on the legacy
+        /// `ConstructorDeclaration` node kind.
+        private void reportParameterizedGdccConstructorIfNeeded(@NotNull FunctionDeclaration functionDeclaration) {
+            if (!functionDeclaration.name().equals("_init")
+                    || functionDeclaration.isStatic()
+                    || functionDeclaration.parameters().isEmpty()
+                    || currentClass == null) {
+                return;
+            }
+            diagnosticManager.error(
+                    TYPE_CHECK_CATEGORY,
+                    parameterizedGdccConstructorUnsupportedMessage(currentClass),
+                    sourcePath,
+                    FrontendRange.fromAstRange(functionDeclaration.range())
+            );
         }
 
         @Override

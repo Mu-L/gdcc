@@ -6,6 +6,7 @@ import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.gdextension.ExtensionGlobalEnum;
 import dev.superice.gdcc.gdextension.ExtensionSingleton;
 import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
@@ -18,6 +19,7 @@ import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.lir.insn.ConstructArrayInsn;
 import dev.superice.gdcc.lir.insn.ConstructBuiltinInsn;
 import dev.superice.gdcc.lir.insn.ConstructDictionaryInsn;
+import dev.superice.gdcc.lir.insn.ConstructObjectInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
@@ -251,6 +253,149 @@ class CConstructInsnGenTest {
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
         assertTrue(ex.getMessage().contains("construct_dictionary value type mismatch"));
+    }
+
+    @Test
+    @DisplayName("construct_object should emit direct gdextension-lite constructor call for engine object targets")
+    void constructObjectShouldEmitEngineConstructCall() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_engine_object");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("node", "Node"));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("godot_new_Node()"));
+        assertFalse(body.contains("gdcc_object_from_godot_object_ptr("), body);
+    }
+
+    @Test
+    @DisplayName("construct_object should externally initialize RefCounted gdcc create_instance results and convert into gdcc wrapper target")
+    void constructObjectShouldConvertToGdccRefCountedWrapperTarget() {
+        var holderClass = new LirClassDef("Holder", "Node", false, false, Map.of(), List.of(), List.of(), List.of());
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        var func = newFunction("construct_gdcc_object");
+        func.createAndAddVariable("worker", new GdObjectType("Worker"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("worker", "Worker"));
+        holderClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(holderClass, workerClass));
+        var codegen = newCodegen(module, List.of(holderClass, workerClass), apiWithConstructibleObjectClasses());
+        var body = codegen.generateFuncBody(holderClass, func);
+
+        assertTrue(body.contains("gdcc_ref_counted_init_raw(Worker_class_create_instance(NULL, false), true)"));
+        assertTrue(body.contains("gdcc_object_from_godot_object_ptr("), body);
+        assertFalse(body.contains("own_object("), body);
+        assertFalse(body.contains("try_own_object("), body);
+    }
+
+    @Test
+    @DisplayName("construct_object should keep plain gdcc create_instance raw when target is not RefCounted")
+    void constructObjectShouldKeepPlainGdccCreateInstanceRaw() {
+        var holderClass = new LirClassDef("Holder", "Node", false, false, Map.of(), List.of(), List.of(), List.of());
+        var plainClass = new LirClassDef("PlainWorker", "Object");
+        var func = newFunction("construct_plain_gdcc_object");
+        func.createAndAddVariable("worker", new GdObjectType("PlainWorker"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("worker", "PlainWorker"));
+        holderClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(holderClass, plainClass));
+        var codegen = newCodegen(module, List.of(holderClass, plainClass), apiWithConstructibleObjectClasses());
+        var body = codegen.generateFuncBody(holderClass, func);
+
+        assertTrue(body.contains("PlainWorker_class_create_instance(NULL, true)"), body);
+        assertFalse(body.contains("gdcc_ref_counted_init_raw("), body);
+        assertTrue(body.contains("gdcc_object_from_godot_object_ptr("), body);
+    }
+
+    @Test
+    @DisplayName("construct_object should reject non-object result slots")
+    void constructObjectShouldRejectNonObjectResultSlot() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_object_non_object_slot");
+        func.createAndAddVariable("value", GdFloatType.FLOAT);
+
+        entry(func).appendInstruction(new ConstructObjectInsn("value", "Node"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("must be Object type for construct_object"));
+    }
+
+    @Test
+    @DisplayName("construct_object should reject unknown classes")
+    void constructObjectShouldRejectUnknownClass() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_unknown_object");
+        func.createAndAddVariable("obj", new GdObjectType("UnknownType"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("obj", "UnknownType"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("class 'UnknownType' is not registered"));
+    }
+
+    @Test
+    @DisplayName("construct_object should reject non-instantiable engine classes")
+    void constructObjectShouldRejectNonInstantiableEngineClass() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_non_instantiable_engine");
+        func.createAndAddVariable("obj", new GdObjectType("EditorOnlyThing"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("obj", "EditorOnlyThing"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("class 'EditorOnlyThing' is not instantiable"));
+    }
+
+    @Test
+    @DisplayName("construct_object should reject abstract gdcc classes")
+    void constructObjectShouldRejectAbstractGdccClass() {
+        var holderClass = newTestClass();
+        var abstractWorker = new LirClassDef("AbstractWorker", "RefCounted");
+        abstractWorker.setAbstract(true);
+        var func = newFunction("construct_abstract_gdcc");
+        func.createAndAddVariable("worker", new GdObjectType("AbstractWorker"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("worker", "AbstractWorker"));
+        holderClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(holderClass, abstractWorker));
+        var codegen = newCodegen(module, List.of(holderClass, abstractWorker), apiWithConstructibleObjectClasses());
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(holderClass, func));
+
+        assertTrue(ex.getMessage().contains("class 'AbstractWorker' is abstract"));
+    }
+
+    @Test
+    @DisplayName("construct_object should reject class targets that are not assignable to result slot type")
+    void constructObjectShouldRejectIncompatibleResultType() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_object_type_mismatch");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("node", "RefCounted"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("is not assignable to result variable type 'Node'"));
     }
 
     @Test
@@ -617,6 +762,25 @@ class CConstructInsnGenTest {
                 List.of(),
                 packedBuiltins,
                 List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionAPI apiWithConstructibleObjectClasses() {
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(
+                        new ExtensionGdClass("Object", false, true, "", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
+                        new ExtensionGdClass("Node", false, true, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
+                        new ExtensionGdClass("RefCounted", true, true, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
+                        new ExtensionGdClass("EditorOnlyThing", false, false, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of())
+                ),
                 List.of(),
                 List.of()
         );

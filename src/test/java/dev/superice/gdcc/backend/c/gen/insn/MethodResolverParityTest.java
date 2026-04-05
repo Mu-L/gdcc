@@ -19,6 +19,7 @@ import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.resolver.ScopeMethodResolver;
 import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
@@ -175,6 +176,27 @@ class MethodResolverParityTest {
         assertEquals("RuntimeOuter$Shared", sharedResolved.method().ownerClass().getName());
         assertEquals(sharedResolved.method().ownerClass().getName(), backendResolved.ownerClassName());
         assertEquals(BackendMethodCallResolver.DispatchMode.GDCC, backendResolved.mode());
+    }
+
+    @Test
+    @DisplayName("backend method adapter should reject _init because constructor routes are not ordinary method calls")
+    void backendMethodAdapterShouldRejectInitConstructorRoute() {
+        var workerClass = newClass("Worker", "RefCounted");
+        var init = newFunction("_init");
+        init.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, init));
+        init.addParameter(new LirParameterDef("value", GdIntType.INT, null, init));
+        entry(init).appendInstruction(new ReturnInsn(null));
+        workerClass.addFunction(init);
+
+        var bodyBuilder = newBodyBuilder(emptyApi(), List.of(workerClass));
+        var receiverVar = new LirVariable("worker", new GdObjectType("Worker"), bodyBuilder.func());
+        var argVar = new LirVariable("value", GdIntType.INT, bodyBuilder.func());
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "_init", List.of(argVar))
+        );
+        assertTrue(ex.getMessage().contains("_init"), ex.getMessage());
     }
 
     private static CBodyBuilder newBodyBuilder(ExtensionAPI api, List<LirClassDef> gdccClasses) {

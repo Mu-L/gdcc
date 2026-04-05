@@ -8,6 +8,7 @@ import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
+import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
 import dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
@@ -16,6 +17,7 @@ import dev.superice.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
+import dev.superice.gdcc.scope.ScopeOwnerKind;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
@@ -146,6 +148,17 @@ public class FrontendCompileCheckAnalyzer {
                 + "does not support script static fields";
     }
 
+    private static @NotNull String gdccParameterizedConstructorCompileBlockedMessage(
+            @NotNull FrontendResolvedCall publishedCall
+    ) {
+        var ownerName = publishedCall.receiverType() != null
+                ? publishedCall.receiverType().getTypeName()
+                : publishedCall.returnType() != null ? publishedCall.returnType().getTypeName() : "<unknown>";
+        return "GDCC custom class constructor '" + ownerName
+                + ".new(...)' is blocked in compile mode because current GDExtension registration "
+                + "supports only zero-argument custom object construction";
+    }
+
     private static @NotNull String publishedCompileBlockedMessage(
             @NotNull String surfaceKind,
             @NotNull Enum<?> publishedStatus,
@@ -182,6 +195,11 @@ public class FrontendCompileCheckAnalyzer {
         };
     }
 
+    /// One-file compile-surface walker that:
+    /// - marks executable/property-init AST nodes that may reach lowering
+    /// - emits explicit compile-only blockers for syntax routes still outside lowering support
+    /// - replays published semantic facts against the marked surface and upgrades blocked routes
+    ///   into final compile diagnostics
     private static final class AstWalkerCompileCheckVisitor implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
         private final @NotNull DiagnosticSnapshot publishedDiagnostics;
@@ -196,6 +214,7 @@ public class FrontendCompileCheckAnalyzer {
         private final @NotNull Set<Node> handledAnchors = Collections.newSetFromMap(new IdentityHashMap<>());
         private int supportedExecutableBlockDepth;
 
+        /// Capture the shared semantic facts for one source file and prepare a dedicated walker.
         private AstWalkerCompileCheckVisitor(
                 @NotNull Path sourcePath,
                 @NotNull DiagnosticSnapshot publishedDiagnostics,
@@ -220,22 +239,26 @@ public class FrontendCompileCheckAnalyzer {
             astWalker = new ASTWalker(this);
         }
 
+        /// Walk the file once to mark compile surface, then scan published facts against that surface.
         private void walk(@NotNull SourceFile sourceFile) {
             astWalker.walk(Objects.requireNonNull(sourceFile, "sourceFile must not be null"));
             scanPublishedCompileBlocks();
         }
 
+        /// Unknown nodes are ignored until a dedicated compile-surface rule is added.
         @Override
         public @NotNull FrontendASTTraversalDirective handleNode(@NotNull Node node) {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// Top-level statements are scanned in non-executable mode so only supported declarations opt in.
         @Override
         public @NotNull FrontendASTTraversalDirective handleSourceFile(@NotNull SourceFile sourceFile) {
             walkNonExecutableContainerStatements(sourceFile.statements());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// Class bodies behave like the source root until a supported executable/property-init child is found.
         @Override
         public @NotNull FrontendASTTraversalDirective handleClassDeclaration(@NotNull ClassDeclaration classDeclaration) {
             if (isNotPublished(classDeclaration)) {
@@ -245,6 +268,7 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// Executable function bodies define the primary compile-ready surface.
         @Override
         public @NotNull FrontendASTTraversalDirective handleFunctionDeclaration(
                 @NotNull FunctionDeclaration functionDeclaration
@@ -256,6 +280,7 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// Constructor bodies share the same compile-surface rules as ordinary executable functions.
         @Override
         public @NotNull FrontendASTTraversalDirective handleConstructorDeclaration(
                 @NotNull ConstructorDeclaration constructorDeclaration
@@ -267,6 +292,7 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// Blocks are only traversed once they belong to a supported executable region.
         @Override
         public @NotNull FrontendASTTraversalDirective handleBlock(@NotNull Block block) {
             if (supportedExecutableBlockDepth <= 0 || isNotPublished(block)) {
@@ -277,6 +303,7 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// Standalone expression statements keep their nested expression tree on compile surface.
         @Override
         public @NotNull FrontendASTTraversalDirective handleExpressionStatement(
                 @NotNull ExpressionStatement expressionStatement
@@ -289,6 +316,7 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// Return statements contribute to compile surface only when they actually materialize a value.
         @Override
         public @NotNull FrontendASTTraversalDirective handleReturnStatement(@NotNull ReturnStatement returnStatement) {
             if (supportedExecutableBlockDepth <= 0 || returnStatement.value() == null) {
@@ -299,6 +327,7 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// `assert` is deliberately compile-blocked until lowering/backend own its semantics.
         @Override
         public @NotNull FrontendASTTraversalDirective handleAssertStatement(@NotNull AssertStatement assertStatement) {
             if (supportedExecutableBlockDepth <= 0) {
@@ -308,6 +337,8 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// Variable declarations participate differently depending on whether they are executable locals,
+        /// blocked static properties, or supported property initializers.
         @Override
         public @NotNull FrontendASTTraversalDirective handleVariableDeclaration(
                 @NotNull VariableDeclaration variableDeclaration
@@ -340,6 +371,7 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// `if` contributes its condition and each reachable branch body to compile surface.
         @Override
         public @NotNull FrontendASTTraversalDirective handleIfStatement(@NotNull IfStatement ifStatement) {
             if (supportedExecutableBlockDepth <= 0 || isNotPublished(ifStatement)) {
@@ -357,6 +389,7 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// `elif` reuses the same compile-surface rules as the parent `if` chain.
         @Override
         public @NotNull FrontendASTTraversalDirective handleElifClause(@NotNull ElifClause elifClause) {
             if (supportedExecutableBlockDepth <= 0 || isNotPublished(elifClause)) {
@@ -368,6 +401,7 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// `while` stays on compile surface because CFG/lowering already owns the loop route.
         @Override
         public @NotNull FrontendASTTraversalDirective handleWhileStatement(@NotNull WhileStatement whileStatement) {
             if (supportedExecutableBlockDepth <= 0 || isNotPublished(whileStatement)) {
@@ -379,16 +413,19 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// `for` remains outside compile mode until the lowering/backend route is implemented.
         @Override
         public @NotNull FrontendASTTraversalDirective handleForStatement(@NotNull ForStatement forStatement) {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// `match` remains outside compile mode until the lowering/backend route is implemented.
         @Override
         public @NotNull FrontendASTTraversalDirective handleMatchStatement(@NotNull MatchStatement matchStatement) {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// Enter one published callable body without leaking executable depth into sibling declarations.
         private void walkCallableBody(@NotNull Node callableOwner, @Nullable Block body) {
             if (isNotPublished(callableOwner) || isNotPublished(body)) {
                 return;
@@ -396,12 +433,14 @@ public class FrontendCompileCheckAnalyzer {
             walkSupportedExecutableBlock(body);
         }
 
+        /// Replay the AST walker over a flat statement list in source order.
         private void walkStatements(@NotNull java.util.List<Statement> statements) {
             for (var statement : statements) {
                 astWalker.walk(statement);
             }
         }
 
+        /// Traverse declarations with executable depth pinned to zero so nested bodies must opt in explicitly.
         private void walkNonExecutableContainerStatements(@NotNull java.util.List<Statement> statements) {
             var previousDepth = supportedExecutableBlockDepth;
             supportedExecutableBlockDepth = 0;
@@ -412,6 +451,7 @@ public class FrontendCompileCheckAnalyzer {
             }
         }
 
+        /// Enter one lowering-ready executable block and restore the outer depth on exit.
         private void walkSupportedExecutableBlock(@Nullable Block block) {
             if (isNotPublished(block)) {
                 return;
@@ -424,6 +464,7 @@ public class FrontendCompileCheckAnalyzer {
             }
         }
 
+        /// Mark supported expressions, while immediately blocking syntax forms whose lowering contract is absent.
         private void walkExpression(@Nullable Expression expression) {
             if (expression == null) {
                 return;
@@ -482,6 +523,7 @@ public class FrontendCompileCheckAnalyzer {
             }
         }
 
+        /// Re-check all published fact tables once compile surface marking is complete.
         private void scanPublishedCompileBlocks() {
             scanExpressionTypeCompileBlocks();
             scanResolvedMemberCompileBlocks();
@@ -489,6 +531,7 @@ public class FrontendCompileCheckAnalyzer {
             scanSlotTypeCompileBlocks();
         }
 
+        /// Any blocked/deferred expression type that still sits on compile surface must stop compilation.
         private void scanExpressionTypeCompileBlocks() {
             for (var entry : expressionTypes.entrySet()) {
                 var anchor = requireExpressionTypeAnchor(entry.getKey());
@@ -511,6 +554,7 @@ public class FrontendCompileCheckAnalyzer {
             }
         }
 
+        /// Member facts are reported at the exact property-step anchor to keep diagnostics precise.
         private void scanResolvedMemberCompileBlocks() {
             for (var entry : resolvedMembers.entrySet()) {
                 var anchor = requireAttributePropertyStep(entry.getKey());
@@ -529,10 +573,20 @@ public class FrontendCompileCheckAnalyzer {
             }
         }
 
+        /// Call facts stop compile mode either because upstream resolution already failed, or because a
+        /// route that used to resolve is still outside the supported compile-time contract.
         private void scanResolvedCallCompileBlocks() {
             for (var entry : resolvedCalls.entrySet()) {
                 var anchor = requireCallAnchor(entry.getKey());
                 var publishedCall = Objects.requireNonNull(entry.getValue(), "publishedCall must not be null");
+                if (shouldBlockParameterizedGdccConstructor(anchor, publishedCall)) {
+                    reportCompileBlock(
+                            anchor,
+                            gdccParameterizedConstructorCompileBlockedMessage(publishedCall),
+                            true
+                    );
+                    continue;
+                }
                 if (!isCompileBlocking(publishedCall.status()) || !compileSurfaceNodes.contains(anchor)) {
                     continue;
                 }
@@ -545,6 +599,23 @@ public class FrontendCompileCheckAnalyzer {
                         )
                 );
             }
+        }
+
+        /// Compile mode keeps a dedicated guard for GDCC parameterized constructors so regressions are
+        /// still caught even if an upstream semantic change accidentally republishes the route as resolved.
+        private static boolean shouldBlockParameterizedGdccConstructor(
+                @NotNull Node anchor,
+                @NotNull FrontendResolvedCall publishedCall
+        ) {
+            if (publishedCall.callKind() != FrontendCallResolutionKind.CONSTRUCTOR
+                    || publishedCall.ownerKind() != ScopeOwnerKind.GDCC) {
+                return false;
+            }
+            return switch (anchor) {
+                case AttributeCallStep attributeCallStep -> !attributeCallStep.arguments().isEmpty();
+                case CallExpression callExpression -> !callExpression.arguments().isEmpty();
+                default -> false;
+            };
         }
 
         /// Callable-local slot types are a lowering-only published fact. When the post analyzer had
@@ -590,6 +661,7 @@ public class FrontendCompileCheckAnalyzer {
             return expression;
         }
 
+        /// Expression-type facts anchored on full expressions may be remapped to a more specific terminal step.
         private @NotNull Node compileAnchorForExpressionType(@NotNull Node node) {
             if (node instanceof Expression expression) {
                 return compileAnchorForExpression(expression);
@@ -597,6 +669,7 @@ public class FrontendCompileCheckAnalyzer {
             return node;
         }
 
+        /// Validate the key shape used by `expressionTypes()` before compile diagnostics rely on it.
         private static @NotNull Node requireExpressionTypeAnchor(@NotNull Node node) {
             if (node instanceof Expression
                     || node instanceof AttributePropertyStep
@@ -610,6 +683,7 @@ public class FrontendCompileCheckAnalyzer {
             );
         }
 
+        /// Member facts must stay anchored at the exact property step that produced them.
         private static @NotNull AttributePropertyStep requireAttributePropertyStep(@NotNull Node node) {
             if (node instanceof AttributePropertyStep attributePropertyStep) {
                 return attributePropertyStep;
@@ -617,6 +691,7 @@ public class FrontendCompileCheckAnalyzer {
             throw new IllegalStateException("resolvedMembers must be keyed by attribute property steps");
         }
 
+        /// Call facts may be anchored either at an attribute step (`foo.bar()`) or a bare call expression.
         private static @NotNull Node requireCallAnchor(@NotNull Node node) {
             if (node instanceof AttributeCallStep || node instanceof CallExpression) {
                 return node;
@@ -624,6 +699,7 @@ public class FrontendCompileCheckAnalyzer {
             throw new IllegalStateException("resolvedCalls must be keyed by attribute call steps or CallExpression");
         }
 
+        /// Render a stable human-facing label for generic expression-root diagnostics.
         private static @NotNull String describeExpression(@NotNull Expression expression) {
             return switch (Objects.requireNonNull(expression, "expression must not be null")) {
                 case AttributeExpression _ -> "Attribute expression";
@@ -631,6 +707,7 @@ public class FrontendCompileCheckAnalyzer {
             };
         }
 
+        /// Render the precise surface label used when an expression-type fact blocks compilation.
         private static @NotNull String describeExpressionTypeAnchor(@NotNull Node node) {
             return switch (Objects.requireNonNull(node, "node must not be null")) {
                 case AttributePropertyStep attributePropertyStep ->
@@ -645,6 +722,7 @@ public class FrontendCompileCheckAnalyzer {
             };
         }
 
+        /// Render the user-facing call label that pairs with generic published-call blocker messages.
         private static @NotNull String describeCallAnchor(
                 @NotNull Node anchor,
                 @NotNull FrontendResolvedCall publishedCall
@@ -657,15 +735,19 @@ public class FrontendCompileCheckAnalyzer {
             };
         }
 
+        /// Emit an explicit syntax blocker and remember the anchor as part of compile surface.
         private void reportExplicitCompileBlock(@NotNull Node anchor, @NotNull String message) {
             markCompileSurfaceNode(anchor);
             reportCompileBlock(anchor, message);
         }
 
+        /// Convenience overload for the common dedup-aware compile blocker path.
         private void reportCompileBlock(@NotNull Node anchor, @NotNull String message) {
             reportCompileBlock(anchor, message, false);
         }
 
+        /// Emit one compile diagnostic unless the anchor has already been handled or an upstream
+        /// conflicting error already owns that exact source range.
         private void reportCompileBlock(
                 @NotNull Node anchor,
                 @NotNull String message,
@@ -673,10 +755,10 @@ public class FrontendCompileCheckAnalyzer {
         ) {
             Objects.requireNonNull(anchor, "anchor must not be null");
             Objects.requireNonNull(message, "message must not be null");
-            if (!handledAnchors.add(anchor)) {
+            if (!skipPublishedConflictDedup && hasPublishedConflictingDiagnosticAt(anchor)) {
                 return;
             }
-            if (!skipPublishedConflictDedup && hasPublishedConflictingDiagnosticAt(anchor)) {
+            if (!handledAnchors.add(anchor)) {
                 return;
             }
             diagnosticManager.error(
@@ -687,6 +769,7 @@ public class FrontendCompileCheckAnalyzer {
             );
         }
 
+        /// Return whether a non-whitelisted upstream blocker already owns this exact source location.
         private boolean hasPublishedConflictingDiagnosticAt(@NotNull Node anchor) {
             return findPublishedDiagnosticAt(
                     anchor,
@@ -695,6 +778,7 @@ public class FrontendCompileCheckAnalyzer {
             ) != null;
         }
 
+        /// Find one previously published diagnostic that exactly matches the anchor range in the same file.
         private @Nullable FrontendDiagnostic findPublishedDiagnosticAt(
                 @NotNull Node anchor,
                 @NotNull java.util.function.Predicate<FrontendDiagnostic> predicate
@@ -708,15 +792,19 @@ public class FrontendCompileCheckAnalyzer {
                     .orElse(null);
         }
 
+        /// Compile mode blocks on upstream errors and on the narrow warning categories that represent
+        /// missing lowering-ready publication.
         private boolean isCompileBlockingPublishedDiagnostic(@NotNull FrontendDiagnostic diagnostic) {
             return diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
                     || NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES.contains(diagnostic.category());
         }
 
+        /// Some upstream diagnostics explain the same missing fact and should coexist with compile_check.
         private boolean isNonConflictingPublishedDiagnostic(@NotNull FrontendDiagnostic diagnostic) {
             return NON_CONFLICTING_UPSTREAM_DIAGNOSTIC_CATEGORIES.containsKey(diagnostic.category());
         }
 
+        /// Compose the final compile-only hard-stop message for missing callable-local slot publication.
         private static @NotNull String slotTypeCompileBlockedMessage(
                 @NotNull VariableDeclaration variableDeclaration,
                 @NotNull FrontendDiagnostic publicationDiagnostic
@@ -727,22 +815,26 @@ public class FrontendCompileCheckAnalyzer {
                     + publicationDiagnostic.message();
         }
 
+        /// Record one AST node as reachable by the current compile-ready surface.
         private void markCompileSurfaceNode(@NotNull Node node) {
             compileSurfaceNodes.add(Objects.requireNonNull(node, "node must not be null"));
         }
 
+        /// Static top-level/class properties are explicitly blocked because the backend has no script-static storage.
         private boolean isStaticClassPropertyDeclaration(@NotNull VariableDeclaration variableDeclaration) {
             return Objects.requireNonNull(variableDeclaration, "variableDeclaration must not be null").kind() == DeclarationKind.VAR
                     && variableDeclaration.isStatic()
                     && scopesByAst.get(variableDeclaration) instanceof ClassScope;
         }
 
+        /// Only callable-local `var` declarations in lowering-ready block inventories are expected to publish slot types.
         private boolean isSupportedCallableLocalDeclaration(@NotNull VariableDeclaration variableDeclaration) {
             return variableDeclaration.kind() == DeclarationKind.VAR
                     && scopesByAst.get(variableDeclaration) instanceof dev.superice.gdcc.frontend.scope.BlockScope blockScope
                     && FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind());
         }
 
+        /// Compile mode only reasons about nodes that survived the shared publication pipeline.
         private boolean isNotPublished(@Nullable Node node) {
             return node == null || !scopesByAst.containsKey(node);
         }

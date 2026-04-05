@@ -18,6 +18,9 @@ import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.scope.ScopeOwnerKind;
+import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
@@ -383,6 +386,86 @@ class FrontendCompileCheckAnalyzerTest {
                 Map.of("MappedWorker", "RuntimeWorker")
         );
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileBlocksParameterizedGdccConstructorRoutes() throws Exception {
+        var compiled = analyzeForCompile("compile_check_parameterized_gdcc_constructor.gd", """
+                class_name CompileCheckParameterizedCtor
+                extends RefCounted
+                
+                class Worker:
+                    func _init(value: int):
+                        pass
+                
+                func build(seed):
+                    return Worker.new(seed)
+                """);
+
+        var callDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.call_resolution");
+        var typeCheckDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.type_check");
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(compiled.diagnostics().hasErrors());
+        assertEquals(1, callDiagnostics.size());
+        assertTrue(callDiagnostics.getFirst().message().contains("does not support arguments"));
+        assertEquals(1, typeCheckDiagnostics.size());
+        assertTrue(typeCheckDiagnostics.getFirst().message().contains("supports only zero parameters"));
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(
+                compileDiagnostics.getFirst().message().contains("supports only zero-argument custom object construction"),
+                compileDiagnostics.getFirst().message()
+        );
+    }
+
+    @Test
+    void analyzeForCompileKeepsDedicatedGuardForResolvedParameterizedGdccConstructorRegression() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_parameterized_gdcc_constructor_regression.gd", """
+                        class_name CompileCheckParameterizedCtorRegression
+                        extends RefCounted
+                
+                        class Worker:
+                            func _init(value: int):
+                                pass
+                
+                        func build(seed):
+                            return Worker.new(seed)
+                """);
+        var buildFunction = findFunction(preparedInput.unit().ast().statements(), "build");
+        var newStep = findNode(buildFunction, AttributeCallStep.class, step -> step.name().equals("new"));
+        preparedInput.analysisData().expressionTypes().clear();
+        preparedInput.analysisData().resolvedCalls().clear();
+        preparedInput.analysisData().resolvedCalls().put(
+                newStep,
+                FrontendResolvedCall.resolved(
+                        "new",
+                        FrontendCallResolutionKind.CONSTRUCTOR,
+                        FrontendReceiverKind.TYPE_META,
+                        ScopeOwnerKind.GDCC,
+                        new GdObjectType("CompileCheckParameterizedCtorRegression$Worker"),
+                        new GdObjectType("CompileCheckParameterizedCtorRegression$Worker"),
+                        List.of(GdVariantType.VARIANT),
+                        new Object()
+                )
+        );
+        preparedInput.analysisData().updateDiagnostics(new DiagnosticSnapshot(List.of()));
+        var cleanDiagnosticManager = new DiagnosticManager();
+
+        runCompileCheck(new PreparedCompileCheckInput(
+                preparedInput.unit(),
+                preparedInput.analysisData(),
+                cleanDiagnosticManager
+        ));
+
+        var compileDiagnostics = diagnosticsByCategory(
+                preparedInput.analysisData().diagnostics(),
+                "sema.compile_check"
+        );
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(
+                compileDiagnostics.getFirst().message().contains("supports only zero-argument custom object construction"),
+                compileDiagnostics.getFirst().message()
+        );
     }
 
     @Test

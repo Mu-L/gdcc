@@ -3,14 +3,19 @@ package dev.superice.gdcc.backend.c.gen.insn;
 import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
 import dev.superice.gdcc.backend.c.gen.CInsnGen;
 import dev.superice.gdcc.enums.GdInstruction;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.lir.insn.ConstructArrayInsn;
 import dev.superice.gdcc.lir.insn.ConstructBuiltinInsn;
 import dev.superice.gdcc.lir.insn.ConstructDictionaryInsn;
+import dev.superice.gdcc.lir.insn.ConstructObjectInsn;
 import dev.superice.gdcc.lir.insn.ConstructionInstruction;
+import dev.superice.gdcc.scope.ClassDef;
+import dev.superice.gdcc.scope.RefCountedStatus;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
+import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdPackedArrayType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
@@ -24,13 +29,22 @@ import java.util.List;
 /// - construct_builtin
 /// - construct_array
 /// - construct_dictionary
+/// - construct_object
 public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction> {
+    private record ObjectConstructTarget(
+            @NotNull GdObjectType constructedType,
+            @NotNull ClassDef classDef,
+            boolean needsExternalRefCountedInit
+    ) {
+    }
+
     @Override
     public @NotNull EnumSet<GdInstruction> getInsnOpcodes() {
         return EnumSet.of(
                 GdInstruction.CONSTRUCT_BUILTIN,
                 GdInstruction.CONSTRUCT_ARRAY,
-                GdInstruction.CONSTRUCT_DICTIONARY
+                GdInstruction.CONSTRUCT_DICTIONARY,
+                GdInstruction.CONSTRUCT_OBJECT
         );
     }
 
@@ -67,6 +81,18 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                     }
                     validateDictionaryTypeHint(bodyBuilder, keyClassName, valueClassName, dictionaryType);
                     bodyBuilder.helper().builtinBuilder().constructBuiltin(bodyBuilder, target, List.of());
+                }
+                case ConstructObjectInsn(_, var className) -> {
+                    var objectTarget = validateConstructObjectTarget(bodyBuilder, resultVar, className);
+                    var constructCall = renderObjectConstructCall(objectTarget);
+                    bodyBuilder.assignVar(
+                            target,
+                            bodyBuilder.valueOfOwnedExpr(
+                                    constructCall,
+                                    objectTarget.constructedType(),
+                                    CBodyBuilder.PtrKind.GODOT_PTR
+                            )
+                    );
                 }
                 default -> throw bodyBuilder.invalidInsn(
                         "Unsupported construction instruction: " + instruction.opcode().opcode()
@@ -169,6 +195,70 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                             "' does not match result variable value type '" +
                             renderTypeName(bodyBuilder, resultType.getValueType()) + "'"
             );
+        }
+    }
+
+    private @NotNull ObjectConstructTarget validateConstructObjectTarget(@NotNull CBodyBuilder bodyBuilder,
+                                                                         @NotNull LirVariable resultVar,
+                                                                         @NotNull String className) {
+        if (className.isBlank()) {
+            throw bodyBuilder.invalidInsn("construct_object class_name must not be blank");
+        }
+        if (!(resultVar.type() instanceof GdObjectType resultType)) {
+            throw bodyBuilder.invalidInsn(
+                    "Result variable ID '" + resultVar.id() + "' must be Object type for construct_object"
+            );
+        }
+
+        var constructedType = new GdObjectType(className);
+        var classDef = bodyBuilder.classRegistry().getClassDef(constructedType);
+        if (classDef == null) {
+            throw bodyBuilder.invalidInsn("construct_object class '" + className + "' is not registered");
+        }
+        validateConstructibleClass(bodyBuilder, classDef, className);
+        if (!bodyBuilder.classRegistry().checkAssignable(constructedType, resultType)) {
+            throw bodyBuilder.invalidInsn(
+                    "construct_object class '" + className + "' is not assignable to result variable type '" +
+                            resultType.getTypeName() + "'"
+            );
+        }
+        return new ObjectConstructTarget(
+                constructedType,
+                classDef,
+                // `*_class_create_instance(...)` stays a raw shared create/bind helper. When generated C
+                // explicitly constructs a GDCC RefCounted object, the caller must delay postinitialize
+                // until after `gdcc_ref_counted_init_raw(...)` has established the initial reference count.
+                !(classDef instanceof ExtensionGdClass)
+                        && bodyBuilder.classRegistry().getRefCountedStatus(constructedType) == RefCountedStatus.YES
+        );
+    }
+
+    /// Render the direct constructor expression for `construct_object`.
+    /// Engine classes use gdextension-lite `godot_new_XXX()`, while GDCC classes reuse generated
+    /// `*_class_create_instance(...)`. Explicit GDCC `RefCounted` construction suppresses the shared
+    /// postinitialize notification first, then replays it from `gdcc_ref_counted_init_raw(..., true)`
+    /// after the raw reference count has been initialized.
+    private @NotNull String renderObjectConstructCall(@NotNull ObjectConstructTarget target) {
+        return switch (target.classDef()) {
+            case ExtensionGdClass _ -> "godot_new_" + target.constructedType().getTypeName() + "()";
+            default -> {
+                var createCall = target.constructedType().getTypeName()
+                        + "_class_create_instance(NULL, " + (!target.needsExternalRefCountedInit()) + ")";
+                yield target.needsExternalRefCountedInit()
+                        ? "gdcc_ref_counted_init_raw(" + createCall + ", true)"
+                        : createCall;
+            }
+        };
+    }
+
+    private void validateConstructibleClass(@NotNull CBodyBuilder bodyBuilder,
+                                            @NotNull ClassDef classDef,
+                                            @NotNull String className) {
+        if (classDef.isAbstract()) {
+            throw bodyBuilder.invalidInsn("construct_object class '" + className + "' is abstract");
+        }
+        if (classDef instanceof ExtensionGdClass engineClass && !engineClass.isInstantiable()) {
+            throw bodyBuilder.invalidInsn("construct_object class '" + className + "' is not instantiable");
         }
     }
 

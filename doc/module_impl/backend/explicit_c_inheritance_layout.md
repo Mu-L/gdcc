@@ -93,6 +93,7 @@
 - 已完成：`src/main/c/codegen/template_451/entry.c.ftl`
   - `*_class_create_instance` 的 `godot_classdb_construct_object2(...)` 已切换为“最近 native ancestor”而非直接 `superName`。
   - 具体模板表达式：`${helper.resolveNearestNativeAncestorName(classDef)}`。
+  - 保持 `*_class_create_instance(...)` 为原始 native object create/bind helper，不把 `RefCounted` 初始化硬编码进所有调用者共享的 create path。
 - 已完成：`src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
   - 新增 `resolveNearestNativeAncestorName(ClassDef classDef)`，沿 GDCC 继承链上溯并返回首个非 GDCC 祖先。
   - 包含防御性检查：继承环检测、缺失父类定义检测、空祖先 fail-fast。
@@ -101,6 +102,15 @@
     - GDCC 子类 `create_instance` 构造目标为最近 native ancestor（例如 `Node`）。
     - 深层 GDCC 继承链（`Leaf -> Mid -> Root -> Node`）仍稳定构造 `Node`。
     - `create_instance` 中 `godot_object_set_instance(...)` 与 `godot_object_set_instance_binding(...)` 在最派生创建函数内各出现一次。
+
+#### 后续同步（2026-04-04）
+
+- 对继承 `RefCounted` 的 GDCC 类，引用计数初始化不放进 `*_class_create_instance(...)`。
+- 只有生成的 C 代码在“外部显式创建 GDCC 类对象”时，才会额外处理 `RefCounted` 初始化：
+  - 非 `RefCounted` 目标继续直接调用 `XXX_class_create_instance(NULL, true)`。
+  - `RefCounted` 目标改为先调用 `XXX_class_create_instance(NULL, false)`，再对返回值执行 `gdcc_ref_counted_init_raw(..., true)`。
+- 通过 Godot 引擎函数或 GDScript 创建继承 `RefCounted` 的 GDCC 类时，引用计数初始化由 Godot 自身创建路径负责，不经过这层外部补包裹逻辑。
+- 这样可以保持 shared create hook 与 Godot/GDExtension 自身创建路径解耦，同时修复 C 侧显式构造 RefCounted GDCC 对象时缺失初始引用计数的问题。
 
 ### 阶段 3：收敛 GDCC 上行转换语义
 

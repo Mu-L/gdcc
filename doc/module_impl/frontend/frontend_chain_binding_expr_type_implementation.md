@@ -274,6 +274,12 @@
 
 这些 route 当前不仅可出现在 executable body，也可出现在 class property `var` initializer subtree；该支持岛会继承 property 自身的 static/instance restriction，但不会把整个 class body 打开成 executable region。
 
+当前 constructor route 的事实源合同已经闭合到 downstream：
+
+- `.new(...)` 与 bare builtin direct constructor 统一发布为 `FrontendResolvedCall(callKind = CONSTRUCTOR)`
+- frontend body lowering 直接消费该 route 并发出 `ConstructBuiltinInsn` / `ConstructObjectInsn`
+- engine object 与 gdcc zero-arg custom object 都已能闭合到 backend object construction；gdcc 带参 constructor 则保持 fail-closed
+
 需要补充的稳定 MVP 合同是：
 
 - property initializer subtree 的 published support 主要服务于可发布事实，而不是宣称“当前类实例成员初始化语义已完成”

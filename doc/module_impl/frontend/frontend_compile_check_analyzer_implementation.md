@@ -168,6 +168,12 @@ short-circuit `BinaryExpression(and/or/&&/||)` 当前已经从显式 compile-blo
 - dedicated frontend CFG short-circuit lowering 已能同时覆盖 condition-context 与 value-context
 - compile gate 现在只要求这类表达式的 published facts 处于 lowering-ready 状态，而不再额外按 AST root 封口
 
+constructor route 当前也不再属于 compile-only blocker：
+
+- `.new(...)` 与 bare direct builtin constructor 的 shared semantic publication 已稳定进入 `resolvedCalls()`
+- body lowering 与 backend `construct_object` 已闭合，engine / builtin / gdcc zero-arg constructor 都可继续下沉
+- compile gate 继续只按 published fact 状态判定，但额外保留一条 regression guard：若 gdcc 带参 constructor 被错误重新发布为 `RESOLVED`，compile mode 仍会在这里硬挡住
+
 这些错误不表示：
 
 - parser 不支持该语法

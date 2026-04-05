@@ -141,6 +141,7 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
                 functionDeclaration.parameters().size()
         );
         requireShellOnlyExecutableFunction(owningClass, targetFunction);
+        ensureExecutableSelfParameter(owningClass, targetFunction);
         return new FunctionLoweringContext(
                 FunctionLoweringContext.Kind.EXECUTABLE_BODY,
                 sourceClassRelation.unit().path(),
@@ -163,6 +164,7 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
         requirePublishedScope(constructorDeclaration.body(), "callable body", analysisData);
         var targetFunction = requireSkeletonFunction(owningClass, "_init", false, constructorDeclaration.parameters().size());
         requireShellOnlyExecutableFunction(owningClass, targetFunction);
+        ensureExecutableSelfParameter(owningClass, targetFunction);
         return new FunctionLoweringContext(
                 FunctionLoweringContext.Kind.EXECUTABLE_BODY,
                 sourceClassRelation.unit().path(),
@@ -269,7 +271,7 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
         var matches = owningClass.getFunctions().stream()
                 .filter(function -> function.getName().equals(functionName))
                 .filter(function -> function.isStatic() == isStatic)
-                .filter(function -> function.getParameterCount() == parameterCount)
+                .filter(function -> matchesExecutableParameterShape(owningClass, function, isStatic, parameterCount))
                 .toList();
         if (matches.size() != 1) {
             throw new IllegalStateException(
@@ -286,6 +288,66 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
             );
         }
         return matches.getFirst();
+    }
+
+    /// Shared skeleton metadata keeps executable instance functions user-parameter-only. Preparation
+    /// upgrades them to backend-facing shells by injecting the leading `self` parameter exactly once.
+    private void ensureExecutableSelfParameter(
+            @NotNull LirClassDef owningClass,
+            @NotNull LirFunctionDef function
+    ) {
+        if (function.isStatic()) {
+            return;
+        }
+        var expectedSelfType = new GdObjectType(owningClass.getName());
+        var firstParameter = function.getParameter(0);
+        if (firstParameter != null && firstParameter.name().equals("self")) {
+            if (!firstParameter.type().getTypeName().equals(expectedSelfType.getTypeName())) {
+                throw new IllegalStateException(
+                        "Executable function '"
+                                + owningClass.getName()
+                                + "."
+                                + function.getName()
+                                + "' has self parameter type '"
+                                + firstParameter.type().getTypeName()
+                                + "', expected '"
+                                + expectedSelfType.getTypeName()
+                                + "'"
+                );
+            }
+            return;
+        }
+        if (function.getParameter("self") != null) {
+            throw new IllegalStateException(
+                    "Executable function '"
+                            + owningClass.getName()
+                            + "."
+                            + function.getName()
+                            + "' must expose self as the leading parameter"
+            );
+        }
+        function.addParameter(0, new LirParameterDef("self", expectedSelfType, null, function));
+    }
+
+    private boolean matchesExecutableParameterShape(
+            @NotNull LirClassDef owningClass,
+            @NotNull LirFunctionDef function,
+            boolean isStatic,
+            int sourceParameterCount
+    ) {
+        if (isStatic) {
+            return function.getParameterCount() == sourceParameterCount;
+        }
+        if (function.getParameterCount() == sourceParameterCount) {
+            return true;
+        }
+        if (function.getParameterCount() != sourceParameterCount + 1) {
+            return false;
+        }
+        var firstParameter = function.getParameter(0);
+        return firstParameter != null
+                && firstParameter.name().equals("self")
+                && firstParameter.type().getTypeName().equals(owningClass.getName());
     }
 
     private @NotNull LirPropertyDef requireProperty(

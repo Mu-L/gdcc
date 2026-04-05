@@ -640,6 +640,36 @@ class FrontendChainReductionHelperTest {
     }
 
     @Test
+    void reducePrefersMoreSpecificBuiltinConstructorOverVariantFallback() {
+        var registry = newRegistry(List.of(stringBuiltinWithSpecificConstructors()), List.of());
+        var chain = chain(identifier("String"), call("new", literal("\"seed\"")));
+        var constructorStep = assertInstanceOf(AttributeCallStep.class, chain.steps().getFirst());
+        var constructorArgument = constructorStep.arguments().getFirst();
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("String", GdStringType.STRING, ScopeTypeMetaKind.BUILTIN, null, false)
+                ),
+                registry,
+                (expression, finalizeWindow) -> expression == constructorArgument
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdStringType.STRING)
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status());
+        var resolvedCall = result.stepTraces().getFirst().suggestedCall();
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedCall.callKind());
+        assertInstanceOf(ExtensionBuiltinClass.ConstructorInfo.class, resolvedCall.declarationSite());
+        var selectedConstructor = assertInstanceOf(
+                ExtensionBuiltinClass.ConstructorInfo.class,
+                resolvedCall.declarationSite()
+        );
+        assertEquals("String", selectedConstructor.arguments().getFirst().type());
+    }
+
+    @Test
     void reduceResolvesGdccDefaultConstructorWithoutExplicitInitFunction() {
         var worker = newClass("Worker");
         worker.addProperty(new LirPropertyDef("payload", GdStringType.STRING));
@@ -928,6 +958,30 @@ class FrontendChainReductionHelperTest {
                                 "String",
                                 0,
                                 List.of(new ExtensionFunctionArgument("value", "int", null, null))
+                        ),
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                1,
+                                List.of(new ExtensionFunctionArgument("value", "String", null, null))
+                        )
+                ),
+                List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionBuiltinClass stringBuiltinWithSpecificConstructors() {
+        return new ExtensionBuiltinClass(
+                "String",
+                false,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                0,
+                                List.of(new ExtensionFunctionArgument("value", "Variant", null, null))
                         ),
                         new ExtensionBuiltinClass.ConstructorInfo(
                                 "String",

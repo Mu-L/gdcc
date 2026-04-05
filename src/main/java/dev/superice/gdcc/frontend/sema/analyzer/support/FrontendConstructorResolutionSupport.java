@@ -30,6 +30,13 @@ final class FrontendConstructorResolutionSupport {
     private FrontendConstructorResolutionSupport() {
     }
 
+    private enum MatchPreference {
+        BETTER,
+        WORSE,
+        EQUAL,
+        INCOMPARABLE
+    }
+
     record Resolution(
             @NotNull FrontendCallResolutionStatus status,
             @Nullable Object declarationSite,
@@ -110,21 +117,15 @@ final class FrontendConstructorResolutionSupport {
                     "Constructor receiver '" + receiverTypeMeta.displayName() + "' has unavailable class metadata"
             );
         }
-        var constructors = classDef.getFunctions().stream()
-                .filter(function -> function.getName().equals("_init") && !function.isStatic())
-                .toList();
-        if (constructors.isEmpty()) {
-            if (argumentTypes.isEmpty()) {
-                return resolved(defaultDeclarationSite(receiverTypeMeta, classDef), ScopeOwnerKind.GDCC);
-            }
+        if (!argumentTypes.isEmpty()) {
             return failed(
                     defaultDeclarationSite(receiverTypeMeta, classDef),
                     ScopeOwnerKind.GDCC,
-                    "Class '" + receiverTypeMeta.displayName() + "' has no matching constructor overload for "
-                            + renderArgumentTypes(argumentTypes)
+                    "GDExtension custom class constructor '" + receiverTypeMeta.displayName()
+                            + ".new' does not support arguments " + renderArgumentTypes(argumentTypes)
             );
         }
-        return chooseConstructor(classRegistry, receiverTypeMeta, constructors, argumentTypes, ScopeOwnerKind.GDCC);
+        return resolved(defaultDeclarationSite(receiverTypeMeta, classDef), ScopeOwnerKind.GDCC);
     }
 
     private static @NotNull Resolution resolveBuiltinConstructor(
@@ -171,10 +172,15 @@ final class FrontendConstructorResolutionSupport {
             return resolved(applicable.getFirst(), ownerKind);
         }
         if (applicable.size() > 1) {
+            var mostSpecific = selectMostSpecificApplicableConstructor(classRegistry, applicable, argumentTypes);
+            if (mostSpecific != null) {
+                return resolved(mostSpecific, ownerKind);
+            }
             return failed(
                     defaultDeclarationSite(receiverTypeMeta, null),
                     ownerKind,
-                    "Ambiguous constructor overload for '" + receiverTypeMeta.displayName() + ".new': "
+                    "Ambiguous constructor overload for '" + receiverTypeMeta.displayName()
+                            + ".new': multiple equally specific applicable overloads remain after constructor ranking: "
                             + renderCallableSignatures(applicable)
             );
         }
@@ -184,6 +190,171 @@ final class FrontendConstructorResolutionSupport {
                   + buildCallableMismatchReason(classRegistry, constructors.getFirst(), argumentTypes)
                   + ". candidates: " + renderCallableSignatures(constructors);
         return failed(defaultDeclarationSite(receiverTypeMeta, null), ownerKind, detailReason);
+    }
+
+    /// Constructor overload ranking mirrors the frontend method-call baseline: applicability is only
+    /// the first filter. Among the surviving candidates, a constructor wins only when it is not
+    /// worse on any compared dimension and is strictly better on at least one of them.
+    private static @Nullable FunctionDef selectMostSpecificApplicableConstructor(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull List<? extends FunctionDef> applicable,
+            @NotNull List<GdType> argumentTypes
+    ) {
+        FunctionDef selected = null;
+        for (var candidate : applicable) {
+            var dominated = false;
+            for (var other : applicable) {
+                if (candidate == other) {
+                    continue;
+                }
+                if (isStrictlyMoreSpecific(classRegistry, other, candidate, argumentTypes)) {
+                    dominated = true;
+                    break;
+                }
+            }
+            if (dominated) {
+                continue;
+            }
+            if (selected != null) {
+                return null;
+            }
+            selected = candidate;
+        }
+        return selected;
+    }
+
+    private static boolean isStrictlyMoreSpecific(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FunctionDef candidate,
+            @NotNull FunctionDef baseline,
+            @NotNull List<GdType> argumentTypes
+    ) {
+        var strictlyBetter = false;
+        for (var index = 0; index < argumentTypes.size(); index++) {
+            var preference = compareArgumentSpecificity(
+                    classRegistry,
+                    argumentTypes.get(index),
+                    parameterTypeAt(candidate, index),
+                    candidate.isVararg(),
+                    parameterTypeAt(baseline, index),
+                    baseline.isVararg()
+            );
+            switch (preference) {
+                case WORSE, INCOMPARABLE -> {
+                    return false;
+                }
+                case BETTER -> strictlyBetter = true;
+                case EQUAL -> {
+                }
+            }
+        }
+
+        var omittedByCandidate = omittedTrailingParameterCount(candidate, argumentTypes.size());
+        var omittedByBaseline = omittedTrailingParameterCount(baseline, argumentTypes.size());
+        if (omittedByCandidate > omittedByBaseline) {
+            return false;
+        }
+        if (omittedByCandidate < omittedByBaseline) {
+            strictlyBetter = true;
+        }
+
+        if (candidate.isVararg() && !baseline.isVararg()) {
+            return false;
+        }
+        if (!candidate.isVararg() && baseline.isVararg()) {
+            strictlyBetter = true;
+        }
+        return strictlyBetter;
+    }
+
+    private static @NotNull MatchPreference compareArgumentSpecificity(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull GdType sourceType,
+            @Nullable GdType candidateTarget,
+            boolean candidateVararg,
+            @Nullable GdType baselineTarget,
+            boolean baselineVararg
+    ) {
+        if (candidateTarget == null && baselineTarget == null) {
+            return MatchPreference.EQUAL;
+        }
+        if (candidateTarget == null) {
+            return candidateVararg ? MatchPreference.WORSE : MatchPreference.INCOMPARABLE;
+        }
+        if (baselineTarget == null) {
+            return baselineVararg ? MatchPreference.BETTER : MatchPreference.INCOMPARABLE;
+        }
+        if (sameRenderedType(sourceType, candidateTarget) && !sameRenderedType(sourceType, baselineTarget)) {
+            return MatchPreference.BETTER;
+        }
+        if (!sameRenderedType(sourceType, candidateTarget) && sameRenderedType(sourceType, baselineTarget)) {
+            return MatchPreference.WORSE;
+        }
+
+        var candidateDecision = FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                classRegistry,
+                sourceType,
+                candidateTarget
+        );
+        var baselineDecision = FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                classRegistry,
+                sourceType,
+                baselineTarget
+        );
+        var decisionPreference = compareDecisionSpecificity(candidateDecision, baselineDecision);
+        if (decisionPreference != MatchPreference.EQUAL) {
+            return decisionPreference;
+        }
+
+        var candidateNarrower = classRegistry.checkAssignable(candidateTarget, baselineTarget);
+        var baselineNarrower = classRegistry.checkAssignable(baselineTarget, candidateTarget);
+        if (candidateNarrower && !baselineNarrower) {
+            return MatchPreference.BETTER;
+        }
+        if (!candidateNarrower && baselineNarrower) {
+            return MatchPreference.WORSE;
+        }
+        return MatchPreference.EQUAL;
+    }
+
+    private static @NotNull MatchPreference compareDecisionSpecificity(
+            @NotNull FrontendVariantBoundaryCompatibility.Decision candidateDecision,
+            @NotNull FrontendVariantBoundaryCompatibility.Decision baselineDecision
+    ) {
+        var candidateRank = decisionSpecificityRank(candidateDecision);
+        var baselineRank = decisionSpecificityRank(baselineDecision);
+        if (candidateRank > baselineRank) {
+            return MatchPreference.BETTER;
+        }
+        if (candidateRank < baselineRank) {
+            return MatchPreference.WORSE;
+        }
+        return MatchPreference.EQUAL;
+    }
+
+    private static int decisionSpecificityRank(@NotNull FrontendVariantBoundaryCompatibility.Decision decision) {
+        return switch (Objects.requireNonNull(decision, "decision must not be null")) {
+            case ALLOW_DIRECT -> 3;
+            case ALLOW_WITH_LITERAL_NULL -> 2;
+            case ALLOW_WITH_UNPACK, ALLOW_WITH_PACK -> 1;
+            case REJECT -> 0;
+        };
+    }
+
+    private static @Nullable GdType parameterTypeAt(@NotNull FunctionDef callable, int index) {
+        if (index < callable.getParameters().size()) {
+            return callable.getParameters().get(index).getType();
+        }
+        return null;
+    }
+
+    private static int omittedTrailingParameterCount(@NotNull FunctionDef callable, int providedCount) {
+        var fixedCount = callable.getParameters().size();
+        return Math.max(0, fixedCount - Math.min(providedCount, fixedCount));
+    }
+
+    private static boolean sameRenderedType(@NotNull GdType first, @NotNull GdType second) {
+        return first.getTypeName().equals(second.getTypeName());
     }
 
     private static boolean matchesCallableArguments(
