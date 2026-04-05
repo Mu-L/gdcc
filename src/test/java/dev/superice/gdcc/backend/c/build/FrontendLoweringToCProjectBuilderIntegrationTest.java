@@ -51,7 +51,7 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
         var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
 
-        assertNotNull(lowered);
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
         assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
         assertEquals(1, lowered.getClassDefs().size());
         assertEquals("RuntimeFrontendBuildSmoke", lowered.getClassDefs().getFirst().getName());
@@ -72,11 +72,14 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
 
         var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entrySource = Files.readString(projectDir.resolve("entry.c"));
         var librarySuffix = projectInfo.getTargetPlatform().sharedLibraryFileName("artifact").replace("artifact", "");
 
         assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
         assertTrue(Files.exists(projectDir.resolve("entry.c")));
         assertTrue(Files.exists(projectDir.resolve("entry.h")));
+        assertTrue(entrySource.contains("GD_STATIC_SN(u8\"RuntimeFrontendBuildSmoke\")"), entrySource);
+        assertFalse(entrySource.contains("GD_STATIC_SN(u8\"FrontendBuildSmoke\")"), entrySource);
         assertTrue(
                 buildResult.artifacts().stream()
                         .anyMatch(artifact -> artifact.getFileName().toString().endsWith(librarySuffix)),
@@ -107,9 +110,17 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                 combinedOutput.contains("frontend lowering runtime ping check passed."),
                 () -> "Godot output should confirm ping result.\nOutput:\n" + combinedOutput
         );
+        assertTrue(
+                combinedOutput.contains("frontend lowering runtime class remap check passed."),
+                () -> "Godot output should confirm mapped runtime class name.\nOutput:\n" + combinedOutput
+        );
         assertFalse(
                 combinedOutput.contains("frontend lowering runtime ping check failed."),
                 () -> "Ping check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend lowering runtime class remap check failed."),
+                () -> "Mapped runtime class-name check should not fail.\nOutput:\n" + combinedOutput
         );
     }
 
@@ -141,6 +152,16 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                 
                 func make_worker_value() -> int:
                     return Worker.new().read()
+                
+                func make_worker_runtime_class_name() -> String:
+                    return Worker.new().get_class()
+                
+                func forward_worker_value(worker: Worker) -> int:
+                    return worker.read()
+                
+                func make_worker_value_via_source_name_parameter() -> int:
+                    var worker: Worker = Worker.new()
+                    return forward_worker_value(worker)
                 
                 func measure_worker_reference_count() -> int:
                     return Worker.new().get_reference_count()
@@ -184,7 +205,7 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
         var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
 
-        assertNotNull(lowered);
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
         assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
         assertEquals(3, lowered.getClassDefs().size());
         assertTrue(
@@ -216,6 +237,8 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         assertTrue(entrySource.contains("godot_new_Vector3i_with_int_int_int"), entrySource);
         assertTrue(entrySource.contains("godot_new_Node()"), entrySource);
         assertTrue(entrySource.contains("godot_new_RefCounted()"), entrySource);
+        assertTrue(entrySource.contains("GD_STATIC_SN(u8\"RuntimeConstructorWorker\")"), entrySource);
+        assertFalse(entrySource.contains("GD_STATIC_SN(u8\"Worker\")"), entrySource);
         assertTrue(
                 entrySource.contains("gdcc_ref_counted_init_raw(RuntimeConstructorWorker_class_create_instance(NULL, false), true)"),
                 entrySource
@@ -263,12 +286,192 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                 () -> "GDCC RefCounted runtime check should pass.\nOutput:\n" + combinedOutput
         );
         assertTrue(
+                combinedOutput.contains("frontend constructor mapped cross-file worker route check passed."),
+                () -> "Mapped cross-file worker route check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
                 combinedOutput.contains("frontend constructor gdcc plain object lifecycle check passed."),
                 () -> "GDCC plain object runtime check should pass.\nOutput:\n" + combinedOutput
         );
         assertFalse(
                 combinedOutput.contains("check failed."),
                 () -> "Constructor integration output should not include failure markers.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    @Test
+    void lowerFrontendMappedCrossFileComplexControlFlowBuildNativeLibraryAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping mapped cross-file frontend integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_mapped_cross_file_complex_runtime");
+        Files.createDirectories(tempDir);
+
+        var hostSource = """
+                class_name ComplexMappedCoordinator
+                extends Node
+                
+                func run_cross_file_flow() -> int:
+                    var alpha: Alpha = Alpha.new()
+                    var beta: Beta = Beta.new()
+                    return alpha.mix(beta, 2) + beta.respond(alpha, 2) + alpha.base + beta.offset
+                
+                func alpha_runtime_class_name() -> String:
+                    return Alpha.new().get_class()
+                
+                func beta_runtime_class_name() -> String:
+                    return Beta.new().get_class()
+                """;
+        var alphaSource = """
+                class_name Alpha
+                extends RefCounted
+                
+                var base: int
+                
+                func _init() -> void:
+                    base = 4
+                
+                func own_value() -> int:
+                    return base
+                
+                func mix(beta: Beta, depth: int) -> int:
+                    var result := 0
+                    if depth <= 0:
+                        result = base + beta.offset
+                    elif depth == 1:
+                        result = beta.respond(self, depth - 1) + beta.offset
+                    else:
+                        var total := 0
+                        var cursor := depth
+                        while cursor > 0:
+                            if cursor > 1:
+                                total = total + beta.offset
+                            elif cursor == 1:
+                                total = total + beta.peek_alpha(self)
+                            else:
+                                total = total + 1000
+                            cursor = cursor - 1
+                        result = total + beta.respond(self, depth - 1)
+                    return result
+                """;
+        var betaSource = """
+                class_name Beta
+                extends RefCounted
+                
+                var offset: int
+                
+                func _init() -> void:
+                    offset = 3
+                
+                func own_value() -> int:
+                    return offset
+                
+                func peek_alpha(alpha: Alpha) -> int:
+                    return alpha.base + alpha.own_value()
+                
+                func respond(alpha: Alpha, depth: int) -> int:
+                    var result := 0
+                    if depth < 0:
+                        result = -100
+                    elif depth == 0:
+                        result = offset + alpha.base
+                    else:
+                        var sum := 0
+                        var index := 0
+                        while index < depth:
+                            if index == 0:
+                                sum = sum + alpha.base
+                            elif index == 1:
+                                sum = sum + alpha.base + offset
+                            else:
+                                sum = sum + alpha.own_value()
+                            index = index + 1
+                        result = sum + alpha.mix(self, depth - 1)
+                    return result
+                """;
+        var module = parseModule(
+                "frontend_mapped_cross_file_complex_runtime_module",
+                List.of(
+                        new SourceFileSpec(tempDir.resolve("complex_mapped_coordinator.gd"), hostSource),
+                        new SourceFileSpec(tempDir.resolve("alpha.gd"), alphaSource),
+                        new SourceFileSpec(tempDir.resolve("beta.gd"), betaSource)
+                ),
+                Map.of(
+                        "ComplexMappedCoordinator", "RuntimeComplexMappedCoordinator",
+                        "Alpha", "RuntimeComplexAlpha",
+                        "Beta", "RuntimeComplexBeta"
+                )
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals(3, lowered.getClassDefs().size());
+        assertTrue(lowered.getClassDefs().stream().anyMatch(classDef -> "RuntimeComplexMappedCoordinator".equals(classDef.getName())));
+        assertTrue(lowered.getClassDefs().stream().anyMatch(classDef -> "RuntimeComplexAlpha".equals(classDef.getName())));
+        assertTrue(lowered.getClassDefs().stream().anyMatch(classDef -> "RuntimeComplexBeta".equals(classDef.getName())));
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_mapped_cross_file_complex_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entrySource = Files.readString(projectDir.resolve("entry.c"));
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+        assertTrue(entrySource.contains("GD_STATIC_SN(u8\"RuntimeComplexMappedCoordinator\")"), entrySource);
+        assertTrue(entrySource.contains("GD_STATIC_SN(u8\"RuntimeComplexAlpha\")"), entrySource);
+        assertTrue(entrySource.contains("GD_STATIC_SN(u8\"RuntimeComplexBeta\")"), entrySource);
+        assertFalse(entrySource.contains("GD_STATIC_SN(u8\"ComplexMappedCoordinator\")"), entrySource);
+        assertFalse(entrySource.contains("GD_STATIC_SN(u8\"Alpha\")"), entrySource);
+        assertFalse(entrySource.contains("GD_STATIC_SN(u8\"Beta\")"), entrySource);
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "ComplexMappedCoordinatorNode",
+                        "RuntimeComplexMappedCoordinator",
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(complexMappedCrossFileTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend complex mapped cross-file flow check passed."),
+                () -> "Complex mapped cross-file flow check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend complex mapped runtime class check passed."),
+                () -> "Mapped runtime class check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend complex mapped cross-file flow check failed."),
+                () -> "Complex mapped cross-file flow check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend complex mapped runtime class check failed."),
+                () -> "Mapped runtime class check should not fail.\nOutput:\n" + combinedOutput
         );
     }
 
@@ -315,6 +518,12 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend lowering runtime ping check passed.")
                     else:
                         push_error("frontend lowering runtime ping check failed.")
+                
+                    var runtime_class = String(target.get_class())
+                    if runtime_class == "RuntimeFrontendBuildSmoke" and target.is_class("RuntimeFrontendBuildSmoke") and not target.is_class("FrontendBuildSmoke"):
+                        print("frontend lowering runtime class remap check passed.")
+                    else:
+                        push_error("frontend lowering runtime class remap check failed.")
                 """;
     }
 
@@ -355,11 +564,45 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                     else:
                         push_error("frontend constructor gdcc refcounted lifecycle check failed.")
                 
+                    var worker_runtime_class = String(target.call("make_worker_runtime_class_name"))
+                    var worker_value_via_source_name = int(target.call("make_worker_value_via_source_name_parameter"))
+                    if worker_runtime_class == "RuntimeConstructorWorker" and worker_value_via_source_name == 7:
+                        print("frontend constructor mapped cross-file worker route check passed.")
+                    else:
+                        push_error("frontend constructor mapped cross-file worker route check failed.")
+                
                     var plain_worker_value = int(target.call("make_plain_worker_value"))
                     if plain_worker_value == 9:
                         print("frontend constructor gdcc plain object lifecycle check passed.")
                     else:
                         push_error("frontend constructor gdcc plain object lifecycle check failed.")
+                """;
+    }
+
+    private static @NotNull String complexMappedCrossFileTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "ComplexMappedCoordinatorNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var total = int(target.call("run_cross_file_flow"))
+                    if total == 50:
+                        print("frontend complex mapped cross-file flow check passed.")
+                    else:
+                        push_error("frontend complex mapped cross-file flow check failed.")
+                
+                    var alpha_runtime_class = String(target.call("alpha_runtime_class_name"))
+                    var beta_runtime_class = String(target.call("beta_runtime_class_name"))
+                    if alpha_runtime_class == "RuntimeComplexAlpha" and beta_runtime_class == "RuntimeComplexBeta":
+                        print("frontend complex mapped runtime class check passed.")
+                    else:
+                        push_error("frontend complex mapped runtime class check failed.")
                 """;
     }
 
