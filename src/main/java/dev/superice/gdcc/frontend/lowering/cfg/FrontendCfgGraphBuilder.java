@@ -504,24 +504,35 @@ public final class FrontendCfgGraphBuilder {
         return currentBuild;
     }
 
-    /// Type-meta chain heads such as `Node.new()` or `Worker.build(...)` do not materialize the
-    /// head identifier as a runtime value. The first call step therefore starts directly from the
-    /// published static/constructor call fact with a null receiver slot, and only subsequent steps
-    /// consume the constructed/called result as an ordinary value.
+    /// Type-meta chain heads such as `Vector3.ZERO`, `Color.RED`, `Node.new()` or `Worker.build(...)`
+    /// do not materialize the head identifier as a runtime value.
+    ///
+    /// The first lowering step must therefore start directly from a published type-meta fact:
+    /// - static member loads publish `MemberLoadItem(..., null, ...)`
+    /// - static/constructor calls publish `CallItem(..., null, ...)`
+    ///
+    /// Only subsequent steps consume the produced result as an ordinary runtime value.
     private @NotNull ValueBuild buildTypeMetaHeadAttributeExpressionValue(
             @NotNull BuildCursor cursor,
             @NotNull AttributeExpression attributeExpression,
             @Nullable String preferredResultValueId
     ) {
-        if (!(attributeExpression.steps().getFirst() instanceof AttributeCallStep firstCallStep)) {
-            throw new IllegalStateException(
-                    "Type-meta attribute head '" + attributeExpression.base()
-                            + "' currently requires a call step to enter lowering"
+        var currentBuild = switch (attributeExpression.steps().getFirst()) {
+            case AttributePropertyStep firstPropertyStep -> buildTypeMetaHeadMemberStep(
+                    cursor,
+                    firstPropertyStep,
+                    attributeExpression.steps().size() == 1 ? preferredResultValueId : null
             );
-        }
-        var currentBuild = buildTypeMetaHeadCallStep(cursor, firstCallStep, attributeExpression.steps().size() == 1
-                ? preferredResultValueId
-                : null);
+            case AttributeCallStep firstCallStep -> buildTypeMetaHeadCallStep(
+                    cursor,
+                    firstCallStep,
+                    attributeExpression.steps().size() == 1 ? preferredResultValueId : null
+            );
+            default -> throw new IllegalStateException(
+                    "Type-meta attribute head '" + attributeExpression.base()
+                            + "' currently requires a property step or call step to enter lowering"
+            );
+        };
         for (var stepIndex = 1; stepIndex < attributeExpression.steps().size(); stepIndex++) {
             var step = attributeExpression.steps().get(stepIndex);
             currentBuild = applyAttributeStep(
@@ -532,6 +543,22 @@ public final class FrontendCfgGraphBuilder {
             );
         }
         return currentBuild;
+    }
+
+    private @NotNull ValueBuild buildTypeMetaHeadMemberStep(
+            @NotNull BuildCursor cursor,
+            @NotNull AttributePropertyStep attributePropertyStep,
+            @Nullable String preferredResultValueId
+    ) {
+        var publishedMember = requireLoweringReadyMember(attributePropertyStep);
+        var resultValueId = chooseResultValueId(preferredResultValueId);
+        cursor.currentSequence().items().add(new MemberLoadItem(
+                attributePropertyStep,
+                publishedMember.memberName(),
+                null,
+                resultValueId
+        ));
+        return new ValueBuild(cursor, resultValueId);
     }
 
     private @NotNull ValueBuild buildTypeMetaHeadCallStep(
@@ -853,7 +880,8 @@ public final class FrontendCfgGraphBuilder {
             @NotNull List<String> frozenTargetOperandValueIds
     ) {
         return switch (targetExpression) {
-            case IdentifierExpression identifierExpression -> emitOpaqueValue(cursor, identifierExpression, List.of(), null);
+            case IdentifierExpression identifierExpression ->
+                    emitOpaqueValue(cursor, identifierExpression, List.of(), null);
             case AttributeExpression attributeExpression -> buildCompoundAssignmentAttributeTargetValue(
                     cursor,
                     attributeExpression,

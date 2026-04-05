@@ -213,6 +213,82 @@ class FrontendLoweringBuildCfgPassTest {
         assertTrue(exception.getMessage().contains("parameter default"), exception.getMessage());
     }
 
+    @Test
+    void runBuildsTypeMetaStaticHeadMemberLoadsWithoutMaterializingReceiverValues() throws Exception {
+        var prepared = prepareContext(
+                "build_cfg_type_meta_static_head.gd",
+                """
+                        class_name BuildCfgTypeMetaStaticHead
+                        extends RefCounted
+                        
+                        func zero_length() -> float:
+                            return Vector3.ZERO.length()
+                        
+                        func red() -> Color:
+                            return Color.RED
+                        """,
+                Map.of("BuildCfgTypeMetaStaticHead", "RuntimeBuildCfgTypeMetaStaticHead")
+        );
+
+        new FrontendLoweringBuildCfgPass().run(prepared.context());
+
+        var contexts = prepared.context().requireFunctionLoweringContexts();
+        var zeroLengthContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBuildCfgTypeMetaStaticHead",
+                "zero_length"
+        );
+        var redContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBuildCfgTypeMetaStaticHead",
+                "red"
+        );
+
+        var sourceFile = prepared.module().units().getFirst().ast();
+        var zeroLengthFunction = requireFunctionDeclaration(sourceFile, "zero_length");
+        var redFunction = requireFunctionDeclaration(sourceFile, "red");
+        var zeroLengthExpression = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ReturnStatement.class, zeroLengthFunction.body().statements().getFirst()).value()
+        );
+        var redExpression = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ReturnStatement.class, redFunction.body().statements().getFirst()).value()
+        );
+        var zeroStep = assertInstanceOf(AttributePropertyStep.class, zeroLengthExpression.steps().getFirst());
+        var lengthStep = assertInstanceOf(AttributeCallStep.class, zeroLengthExpression.steps().get(1));
+        var redStep = assertInstanceOf(AttributePropertyStep.class, redExpression.steps().getFirst());
+
+        var zeroGraph = zeroLengthContext.requireFrontendCfgGraph();
+        var redGraph = redContext.requireFrontendCfgGraph();
+        var zeroEntry = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, zeroGraph.requireNode(zeroGraph.entryNodeId()));
+        var zeroStop = assertInstanceOf(FrontendCfgGraph.StopNode.class, zeroGraph.requireNode(zeroEntry.nextId()));
+        var redEntry = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, redGraph.requireNode(redGraph.entryNodeId()));
+        var redStop = assertInstanceOf(FrontendCfgGraph.StopNode.class, redGraph.requireNode(redEntry.nextId()));
+        var zeroStaticLoad = assertInstanceOf(MemberLoadItem.class, zeroEntry.items().get(0));
+        var zeroLengthCall = assertInstanceOf(CallItem.class, zeroEntry.items().get(1));
+        var redStaticLoad = assertInstanceOf(MemberLoadItem.class, redEntry.items().getFirst());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(2, zeroEntry.items().size()),
+                () -> assertEquals(zeroStep, zeroStaticLoad.anchor()),
+                () -> assertEquals("ZERO", zeroStaticLoad.memberName()),
+                () -> assertEquals(List.of(), zeroStaticLoad.operandValueIds()),
+                () -> assertEquals(lengthStep, zeroLengthCall.anchor()),
+                () -> assertEquals("length", zeroLengthCall.callableName()),
+                () -> assertEquals(List.of(zeroStaticLoad.resultValueId()), zeroLengthCall.operandValueIds()),
+                () -> assertEquals(zeroLengthCall.resultValueId(), zeroStop.returnValueIdOrNull()),
+                () -> assertEquals(1, redEntry.items().size()),
+                () -> assertEquals(redStep, redStaticLoad.anchor()),
+                () -> assertEquals("RED", redStaticLoad.memberName()),
+                () -> assertEquals(List.of(), redStaticLoad.operandValueIds()),
+                () -> assertEquals(redStaticLoad.resultValueId(), redStop.returnValueIdOrNull())
+        );
+    }
+
     private static @NotNull FrontendCfgGraph.BranchNode requireReachableBranch(
             @NotNull FrontendCfgGraph graph,
             @NotNull String entryId,

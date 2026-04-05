@@ -178,6 +178,7 @@ class FrontendCfgGraphTest {
         var assignmentExpression = new AssignmentExpression("=", identifier("target"), expression, SYNTHETIC_RANGE);
         var opaqueValue = new OpaqueExprValueItem(expression, List.of("lhs0", "rhs0"), "v0");
         var memberItem = new MemberLoadItem(propertyStep, "payload", "recv0", "v1");
+        var staticMemberItem = new MemberLoadItem(propertyStep, "ZERO", null, "v7");
         var subscriptItem = new SubscriptLoadItem(expression, "items", "recv1", List.of("arg0"), "v2");
         var callItem = new CallItem(expression, "build", "recv2", List.of("arg1", "arg2"), "v3");
         var boolItem = new BoolConstantItem(expression, true, "v4");
@@ -201,6 +202,8 @@ class FrontendCfgGraphTest {
                 () -> assertSame(propertyStep, memberItem.anchor()),
                 () -> assertEquals("payload", memberItem.memberName()),
                 () -> assertEquals(List.of("recv0"), memberItem.operandValueIds()),
+                () -> assertEquals("ZERO", staticMemberItem.memberName()),
+                () -> assertEquals(List.of(), staticMemberItem.operandValueIds()),
                 () -> assertSame(expression, subscriptItem.anchor()),
                 () -> assertEquals("items", subscriptItem.memberNameOrNull()),
                 () -> assertEquals(List.of("recv1", "arg0"), subscriptItem.operandValueIds()),

@@ -204,7 +204,7 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
                         materializedRhsSlotId
                 ));
                 case TYPE_META -> block.appendNonTerminatorInstruction(new StoreStaticInsn(
-                        session.requireClassName(resolvedMember.receiverType()),
+                        session.requireStaticReceiverName(resolvedMember.receiverType()),
                         node.name(),
                         materializedRhsSlotId
                 ));

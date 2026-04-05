@@ -325,7 +325,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     }
                     block.appendNonTerminatorInstruction(new CallStaticMethodInsn(
                             resultSlotId,
-                            session.requireClassName(resolvedCall.receiverType()),
+                            session.requireStaticReceiverName(resolvedCall.receiverType()),
                             resolvedCall.callableName(),
                             arguments
                     ));
@@ -375,16 +375,32 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var resolvedMember = session.requireResolvedMember(node.anchor());
             var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
             switch (resolvedMember.receiverKind()) {
-                case INSTANCE -> block.appendNonTerminatorInstruction(new LoadPropertyInsn(
-                        resultSlotId,
-                        node.memberName(),
-                        session.slotIdForValue(node.baseValueId())
-                ));
-                case TYPE_META -> block.appendNonTerminatorInstruction(new LoadStaticInsn(
-                        resultSlotId,
-                        session.requireClassName(resolvedMember.receiverType()),
-                        node.memberName()
-                ));
+                case INSTANCE -> {
+                    if (node.baseValueIdOrNull() == null) {
+                        throw session.unsupportedSequenceItem(
+                                node,
+                                "instance member load is missing a receiver value id"
+                        );
+                    }
+                    block.appendNonTerminatorInstruction(new LoadPropertyInsn(
+                            resultSlotId,
+                            node.memberName(),
+                            session.slotIdForValue(node.baseValueIdOrNull())
+                    ));
+                }
+                case TYPE_META -> {
+                    if (node.baseValueIdOrNull() != null) {
+                        throw session.unsupportedSequenceItem(
+                                node,
+                                "type-meta static member load must not carry a receiver value id"
+                        );
+                    }
+                    block.appendNonTerminatorInstruction(new LoadStaticInsn(
+                            resultSlotId,
+                            session.requireStaticReceiverName(resolvedMember.receiverType()),
+                            node.memberName()
+                    ));
+                }
                 default -> throw session.unsupportedSequenceItem(
                         node,
                         "member receiver kind is not lowering-ready: " + resolvedMember.receiverKind()
@@ -523,10 +539,11 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
     }
 
-    /// Holds the explicit fail-fast boundary for cast items until their runtime lowering contract is frozen.
+    /// Holds the explicit fail-fast boundary for cast items while cast lowering remains outside the
+    /// current executable-body support surface.
     ///
-    /// Keeping this as its own processor makes the staged surface visible in the registry instead of
-    /// burying it inside an unrelated `switch`.
+    /// Keeping this as its own processor keeps the unsupported route explicit in the registry instead
+    /// of burying it inside an unrelated `switch`.
     private static final class FrontendCastInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<CastItem, Void> {
         @Override

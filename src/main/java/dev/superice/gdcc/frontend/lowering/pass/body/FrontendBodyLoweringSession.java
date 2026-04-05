@@ -60,6 +60,7 @@ public final class FrontendBodyLoweringSession {
     private final @NotNull FrontendAnalysisData analysisData;
     private final @NotNull FrontendCfgGraph graph;
     private final @NotNull LirFunctionDef function;
+    private final @NotNull ClassRegistry classRegistry;
     private final @NotNull SequencedMap<String, GdType> valueTypes;
     private final @NotNull Set<String> mergeValueIds;
     private final @NotNull FrontendInsnLoweringProcessorRegistry<FrontendCfgGraph.NodeDef, Void> cfgNodeProcessors;
@@ -79,10 +80,11 @@ public final class FrontendBodyLoweringSession {
         this.analysisData = functionContext.analysisData();
         this.graph = functionContext.requireFrontendCfgGraph();
         this.function = functionContext.targetFunction();
+        this.classRegistry = Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         this.valueTypes = FrontendBodyLoweringSupport.collectCfgValueSlotTypes(
                 graph,
                 analysisData,
-                Objects.requireNonNull(classRegistry, "classRegistry must not be null")
+                this.classRegistry
         );
         this.mergeValueIds = collectMergeValueIds(graph);
         this.cfgNodeProcessors = FrontendCfgNodeInsnLoweringProcessors.createRegistry();
@@ -402,6 +404,21 @@ public final class FrontendBodyLoweringSession {
                     "Static receiver type must be an object/class type, but was " + receiverType.getTypeName()
             );
         };
+    }
+
+    @NotNull String requireStaticReceiverName(@Nullable GdType receiverType) {
+        Objects.requireNonNull(receiverType, "receiverType must not be null");
+        if (receiverType instanceof GdObjectType(var className)) {
+            return className;
+        }
+        var builtinTypeName = receiverType.getTypeName();
+        if (classRegistry.findBuiltinClass(builtinTypeName) != null) {
+            return builtinTypeName;
+        }
+        throw new IllegalStateException(
+                "Static receiver type must be an engine/script class or builtin type, but was "
+                        + receiverType.getTypeName()
+        );
     }
 
     @NotNull String namedBaseSlotId(@NotNull String valueId) {

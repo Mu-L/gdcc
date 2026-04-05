@@ -18,8 +18,9 @@ import java.util.Objects;
 /// Public frontend lowering entrypoint that executes the fixed lowering pass pipeline.
 ///
 /// The current pipeline consumes a `FrontendModule`, runs compile-ready semantic analysis, and
-/// emits a `LirModule` whose executable functions already contain frontend-lowered basic blocks,
-/// while property initializer shells remain staged for a later dedicated expression route.
+/// emits a `LirModule` whose executable functions already contain frontend-lowered basic blocks.
+/// Property initializer functions remain shell-only until their dedicated expression route is
+/// connected to CFG build and body lowering.
 public final class FrontendLoweringPassManager {
     private final @NotNull List<FrontendLoweringPass> passes;
 

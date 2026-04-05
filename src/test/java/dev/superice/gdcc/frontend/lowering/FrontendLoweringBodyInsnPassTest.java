@@ -33,6 +33,7 @@ import dev.superice.gdcc.lir.insn.GoIfInsn;
 import dev.superice.gdcc.lir.insn.GotoInsn;
 import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
 import dev.superice.gdcc.lir.insn.LiteralNullInsn;
+import dev.superice.gdcc.lir.insn.LoadStaticInsn;
 import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.lir.insn.PackVariantInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
@@ -59,13 +60,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 class FrontendLoweringBodyInsnPassTest {
     @Test
@@ -970,7 +965,7 @@ class FrontendLoweringBodyInsnPassTest {
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
                 () -> assertEquals(1, terminalMergeStopIds.size()),
-                () -> assertTrue(function.getBasicBlock(terminalMergeStopIds.getFirst()) == null),
+                () -> assertNull(function.getBasicBlock(terminalMergeStopIds.getFirst())),
                 () -> assertEquals(2, returnTerminators.size()),
                 () -> assertTrue(returnTerminators.stream().allMatch(returnInsn -> returnInsn.returnValueId() != null))
         );
@@ -1107,6 +1102,60 @@ class FrontendLoweringBodyInsnPassTest {
                         exception.getMessage()
                 ),
                 () -> assertFalse(exception.getMessage().contains("call route is not lowering-ready"), exception.getMessage())
+        );
+    }
+
+    @Test
+    void runLowersTypeMetaStaticHeadMemberLoadsIntoLoadStaticInsn() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_type_meta_static_head.gd",
+                """
+                        class_name BodyInsnTypeMetaStaticHead
+                        extends RefCounted
+                        
+                        func zero_length() -> float:
+                            return Vector3.ZERO.length()
+                        
+                        func red() -> Color:
+                            return Color.RED
+                        """,
+                Map.of("BodyInsnTypeMetaStaticHead", "RuntimeBodyInsnTypeMetaStaticHead"),
+                true
+        );
+        var zeroLengthContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaStaticHead",
+                "zero_length"
+        );
+        var redContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaStaticHead",
+                "red"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var zeroLengthInstructions = allInstructions(zeroLengthContext.targetFunction());
+        var redInstructions = allInstructions(redContext.targetFunction());
+        var zeroLengthStaticLoad = requireOnlyInstruction(zeroLengthContext.targetFunction(), LoadStaticInsn.class);
+        var zeroLengthCall = requireOnlyInstruction(zeroLengthContext.targetFunction(), CallMethodInsn.class);
+        var redStaticLoad = requireOnlyInstruction(redContext.targetFunction(), LoadStaticInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, countInstructions(zeroLengthInstructions, LoadStaticInsn.class)),
+                () -> assertEquals("Vector3", zeroLengthStaticLoad.className()),
+                () -> assertEquals("ZERO", zeroLengthStaticLoad.staticName()),
+                () -> assertEquals(1, countInstructions(zeroLengthInstructions, CallMethodInsn.class)),
+                () -> assertEquals("length", zeroLengthCall.methodName()),
+                () -> assertEquals(0, countInstructions(zeroLengthInstructions, LoadPropertyInsn.class)),
+                () -> assertEquals(1, countInstructions(redInstructions, LoadStaticInsn.class)),
+                () -> assertEquals("Color", redStaticLoad.className()),
+                () -> assertEquals("RED", redStaticLoad.staticName()),
+                () -> assertEquals(0, countInstructions(redInstructions, LoadPropertyInsn.class)),
+                () -> assertEquals(0, countInstructions(redInstructions, CallMethodInsn.class))
         );
     }
 
