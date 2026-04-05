@@ -36,6 +36,11 @@ sourceSets {
             srcDir("src/main/c/codegen")
         }
     }
+    test {
+        resources {
+            srcDir("src/test/test_suite")
+        }
+    }
 }
 
 extraJavaModuleInfo {

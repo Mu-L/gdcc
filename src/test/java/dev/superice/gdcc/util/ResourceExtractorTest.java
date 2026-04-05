@@ -70,4 +70,22 @@ public class ResourceExtractorTest {
         // ensure nothing was extracted
         assertFalse(Files.exists(tempDir.resolve("a.txt")));
     }
+
+    @Test
+    public void testListResourceFilesRecursivelyReturnsSortedRelativePaths() throws IOException {
+        var loader = getClass().getClassLoader();
+
+        var resources = ResourceExtractor.listResourceFilesRecursively("extractor_test", loader);
+
+        assertEquals(List.of("a.txt", "o.zip"), resources);
+    }
+
+    @Test
+    public void testListResourceFilesRecursivelyFindsNestedTestSuiteScripts() throws IOException {
+        var loader = getClass().getClassLoader();
+
+        var resources = ResourceExtractor.listResourceFilesRecursively("unit_test/script", loader);
+
+        assertTrue(resources.contains("smoke/basic_arithmetic.gd"), () -> "Expected nested test-suite script, got " + resources);
+    }
 }
