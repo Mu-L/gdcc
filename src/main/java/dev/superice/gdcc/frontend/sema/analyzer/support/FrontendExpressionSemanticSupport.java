@@ -448,7 +448,7 @@ public final class FrontendExpressionSemanticSupport {
     /// Callers must pass only stable operands (`RESOLVED` / `DYNAMIC`) whose published type is already
     /// available. Dependency propagation stays outside this helper so the owner can keep precise
     /// root-vs-propagated diagnostic ownership.
-    static @NotNull FrontendExpressionType resolveBinaryOperatorResultType(
+    public static @NotNull FrontendExpressionType resolveBinaryOperatorResultType(
             @NotNull ClassRegistry classRegistry,
             @NotNull String operatorText,
             @NotNull FrontendExpressionType leftOperandType,

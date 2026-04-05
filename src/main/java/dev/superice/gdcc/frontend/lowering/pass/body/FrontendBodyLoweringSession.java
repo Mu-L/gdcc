@@ -22,6 +22,7 @@ import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.insn.LiteralNullInsn;
 import dev.superice.gdcc.lir.insn.PackVariantInsn;
 import dev.superice.gdcc.lir.insn.UnpackVariantInsn;
+import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.PropertyDef;
@@ -70,12 +71,19 @@ public final class FrontendBodyLoweringSession {
             attributeStepProcessors;
     private int boundaryMaterializationCounter;
 
-    public FrontendBodyLoweringSession(@NotNull FunctionLoweringContext functionContext) {
+    public FrontendBodyLoweringSession(
+            @NotNull FunctionLoweringContext functionContext,
+            @NotNull ClassRegistry classRegistry
+    ) {
         this.functionContext = Objects.requireNonNull(functionContext, "functionContext must not be null");
         this.analysisData = functionContext.analysisData();
         this.graph = functionContext.requireFrontendCfgGraph();
         this.function = functionContext.targetFunction();
-        this.valueTypes = FrontendBodyLoweringSupport.collectCfgValueSlotTypes(graph, analysisData);
+        this.valueTypes = FrontendBodyLoweringSupport.collectCfgValueSlotTypes(
+                graph,
+                analysisData,
+                Objects.requireNonNull(classRegistry, "classRegistry must not be null")
+        );
         this.mergeValueIds = collectMergeValueIds(graph);
         this.cfgNodeProcessors = FrontendCfgNodeInsnLoweringProcessors.createRegistry();
         this.sequenceItemProcessors = FrontendSequenceItemInsnLoweringProcessors.createRegistry();

@@ -340,7 +340,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileKeepsCompoundAssignmentBehindTemporaryCompileGate() throws Exception {
+    void analyzeForCompileAllowsCompoundAssignmentOnceBodyLoweringContractLands() throws Exception {
         var source = """
                 class_name CompileCheckCompoundAssignment
                 extends RefCounted
@@ -357,13 +357,9 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.unsupported_expression_route").isEmpty());
 
         var compiled = analyzeForCompile("compile_check_compound_assignment.gd", source);
-        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-
-        assertEquals(1, compileDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.ERROR, compileDiagnostics.getFirst().severity());
-        assertTrue(compileDiagnostics.getFirst().message().contains("Compound assignment operator '+='"));
-        assertTrue(compileDiagnostics.getFirst().message().contains("read-modify-write"));
-        assertTrue(compileDiagnostics.getFirst().message().contains("body lowering"));
+        assertFalse(compiled.diagnostics().hasErrors(), () -> "Unexpected compile diagnostics: " + compiled.diagnostics().asList());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.unsupported_expression_route").isEmpty());
     }
 
     @Test

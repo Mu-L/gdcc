@@ -829,7 +829,7 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
 
 ## 14. Compound Assignment 实施计划
 
-本节用于收口当前 `+=` / `-=` / `*=` 等 compound assignment 的支持缺口。当前 parser/gdparser 已经把这些语法稳定映射为 `AssignmentExpression.operator()` 的一部分，frontend 共享语义也已接通 closed-set compound operator contract；但 compile-only gate 仍保持封锁，且 executable-body body lowering 尚未 materialize 新增的 read-modify-write CFG item。因此这个缺口不能只靠放宽 analyzer 解决，必须同时冻结语义合同、CFG 求值顺序和 body lowering materialization。
+本节用于收口当前 `+=` / `-=` / `*=` 等 compound assignment 的支持缺口。当前 parser/gdparser 已经把这些语法稳定映射为 `AssignmentExpression.operator()` 的一部分，frontend 共享语义、CFG read-modify-write 形状、executable-body body lowering materialization 以及 compile-ready surface 现已全部接通；后续实现应直接在这份已冻结合同上扩面，而不是重新退回“plain assignment store-only”思路。
 
 ### 14.1 背景与现状缺口
 
@@ -907,7 +907,7 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
 4. 保持 owner 边界与诊断语义稳定
    - operator 不受支持或仍显式冻结的情况继续走 `sema.unsupported_expression_route`
    - operator 对给定 operand type 不成立、或运算结果不可写回 target 的情况走 `sema.expression_resolution`
-   - 在 `14.4` / `14.5` 落地前，compile-only gate 继续保留 explicit temporary block，避免 shared semantic 已放行但 lowering 尚未闭合
+   - 在 `14.4` / `14.5` 全部落地前，compile-only gate 必须保留 explicit temporary block，避免 shared semantic 已放行但 lowering 尚未闭合
 
 需要特别校准的点：
 
@@ -960,9 +960,9 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
     5. 发 `AssignmentItem(..., computedResultValueId, null)`
   - 回归测试已覆盖 identifier / attribute-property / subscript / attribute-subscript 四类 target 的 graph shape，以及缺失 compound read fact 时指向 contract gap 的 fail-fast 文案
 
-- 当前仍保留的边界：
-  - compile-only gate 继续封锁 compound assignment，避免新 CFG item 在 body lowering materialization 落地前提前进入默认编译管线
-  - `FrontendBodyLoweringSupport` 当前仅把 `CompoundAssignmentBinaryOpItem` 视为 staged fail-fast，占位等待 `14.5` 接通真实 lowering
+- 该步落地时曾保留的阶段性边界（现已由 `14.5` / `14.6` 收口）：
+  - compile-only gate 在 body lowering materialization 完成前继续封锁 compound assignment，避免新 CFG item 提前进入默认编译管线
+  - `FrontendBodyLoweringSupport` 在当时仍把 `CompoundAssignmentBinaryOpItem` 视为 staged fail-fast，占位等待 `14.5` 接通真实 lowering
 
 需要完成的工作：
 
@@ -1014,7 +1014,26 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
 
 ### 14.5 第三步：接通 body lowering materialization
 
-- 状态：未开始（2026-04-05）
+- 状态：已完成（2026-04-05）
+
+- 已落地产出：
+  - `FrontendSequenceItemInsnLoweringProcessors` 已注册 `CompoundAssignmentBinaryOpItem` processor，并将其直接 lower 为 `BinaryOpInsn`
+  - compound-op processor 只消费 CFG 已冻结的：
+    - binary operator lexeme
+    - current-target-value id
+    - rhs value id
+    - result value id
+  - processor 本身不插入额外的 assignment-boundary `(un)pack`；最终 store 仍由 `FrontendAssignmentTargetInsnLoweringProcessors` 统一负责
+  - `FrontendBodyLoweringSupport.collectCfgValueSlotTypes(...)` 已接通 compound-op result type publication：
+    - 通过 shared binary-operator typing helper 重新计算真实 binary result type
+    - 若结果为 `Variant` / `DYNAMIC(Variant)`，compound temp slot 继续保持 `Variant`
+    - 因而具体 target 的 unpack 仍只会出现在最终 assignment store boundary，而不会被错误前移到 `BinaryOpInsn`
+  - body-lowering regression test 现已覆盖：
+    - local target `count += 1`
+    - property target `hp -= seed`
+    - indexed subscript target `values[slot] <<= 1`
+    - `Variant` RHS -> concrete target 时 unpack 继续锚定在最终 store boundary
+    - published invalid compound operator lexeme 时给出 compound-contract-specific fail-fast
 
 需要完成的工作：
 
@@ -1047,7 +1066,20 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
 
 ### 14.6 第四步：同步 compile-ready surface、文档与端到端测试
 
-- 状态：未开始（2026-04-05）
+- 状态：已完成（2026-04-05）
+
+- 已落地产出：
+  - `FrontendCompileCheckAnalyzer` 已移除 compound assignment 的 explicit temporary compile block
+  - compile-ready surface 现在把 compound assignment 视为 ordinary supported route：
+    - compile mode 只再依赖 published fact 是否 lowering-ready
+    - 不再因为 AST root 是 compound assignment 就额外报 `sema.compile_check`
+  - `FrontendCompileCheckAnalyzerTest` 已改为锚定 compile mode 对 compound assignment 的放行行为
+  - 新增 frontend-to-native engine integration smoke：
+    - while-loop accumulator 中的 `+=`
+    - property route `hp += total`
+    - indexed subscript route `values[1] += hp`
+    - 真实 Godot 运行结果与 runtime-mapped class name 均已锚定
+  - 本文档及相关事实源文档已同步移除“body lowering 未完成 / compile gate 仍封锁 compound assignment”的旧描述
 
 需要完成的工作：
 

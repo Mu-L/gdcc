@@ -3,9 +3,14 @@ package dev.superice.gdcc.frontend.lowering;
 import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
+import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.ValueOpItem;
+import dev.superice.gdcc.frontend.lowering.pass.body.FrontendBodyLoweringSession;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringBodyInsnPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringBuildCfgPass;
@@ -63,6 +68,246 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendLoweringBodyInsnPassTest {
+    @Test
+    void runLowersCompoundAssignmentOnLocalIntoBinaryOpAndFinalAssign() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_compound_local.gd",
+                """
+                        class_name BodyInsnCompoundLocal
+                        extends RefCounted
+                        
+                        func ping(seed: int) -> int:
+                            var count := seed
+                            count += 1
+                            return count
+                        """,
+                Map.of("BodyInsnCompoundLocal", "RuntimeBodyInsnCompoundLocal"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCompoundLocal",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var compoundInsn = requireOnlyInstruction(pingContext.targetFunction(), BinaryOpInsn.class);
+        var assignSources = assignSourcesByTarget(instructions);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GodotOperator.ADD, compoundInsn.op()),
+                () -> assertEquals(compoundInsn.resultId(), assignSources.get("count")),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersCompoundAssignmentOnPropertyThroughLoadBinaryOpAndStore() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_compound_property.gd",
+                """
+                        class_name BodyInsnCompoundProperty
+                        extends RefCounted
+                        
+                        var hp: int = 10
+                        
+                        func ping(seed: int) -> int:
+                            hp -= seed
+                            return hp
+                        """,
+                Map.of("BodyInsnCompoundProperty", "RuntimeBodyInsnCompoundProperty"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCompoundProperty",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var compoundInsn = requireOnlyInstruction(pingContext.targetFunction(), BinaryOpInsn.class);
+        var propertyLoads = instructions.stream()
+                .filter(LoadPropertyInsn.class::isInstance)
+                .map(LoadPropertyInsn.class::cast)
+                .filter(instruction -> instruction.propertyName().equals("hp"))
+                .toList();
+        var propertyStores = instructions.stream()
+                .filter(StorePropertyInsn.class::isInstance)
+                .map(StorePropertyInsn.class::cast)
+                .filter(instruction -> instruction.propertyName().equals("hp"))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GodotOperator.SUBTRACT, compoundInsn.op()),
+                () -> assertEquals(2, propertyLoads.size()),
+                () -> assertEquals(1, propertyStores.size()),
+                () -> assertEquals(compoundInsn.resultId(), propertyStores.getFirst().valueId())
+        );
+    }
+
+    @Test
+    void runLowersCompoundAssignmentOnIndexedSubscriptThroughSingleReadModifyWriteRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_compound_subscript.gd",
+                """
+                        class_name BodyInsnCompoundSubscript
+                        extends RefCounted
+                        
+                        func ping(values: PackedInt32Array, slot: int) -> int:
+                            values[slot] <<= 1
+                            return values[slot]
+                        """,
+                Map.of("BodyInsnCompoundSubscript", "RuntimeBodyInsnCompoundSubscript"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCompoundSubscript",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var compoundInsn = requireOnlyInstruction(pingContext.targetFunction(), BinaryOpInsn.class);
+        var indexedStores = instructions.stream()
+                .filter(VariantSetIndexedInsn.class::isInstance)
+                .map(VariantSetIndexedInsn.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GodotOperator.SHIFT_LEFT, compoundInsn.op()),
+                () -> assertEquals(1, indexedStores.size()),
+                () -> assertEquals(compoundInsn.resultId(), indexedStores.getFirst().valueId()),
+                () -> assertEquals(2, countInstructions(instructions, VariantGetIndexedInsn.class))
+        );
+    }
+
+    @Test
+    void runKeepsVariantUnpackAtFinalCompoundAssignmentStoreBoundary() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_compound_boundary.gd",
+                """
+                        class_name BodyInsnCompoundBoundary
+                        extends RefCounted
+                        
+                        func ping(seed: Variant) -> int:
+                            var count: int = 1
+                            count += seed
+                            return count
+                        """,
+                Map.of("BodyInsnCompoundBoundary", "RuntimeBodyInsnCompoundBoundary"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCompoundBoundary",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var compoundInsn = requireOnlyInstruction(pingContext.targetFunction(), BinaryOpInsn.class);
+        var unpackInsn = requireOnlyInstruction(pingContext.targetFunction(), UnpackVariantInsn.class);
+        var assignSources = assignSourcesByTarget(instructions);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GodotOperator.ADD, compoundInsn.op()),
+                () -> assertEquals(compoundInsn.resultId(), unpackInsn.variantId()),
+                () -> assertEquals(unpackInsn.resultId(), assignSources.get("count")),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runFailsFastWithCompoundSpecificMessageWhenPublishedOperatorLexemeIsInvalid() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_compound_invalid_operator.gd",
+                """
+                        class_name BodyInsnCompoundInvalidOperator
+                        extends RefCounted
+                        
+                        func ping(seed: int) -> int:
+                            var count := seed
+                            count += 1
+                            return count
+                        """,
+                Map.of("BodyInsnCompoundInvalidOperator", "RuntimeBodyInsnCompoundInvalidOperator"),
+                true
+        );
+        var originalContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCompoundInvalidOperator",
+                "ping"
+        );
+        var originalGraph = originalContext.requireFrontendCfgGraph();
+        var originalCompoundItem = requireSingleValueProducerItem(originalGraph, CompoundAssignmentBinaryOpItem.class);
+        var currentProducer = requireValueProducerByResultId(originalGraph, originalCompoundItem.currentTargetValueId());
+        var rhsProducer = requireValueProducerByResultId(originalGraph, originalCompoundItem.rhsValueId());
+        var originalAssignmentItem = requireSingleSequenceItem(originalGraph, AssignmentItem.class);
+        var mutatedGraph = new FrontendCfgGraph(
+                "seq_0",
+                Map.of(
+                        "seq_0",
+                        new FrontendCfgGraph.SequenceNode(
+                                "seq_0",
+                                List.of(
+                                        currentProducer,
+                                        rhsProducer,
+                                        new CompoundAssignmentBinaryOpItem(
+                                                originalCompoundItem.assignment(),
+                                                "??",
+                                                originalCompoundItem.currentTargetValueId(),
+                                                originalCompoundItem.rhsValueId(),
+                                                originalCompoundItem.resultValueId()
+                                        ),
+                                        originalAssignmentItem
+                                ),
+                                "stop_1"
+                        ),
+                        "stop_1",
+                        new FrontendCfgGraph.StopNode("stop_1", FrontendCfgGraph.StopKind.RETURN, null)
+                )
+        );
+        var mutatedContext = new FunctionLoweringContext(
+                originalContext.kind(),
+                originalContext.sourcePath(),
+                originalContext.sourceClassRelation(),
+                originalContext.owningClass(),
+                originalContext.targetFunction(),
+                originalContext.sourceOwner(),
+                originalContext.loweringRoot(),
+                originalContext.analysisData()
+        );
+        mutatedContext.publishFrontendCfgGraph(mutatedGraph);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendBodyLoweringSession(
+                        mutatedContext,
+                        new ClassRegistry(ExtensionApiLoader.loadDefault())
+                ).run()
+        );
+
+        assertTrue(exception.getMessage().contains("Compound assignment body-lowering contract"), exception.getMessage());
+        assertTrue(exception.getMessage().contains("unsupported binary operator"), exception.getMessage());
+    }
+
     @Test
     void runMaterializesStraightLineExecutableBodyIntoRealBlocksAndInstructions() throws Exception {
         var prepared = prepareContext(
@@ -1167,6 +1412,64 @@ class FrontendLoweringBodyInsnPassTest {
         }
         assertEquals(1, subscriptSteps.size());
         return subscriptSteps.getFirst();
+    }
+
+    private static <T extends SequenceItem> @NotNull T requireSingleSequenceItem(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull Class<T> itemType
+    ) {
+        var matches = new ArrayList<T>();
+        for (var nodeId : graph.nodeIds()) {
+            if (!(graph.requireNode(nodeId) instanceof FrontendCfgGraph.SequenceNode(_, var items, _))) {
+                continue;
+            }
+            for (var item : items) {
+                if (itemType.isInstance(item)) {
+                    matches.add(itemType.cast(item));
+                }
+            }
+        }
+        assertEquals(1, matches.size(), () -> "Expected exactly one " + itemType.getSimpleName());
+        return matches.getFirst();
+    }
+
+    private static <T extends ValueOpItem> @NotNull T requireSingleValueProducerItem(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull Class<T> itemType
+    ) {
+        var matches = new ArrayList<T>();
+        for (var nodeId : graph.nodeIds()) {
+            if (!(graph.requireNode(nodeId) instanceof FrontendCfgGraph.SequenceNode(_, var items, _))) {
+                continue;
+            }
+            for (var item : items) {
+                if (itemType.isInstance(item)) {
+                    matches.add(itemType.cast(item));
+                }
+            }
+        }
+        assertEquals(1, matches.size(), () -> "Expected exactly one " + itemType.getSimpleName());
+        return matches.getFirst();
+    }
+
+    private static @NotNull ValueOpItem requireValueProducerByResultId(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull String valueId
+    ) {
+        var matches = new ArrayList<ValueOpItem>();
+        for (var nodeId : graph.nodeIds()) {
+            if (!(graph.requireNode(nodeId) instanceof FrontendCfgGraph.SequenceNode(_, var items, _))) {
+                continue;
+            }
+            for (var item : items) {
+                if (item instanceof ValueOpItem valueOpItem
+                        && valueId.equals(valueOpItem.resultValueIdOrNull())) {
+                    matches.add(valueOpItem);
+                }
+            }
+        }
+        assertEquals(1, matches.size(), () -> "Expected exactly one producer for value id " + valueId);
+        return matches.getFirst();
     }
 
     private record PreparedContext(

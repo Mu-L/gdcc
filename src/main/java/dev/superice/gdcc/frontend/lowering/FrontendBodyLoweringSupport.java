@@ -12,8 +12,16 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.TypeTestItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.ValueOpItem;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
+import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
+import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
+import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendExpressionSemanticSupport;
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendSubscriptSemanticSupport;
+import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.Expression;
@@ -67,17 +75,19 @@ public final class FrontendBodyLoweringSupport {
 
     public static @NotNull SequencedMap<String, GdType> collectCfgValueSlotTypes(
             @NotNull FrontendCfgGraph graph,
-            @NotNull FrontendAnalysisData analysisData
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull ClassRegistry classRegistry
     ) {
         Objects.requireNonNull(graph, "graph must not be null");
         Objects.requireNonNull(analysisData, "analysisData must not be null");
+        Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         var valueTypes = new LinkedHashMap<String, GdType>();
         for (var nodeId : graph.nodeIds()) {
             switch (graph.requireNode(nodeId)) {
                 case FrontendCfgGraph.SequenceNode(_, var items, _) -> {
                     for (var item : items) {
                         if (item instanceof ValueOpItem valueOpItem) {
-                            collectProducedValueType(valueTypes, valueOpItem, analysisData);
+                            collectProducedValueType(valueTypes, valueOpItem, analysisData, classRegistry);
                         }
                     }
                 }
@@ -91,13 +101,14 @@ public final class FrontendBodyLoweringSupport {
     private static void collectProducedValueType(
             @NotNull SequencedMap<String, GdType> valueTypes,
             @NotNull ValueOpItem item,
-            @NotNull FrontendAnalysisData analysisData
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull ClassRegistry classRegistry
     ) {
         var resultValueId = item.resultValueIdOrNull();
         if (resultValueId == null) {
             return;
         }
-        var resolvedType = requireProducedValueType(item, analysisData, valueTypes);
+        var resolvedType = requireProducedValueType(item, analysisData, classRegistry, valueTypes);
         var previous = valueTypes.putIfAbsent(resultValueId, resolvedType);
         if (previous != null && !previous.equals(resolvedType)) {
             throw new IllegalStateException(
@@ -114,6 +125,7 @@ public final class FrontendBodyLoweringSupport {
     private static @NotNull GdType requireProducedValueType(
             @NotNull ValueOpItem item,
             @NotNull FrontendAnalysisData analysisData,
+            @NotNull ClassRegistry classRegistry,
             @NotNull SequencedMap<String, GdType> resolvedValueTypes
     ) {
         return switch (item) {
@@ -126,13 +138,19 @@ public final class FrontendBodyLoweringSupport {
                     analysisData,
                     opaqueExprValueItem.expression()
             );
-            case CompoundAssignmentBinaryOpItem compoundAssignmentItem -> throw new IllegalStateException(
-                    "Compound assignment value item reached body-lowering type collection before its processor "
-                            + "contract landed: " + compoundAssignmentItem.binaryOperatorLexeme()
+            case CompoundAssignmentBinaryOpItem compoundAssignmentItem -> requireCompoundAssignmentResultType(
+                    compoundAssignmentItem,
+                    classRegistry,
+                    resolvedValueTypes
             );
             case CallItem callItem -> requireCallReturnType(analysisData, callItem.anchor());
             case MemberLoadItem memberLoadItem -> requireMemberResultType(analysisData, memberLoadItem.anchor());
-            case SubscriptLoadItem subscriptLoadItem -> requireSubscriptResultType(analysisData, subscriptLoadItem);
+            case SubscriptLoadItem subscriptLoadItem -> requireSubscriptResultType(
+                    analysisData,
+                    classRegistry,
+                    subscriptLoadItem,
+                    resolvedValueTypes
+            );
             case CastItem castItem -> requireExpressionType(analysisData, castItem.expression());
             case TypeTestItem _ -> GdBoolType.BOOL;
             case dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem assignmentItem ->
@@ -183,12 +201,20 @@ public final class FrontendBodyLoweringSupport {
 
     private static @NotNull GdType requireSubscriptResultType(
             @NotNull FrontendAnalysisData analysisData,
-            @NotNull SubscriptLoadItem subscriptLoadItem
+            @NotNull ClassRegistry classRegistry,
+            @NotNull SubscriptLoadItem subscriptLoadItem,
+            @NotNull SequencedMap<String, GdType> resolvedValueTypes
     ) {
         if (subscriptLoadItem.anchor() instanceof Expression expression) {
+            if (analysisData.expressionTypes().get(expression) == null) {
+                return requireCompoundAssignmentSubscriptResultType(classRegistry, subscriptLoadItem, resolvedValueTypes);
+            }
             return requireExpressionType(analysisData, expression);
         }
         if (subscriptLoadItem.anchor() instanceof AttributeSubscriptStep attributeSubscriptStep) {
+            if (analysisData.expressionTypes().get(attributeSubscriptStep) == null) {
+                return requireCompoundAssignmentSubscriptResultType(classRegistry, subscriptLoadItem, resolvedValueTypes);
+            }
             return requireLoweringReadyExpressionType(
                     analysisData,
                     attributeSubscriptStep,
@@ -219,6 +245,10 @@ public final class FrontendBodyLoweringSupport {
             if (slotType != null) {
                 return slotType;
             }
+        }
+        if (binding != null && binding.kind() == FrontendBindingKind.PROPERTY
+                && binding.declarationSite() instanceof PropertyDef propertyDef) {
+            return propertyDef.getType();
         }
         return requireExpressionType(analysisData, expression);
     }
@@ -271,5 +301,106 @@ public final class FrontendBodyLoweringSupport {
             throw new IllegalStateException("Missing previously resolved value type for '" + valueId + "'");
         }
         return resolvedType;
+    }
+
+    /// Compound-assignment result slots must carry the real binary-operation result type instead of
+    /// blindly reusing the final store target type.
+    ///
+    /// This keeps `Variant`-to-concrete boundaries anchored at the later assignment store contract:
+    /// if `count += value` produces a dynamic `Variant` result, the binary temp stays `Variant` and
+    /// the eventual unpack still happens at the ordinary assignment boundary rather than being
+    /// accidentally pulled forward into `BinaryOpInsn`.
+    private static @NotNull GdType requireCompoundAssignmentResultType(
+            @NotNull CompoundAssignmentBinaryOpItem compoundAssignmentItem,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull SequencedMap<String, GdType> resolvedValueTypes
+    ) {
+        var currentTargetType = requireCompoundOperandValueType(
+                resolvedValueTypes,
+                compoundAssignmentItem.currentTargetValueId(),
+                "current target"
+        );
+        var rhsType = requireCompoundOperandValueType(
+                resolvedValueTypes,
+                compoundAssignmentItem.rhsValueId(),
+                "rhs"
+        );
+        var binaryResultType = FrontendExpressionSemanticSupport.resolveBinaryOperatorResultType(
+                classRegistry,
+                compoundAssignmentItem.binaryOperatorLexeme(),
+                FrontendExpressionType.resolved(currentTargetType),
+                FrontendExpressionType.resolved(rhsType)
+        );
+        if (binaryResultType.status() == FrontendExpressionTypeStatus.RESOLVED
+                || binaryResultType.status() == FrontendExpressionTypeStatus.DYNAMIC) {
+            return Objects.requireNonNull(
+                    binaryResultType.publishedType(),
+                    "successful compound assignment result type must publish a runtime type"
+            );
+        }
+        var detailSuffix = binaryResultType.detailReason() == null || binaryResultType.detailReason().isBlank()
+                ? ""
+                : ": " + binaryResultType.detailReason();
+        throw new IllegalStateException(
+                "Compound assignment body-lowering contract published unsupported binary operator or non-lowering-ready "
+                        + "result status '"
+                        + binaryResultType.status()
+                        + "' for operator '"
+                        + compoundAssignmentItem.binaryOperatorLexeme()
+                        + "'"
+                        + detailSuffix
+        );
+    }
+
+    private static @NotNull GdType requireCompoundOperandValueType(
+            @NotNull SequencedMap<String, GdType> resolvedValueTypes,
+            @NotNull String valueId,
+            @NotNull String role
+    ) {
+        var resolvedType = resolvedValueTypes.get(StringUtil.requireNonBlank(valueId, "valueId"));
+        if (resolvedType != null) {
+            return resolvedType;
+        }
+        throw new IllegalStateException(
+                "Compound assignment body-lowering contract is missing the published "
+                        + StringUtil.requireNonBlank(role, "role")
+                        + " value type for '"
+                        + valueId
+                        + "'"
+        );
+    }
+
+    /// Subscript reads that originate from compound-assignment targets are allowed to bypass the
+    /// ordinary `expressionTypes()` publication table, mirroring the CFG-builder contract that
+    /// assignment targets need only the frozen receiver/key operand types and must not require a
+    /// second ordinary-value publication route.
+    private static @NotNull GdType requireCompoundAssignmentSubscriptResultType(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull SubscriptLoadItem subscriptLoadItem,
+            @NotNull SequencedMap<String, GdType> resolvedValueTypes
+    ) {
+        var receiverType = subscriptLoadItem.memberNameOrNull() == null
+                ? requireResolvedValueType(resolvedValueTypes, subscriptLoadItem.baseValueId())
+                : GdVariantType.VARIANT;
+        var argumentTypes = subscriptLoadItem.argumentValueIds().stream()
+                .map(valueId -> requireResolvedValueType(resolvedValueTypes, valueId))
+                .toList();
+        var resolvedType = new FrontendSubscriptSemanticSupport(classRegistry).resolveSubscriptType(
+                receiverType,
+                argumentTypes,
+                "compound-assignment current-target subscript read"
+        );
+        if (resolvedType.status() == FrontendExpressionTypeStatus.RESOLVED
+                || resolvedType.status() == FrontendExpressionTypeStatus.DYNAMIC) {
+            return Objects.requireNonNull(
+                    resolvedType.publishedType(),
+                    "successful compound-assignment subscript read must publish a runtime type"
+            );
+        }
+        throw new IllegalStateException(
+                "Compound assignment body-lowering contract published non-lowering-ready subscript result status '"
+                        + resolvedType.status()
+                        + "'"
+        );
     }
 }

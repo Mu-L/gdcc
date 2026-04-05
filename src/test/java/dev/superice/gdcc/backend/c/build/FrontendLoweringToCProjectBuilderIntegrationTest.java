@@ -300,6 +300,105 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     }
 
     @Test
+    void lowerFrontendCompoundAssignmentRoutesBuildNativeLibraryAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping frontend compound-assignment integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_compound_assignment_runtime");
+        Files.createDirectories(tempDir);
+
+        var source = """
+                class_name CompoundAssignmentSmoke
+                extends Node
+                
+                var hp: int
+                
+                func _init() -> void:
+                    hp = 10
+                
+                func run_compound_flow() -> int:
+                    var values: Variant = Vector3i(1, 2, 3)
+                    var total := 0
+                    var index := 0
+                    while index < 3:
+                        total += values[index]
+                        index += 1
+                    hp += total
+                    return hp * 100 + total
+                """;
+        var module = parseModule(
+                tempDir.resolve("compound_assignment_smoke.gd"),
+                source,
+                Map.of("CompoundAssignmentSmoke", "RuntimeCompoundAssignmentSmoke")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals(1, lowered.getClassDefs().size());
+        assertEquals("RuntimeCompoundAssignmentSmoke", lowered.getClassDefs().getFirst().getName());
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_compound_assignment_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entrySource = Files.readString(projectDir.resolve("entry.c"));
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+        assertTrue(entrySource.contains("GD_STATIC_SN(u8\"RuntimeCompoundAssignmentSmoke\")"), entrySource);
+        assertFalse(entrySource.contains("GD_STATIC_SN(u8\"CompoundAssignmentSmoke\")"), entrySource);
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "CompoundAssignmentSmokeNode",
+                        "RuntimeCompoundAssignmentSmoke",
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(compoundAssignmentTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend compound assignment runtime flow check passed."),
+                () -> "Compound-assignment runtime flow check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend compound assignment runtime class check passed."),
+                () -> "Compound-assignment runtime class check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend compound assignment runtime flow check failed."),
+                () -> "Compound-assignment runtime flow check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend compound assignment runtime class check failed."),
+                () -> "Compound-assignment runtime class check should not fail.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    @Test
     void lowerFrontendMappedCrossFileComplexControlFlowBuildNativeLibraryAndRunInGodot() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping mapped cross-file frontend integration test");
@@ -576,6 +675,32 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend constructor gdcc plain object lifecycle check passed.")
                     else:
                         push_error("frontend constructor gdcc plain object lifecycle check failed.")
+                """;
+    }
+
+    private static @NotNull String compoundAssignmentTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "CompoundAssignmentSmokeNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var total = int(target.run_compound_flow())
+                    if total == 1606:
+                        print("frontend compound assignment runtime flow check passed.")
+                    else:
+                        push_error("frontend compound assignment runtime flow check failed.")
+                
+                    var runtime_class = String(target.get_class())
+                    if runtime_class == "RuntimeCompoundAssignmentSmoke" and target.is_class("RuntimeCompoundAssignmentSmoke") and not target.is_class("CompoundAssignmentSmoke"):
+                        print("frontend compound assignment runtime class check passed.")
+                    else:
+                        push_error("frontend compound assignment runtime class check failed.")
                 """;
     }
 

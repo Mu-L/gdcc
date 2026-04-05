@@ -1,9 +1,11 @@
 package dev.superice.gdcc.frontend.lowering.pass.body;
 
+import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.frontend.lowering.FrontendBodyLoweringSupport;
 import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CastItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
@@ -15,6 +17,7 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.TypeTestItem;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.insn.AssignInsn;
+import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.CallGlobalInsn;
 import dev.superice.gdcc.lir.insn.CallMethodInsn;
 import dev.superice.gdcc.lir.insn.CallStaticMethodInsn;
@@ -65,6 +68,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 new FrontendCallInsnLoweringProcessor(),
                 new FrontendMemberLoadInsnLoweringProcessor(),
                 new FrontendSubscriptLoadInsnLoweringProcessor(),
+                new FrontendCompoundAssignmentBinaryInsnLoweringProcessor(),
                 new FrontendAssignmentInsnLoweringProcessor(),
                 new FrontendCastInsnLoweringProcessor(),
                 new FrontendTypeTestInsnLoweringProcessor()
@@ -333,10 +337,11 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     );
                     switch (constructorResultType) {
                         // Builtin/container constructors materialize directly from the published call route.
-                        case dev.superice.gdcc.type.GdObjectType _ -> block.appendNonTerminatorInstruction(new ConstructObjectInsn(
-                                resultSlotId,
-                                session.requireClassName(constructorResultType)
-                        ));
+                        case dev.superice.gdcc.type.GdObjectType _ ->
+                                block.appendNonTerminatorInstruction(new ConstructObjectInsn(
+                                        resultSlotId,
+                                        session.requireClassName(constructorResultType)
+                                ));
                         default ->
                                 block.appendNonTerminatorInstruction(new ConstructBuiltinInsn(resultSlotId, arguments));
                     }
@@ -439,6 +444,53 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     keySlotId,
                     keyType
             );
+        }
+    }
+
+    /// Materializes the already-frozen read-modify-write computation for one compound assignment.
+    ///
+    /// CFG build already guaranteed evaluation order and single-evaluation target operands. This
+    /// processor therefore only converts the published binary lexeme plus the two operand value ids
+    /// into one `BinaryOpInsn`; it does not insert any extra assignment-boundary `(un)pack` logic.
+    private static final class FrontendCompoundAssignmentBinaryInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<CompoundAssignmentBinaryOpItem, Void> {
+        @Override
+        public @NotNull Class<CompoundAssignmentBinaryOpItem> nodeType() {
+            return CompoundAssignmentBinaryOpItem.class;
+        }
+
+        @Override
+        public void lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull CompoundAssignmentBinaryOpItem node,
+                @Nullable Void context
+        ) {
+            block.appendNonTerminatorInstruction(new BinaryOpInsn(
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
+                    requireCompoundOperator(session, node),
+                    session.slotIdForValue(node.currentTargetValueId()),
+                    session.slotIdForValue(node.rhsValueId())
+            ));
+        }
+
+        private @NotNull GodotOperator requireCompoundOperator(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull CompoundAssignmentBinaryOpItem node
+        ) {
+            try {
+                return GodotOperator.fromSourceLexeme(
+                        node.binaryOperatorLexeme(),
+                        GodotOperator.OperatorArity.BINARY
+                );
+            } catch (IllegalArgumentException ex) {
+                throw session.unsupportedSequenceItem(
+                        node,
+                        "compound-assignment body-lowering contract published unsupported binary operator '"
+                                + node.binaryOperatorLexeme()
+                                + "'"
+                );
+            }
         }
     }
 

@@ -31,7 +31,7 @@
 - compile-only gate 的去重规则不得继续写死单个 category；哪些 upstream diagnostic 与 `sema.compile_check` 不冲突、因此允许共存，必须通过静态 category 配置维护。
 - `assert` 在共享语义路径中继续沿用 Godot-compatible condition contract；compile-only `FrontendCompileCheckAnalyzer` 只是暂时阻断 statement 自身，不得把它回退成 `sema.type_check` 或 grammar unsupported。
 - 脚本类 `static var` 当前属于“frontend 已识别但 compile target 明确不接受”的 declaration-level compile boundary；共享语义可继续发布 metadata，但 compile-only gate 必须在进入 lowering/backend 前显式封口。
-- `ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression` 当前属于 frontend 已识别但 lowering 尚未就绪的 temporary compile intercept；共享语义路径可以继续发布 deferred/unstable facts，但 compile-only gate 必须在进入 lowering 前最终封口。
+- `ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression` 当前属于 frontend 已识别但 lowering 尚未就绪的 temporary compile intercept；共享语义路径可以继续发布 deferred/unstable facts，但 compile-only gate 必须在进入 lowering 前最终封口。compound assignment 已不再属于这组 temporary compile intercept。
 - `ConditionalExpression` 当前之所以在 compile-only gate 中被显式封口，是因为它的 lowering 需要依赖 frontend CFG graph / condition-evaluation-region 合同先稳定；legacy `FrontendLoweringCfgPass` 已移除，但 `FrontendLoweringBodyInsnPass` 尚未接通 value merge / branch-result materialization 之前，仍不得放行进编译管线。
 - 共享 `FrontendSemanticAnalyzer.analyze(...)` 的结果不是 lowering-ready 合同；未来 frontend -> LIR lowering 只能以前置的 `analyzeForCompile(...)` 结果为准，并在 diagnostics 无 error 时继续。
 

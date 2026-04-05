@@ -174,7 +174,10 @@ class FrontendBodyLoweringSessionTest {
         new FrontendLoweringFunctionPreparationPass().run(context);
         new FrontendLoweringBuildCfgPass().run(context);
         assertFalse(diagnostics.hasErrors(), () -> "Unexpected lowering diagnostics: " + diagnostics.snapshot());
-        return new FrontendBodyLoweringSession(requireContext(context.requireFunctionLoweringContexts()));
+        return new FrontendBodyLoweringSession(
+                requireContext(context.requireFunctionLoweringContexts()),
+                context.classRegistry()
+        );
     }
 
     private static @NotNull FrontendModule parseModule(

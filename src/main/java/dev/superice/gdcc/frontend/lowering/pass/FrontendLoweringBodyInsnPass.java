@@ -19,7 +19,7 @@ public final class FrontendLoweringBodyInsnPass implements FrontendLoweringPass 
                 throw new IllegalStateException("Function lowering context must reuse the published analysis snapshot");
             }
             switch (functionContext.kind()) {
-                case EXECUTABLE_BODY -> new FrontendBodyLoweringSession(functionContext).run();
+                case EXECUTABLE_BODY -> new FrontendBodyLoweringSession(functionContext, context.classRegistry()).run();
                 case PROPERTY_INIT -> requireShellOnlyTarget(functionContext);
                 case PARAMETER_DEFAULT_INIT -> throw new IllegalStateException(
                         "Frontend body lowering pass does not support parameter default initializer contexts yet"

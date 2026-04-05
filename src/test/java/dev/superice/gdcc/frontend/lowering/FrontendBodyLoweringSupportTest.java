@@ -4,6 +4,7 @@ import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraphBuilder;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.ValueOpItem;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
@@ -13,6 +14,7 @@ import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
@@ -30,6 +32,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendBodyLoweringSupportTest {
@@ -97,12 +100,98 @@ class FrontendBodyLoweringSupportTest {
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Missing consume CallItem"));
         var mergedResultValueId = consumeItem.argumentValueIds().getFirst();
-        var valueTypes = FrontendBodyLoweringSupport.collectCfgValueSlotTypes(graph, analyzed.analysisData());
+        var valueTypes = FrontendBodyLoweringSupport.collectCfgValueSlotTypes(
+                graph,
+                analyzed.analysisData(),
+                new ClassRegistry(ExtensionApiLoader.loadDefault())
+        );
 
         assertAll(
                 () -> assertEquals(GdBoolType.BOOL, valueTypes.get(mergedResultValueId)),
                 () -> assertEquals("cfg_merge_" + mergedResultValueId, FrontendBodyLoweringSupport.mergeSlotId(mergedResultValueId))
         );
+    }
+
+    @Test
+    void collectCfgValueSlotTypesPublishesRealCompoundBinaryResultTypeInsteadOfFinalStoreType() throws Exception {
+        var analyzed = analyzeFunction(
+                "body_lowering_support_compound_variant_result.gd",
+                """
+                        class_name BodyLoweringSupportCompoundVariantResult
+                        extends RefCounted
+                        
+                        func ping(seed: Variant) -> Variant:
+                            var count: int = 1
+                            count += seed
+                            return count
+                        """,
+                "ping",
+                Map.of("BodyLoweringSupportCompoundVariantResult", "RuntimeBodyLoweringSupportCompoundVariantResult")
+        );
+
+        var graph = new FrontendCfgGraphBuilder()
+                .buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+                .graph();
+        var compoundItem = collectReachableValueItems(graph).stream()
+                .filter(CompoundAssignmentBinaryOpItem.class::isInstance)
+                .map(CompoundAssignmentBinaryOpItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing CompoundAssignmentBinaryOpItem"));
+        var valueTypes = FrontendBodyLoweringSupport.collectCfgValueSlotTypes(
+                graph,
+                analyzed.analysisData(),
+                new ClassRegistry(ExtensionApiLoader.loadDefault())
+        );
+
+        assertEquals(GdVariantType.VARIANT, valueTypes.get(compoundItem.resultValueId()));
+    }
+
+    @Test
+    void collectCfgValueSlotTypesFailsWithCompoundSpecificMessageWhenOperandTypesAreMissing() throws Exception {
+        var analyzed = analyzeFunction(
+                "body_lowering_support_compound_missing_operand_type.gd",
+                """
+                        class_name BodyLoweringSupportCompoundMissingOperandType
+                        extends RefCounted
+                        
+                        func ping(seed: int) -> int:
+                            var count := seed
+                            count += 1
+                            return count
+                        """,
+                "ping",
+                Map.of("BodyLoweringSupportCompoundMissingOperandType", "RuntimeBodyLoweringSupportCompoundMissingOperandType")
+        );
+
+        var originalGraph = new FrontendCfgGraphBuilder()
+                .buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+                .graph();
+        var compoundItem = collectReachableValueItems(originalGraph).stream()
+                .filter(CompoundAssignmentBinaryOpItem.class::isInstance)
+                .map(CompoundAssignmentBinaryOpItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing CompoundAssignmentBinaryOpItem"));
+        var syntheticGraph = new FrontendCfgGraph(
+                "seq_0",
+                Map.of(
+                        "seq_0",
+                        new FrontendCfgGraph.SequenceNode("seq_0", List.of(compoundItem), "stop_1"),
+                        "stop_1",
+                        new FrontendCfgGraph.StopNode("stop_1", FrontendCfgGraph.StopKind.RETURN, null)
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> FrontendBodyLoweringSupport.collectCfgValueSlotTypes(
+                        syntheticGraph,
+                        analyzed.analysisData(),
+                        new ClassRegistry(ExtensionApiLoader.loadDefault())
+                )
+        );
+
+        assertTrue(exception.getMessage().contains("Compound assignment body-lowering contract"), exception.getMessage());
+        assertTrue(exception.getMessage().contains("current target"), exception.getMessage());
     }
 
     private static @NotNull List<ValueOpItem> collectReachableValueItems(@NotNull FrontendCfgGraph graph) {

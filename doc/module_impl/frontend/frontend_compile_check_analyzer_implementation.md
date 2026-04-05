@@ -151,7 +151,6 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 - `GetNodeExpression`
 - `CastExpression`
 - `TypeTestExpression`
-- compound assignment
 
 这些节点在 shared semantic 路径中仍是 frontend 已识别的语法/语义形态。compile gate 现在发出的错误只表示：
 
@@ -169,11 +168,11 @@ short-circuit `BinaryExpression(and/or/&&/||)` 当前已经从显式 compile-blo
 - dedicated frontend CFG short-circuit lowering 已能同时覆盖 condition-context 与 value-context
 - compile gate 现在只要求这类表达式的 published facts 处于 lowering-ready 状态，而不再额外按 AST root 封口
 
-compound assignment 当前属于另一个阶段性例外：
+compound assignment 现在已经离开 compile-only blocker 列表：
 
-- shared semantic 已经接通 closed-set compound operator 的 assignment contract，并复用 ordinary binary operator typing
-- frontend CFG 的 read-modify-write item shape 已冻结，但 body lowering 对应 materialization 仍未接通
-- 因此 compile gate 继续按 assignment root 做 explicit temporary block，避免把 shared-semantic 已成功的 route 提前放进 lowering
+- shared semantic、frontend CFG read-modify-write shape 与 executable-body body lowering 都已接通
+- compile mode 不再因为 AST root 是 compound assignment 而额外报 `sema.compile_check`
+- 这类 route 现在与 ordinary supported expression 一样，只依赖 published fact 是否 lowering-ready
 
 constructor route 当前也不再属于 compile-only blocker：
 
