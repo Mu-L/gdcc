@@ -399,6 +399,106 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     }
 
     @Test
+    void lowerFrontendDynamicInstanceCallRoutesBuildNativeLibraryAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping frontend dynamic-call integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_dynamic_call_runtime");
+        Files.createDirectories(tempDir);
+
+        var source = """
+                class_name DynamicCallSmoke
+                extends Node
+                
+                func dynamic_size() -> int:
+                    var values
+                    values = PackedInt32Array()
+                    return values.size()
+                
+                func typed_size(values: PackedInt32Array) -> int:
+                    return values.size()
+                """;
+        var module = parseModule(
+                tempDir.resolve("dynamic_call_smoke.gd"),
+                source,
+                Map.of("DynamicCallSmoke", "RuntimeDynamicCallSmoke")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals(1, lowered.getClassDefs().size());
+        assertEquals("RuntimeDynamicCallSmoke", lowered.getClassDefs().getFirst().getName());
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_dynamic_call_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entrySource = Files.readString(projectDir.resolve("entry.c"));
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+        assertTrue(entrySource.contains("GD_STATIC_SN(u8\"RuntimeDynamicCallSmoke\")"), entrySource);
+        assertFalse(entrySource.contains("GD_STATIC_SN(u8\"DynamicCallSmoke\")"), entrySource);
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "DynamicCallSmokeNode",
+                        "RuntimeDynamicCallSmoke",
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(dynamicCallTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend dynamic call runtime dispatch check passed."),
+                () -> "Dynamic dispatch runtime check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend dynamic call exact route check passed."),
+                () -> "Exact-route runtime check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend dynamic call runtime class check passed."),
+                () -> "Dynamic-call runtime class check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend dynamic call runtime dispatch check failed."),
+                () -> "Dynamic dispatch runtime check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend dynamic call exact route check failed."),
+                () -> "Exact-route runtime check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend dynamic call runtime class check failed."),
+                () -> "Dynamic-call runtime class check should not fail.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    @Test
     void lowerFrontendMappedCrossFileComplexControlFlowBuildNativeLibraryAndRunInGodot() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping mapped cross-file frontend integration test");
@@ -728,6 +828,38 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend complex mapped runtime class check passed.")
                     else:
                         push_error("frontend complex mapped runtime class check failed.")
+                """;
+    }
+
+    private static @NotNull String dynamicCallTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "DynamicCallSmokeNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var dynamic_size = int(target.call("dynamic_size"))
+                    if dynamic_size == 0:
+                        print("frontend dynamic call runtime dispatch check passed.")
+                    else:
+                        push_error("frontend dynamic call runtime dispatch check failed.")
+                
+                    var typed_size = int(target.call("typed_size", PackedInt32Array([4, 5])))
+                    if typed_size == 2:
+                        print("frontend dynamic call exact route check passed.")
+                    else:
+                        push_error("frontend dynamic call exact route check failed.")
+                
+                    var runtime_class = String(target.get_class())
+                    if runtime_class == "RuntimeDynamicCallSmoke" and target.is_class("RuntimeDynamicCallSmoke") and not target.is_class("DynamicCallSmoke"):
+                        print("frontend dynamic call runtime class check passed.")
+                    else:
+                        push_error("frontend dynamic call runtime class check failed.")
                 """;
     }
 

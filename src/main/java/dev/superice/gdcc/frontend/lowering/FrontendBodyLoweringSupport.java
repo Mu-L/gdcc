@@ -23,7 +23,9 @@ import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.util.StringUtil;
+import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
+import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
@@ -181,13 +183,12 @@ public final class FrontendBodyLoweringSupport {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull Node callAnchor
     ) {
-        var publishedCall = analysisData.resolvedCalls().get(Objects.requireNonNull(callAnchor, "callAnchor must not be null"));
-        if (publishedCall == null || publishedCall.returnType() == null) {
-            throw new IllegalStateException(
-                    "Missing published call return type for " + callAnchor.getClass().getSimpleName()
-            );
-        }
-        return publishedCall.returnType();
+        var anchor = Objects.requireNonNull(callAnchor, "callAnchor must not be null");
+        return requireLoweringReadyExpressionType(
+                analysisData,
+                anchor,
+                describeCallAnchor(anchor)
+        );
     }
 
     private static @NotNull GdType requireMemberResultType(
@@ -296,6 +297,18 @@ public final class FrontendBodyLoweringSupport {
             throw new IllegalStateException("AssignmentItem must not request a result type without a result value id");
         }
         return requireExpressionType(analysisData, assignmentItem.assignment());
+    }
+
+    /// Call result runtime types are published through `expressionTypes()`, not re-derived from
+    /// `resolvedCalls()`. This matters especially for `DYNAMIC` routes, whose runtime type contract
+    /// is the published `Variant` expression type even though the resolved-call fact carries no exact
+    /// signature return metadata.
+    private static @NotNull String describeCallAnchor(@NotNull Node callAnchor) {
+        return switch (callAnchor) {
+            case AttributeCallStep step -> "AttributeCallStep '" + step.name() + "()'";
+            case CallExpression _ -> "CallExpression";
+            default -> callAnchor.getClass().getSimpleName();
+        };
     }
 
     private static @NotNull GdType requireResolvedValueType(

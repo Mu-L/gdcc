@@ -15,6 +15,7 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.TypeTestItem;
+import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.insn.AssignInsn;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
@@ -284,12 +285,14 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
     }
 
-    /// Emits call instructions strictly from the published resolved-call route.
+    /// Emits call instructions strictly from the published call route.
     ///
     /// The processor is not allowed to repair missing receiver information, redo overload choice,
     /// or guess between global/static/instance call families once compile-ready facts exist. It
     /// only materializes the already-approved argument-side `Variant` boundaries required by the
-    /// selected callable signature before emitting the final call instruction.
+    /// selected callable signature for exact routes. Runtime-open `DYNAMIC_FALLBACK` instance calls
+    /// reuse the ordinary `CallMethodInsn` surface and forward their already-evaluated operands so
+    /// backend dynamic dispatch remains the sole owner of argument pack/result unpack.
     private static final class FrontendCallInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<CallItem, Void> {
         @Override
@@ -346,7 +349,22 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                                 block.appendNonTerminatorInstruction(new ConstructBuiltinInsn(resultSlotId, arguments));
                     }
                 }
-                case UNKNOWN, DYNAMIC_FALLBACK -> throw session.unsupportedSequenceItem(
+                case DYNAMIC_FALLBACK -> {
+                    if (resolvedCall.receiverKind() != FrontendReceiverKind.INSTANCE) {
+                        throw session.unsupportedSequenceItem(
+                                node,
+                                "dynamic call lowering currently requires an instance receiver route, but got "
+                                        + resolvedCall.receiverKind()
+                        );
+                    }
+                    block.appendNonTerminatorInstruction(new CallMethodInsn(
+                            resultSlotId,
+                            resolvedCall.callableName(),
+                            session.resolveInstanceCallReceiver(node),
+                            arguments
+                    ));
+                }
+                case UNKNOWN -> throw session.unsupportedSequenceItem(
                         node,
                         "call route is not lowering-ready: " + resolvedCall.callKind()
                 );

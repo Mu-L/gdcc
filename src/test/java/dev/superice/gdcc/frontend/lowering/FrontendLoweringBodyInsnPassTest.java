@@ -19,6 +19,7 @@ import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringFunctionPreparat
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
+import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirBasicBlock;
@@ -48,6 +49,7 @@ import dev.superice.gdcc.lir.insn.VariantSetIndexedInsn;
 import dev.superice.gdcc.lir.insn.VariantSetKeyedInsn;
 import dev.superice.gdcc.lir.insn.VariantSetNamedInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.Node;
 import org.jetbrains.annotations.NotNull;
@@ -786,6 +788,101 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersDynamicInstanceCallsIntoCallMethodInsnWithVariantResultSlot() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_call.gd",
+                """
+                        class_name BodyInsnDynamicCall
+                        extends RefCounted
+                        
+                        func ping(worker):
+                            return worker.ping()
+                        """,
+                Map.of("BodyInsnDynamicCall", "RuntimeBodyInsnDynamicCall"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicCall",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var callInsn = requireOnlyInstruction(pingContext.targetFunction(), CallMethodInsn.class);
+        var returnInsn = requireOnlyReturnInsn(pingContext.targetFunction());
+        var callResultId = java.util.Objects.requireNonNull(callInsn.resultId());
+        var resultVariable = pingContext.targetFunction().getVariableById(callResultId);
+
+        assertNotNull(resultVariable, () -> "Missing lowered variable for " + callResultId);
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(callInsn.objectId().startsWith("cfg_tmp_"), callInsn.objectId()),
+                () -> assertEquals("ping", callInsn.methodName()),
+                () -> assertEquals(GdVariantType.VARIANT, resultVariable.type()),
+                () -> assertEquals(callResultId, returnInsn.returnValueId()),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runLetsDynamicCallResultsCrossTypedCallBoundariesThroughOrdinaryUnpack() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_call_boundary.gd",
+                """
+                        class_name BodyInsnDynamicCallBoundary
+                        extends RefCounted
+                        
+                        func take_i(value: int) -> int:
+                            return value
+                        
+                        func ping(worker) -> int:
+                            return take_i(worker.size())
+                        """,
+                Map.of("BodyInsnDynamicCallBoundary", "RuntimeBodyInsnDynamicCallBoundary"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicCallBoundary",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var methodCalls = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .toList();
+        var dynamicSizeCall = methodCalls.stream()
+                .filter(instruction -> instruction.methodName().equals("size"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing dynamic size() call"));
+        var exactTakeCall = methodCalls.stream()
+                .filter(instruction -> instruction.methodName().equals("take_i"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing exact take_i() call"));
+        var dynamicResultId = java.util.Objects.requireNonNull(dynamicSizeCall.resultId());
+        var dynamicResultVariable = pingContext.targetFunction().getVariableById(dynamicResultId);
+        var unpackInsn = requireOnlyInstruction(pingContext.targetFunction(), UnpackVariantInsn.class);
+
+        assertNotNull(dynamicResultVariable, () -> "Missing lowered variable for " + dynamicResultId);
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(dynamicSizeCall.objectId().startsWith("cfg_tmp_"), dynamicSizeCall.objectId()),
+                () -> assertEquals(GdVariantType.VARIANT, dynamicResultVariable.type()),
+                () -> assertEquals(dynamicResultId, unpackInsn.variantId()),
+                () -> assertEquals(unpackInsn.resultId(), onlyVariableOperandId(exactTakeCall.args())),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class))
+        );
+    }
+
+    @Test
     void runMaterializesVariantBoundariesAtReturnSlots() throws Exception {
         var prepared = prepareContext(
                 "body_insn_return_variant_boundary.gd",
@@ -1101,6 +1198,55 @@ class FrontendLoweringBodyInsnPassTest {
                         exception.getMessage().contains("required for argument materialization"),
                         exception.getMessage()
                 ),
+                () -> assertFalse(exception.getMessage().contains("call route is not lowering-ready"), exception.getMessage())
+        );
+    }
+
+    @Test
+    void runFailsFastWhenSyntheticDynamicFallbackDoesNotUseInstanceReceiverRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_call_invalid_route.gd",
+                """
+                        class_name BodyInsnDynamicCallInvalidRoute
+                        extends RefCounted
+                        
+                        func build_vector(x: int, y: int, z: int) -> Vector3i:
+                            return Vector3i(x, y, z)
+                        """,
+                Map.of("BodyInsnDynamicCallInvalidRoute", "RuntimeBodyInsnDynamicCallInvalidRoute"),
+                true
+        );
+        var buildVectorContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicCallInvalidRoute",
+                "build_vector"
+        );
+        var callAnchor = requireSingleCallAnchor(buildVectorContext.requireFrontendCfgGraph());
+        var originalResolvedCall = prepared.context().requireAnalysisData().resolvedCalls().get(callAnchor);
+        assertNotNull(originalResolvedCall);
+
+        prepared.context().requireAnalysisData().resolvedCalls().put(
+                callAnchor,
+                FrontendResolvedCall.dynamic(
+                        originalResolvedCall.callableName(),
+                        FrontendReceiverKind.TYPE_META,
+                        originalResolvedCall.ownerKind(),
+                        originalResolvedCall.receiverType(),
+                        originalResolvedCall.argumentTypes(),
+                        originalResolvedCall.declarationSite(),
+                        "synthetic non-instance dynamic route"
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("instance receiver route"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("TYPE_META"), exception.getMessage()),
                 () -> assertFalse(exception.getMessage().contains("call route is not lowering-ready"), exception.getMessage())
         );
     }

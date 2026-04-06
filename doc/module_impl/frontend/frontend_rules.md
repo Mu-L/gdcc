@@ -27,6 +27,7 @@
 - `FrontendCompileCheckAnalyzer` 只能挂在 compile-only 入口上；默认共享 `FrontendSemanticAnalyzer.analyze(...)`、inspection 与未来 LSP 入口不得隐式附带 compile-only gate。
 - compile-only gate 只允许扫描未来 lowering 会消费的 compile surface：supported executable body 与 supported property initializer island；不得重新深入 parameter default、lambda、`for`、`match`、block-local `const` 或 skipped subtree。
 - compile-only gate 对已发布 side-table 事实的最终阻断范围固定为 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`；`DYNAMIC` 继续保留为 frontend 已认可的 runtime-open 事实，不得在 compile gate 中误判成 blocker。
+- executable-body body lowering 对 call 的 lowering-ready surface 必须与 compile gate / CFG builder 保持一致：`resolvedCalls()` 只要已发布为 `RESOLVED` 或 `DYNAMIC` 就允许进入 body pass；其中 `DYNAMIC_FALLBACK` 当前只允许 instance route，必须继续复用 `CallMethodInsn`，结果类型真源来自 call anchor 的 `expressionTypes()`，frontend 不得为该路由重做 callable signature 推导，参数 pack / 结果 unpack 责任继续留给 backend dynamic dispatch。
 - compile-only gate 还必须检查 lowering-only published fact 的缺洞：若 supported callable-local `var` 因已登记为 non-error blocker 的 diagnostic（当前为 `sema.variable_slot_publication`）仍缺少 `slotTypes()`，compile gate 必须补发 `sema.compile_check` error 并阻止进入 lowering。
 - compile-only gate 的去重规则不得继续写死单个 category；哪些 upstream diagnostic 与 `sema.compile_check` 不冲突、因此允许共存，必须通过静态 category 配置维护。
 - `assert` 在共享语义路径中继续沿用 Godot-compatible condition contract；compile-only `FrontendCompileCheckAnalyzer` 只是暂时阻断 statement 自身，不得把它回退成 `sema.type_check` 或 grammar unsupported。

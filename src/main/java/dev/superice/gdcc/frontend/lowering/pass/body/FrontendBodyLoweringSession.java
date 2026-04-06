@@ -136,6 +136,11 @@ public final class FrontendBodyLoweringSession {
         return binding;
     }
 
+    /// Consumes one lowering-ready published call fact.
+    ///
+    /// Compile gate and CFG publication already accept both exact `RESOLVED` routes and runtime-open
+    /// `DYNAMIC` routes. Body lowering therefore reads the same frozen contract here instead of
+    /// silently narrowing the accepted surface back to resolved-only.
     @NotNull FrontendResolvedCall requireResolvedCall(@NotNull Node callAnchor) {
         var resolvedCall = analysisData.resolvedCalls().get(Objects.requireNonNull(callAnchor, "callAnchor must not be null"));
         if (resolvedCall == null) {
@@ -143,7 +148,8 @@ public final class FrontendBodyLoweringSession {
                     "Missing published resolved call for " + callAnchor.getClass().getSimpleName()
             );
         }
-        if (resolvedCall.status() != FrontendCallResolutionStatus.RESOLVED) {
+        if (resolvedCall.status() != FrontendCallResolutionStatus.RESOLVED
+                && resolvedCall.status() != FrontendCallResolutionStatus.DYNAMIC) {
             throw new IllegalStateException(
                     "Call anchor " + callAnchor.getClass().getSimpleName() + " is not lowering-ready: " + resolvedCall.status()
             );
@@ -332,12 +338,12 @@ public final class FrontendBodyLoweringSession {
         return sourceSlot;
     }
 
-    /// Materializes fixed arguments against their declared parameter slots and packs any vararg
-    /// tail values into `Variant`.
+    /// Materializes call operands against the already-published route contract.
     ///
-    /// Resolved-call facts already froze overload selection, so this helper only consumes the final
-    /// callable signature and emits the minimal boundary `(un)pack` instructions needed for the
-    /// selected route. It never retries overload resolution or re-derives parameter metadata.
+    /// Exact `RESOLVED` calls still consume their final callable signature here so fixed parameters
+    /// can materialize the minimal ordinary `Variant` boundaries and vararg tails can be packed.
+    /// `DYNAMIC` calls intentionally bypass signature lookup and forward their already-evaluated
+    /// operand slots unchanged; runtime pack/unpack stays on the backend dynamic-dispatch route.
     @NotNull List<LirInstruction.Operand> materializeCallArguments(
             @NotNull LirBasicBlock block,
             @NotNull CallItem item,
@@ -348,6 +354,12 @@ public final class FrontendBodyLoweringSession {
         var argumentValueIds = item.argumentValueIds();
         if (argumentValueIds.isEmpty()) {
             return List.of();
+        }
+        if (resolvedCall.status() == FrontendCallResolutionStatus.DYNAMIC) {
+            return argumentValueIds.stream()
+                    .map(this::slotIdForValue)
+                    .<LirInstruction.Operand>map(LirInstruction.VariableOperand::new)
+                    .toList();
         }
         var callable = requireBoundaryCallableSignature(resolvedCall);
         var parameterTypes = callBoundaryParameterTypes(callable, resolvedCall.callKind());
