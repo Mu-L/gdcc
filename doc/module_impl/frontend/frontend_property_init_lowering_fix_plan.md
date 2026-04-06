@@ -128,6 +128,12 @@
 
 ### 第二步：为 PROPERTY_INIT 发布 frontend CFG graph
 
+执行状态：
+
+- [x] `FrontendCfgGraphBuilder` 已新增 expression-rooted property-init CFG 入口，直接复用现有 value / short-circuit 构图逻辑并以 `RETURN` stop 收口
+- [x] `FrontendLoweringBuildCfgPass` 已将 `PROPERTY_INIT` 从 shell-only guard 接到真实 CFG graph 发布路径，并校验 property declaration / initializer expression 合同
+- [x] 已补充并运行 `FrontendCfgGraphBuilderTest`、`FrontendLoweringBuildCfgPassTest`、`FrontendLoweringPassManagerTest`、`FrontendLoweringBodyInsnPassTest`，确认 graph 发布、缺失 published fact fail-fast、以及默认 pipeline 下 property-init 仍保持 shell-only LIR 边界
+
 实现目标：
 
 - `PROPERTY_INIT` 不再只做 shell-only guard

@@ -22,6 +22,7 @@ import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
@@ -48,7 +49,7 @@ class FrontendLoweringBuildCfgPassTest {
                         class_name BuildCfgLinearValueOps
                         extends RefCounted
                         
-                        var ready_value: int = 1
+                        var ready_value: float = Vector3.ZERO.length()
                         var payloads: Dictionary[int, BuildCfgLinearValueOps]
                         var value: int
                         
@@ -102,6 +103,10 @@ class FrontendLoweringBuildCfgPassTest {
         var branchyFunction = requireFunctionDeclaration(prepared.module().units().getFirst().ast(), "branchy");
         var branchyBlock = branchyFunction.body();
         var branchyIf = assertInstanceOf(IfStatement.class, branchyBlock.statements().getFirst());
+        var readyValueProperty = requirePropertyDeclaration(prepared.module().units().getFirst().ast(), "ready_value");
+        var propertyInitializer = assertInstanceOf(dev.superice.gdparser.frontend.ast.AttributeExpression.class, readyValueProperty.value());
+        var zeroStep = assertInstanceOf(AttributePropertyStep.class, propertyInitializer.steps().getFirst());
+        var lengthStep = assertInstanceOf(AttributeCallStep.class, propertyInitializer.steps().get(1));
 
         var graph = linearContext.requireFrontendCfgGraph();
         var blockRegion = assertInstanceOf(
@@ -138,6 +143,17 @@ class FrontendLoweringBuildCfgPassTest {
                 FrontendCfgGraph.SequenceNode.class,
                 structuredGraph.requireNode(structuredIfRegion.mergeId())
         );
+        var propertyGraph = propertyContext.requireFrontendCfgGraph();
+        var propertyEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                propertyGraph.requireNode(propertyGraph.entryNodeId())
+        );
+        var propertyStop = assertInstanceOf(
+                FrontendCfgGraph.StopNode.class,
+                propertyGraph.requireNode(propertyEntry.nextId())
+        );
+        var propertyZeroLoad = assertInstanceOf(MemberLoadItem.class, propertyEntry.items().get(0));
+        var propertyLengthCall = assertInstanceOf(CallItem.class, propertyEntry.items().get(1));
 
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
@@ -167,10 +183,59 @@ class FrontendLoweringBuildCfgPassTest {
                 () -> assertEquals(structuredIfRegion.elseOrNextClauseEntryId(), structuredBranch.falseTargetId()),
                 () -> assertEquals(structuredIfRegion.mergeId(), structuredMerge.id()),
                 () -> assertEquals("stop_0", structuredMerge.nextId()),
-                () -> assertNull(propertyContext.frontendCfgGraphOrNull()),
+                () -> assertEquals(List.of("seq_0", "stop_0"), propertyGraph.nodeIds()),
+                () -> assertEquals(2, propertyEntry.items().size()),
+                () -> assertEquals(zeroStep, propertyZeroLoad.anchor()),
+                () -> assertEquals("ZERO", propertyZeroLoad.memberName()),
+                () -> assertEquals(List.of(), propertyZeroLoad.operandValueIds()),
+                () -> assertEquals(lengthStep, propertyLengthCall.anchor()),
+                () -> assertEquals("length", propertyLengthCall.callableName()),
+                () -> assertEquals(List.of(propertyZeroLoad.resultValueId()), propertyLengthCall.operandValueIds()),
+                () -> assertEquals(propertyLengthCall.resultValueId(), propertyStop.returnValueIdOrNull()),
                 () -> assertNull(propertyContext.frontendCfgRegionOrNull(propertyContext.loweringRoot())),
                 () -> assertEquals(0, propertyContext.targetFunction().getBasicBlockCount()),
                 () -> assertTrue(propertyContext.targetFunction().getEntryBlockId().isEmpty())
+        );
+    }
+
+    @Test
+    void runFailsFastWhenPropertyInitializerExpressionFactIsMissing() throws Exception {
+        var prepared = prepareContext(
+                "build_cfg_property_init_missing_fact.gd",
+                """
+                        class_name BuildCfgPropertyInitMissingFact
+                        extends RefCounted
+                        
+                        var ready_value: int = 1
+                        """,
+                Map.of("BuildCfgPropertyInitMissingFact", "RuntimeBuildCfgPropertyInitMissingFact")
+        );
+        var propertyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBuildCfgPropertyInitMissingFact",
+                "_field_init_ready_value"
+        );
+        var propertyDeclaration = requirePropertyDeclaration(prepared.module().units().getFirst().ast(), "ready_value");
+        var initializerExpression = java.util.Objects.requireNonNull(
+                propertyDeclaration.value(),
+                "property initializer must not be null"
+        );
+        prepared.context().requireAnalysisData().expressionTypes().remove(initializerExpression);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBuildCfgPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertTrue(
+                        exception.getMessage().contains("expressionTypes() is missing a lowering-ready fact"),
+                        exception.getMessage()
+                ),
+                () -> assertTrue(exception.getMessage().contains("LiteralExpression"), exception.getMessage()),
+                () -> assertNull(propertyContext.frontendCfgGraphOrNull()),
+                () -> assertNull(propertyContext.frontendCfgRegionOrNull(initializerExpression))
         );
     }
 
@@ -379,6 +444,18 @@ class FrontendLoweringBuildCfgPassTest {
                 .filter(function -> function.name().equals(functionName))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Missing function declaration " + functionName));
+    }
+
+    private static @NotNull VariableDeclaration requirePropertyDeclaration(
+            @NotNull dev.superice.gdparser.frontend.ast.SourceFile sourceFile,
+            @NotNull String propertyName
+    ) {
+        return sourceFile.statements().stream()
+                .filter(VariableDeclaration.class::isInstance)
+                .map(VariableDeclaration.class::cast)
+                .filter(property -> property.name().equals(propertyName))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing property declaration " + propertyName));
     }
 
     private record PreparedContext(

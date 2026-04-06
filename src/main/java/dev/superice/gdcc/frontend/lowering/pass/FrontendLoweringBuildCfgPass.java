@@ -7,7 +7,9 @@ import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraphBuilder;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
+import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 
 /// Frontend CFG graph publication pass.
@@ -29,7 +31,7 @@ public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass 
             validateTargetFunctionMembership(functionContext, lirModule);
             switch (functionContext.kind()) {
                 case EXECUTABLE_BODY -> publishStraightLineExecutableGraph(functionContext);
-                case PROPERTY_INIT -> validateShellOnlyTarget(functionContext);
+                case PROPERTY_INIT -> publishPropertyInitializerGraph(functionContext);
                 case PARAMETER_DEFAULT_INIT -> throw new IllegalStateException(
                         "Frontend CFG build pass does not support parameter default initializer contexts yet"
                 );
@@ -49,6 +51,30 @@ public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass 
         var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, functionContext.analysisData());
         functionContext.publishFrontendCfgGraph(build.graph());
         build.regions().forEach(functionContext::publishFrontendCfgRegion);
+    }
+
+    private void publishPropertyInitializerGraph(@NotNull FunctionLoweringContext functionContext) {
+        if (!(functionContext.sourceOwner() instanceof VariableDeclaration propertyDeclaration)) {
+            throw new IllegalStateException(
+                    describeContext(functionContext) + " must keep a property declaration as sourceOwner"
+            );
+        }
+        if (!(functionContext.loweringRoot() instanceof Expression initializerExpression)) {
+            throw new IllegalStateException(
+                    describeContext(functionContext) + " must expose an Expression loweringRoot"
+            );
+        }
+        if (propertyDeclaration.value() != initializerExpression) {
+            throw new IllegalStateException(
+                    describeContext(functionContext) + " must lower the published property initializer expression directly"
+            );
+        }
+        validateShellOnlyTarget(functionContext);
+        functionContext.publishFrontendCfgGraph(
+                new FrontendCfgGraphBuilder()
+                        .buildPropertyInitializer(initializerExpression, functionContext.analysisData())
+                        .graph()
+        );
     }
 
     private void validateTargetFunctionMembership(

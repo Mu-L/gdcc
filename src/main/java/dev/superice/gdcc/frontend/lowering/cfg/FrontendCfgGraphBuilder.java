@@ -107,14 +107,7 @@ public final class FrontendCfgGraphBuilder {
             @NotNull FrontendAnalysisData analysisData
     ) {
         Objects.requireNonNull(rootBlock, "rootBlock must not be null");
-        this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
-        nodes = new LinkedHashMap<>();
-        regions = new FrontendAstSideTable<>();
-        loopStack.clear();
-        nextSequenceIndex = 0;
-        nextBranchIndex = 0;
-        nextStopIndex = 0;
-        nextValueIndex = 0;
+        initializeBuildState(analysisData);
 
         var fallthroughStopId = publishStopNode(FrontendCfgGraph.StopKind.RETURN, null);
         var rootBuild = buildBlock(rootBlock, fallthroughStopId);
@@ -126,10 +119,30 @@ public final class FrontendCfgGraphBuilder {
             requireNodes().remove(fallthroughStopId);
         }
 
-        return new ExecutableBodyBuild(
-                new FrontendCfgGraph(entryId, orderNodes(entryId)),
-                copyRegions(requireRegions())
+        return finishBuild(entryId);
+    }
+
+    /// Builds one expression-rooted frontend CFG graph for a property initializer helper.
+    ///
+    /// Property initializer contexts do not synthesize a fake `Block` wrapper. They reuse the same
+    /// value/short-circuit graph core as executable bodies, then terminate in one synthetic
+    /// `RETURN` stop carrying the initializer result value id. No structured region is published
+    /// here because `FrontendCfgRegion` currently models block/branch/loop ownership only.
+    public @NotNull ExecutableBodyBuild buildPropertyInitializer(
+            @NotNull Expression rootExpression,
+            @NotNull FrontendAnalysisData analysisData
+    ) {
+        Objects.requireNonNull(rootExpression, "rootExpression must not be null");
+        initializeBuildState(analysisData);
+
+        var rootBuild = buildValue(new BuildCursor(new OpenSequence(nextSequenceId())), rootExpression, null);
+        var returnStopId = publishStopNode(FrontendCfgGraph.StopKind.RETURN, rootBuild.resultValueId());
+        publishSequenceNode(
+                rootBuild.cursor().currentSequence().id(),
+                rootBuild.cursor().currentSequence().items(),
+                returnStopId
         );
+        return finishBuild(rootBuild.cursor().entryId());
     }
 
     private @NotNull BlockBuild buildBlock(@NotNull Block block, @NotNull String continuationId) {
@@ -1611,6 +1624,24 @@ public final class FrontendCfgGraphBuilder {
         var copied = new FrontendAstSideTable<FrontendCfgRegion>();
         copied.putAll(regions);
         return copied;
+    }
+
+    private void initializeBuildState(@NotNull FrontendAnalysisData analysisData) {
+        this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
+        nodes = new LinkedHashMap<>();
+        regions = new FrontendAstSideTable<>();
+        loopStack.clear();
+        nextSequenceIndex = 0;
+        nextBranchIndex = 0;
+        nextStopIndex = 0;
+        nextValueIndex = 0;
+    }
+
+    private @NotNull ExecutableBodyBuild finishBuild(@NotNull String entryId) {
+        return new ExecutableBodyBuild(
+                new FrontendCfgGraph(entryId, orderNodes(entryId)),
+                copyRegions(requireRegions())
+        );
     }
 
     public record ExecutableBodyBuild(

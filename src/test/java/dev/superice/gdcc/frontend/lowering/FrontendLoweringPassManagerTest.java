@@ -202,8 +202,9 @@ class FrontendLoweringPassManagerTest {
                         executableContext.requireFrontendCfgRegion(rootBlock)
                 ),
                 () -> assertNotNull(executableContext.frontendCfgRegionOrNull(outerIf)),
-                () -> assertFalse(propertyContext.hasFrontendCfgGraph()),
-                () -> assertNull(propertyContext.frontendCfgGraphOrNull()),
+                () -> assertTrue(propertyContext.hasFrontendCfgGraph()),
+                () -> assertNotNull(propertyContext.frontendCfgGraphOrNull()),
+                () -> assertNull(propertyContext.frontendCfgRegionOrNull(propertyContext.loweringRoot())),
                 () -> assertTrue(executableContext.targetFunction().getBasicBlockCount() > 0),
                 () -> assertFalse(executableContext.targetFunction().getEntryBlockId().isEmpty()),
                 () -> assertEquals(0, propertyContext.targetFunction().getBasicBlockCount()),
@@ -282,6 +283,15 @@ class FrontendLoweringPassManagerTest {
                 structuredContext.requireFrontendCfgRegion(structuredBlock)
         );
         var structuredGraph = structuredContext.requireFrontendCfgGraph();
+        var propertyGraph = propertyContext.requireFrontendCfgGraph();
+        var propertyEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                propertyGraph.requireNode(propertyGraph.entryNodeId())
+        );
+        var propertyStop = assertInstanceOf(
+                FrontendCfgGraph.StopNode.class,
+                propertyGraph.requireNode(propertyEntry.nextId())
+        );
         var binaryValue = assertInstanceOf(
                 OpaqueExprValueItem.class,
                 entryNode.items().get(3)
@@ -297,7 +307,11 @@ class FrontendLoweringPassManagerTest {
                 () -> assertEquals("v3", stopNode.returnValueIdOrNull()),
                 () -> assertEquals(structuredGraph.entryNodeId(), structuredRootRegion.entryId()),
                 () -> assertNotNull(structuredContext.frontendCfgGraphOrNull()),
-                () -> assertNull(propertyContext.frontendCfgGraphOrNull()),
+                () -> assertEquals(List.of("seq_0", "stop_0"), propertyGraph.nodeIds()),
+                () -> assertEquals(1, propertyEntry.items().size()),
+                () -> assertEquals("v0", propertyStop.returnValueIdOrNull()),
+                () -> assertNotNull(propertyContext.frontendCfgGraphOrNull()),
+                () -> assertNull(propertyContext.frontendCfgRegionOrNull(propertyContext.loweringRoot())),
                 () -> assertTrue(straightLineContext.targetFunction().getBasicBlockCount() > 0),
                 () -> assertFalse(straightLineContext.targetFunction().getEntryBlockId().isEmpty()),
                 () -> assertEquals(0, propertyContext.targetFunction().getBasicBlockCount()),

@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：计划维护中（function pre-pass scaffold、frontend CFG graph shared-expression core、executable-body body lowering 与 processor-registry 重构已落地；property initializer / parameter default / staged surface 仍待继续推进）
-- 更新时间：2026-04-05
+- 状态：计划维护中（function pre-pass scaffold、frontend CFG graph shared-expression core、property-initializer CFG publication、executable-body body lowering 与 processor-registry 重构已落地；property initializer body lowering / parameter default / staged surface 仍待继续推进）
+- 更新时间：2026-04-06
 - 当前事实源：
   - `frontend_lowering_skeleton_pre_pass_implementation.md`
   - `frontend_lowering_func_pre_pass_implementation.md`
@@ -32,6 +32,7 @@
 - compound assignment 已完成 shared semantic + CFG read-modify-write + body lowering 的全链路接通：`AssignmentItem` 继续只承载最终 store commit，当前值读取与 compound binary 结果由前置 value item 显式表达，compile-only gate 也已同步解封
 - callable-local slot type 现在也已进入 published fact 面：`FrontendVarTypePostAnalyzer` 会把 parameter / supported local `var` 的最终 slot type 写入 `FrontendAnalysisData.slotTypes()`，供 future body lowering 直接消费
 - condition-context `not` 已切到 target-flip 路径；`and` / `or` 已正式接通 shared-expression-core + branch-result merge 路径，`ConditionalExpression` 仍保留 compile gate + builder fail-fast 边界
+- `PROPERTY_INIT` 当前也已进入 frontend CFG publication：property initializer expression 通过独立 `FunctionLoweringContext` 复用同一套 value/short-circuit graph core，并以 expression-rooted `RETURN` stop 收口；但对应 body lowering 仍未接通
 - executable-body `FrontendLoweringBodyInsnPass` 现在也已落地：实际 lowering state 收口在 `frontend.lowering.pass.body.FrontendBodyLoweringSession`，并通过 `FrontendInsnLoweringProcessor` 注册表按 CFG node / item / AST target 的实际类型分派处理，便于后续按节点扩面而不回退成单个巨型 pass
 
 后续工程应在这条稳定链路之上继续推进，不要回退到“先手工做一份分析结果再喂 lowering”的分叉入口。
@@ -103,7 +104,7 @@
 - 在真正写 LIR 前，先建立 frontend-only CFG graph
 - 让 CFG 层能够表达 condition-evaluation-region，而不只是 metadata-only block skeleton
 - 新 CFG graph 必须在独立的 `frontend.lowering.cfg` 包中实现，并只由 `FrontendLoweringBuildCfgPass` 构建
-- 当前实际落地范围先覆盖 executable callable；property initializer function 在对应 expression/body lowering 接通后复用同一套入口
+- 当前实际落地范围已覆盖 executable callable，以及 property initializer function 的 frontend CFG publication；property initializer body lowering 仍待后续步骤接通
 
 第一批建议只支持：
 
