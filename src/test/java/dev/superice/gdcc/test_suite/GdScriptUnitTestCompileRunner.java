@@ -1,4 +1,4 @@
-package test_suite;
+package dev.superice.gdcc.test_suite;
 
 import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.c.build.CBuildResult;
@@ -63,15 +63,10 @@ public final class GdScriptUnitTestCompileRunner {
         loweringPassManager = new FrontendLoweringPassManager();
     }
 
-    public @NotNull List<CaseResult> compileAndValidateAll() throws Exception {
+    public @NotNull List<String> listScriptResourcePaths() throws IOException {
         var scriptResourcePaths = ResourceExtractor.listResourceFilesRecursively(SCRIPT_RESOURCE_ROOT, loader);
         assertFalse(scriptResourcePaths.isEmpty(), "No GDScript unit-test resources found under " + SCRIPT_RESOURCE_ROOT);
-
-        var results = new java.util.ArrayList<CaseResult>(scriptResourcePaths.size());
-        for (var scriptResourcePath : scriptResourcePaths) {
-            results.add(compileAndValidate(scriptResourcePath));
-        }
-        return List.copyOf(results);
+        return scriptResourcePaths;
     }
 
     public @NotNull CaseResult compileAndValidate(@NotNull String scriptResourcePath) throws Exception {

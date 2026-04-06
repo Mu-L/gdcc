@@ -4,7 +4,7 @@
 
 The `test_suite` package provides a resource-driven end-to-end test harness for GDScript frontend and native build validation.
 
-Its current entry point is `test_suite.GdScriptUnitTestCompileRunner`, which:
+Its current entry point is `dev.superice.gdcc.test_suite.GdScriptUnitTestCompileRunner`, which:
 
 1. Recursively scans bundled test-case scripts under `unit_test/script`.
 2. Parses and lowers each script through the frontend.
@@ -105,7 +105,11 @@ If these prerequisites are not available, the JUnit wrapper test will be skipped
 
 The current JUnit entry is:
 
-- `test_suite.GdScriptUnitTestCompileRunnerTest`
+- `dev.superice.gdcc.test_suite.GdScriptUnitTestCompileRunnerTest`
+
+That test uses a JUnit `@TestFactory` to generate one dynamic test per discovered
+`unit_test/script` resource path, so each Java-side test execution covers exactly one
+source script and its paired validation script.
 
 Recommended targeted command:
 
@@ -114,6 +118,7 @@ rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps
 ```
 
 During normal development, prefer targeted execution instead of running the full test suite.
+When one generated case fails, JUnit reports the failing resource path directly.
 
 ## Adding a New Test Case
 
