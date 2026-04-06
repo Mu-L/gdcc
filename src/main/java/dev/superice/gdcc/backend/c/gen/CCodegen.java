@@ -220,6 +220,78 @@ public class CCodegen implements Codegen {
         }
     }
 
+    /// `initFunc == null` means backend still owns default-value helper synthesis. Once a property
+    /// points at a named init function, backend only accepts an already materialized executable body.
+    private void validatePropertyInitFunctionsReadyForCodegen() {
+        for (var classDef : module.getClassDefs()) {
+            for (var propertyDef : classDef.getProperties()) {
+                validatePropertyInitFunctionReadyForCodegen(classDef, propertyDef);
+            }
+        }
+    }
+
+    private void validatePropertyInitFunctionReadyForCodegen(
+            @NotNull LirClassDef classDef,
+            @NotNull LirPropertyDef propertyDef
+    ) {
+        var initFuncName = propertyDef.getInitFunc();
+        if (initFuncName == null) {
+            return;
+        }
+
+        var matches = classDef.getFunctions().stream()
+                .filter(function -> function.getName().equals(initFuncName))
+                .toList();
+        if (matches.isEmpty()) {
+            throw new IllegalStateException(
+                    "Property init function '"
+                            + classDef.getName()
+                            + "."
+                            + initFuncName
+                            + "' referenced by property '"
+                            + propertyDef.getName()
+                            + "' does not exist"
+            );
+        }
+        if (matches.size() != 1) {
+            throw new IllegalStateException(
+                    "Expected exactly one property init function '"
+                            + classDef.getName()
+                            + "."
+                            + initFuncName
+                            + "' for property '"
+                            + propertyDef.getName()
+                            + "', but found "
+                            + matches.size()
+            );
+        }
+
+        var function = matches.getFirst();
+        if (function.getBasicBlockCount() == 0 || function.getEntryBlockId().isEmpty()) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references shell-only init function '"
+                            + function.getName()
+                            + "'; property init must be fully lowered before backend codegen"
+            );
+        }
+        if (!function.hasBasicBlock(function.getEntryBlockId())) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references init function '"
+                            + function.getName()
+                            + "' with invalid entry block ID: "
+                            + function.getEntryBlockId()
+            );
+        }
+    }
+
     private void ensureFunctionFinallyBlock() {
         for (var classDef : module.getClassDefs()) {
             for (var func : classDef.getFunctions()) {
@@ -291,6 +363,7 @@ public class CCodegen implements Codegen {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generate().");
         }
         this.generateDefaultGetterSetterInitialization();
+        this.validatePropertyInitFunctionsReadyForCodegen();
         this.generateFunctionPrepareBlock();
         this.ensureFunctionFinallyBlock();
         for (var classDef : module.getClassDefs()) {

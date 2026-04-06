@@ -16,6 +16,7 @@ import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
+import dev.superice.gdcc.lir.insn.LiteralIntInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.lir.insn.UnaryOpInsn;
 import dev.superice.gdcc.lir.insn.VariantGetInsn;
@@ -159,14 +160,7 @@ public class CCodegenTest {
     public void generatesEntryFiles() throws Exception {
         // build a simple LirModule
         var rotatingCameraClass = new LirClassDef("GDRotatingCamera3D", "Camera3D");
-        rotatingCameraClass.addProperty(new LirPropertyDef("pitch_degree",
-                GdFloatType.FLOAT,
-                false,
-                "_field_init_pitch_degree",
-                "_field_getter_pitch_degree",
-                "_field_setter_pitch_degree",
-                Map.of())
-        );
+        rotatingCameraClass.addProperty(new LirPropertyDef("pitch_degree", GdFloatType.FLOAT));
         var module = new LirModule("my_module", List.of(rotatingCameraClass));
 
         // load extension API and class registry
@@ -192,6 +186,135 @@ public class CCodegenTest {
         System.out.println(cCode);
         assertTrue(cCode.contains("Loading my_module"));
         assertTrue(hCode.contains("GDEXTENSION_MY_MODULE_ENTRY_H"));
+    }
+
+    @Test
+    public void generateCreatesDefaultPropertyInitHelperWhenInitFuncIsUnset() throws Exception {
+        var workerClass = new LirClassDef("GDWorkerNode", "Node");
+        var property = new LirPropertyDef("ready_value", GdIntType.INT);
+        workerClass.addProperty(property);
+        var module = new LirModule("property_init_default_helper_module", List.of(workerClass));
+
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var cCode = new String(files.getFirst().contentWriter());
+
+        assertEquals("_field_init_ready_value", property.getInitFunc());
+        var initFunc = assertInstanceOf(
+                LirFunctionDef.class,
+                workerClass.getFunctions().stream()
+                        .filter(function -> function.getName().equals("_field_init_ready_value"))
+                        .findFirst()
+                        .orElseThrow()
+        );
+        assertTrue(initFunc.hasBasicBlock("entry"));
+        assertEquals("__prepare__", initFunc.getEntryBlockId());
+        assertTrue(initFunc.hasBasicBlock("__prepare__"));
+        assertTrue(cCode.contains("self->ready_value = GDWorkerNode__field_init_ready_value(self);"), cCode);
+    }
+
+    @Test
+    public void generateAcceptsPropertyInitFunctionWithExecutableBody() throws Exception {
+        var workerClass = new LirClassDef("GDWorkerNode", "Node");
+        var property = new LirPropertyDef("ready_value", GdIntType.INT, false, "_field_init_ready_value", null, null, Map.of());
+        workerClass.addProperty(property);
+        var initFunction = new LirFunctionDef("_field_init_ready_value");
+        initFunction.setHidden(true);
+        initFunction.setReturnType(GdIntType.INT);
+        initFunction.addParameter(new LirParameterDef("self", new GdObjectType("GDWorkerNode"), null, initFunction));
+        var result = initFunction.createAndAddTmpVariable(GdIntType.INT);
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new LiteralIntInsn(result.id(), 7));
+        entry.setTerminator(new ReturnInsn(result.id()));
+        initFunction.addBasicBlock(entry);
+        initFunction.setEntryBlockId("entry");
+        workerClass.addFunction(initFunction);
+        var module = new LirModule("property_init_lowered_helper_module", List.of(workerClass));
+
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var cCode = new String(files.getFirst().contentWriter());
+
+        assertTrue(cCode.contains("self->ready_value = GDWorkerNode__field_init_ready_value(self);"), cCode);
+    }
+
+    @Test
+    public void generateFailsFastWhenPropertyInitFunctionIsMissing() throws Exception {
+        var workerClass = new LirClassDef("GDWorkerNode", "Node");
+        workerClass.addProperty(new LirPropertyDef(
+                "ready_value",
+                GdIntType.INT,
+                false,
+                "_field_init_ready_value",
+                null,
+                null,
+                Map.of()
+        ));
+        var module = new LirModule("property_init_missing_helper_module", List.of(workerClass));
+
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var exception = assertThrows(IllegalStateException.class, codegen::generate);
+
+        assertTrue(exception.getMessage().contains("GDWorkerNode._field_init_ready_value"), exception.getMessage());
+        assertTrue(exception.getMessage().contains("ready_value"), exception.getMessage());
+        assertTrue(exception.getMessage().contains("does not exist"), exception.getMessage());
+    }
+
+    @Test
+    public void generateFailsFastWhenPropertyInitFunctionRemainsShellOnly() throws Exception {
+        var workerClass = new LirClassDef("GDWorkerNode", "Node");
+        workerClass.addProperty(new LirPropertyDef(
+                "ready_value",
+                GdIntType.INT,
+                false,
+                "_field_init_ready_value",
+                null,
+                null,
+                Map.of()
+        ));
+        var shellOnlyInit = new LirFunctionDef("_field_init_ready_value");
+        shellOnlyInit.setHidden(true);
+        shellOnlyInit.setReturnType(GdIntType.INT);
+        shellOnlyInit.addParameter(new LirParameterDef("self", new GdObjectType("GDWorkerNode"), null, shellOnlyInit));
+        workerClass.addFunction(shellOnlyInit);
+        var module = new LirModule("property_init_shell_only_module", List.of(workerClass));
+
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var exception = assertThrows(IllegalStateException.class, codegen::generate);
+
+        assertTrue(exception.getMessage().contains("GDWorkerNode.ready_value"), exception.getMessage());
+        assertTrue(exception.getMessage().contains("_field_init_ready_value"), exception.getMessage());
+        assertTrue(exception.getMessage().contains("shell-only"), exception.getMessage());
     }
 
     @Test
