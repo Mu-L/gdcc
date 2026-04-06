@@ -207,8 +207,8 @@ class FrontendLoweringPassManagerTest {
                 () -> assertNull(propertyContext.frontendCfgRegionOrNull(propertyContext.loweringRoot())),
                 () -> assertTrue(executableContext.targetFunction().getBasicBlockCount() > 0),
                 () -> assertFalse(executableContext.targetFunction().getEntryBlockId().isEmpty()),
-                () -> assertEquals(0, propertyContext.targetFunction().getBasicBlockCount()),
-                () -> assertTrue(propertyContext.targetFunction().getEntryBlockId().isEmpty())
+                () -> assertTrue(propertyContext.targetFunction().getBasicBlockCount() > 0),
+                () -> assertFalse(propertyContext.targetFunction().getEntryBlockId().isEmpty())
         );
 
         var xml = new DomLirSerializer().serializeToString(lowered);
@@ -314,8 +314,8 @@ class FrontendLoweringPassManagerTest {
                 () -> assertNull(propertyContext.frontendCfgRegionOrNull(propertyContext.loweringRoot())),
                 () -> assertTrue(straightLineContext.targetFunction().getBasicBlockCount() > 0),
                 () -> assertFalse(straightLineContext.targetFunction().getEntryBlockId().isEmpty()),
-                () -> assertEquals(0, propertyContext.targetFunction().getBasicBlockCount()),
-                () -> assertTrue(propertyContext.targetFunction().getEntryBlockId().isEmpty())
+                () -> assertTrue(propertyContext.targetFunction().getBasicBlockCount() > 0),
+                () -> assertFalse(propertyContext.targetFunction().getEntryBlockId().isEmpty())
         );
     }
 

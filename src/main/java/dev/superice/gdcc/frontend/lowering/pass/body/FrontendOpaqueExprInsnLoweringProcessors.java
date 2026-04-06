@@ -80,7 +80,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                 }
                 default -> throw session.unsupportedSequenceItem(
                         item,
-                        "identifier binding kind is not supported by executable body lowering: " + binding.kind()
+                        "identifier binding kind is not supported by frontend body lowering: " + binding.kind()
                 );
             }
         }
@@ -141,7 +141,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                 case "null" -> block.appendNonTerminatorInstruction(new LiteralNilInsn(resultSlotId));
                 default -> throw session.unsupportedSequenceItem(
                         item,
-                        "literal kind is not supported by executable body lowering: " + node.kind()
+                        "literal kind is not supported by frontend body lowering: " + node.kind()
                 );
             }
         }

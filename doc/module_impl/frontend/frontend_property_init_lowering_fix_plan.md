@@ -178,6 +178,12 @@
 
 ### 第三步：接通 PROPERTY_INIT body lowering
 
+执行状态：
+
+- [x] `FrontendLoweringBodyInsnPass` 已将 `PROPERTY_INIT` 接到与 `EXECUTABLE_BODY` 相同的 `FrontendBodyLoweringSession`
+- [x] `FrontendLoweringBodyInsnPassTest` 与 `FrontendLoweringPassManagerTest` 已新增/更新 literal、constructor、member/global helper 与缺失 published fact 的正反锚点
+- [x] 已运行 targeted tests，确认 property-init helper 在默认 lowering pipeline 末端已拥有真实 `LirBasicBlock`、`entryBlockId` 与 `ReturnInsn`
+
 实现目标：
 
 - `FrontendLoweringBodyInsnPass` 对 `PROPERTY_INIT` 调用同一套 `FrontendBodyLoweringSession`

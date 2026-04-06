@@ -45,7 +45,7 @@ import java.util.Objects;
 import java.util.SequencedMap;
 import java.util.Set;
 
-/// Stateful carrier for one executable-body lowering run.
+/// Stateful carrier for one function-body lowering run.
 ///
 /// The session owns the shared lowering facts for a single function:
 /// - published semantic tables already accepted by compile gate

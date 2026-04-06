@@ -24,6 +24,7 @@ import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirInstruction;
+import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.insn.AssignInsn;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.CallGlobalInsn;
@@ -33,6 +34,7 @@ import dev.superice.gdcc.lir.insn.ConstructObjectInsn;
 import dev.superice.gdcc.lir.insn.GoIfInsn;
 import dev.superice.gdcc.lir.insn.GotoInsn;
 import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
+import dev.superice.gdcc.lir.insn.LiteralIntInsn;
 import dev.superice.gdcc.lir.insn.LiteralNullInsn;
 import dev.superice.gdcc.lir.insn.LoadStaticInsn;
 import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
@@ -1342,6 +1344,182 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertFalse(allInstructions.stream().anyMatch(VariantGetKeyedInsn.class::isInstance)),
                 () -> assertFalse(allInstructions.stream().anyMatch(VariantGetNamedInsn.class::isInstance))
         );
+    }
+
+    @Test
+    void runLowersLiteralPropertyInitializerIntoExecutableInitFunction() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_property_literal.gd",
+                """
+                        class_name BodyInsnPropertyLiteral
+                        extends RefCounted
+                        
+                        var ready_value: int = 7
+                        
+                        func ping() -> int:
+                            return ready_value
+                        """,
+                Map.of("BodyInsnPropertyLiteral", "RuntimeBodyInsnPropertyLiteral"),
+                true
+        );
+        var initContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBodyInsnPropertyLiteral",
+                "_field_init_ready_value"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var initFunction = initContext.targetFunction();
+        var literalInsn = requireOnlyInstruction(initFunction, LiteralIntInsn.class);
+        var returnInsn = requireOnlyReturnInsn(initFunction);
+        var selfParameter = initFunction.getParameter(0);
+        var selfParameterName = selfParameter == null ? null : selfParameter.name();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("seq_0", initFunction.getEntryBlockId()),
+                () -> assertEquals(2, initFunction.getBasicBlockCount()),
+                () -> assertEquals(1, initFunction.getParameters().size()),
+                () -> assertInstanceOf(LirParameterDef.class, selfParameter),
+                () -> assertEquals("self", selfParameterName),
+                () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersCallPropertyInitializerIntoExecutableInitFunction() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_property_call.gd",
+                """
+                        class_name BodyInsnPropertyCall
+                        extends RefCounted
+                        
+                        var ready_value: float = abs(1.0)
+                        
+                        func ping() -> float:
+                            return ready_value
+                        """,
+                Map.of("BodyInsnPropertyCall", "RuntimeBodyInsnPropertyCall"),
+                true
+        );
+        var initContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBodyInsnPropertyCall",
+                "_field_init_ready_value"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var initFunction = initContext.targetFunction();
+        var globalInsn = requireOnlyInstruction(initFunction, CallGlobalInsn.class);
+        var packInsn = requireOnlyInstruction(initFunction, PackVariantInsn.class);
+        var unpackInsn = requireOnlyInstruction(initFunction, UnpackVariantInsn.class);
+        var returnInsn = requireOnlyReturnInsn(initFunction);
+        var instructions = allInstructions(initFunction);
+        var selfParameter = initFunction.getParameter(0);
+        var selfParameterName = selfParameter == null ? null : selfParameter.name();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("seq_0", initFunction.getEntryBlockId()),
+                () -> assertEquals(2, initFunction.getBasicBlockCount()),
+                () -> assertEquals(1, initFunction.getParameters().size()),
+                () -> assertInstanceOf(LirParameterDef.class, selfParameter),
+                () -> assertEquals("self", selfParameterName),
+                () -> assertEquals("abs", globalInsn.functionName()),
+                () -> assertEquals(0, countInstructions(instructions, CallMethodInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, ConstructBuiltinInsn.class)),
+                () -> assertEquals(packInsn.resultId(), onlyVariableOperandId(globalInsn.args())),
+                () -> assertEquals(globalInsn.resultId(), unpackInsn.variantId()),
+                () -> assertEquals(unpackInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersPropertyInitializerThroughMemberAndGlobalHelperRoutes() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_property_helper_call.gd",
+                """
+                        class_name BodyInsnPropertyHelperCall
+                        extends RefCounted
+                        
+                        var ready_value: float = abs(Vector3.ZERO.length())
+                        
+                        func ping() -> float:
+                            return ready_value
+                        """,
+                Map.of("BodyInsnPropertyHelperCall", "RuntimeBodyInsnPropertyHelperCall"),
+                true
+        );
+        var initContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBodyInsnPropertyHelperCall",
+                "_field_init_ready_value"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var initFunction = initContext.targetFunction();
+        var instructions = allInstructions(initFunction);
+        var loadStaticInsn = requireOnlyInstruction(initFunction, LoadStaticInsn.class);
+        var methodInsn = requireOnlyInstruction(initFunction, CallMethodInsn.class);
+        var globalInsn = requireOnlyInstruction(initFunction, CallGlobalInsn.class);
+        var packInsn = requireOnlyInstruction(initFunction, PackVariantInsn.class);
+        var unpackInsn = requireOnlyInstruction(initFunction, UnpackVariantInsn.class);
+        var returnInsn = requireOnlyReturnInsn(initFunction);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("seq_0", initFunction.getEntryBlockId()),
+                () -> assertEquals(2, initFunction.getBasicBlockCount()),
+                () -> assertEquals("ZERO", loadStaticInsn.staticName()),
+                () -> assertEquals("length", methodInsn.methodName()),
+                () -> assertEquals(loadStaticInsn.resultId(), methodInsn.objectId()),
+                () -> assertEquals("abs", globalInsn.functionName()),
+                () -> assertEquals(1, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, UnpackVariantInsn.class)),
+                () -> assertEquals(methodInsn.resultId(), packInsn.valueId()),
+                () -> assertEquals(packInsn.resultId(), onlyVariableOperandId(globalInsn.args())),
+                () -> assertEquals(globalInsn.resultId(), unpackInsn.variantId()),
+                () -> assertEquals(unpackInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runFailsFastWhenPropertyInitializerCallFactIsMissingDuringBodyLowering() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_property_missing_call_fact.gd",
+                """
+                        class_name BodyInsnPropertyMissingCallFact
+                        extends RefCounted
+                        
+                        var ready_value: float = abs(1.0)
+                        
+                        func ping() -> float:
+                            return ready_value
+                        """,
+                Map.of("BodyInsnPropertyMissingCallFact", "RuntimeBodyInsnPropertyMissingCallFact"),
+                true
+        );
+        var initContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBodyInsnPropertyMissingCallFact",
+                "_field_init_ready_value"
+        );
+        var callAnchor = requireSingleCallAnchor(initContext.requireFrontendCfgGraph());
+        prepared.context().requireAnalysisData().resolvedCalls().remove(callAnchor);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertTrue(exception.getMessage().contains("Missing published resolved call"), exception.getMessage());
     }
 
     @Test

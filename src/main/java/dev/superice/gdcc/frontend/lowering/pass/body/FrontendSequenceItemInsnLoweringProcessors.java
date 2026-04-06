@@ -558,7 +558,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
     }
 
     /// Holds the explicit fail-fast boundary for cast items while cast lowering remains outside the
-    /// current executable-body support surface.
+    /// current frontend-body support surface.
     ///
     /// Keeping this as its own processor keeps the unsupported route explicit in the registry instead
     /// of burying it inside an unrelated `switch`.
