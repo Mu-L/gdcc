@@ -26,6 +26,7 @@
 - `break` / `continue` 的位置合法性属于 shared semantic contract；`FrontendLoopControlFlowAnalyzer` 必须在进入 compile-only gate 前就对非法 loop control 发出 `sema.loop_control_flow`，lowering 中的 loop-frame fail-fast 只能保留为实现不变量保护。
 - `FrontendCompileCheckAnalyzer` 只能挂在 compile-only 入口上；默认共享 `FrontendSemanticAnalyzer.analyze(...)`、inspection 与未来 LSP 入口不得隐式附带 compile-only gate。
 - compile-only gate 只允许扫描未来 lowering 会消费的 compile surface：supported executable body 与 supported property initializer island；不得重新深入 parameter default、lambda、`for`、`match`、block-local `const` 或 skipped subtree。
+- compile-only gate 一旦放行 supported property initializer，默认 lowering pipeline 必须把它 materialize 为真实 `init_func` helper；backend 不得再把同名 shell-only function 当作可修补中间态消费。
 - compile-only gate 对已发布 side-table 事实的最终阻断范围固定为 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`；`DYNAMIC` 继续保留为 frontend 已认可的 runtime-open 事实，不得在 compile gate 中误判成 blocker。
 - executable-body body lowering 对 call 的 lowering-ready surface 必须与 compile gate / CFG builder 保持一致：`resolvedCalls()` 只要已发布为 `RESOLVED` 或 `DYNAMIC` 就允许进入 body pass；其中 `DYNAMIC_FALLBACK` 当前只允许 instance route，必须继续复用 `CallMethodInsn`，结果类型真源来自 call anchor 的 `expressionTypes()`，frontend 不得为该路由重做 callable signature 推导，参数 pack / 结果 unpack 责任继续留给 backend dynamic dispatch。
 - compile-only gate 还必须检查 lowering-only published fact 的缺洞：若 supported callable-local `var` 因已登记为 non-error blocker 的 diagnostic（当前为 `sema.variable_slot_publication`）仍缺少 `slotTypes()`，compile gate 必须补发 `sema.compile_check` error 并阻止进入 lowering。
@@ -75,6 +76,7 @@
 - `ScopeValue.writable` 当前只表达 bare identifier direct-write contract；不要把它误当成完整的 member/container/property mutation 语义模型。
 - property writable 判定必须统一复用共享 helper，而不是在 scope publication、assignment analyzer、其他 frontend 路径里各自硬编码 engine/builtin property metadata 分支。
 - property initializer 的 MVP 支持面是“published subtree facts”，不是“完整 class-member initializer 语义”。
+- supported property initializer 当前已经属于 compile-ready lowering surface：它们在默认 pipeline 终态拥有真实 CFG/LIR helper body，但这不等于完整实例初始化时序语义已经闭环。
 - 脚本类 static property declaration 当前不在 compile-ready 支持面；即使它在 shared semantic 中可被识别，也必须由 compile-only gate fail-closed，而不是等 backend 在 codegen 阶段拒绝。
 - MVP 不支持 property initializer 访问同 class 下的 non-static property / method / signal / `self`；这类访问必须 fail-closed，而不是假装已经拥有 declaration-order / default-state / cycle-aware 语义。
 - property initializer 若确实需要静态 helper，优先通过 global name、type-meta route 或其他不依赖当前类实例状态的路径进入；不要把当前类 direct member namespace 当成实例初始化期可见性模型。

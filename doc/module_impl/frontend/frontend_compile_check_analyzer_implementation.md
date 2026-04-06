@@ -91,7 +91,7 @@ compile gate 当前只扫描未来 lowering 会实际消费的 surface：
 - supported executable body
 - supported property initializer island
 
-compile gate 可以沿 callable body 和支持岛 property initializer 继续递归表达式子树，并据此建立 compile anchor。
+compile gate 可以沿 callable body 和支持岛 property initializer 继续递归表达式子树，并据此建立 compile anchor。对 property initializer 而言，这条 compile surface 的 downstream 已经固定为 `PROPERTY_INIT` CFG/body lowering 与真实 `init_func` helper materialization，而不是停留在 shell-only scaffold。
 
 ### 2.2 当前显式跳过的区域
 

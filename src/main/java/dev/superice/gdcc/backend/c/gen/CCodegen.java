@@ -144,6 +144,7 @@ public class CCodegen implements Codegen {
                     var initName = "_field_init_" + propertyDef.getName();
                     propertyDef.setInitFunc(initName);
                     var func = new LirFunctionDef(initName);
+                    func.setHidden(true);
                     func.setReturnType(propertyDef.getType());
                     func.addParameter(new LirParameterDef("self", selfType, null, func));
                     var tmpVar = func.createAndAddTmpVariable(propertyDef.getType());
@@ -267,6 +268,7 @@ public class CCodegen implements Codegen {
         }
 
         var function = matches.getFirst();
+        validatePropertyInitFunctionSignature(classDef, propertyDef, function);
         if (function.getBasicBlockCount() == 0 || function.getEntryBlockId().isEmpty()) {
             throw new IllegalStateException(
                     "Property '"
@@ -288,6 +290,71 @@ public class CCodegen implements Codegen {
                             + function.getName()
                             + "' with invalid entry block ID: "
                             + function.getEntryBlockId()
+            );
+        }
+    }
+
+    /// Property-init helpers are always internal single-return helpers with the owning-class `self`
+    /// parameter. Backend keeps this contract explicit so template rendering never has to guess
+    /// whether a named `initFunc` still needs repair.
+    private void validatePropertyInitFunctionSignature(
+            @NotNull LirClassDef classDef,
+            @NotNull LirPropertyDef propertyDef,
+            @NotNull LirFunctionDef function
+    ) {
+        if (!function.isHidden()) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references non-hidden init function '"
+                            + function.getName()
+                            + "'; property init helpers must stay internal to backend/template wiring"
+            );
+        }
+        if (!function.getReturnType().equals(propertyDef.getType())) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references init function '"
+                            + function.getName()
+                            + "' with mismatched return type "
+                            + function.getReturnType().getTypeName()
+                            + "; expected "
+                            + propertyDef.getType().getTypeName()
+            );
+        }
+        if (function.getParameterCount() != 1) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references init function '"
+                            + function.getName()
+                            + "' with "
+                            + function.getParameterCount()
+                            + " parameters; expected exactly one owning-class self parameter"
+            );
+        }
+
+        var selfParameter = function.getParameter(0);
+        if (selfParameter == null
+                || !selfParameter.getName().equals("self")
+                || !selfParameter.getType().equals(new GdObjectType(classDef.getName()))) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references init function '"
+                            + function.getName()
+                            + "' with invalid self parameter; expected `self: "
+                            + classDef.getName()
+                            + "`"
             );
         }
     }

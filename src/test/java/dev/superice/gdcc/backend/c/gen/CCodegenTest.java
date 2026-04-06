@@ -16,6 +16,7 @@ import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
+import dev.superice.gdcc.lir.insn.LiteralFloatInsn;
 import dev.superice.gdcc.lir.insn.LiteralIntInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.lir.insn.UnaryOpInsn;
@@ -214,10 +215,12 @@ public class CCodegenTest {
                         .findFirst()
                         .orElseThrow()
         );
+        assertTrue(initFunc.isHidden());
         assertTrue(initFunc.hasBasicBlock("entry"));
         assertEquals("__prepare__", initFunc.getEntryBlockId());
         assertTrue(initFunc.hasBasicBlock("__prepare__"));
         assertTrue(cCode.contains("self->ready_value = GDWorkerNode__field_init_ready_value(self);"), cCode);
+        assertFalse(cCode.contains("GD_STATIC_SN(u8\"_field_init_ready_value\")"), cCode);
     }
 
     @Test
@@ -249,6 +252,9 @@ public class CCodegenTest {
         var files = codegen.generate();
         var cCode = new String(files.getFirst().contentWriter());
 
+        assertTrue(cCode.contains("godot_int GDWorkerNode__field_init_ready_value("), cCode);
+        assertTrue(cCode.contains("GDWorkerNode* $self"), cCode);
+        assertTrue(cCode.contains("$0 = 7;"), cCode);
         assertTrue(cCode.contains("self->ready_value = GDWorkerNode__field_init_ready_value(self);"), cCode);
     }
 
@@ -315,6 +321,47 @@ public class CCodegenTest {
         assertTrue(exception.getMessage().contains("GDWorkerNode.ready_value"), exception.getMessage());
         assertTrue(exception.getMessage().contains("_field_init_ready_value"), exception.getMessage());
         assertTrue(exception.getMessage().contains("shell-only"), exception.getMessage());
+    }
+
+    @Test
+    public void generateFailsFastWhenPropertyInitFunctionSignatureIsNotInternalHelperShape() throws Exception {
+        var workerClass = new LirClassDef("GDWorkerNode", "Node");
+        workerClass.addProperty(new LirPropertyDef(
+                "ready_value",
+                GdIntType.INT,
+                false,
+                "_field_init_ready_value",
+                null,
+                null,
+                Map.of()
+        ));
+        var invalidInit = new LirFunctionDef("_field_init_ready_value");
+        invalidInit.setHidden(true);
+        invalidInit.setReturnType(GdFloatType.FLOAT);
+        invalidInit.addParameter(new LirParameterDef("value", GdIntType.INT, null, invalidInit));
+        var entry = new LirBasicBlock("entry");
+        var result = invalidInit.createAndAddTmpVariable(GdFloatType.FLOAT);
+        entry.appendInstruction(new LiteralFloatInsn(result.id(), 1.0));
+        entry.setTerminator(new ReturnInsn(result.id()));
+        invalidInit.addBasicBlock(entry);
+        invalidInit.setEntryBlockId("entry");
+        workerClass.addFunction(invalidInit);
+        var module = new LirModule("property_init_invalid_signature_module", List.of(workerClass));
+
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var exception = assertThrows(IllegalStateException.class, codegen::generate);
+
+        assertTrue(exception.getMessage().contains("GDWorkerNode.ready_value"), exception.getMessage());
+        assertTrue(exception.getMessage().contains("_field_init_ready_value"), exception.getMessage());
+        assertTrue(exception.getMessage().contains("mismatched return type"), exception.getMessage());
     }
 
     @Test

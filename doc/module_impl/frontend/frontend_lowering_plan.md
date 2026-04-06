@@ -23,7 +23,7 @@
 
 - public lowering 输入固定为 `FrontendModule`
 - lowering 内部统一走 `FrontendSemanticAnalyzer.analyzeForCompile(...)`
-- default pipeline 已稳定产出 `LirModule(skeleton/shell-only)`、function lowering context scaffold，以及带显式 operand/result value-op、structured region 与 loop-control edge 的 executable body frontend CFG graph
+- default pipeline 已稳定产出 function lowering context scaffold、带显式 operand/result value-op/structured region/loop-control edge 的 frontend CFG graph，以及已 materialize executable body / property-init helper 的 `LirModule`
 - compile-only gate 仍负责拦截当前未打通 lowering/backend 的 surface；`and` / `or` 已不再停留在 compile-only blocker，而是作为 compile-ready surface 进入 dedicated short-circuit CFG lowering
 - `FrontendCfgGraphBuilder` 内部已冻结共享表达式构图内核：`buildValue(...)` 现在返回 continuation-aware 内部状态，`buildCondition(...)` 现在只承诺发布 condition subgraph 的稳定入口，而不再编码固定 `SequenceNode -> BranchNode` 形状
 - `FrontendCfgGraph.BranchNode.conditionRoot` 现在固定表示“当前 branch 直接测试的 condition fragment root”；它必须对齐 `conditionValueId` 的直接 producer subtree，而不是笼统复用外围 source-level condition root，也不能再把 `conditionValueId` 当成可全图反推唯一 producer item 的句柄
@@ -133,7 +133,7 @@
   - `buildCondition(...)`
 - `and` / `or` 无论处于 value context 还是 condition context，都必须按短路控制流展开；不得把 value-context `and/or` 回退成单个线性二元表达式节点
 - `BranchNode` 当前允许持有非 `bool` condition value，truthiness / condition normalization 延后到 frontend CFG -> LIR lowering
-- 在 frontend CFG graph 稳定前，`LirModule` 继续保持 shell-only
+- 仅在 function pre-pass / CFG build 之间的中间态，`LirModule` 保持 shell-only；默认 pipeline 终态已经 materialize executable body 与 property-init helper
 
 验收细则：
 

@@ -19,8 +19,8 @@ import java.util.Objects;
 ///
 /// The current pipeline consumes a `FrontendModule`, runs compile-ready semantic analysis, and
 /// emits a `LirModule` whose executable functions already contain frontend-lowered basic blocks.
-/// Property initializer functions remain shell-only until their dedicated expression route is
-/// connected to CFG build and body lowering.
+/// Supported property initializer helpers travel through the same CFG/body lowering pipeline and
+/// reach backend as real executable helper bodies rather than shell-only stubs.
 public final class FrontendLoweringPassManager {
     private final @NotNull List<FrontendLoweringPass> passes;
 

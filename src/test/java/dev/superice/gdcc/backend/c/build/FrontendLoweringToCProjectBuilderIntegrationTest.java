@@ -125,6 +125,141 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     }
 
     @Test
+    void lowerFrontendPropertyInitializerModuleBuildNativeLibraryAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping frontend property initializer integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_property_init_runtime");
+        Files.createDirectories(tempDir);
+
+        var source = """
+                class_name PropertyInitSmoke
+                extends Node
+                
+                var ready_value: int = (1 + 2) * (3 + 4)
+                var ready_angle: float = deg_to_rad(180.0)
+                var ready_flag: bool = true
+                
+                func read_value() -> int:
+                    return ready_value
+                
+                func read_angle() -> float:
+                    return ready_angle
+                
+                func read_flag() -> bool:
+                    return ready_flag
+                """;
+        var module = parseModule(
+                tempDir.resolve("property_init_smoke.gd"),
+                source,
+                Map.of("PropertyInitSmoke", "RuntimePropertyInitSmoke")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals(1, lowered.getClassDefs().size());
+
+        var loweredClass = lowered.getClassDefs().getFirst();
+        assertEquals("RuntimePropertyInitSmoke", loweredClass.getName());
+        assertEquals(3, loweredClass.getProperties().size());
+        assertTrue(
+                loweredClass.getProperties().stream()
+                        .allMatch(property -> property.getInitFunc() != null && !property.getInitFunc().isBlank())
+        );
+        for (var property : loweredClass.getProperties()) {
+            var initFunc = loweredClass.getFunctions().stream()
+                    .filter(function -> function.getName().equals(property.getInitFunc()))
+                    .findFirst()
+                    .orElseThrow();
+            assertTrue(initFunc.isHidden());
+            assertFalse(initFunc.getEntryBlockId().isBlank());
+            assertTrue(initFunc.getBasicBlockCount() > 0);
+        }
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_property_init_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entrySource = Files.readString(projectDir.resolve("entry.c"));
+        var librarySuffix = projectInfo.getTargetPlatform().sharedLibraryFileName("artifact").replace("artifact", "");
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+        assertTrue(Files.exists(projectDir.resolve("entry.c")));
+        assertTrue(Files.exists(projectDir.resolve("entry.h")));
+        assertTrue(
+                entrySource.contains("self->ready_value = RuntimePropertyInitSmoke__field_init_ready_value(self);"),
+                entrySource
+        );
+        assertTrue(
+                entrySource.contains("self->ready_angle = RuntimePropertyInitSmoke__field_init_ready_angle(self);"),
+                entrySource
+        );
+        assertTrue(
+                entrySource.contains("self->ready_flag = RuntimePropertyInitSmoke__field_init_ready_flag(self);"),
+                entrySource
+        );
+        assertFalse(entrySource.contains("GD_STATIC_SN(u8\"_field_init_ready_value\")"), entrySource);
+        assertFalse(entrySource.contains("GD_STATIC_SN(u8\"_field_init_ready_angle\")"), entrySource);
+        assertFalse(entrySource.contains("GD_STATIC_SN(u8\"_field_init_ready_flag\")"), entrySource);
+        assertTrue(
+                buildResult.artifacts().stream()
+                        .anyMatch(artifact -> artifact.getFileName().toString().endsWith(librarySuffix)),
+                () -> "Expected a native library artifact with suffix '" + librarySuffix + "', got " + buildResult.artifacts()
+        );
+        assertTrue(buildResult.artifacts().stream().allMatch(Files::exists));
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "PropertyInitSmokeNode",
+                        loweredClass.getName(),
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(propertyInitTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend property init runtime check passed."),
+                () -> "Godot output should confirm property initializer values.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend property init runtime class check passed."),
+                () -> "Godot output should confirm mapped runtime class name.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend property init runtime check failed."),
+                () -> "Property initializer runtime check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend property init runtime class check failed."),
+                () -> "Mapped runtime class-name check should not fail.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    @Test
     void lowerFrontendConstructorRoutesBuildNativeLibraryAndRunInGodot() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping frontend constructor integration test");
@@ -723,6 +858,34 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend lowering runtime class remap check passed.")
                     else:
                         push_error("frontend lowering runtime class remap check failed.")
+                """;
+    }
+
+    private static @NotNull String propertyInitTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "PropertyInitSmokeNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var value = int(target.call("read_value"))
+                    var angle = float(target.call("read_angle"))
+                    var flag = bool(target.call("read_flag"))
+                    if value == 21 and is_equal_approx(angle, PI) and flag:
+                        print("frontend property init runtime check passed.")
+                    else:
+                        push_error("frontend property init runtime check failed.")
+                
+                    var runtime_class = String(target.get_class())
+                    if runtime_class == "RuntimePropertyInitSmoke" and target.is_class("RuntimePropertyInitSmoke") and not target.is_class("PropertyInitSmoke"):
+                        print("frontend property init runtime class check passed.")
+                    else:
+                        push_error("frontend property init runtime class check failed.")
                 """;
     }
 

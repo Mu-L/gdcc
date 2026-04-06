@@ -200,6 +200,17 @@ Object category rules:
 - Once `_return_val` is written, a goto to `__finally__` is emitted immediately, so `_return_val` is always live until the end of the function, and its value is published through return flow. 
   - What's more, `_return_val` is never written twice since `__finally__` block directly returns after reading `_return_val`.
 
+### Property Init Helper Ownership
+
+- `LirPropertyDef.initFunc == null` is the only state where backend owns property default helper synthesis.
+- Once `initFunc` points at a named helper, backend treats it as a fully lowered executable helper and never tries to repair or synthesize its body.
+- Template rendering keeps the current constructor call shape `self->prop = Class_<init_func>(self);`, but this now has a hard precondition:
+  - the helper is hidden/internal
+  - the helper returns exactly the property type
+  - the helper takes exactly one owning-class `self` parameter
+  - the helper already has real basic blocks and a valid entry block
+- Missing helper, shell-only helper, or helper-signature drift must fail fast before backend starts grafting `__prepare__` / `__finally__` or rendering templates.
+
 ### Default Argument Values
 
 All possible default values in Godot 4.5.1:

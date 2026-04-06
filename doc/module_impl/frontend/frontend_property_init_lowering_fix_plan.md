@@ -132,7 +132,7 @@
 
 - [x] `FrontendCfgGraphBuilder` 已新增 expression-rooted property-init CFG 入口，直接复用现有 value / short-circuit 构图逻辑并以 `RETURN` stop 收口
 - [x] `FrontendLoweringBuildCfgPass` 已将 `PROPERTY_INIT` 从 shell-only guard 接到真实 CFG graph 发布路径，并校验 property declaration / initializer expression 合同
-- [x] 已补充并运行 `FrontendCfgGraphBuilderTest`、`FrontendLoweringBuildCfgPassTest`、`FrontendLoweringPassManagerTest`、`FrontendLoweringBodyInsnPassTest`，确认 graph 发布、缺失 published fact fail-fast、以及默认 pipeline 下 property-init 仍保持 shell-only LIR 边界
+- [x] 已补充并运行 `FrontendCfgGraphBuilderTest`、`FrontendLoweringBuildCfgPassTest`、`FrontendLoweringPassManagerTest`、`FrontendLoweringBodyInsnPassTest`，确认 graph 发布、缺失 published fact fail-fast、以及在仅执行到 CFG/build 阶段时 property-init 仍保持 pre-body shell-only 边界
 
 实现目标：
 
@@ -230,6 +230,13 @@
 
 ### 第四步：收紧 backend 所有权边界
 
+执行状态：
+
+- [x] `CCodegen` 已把 property-init helper 前置条件收紧为 hidden/internal helper + owning-class `self` 参数 + property-type return + real executable body，禁止模板层继续消费可修补 shell
+- [x] `CCodegenTest` 已补充 backend 默认 helper hidden/internal 合同、frontend-lowered helper C body 生成，以及 helper signature drift 的 fail-fast 锚点
+- [x] `FrontendLoweringToCProjectBuilderIntegrationTest` 已新增包含复杂算术表达式、global call 与 literal initializer 的 property initializer frontend lowering -> C project build/runtime 锚点，确认 end-to-end helper 调用与运行时值正确
+- [x] 已运行 `CCodegenTest`、`FrontendLoweringToCProjectBuilderIntegrationTest`，确认 backend owner/invariant 收紧后，复杂 property initializer 仍可生成并运行
+
 实现目标：
 
 - backend 只消费 lowering 完成的 property init function
@@ -262,6 +269,13 @@
   - 含 property initializer 的脚本可从 frontend lowering 走到 C project 生成
 
 ### 第五步：替换旧合同并清理文档/测试
+
+执行状态：
+
+- [x] 已同步更新 `frontend_lowering_plan.md`、`frontend_lowering_cfg_pass_implementation.md`、`frontend_lowering_func_pre_pass_implementation.md`、`frontend_compile_check_analyzer_implementation.md`、`frontend_rules.md`、`doc/gdcc_low_ir.md`、`doc/gdcc_c_backend.md`
+- [x] 已清理默认 lowering 终态仍把 `PROPERTY_INIT` 视为 shell-only 的残留注释/文档表述，并明确 pre-pass shell-only 中间态与默认 pipeline executable 终态的边界
+- [x] 现有测试锚点继续保留 preparation 阶段 shell-only 合同，但不再把该中间态外推成默认 lowering pipeline 的最终合同
+- [x] 已运行 `FrontendLoweringFunctionPreparationPassTest`、`FrontendLoweringBuildCfgPassTest`、`FrontendLoweringBodyInsnPassTest`、`FrontendLoweringPassManagerTest`，确认文档/测试/实现三者在 property-init 最终合同上保持一致
 
 实现目标：
 
