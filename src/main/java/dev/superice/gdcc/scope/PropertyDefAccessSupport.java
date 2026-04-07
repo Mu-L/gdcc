@@ -9,7 +9,8 @@ import java.util.Objects;
 /// Shared direct-property access helper used by scope publication and frontend assignment typing.
 ///
 /// This helper intentionally models only the current direct-write contract:
-/// - engine and builtin metadata honor their explicit writable flag
+/// - engine metadata honor their explicit writable flag
+/// - builtin metadata is normalized from `members` into synthetic properties, which are writable
 /// - other property definitions stay conservatively writable until a richer property access model lands
 ///
 /// It does not try to encode receiver-sensitive aliasing or container/property mutation semantics.

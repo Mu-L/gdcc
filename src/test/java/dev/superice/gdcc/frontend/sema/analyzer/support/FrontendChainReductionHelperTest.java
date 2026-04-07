@@ -924,7 +924,7 @@ class FrontendChainReductionHelperTest {
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
                 List.of()
         );
     }
@@ -941,7 +941,7 @@ class FrontendChainReductionHelperTest {
                         0,
                         List.of(new ExtensionFunctionArgument("value", "int", null, null))
                 )),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
                 List.of()
         );
     }
@@ -965,7 +965,7 @@ class FrontendChainReductionHelperTest {
                                 List.of(new ExtensionFunctionArgument("value", "String", null, null))
                         )
                 ),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
                 List.of()
         );
     }
@@ -989,7 +989,7 @@ class FrontendChainReductionHelperTest {
                                 List.of(new ExtensionFunctionArgument("value", "String", null, null))
                         )
                 ),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
                 List.of()
         );
     }
@@ -1002,7 +1002,7 @@ class FrontendChainReductionHelperTest {
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
                 List.of()
         );
     }

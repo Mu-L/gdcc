@@ -1,9 +1,11 @@
 package dev.superice.gdcc.gdextension;
 
+import dev.superice.gdcc.scope.PropertyDef;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.HashSet;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -37,8 +39,8 @@ public class ExtensionApiLoaderTest {
         assertNotNull(aes.enums(), "AES enums should not be null");
         assertFalse(aes.enums().isEmpty());
 
-        // properties/constants fields exist (may be empty)
-        assertNotNull(stringClass.properties());
+        // builtin members/constants fields exist (may be empty)
+        assertNotNull(stringClass.members());
         assertNotNull(stringClass.constants());
     }
 
@@ -73,5 +75,24 @@ public class ExtensionApiLoaderTest {
                 .orElseThrow();
         assertEquals("Vector3", backConstant.type());
         assertEquals("Vector3(0, 0, 1)", backConstant.value());
+    }
+
+    @Test
+    void builtinMembersShouldBeParsedAndNormalizedIntoPropertySurface() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+
+        var vector3Class = api.builtinClasses().stream()
+                .filter(builtinClass -> "Vector3".equals(builtinClass.name()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(List.of("x", "y", "z"), vector3Class.members().stream().map(ExtensionBuiltinClass.MemberInfo::name).toList());
+        assertTrue(vector3Class.getProperties().stream().map(PropertyDef::getName).toList().containsAll(List.of("x", "y", "z")));
+
+        var colorClass = api.builtinClasses().stream()
+                .filter(builtinClass -> "Color".equals(builtinClass.name()))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(colorClass.members().stream().map(ExtensionBuiltinClass.MemberInfo::name).toList().containsAll(List.of("r", "g", "b", "a")));
+        assertTrue(colorClass.getProperties().stream().map(PropertyDef::getName).toList().containsAll(List.of("r", "g", "b", "a")));
     }
 }

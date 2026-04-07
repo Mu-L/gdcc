@@ -94,7 +94,7 @@ class PropertyResolverParityTest {
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
                 List.of()
         );
         var bodyBuilder = newBodyBuilder(apiWith(List.of(stringBuiltin), List.of()), List.of());

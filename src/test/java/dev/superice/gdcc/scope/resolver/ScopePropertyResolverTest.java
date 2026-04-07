@@ -1,6 +1,7 @@
 package dev.superice.gdcc.scope.resolver;
 
 import dev.superice.gdcc.gdextension.ExtensionAPI;
+import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ScopeOwnerKind;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
@@ -13,11 +14,13 @@ import dev.superice.gdcc.type.GdStringType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ScopePropertyResolverTest {
@@ -121,11 +124,12 @@ class ScopePropertyResolverTest {
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
                 List.of()
         );
         var registry = newRegistry(apiWith(List.of(stringBuiltin), List.of()), List.of());
         var stringTypeMeta = registry.resolveTypeMeta("String");
+        assertNotNull(stringTypeMeta);
 
         var result = ScopePropertyResolver.resolveBuiltinProperty(
                 registry,
@@ -137,6 +141,30 @@ class ScopePropertyResolverTest {
         assertEquals(ScopeOwnerKind.BUILTIN, resolved.property().ownerKind());
         assertEquals("String", resolved.property().ownerClass().getName());
         assertEquals("length", resolved.property().property().getName());
+    }
+
+    @Test
+    @DisplayName("shared builtin property resolver should resolve member-backed builtin properties from default API")
+    void resolveBuiltinPropertyShouldResolveMemberBackedBuiltinPropertiesFromDefaultApi() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        assertBuiltinPropertyResolved(registry, "Vector3", "x", "float");
+        assertBuiltinPropertyResolved(registry, "Color", "r", "float");
+    }
+
+    @Test
+    @DisplayName("shared builtin property resolver should still report missing builtin member on default API")
+    void resolveBuiltinPropertyShouldStillReportMissingBuiltinMemberOnDefaultApi() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var vector3Type = registry.findType("Vector3");
+        assertNotNull(vector3Type);
+
+        var result = ScopePropertyResolver.resolveBuiltinProperty(registry, vector3Type, "missing_axis");
+        var failed = assertInstanceOf(ScopePropertyResolver.Failed.class, result);
+
+        assertEquals(ScopePropertyResolver.FailureKind.BUILTIN_PROPERTY_MISSING, failed.kind());
+        assertEquals("Vector3", failed.ownerClassName());
+        assertEquals("missing_axis", failed.propertyName());
     }
 
     @Test
@@ -241,5 +269,21 @@ class ScopePropertyResolverTest {
 
     private static ExtensionAPI emptyApi() {
         return apiWith(List.of(), List.of());
+    }
+
+    private static void assertBuiltinPropertyResolved(
+            ClassRegistry registry,
+            String builtinName,
+            String propertyName,
+            String expectedTypeName
+    ) {
+        var builtinType = registry.findType(builtinName);
+        assertNotNull(builtinType);
+        var result = ScopePropertyResolver.resolveBuiltinProperty(registry, builtinType, propertyName);
+        var resolved = assertInstanceOf(ScopePropertyResolver.Resolved.class, result);
+        assertEquals(ScopeOwnerKind.BUILTIN, resolved.property().ownerKind());
+        assertEquals(builtinName, resolved.property().ownerClass().getName());
+        assertEquals(propertyName, resolved.property().property().getName());
+        assertEquals(expectedTypeName, resolved.property().property().getType().getTypeName());
     }
 }

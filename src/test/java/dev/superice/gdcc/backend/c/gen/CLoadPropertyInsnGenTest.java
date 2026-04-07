@@ -294,7 +294,7 @@ public class CLoadPropertyInsnGenTest {
                 "Vector2", false,
                 List.of(), List.of(), List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("x", "float", true, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("x", "float")),
                 List.of()
         );
         var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(vector2Class), List.of(), List.of(), List.of());
@@ -390,7 +390,7 @@ public class CLoadPropertyInsnGenTest {
                 "Vector2", false,
                 List.of(), List.of(), List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("x", "float", true, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("x", "float")),
                 List.of()
         );
         var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(vector2Class), List.of(), List.of(), List.of());
@@ -420,13 +420,13 @@ public class CLoadPropertyInsnGenTest {
     }
 
     @Test
-    @DisplayName("Builtin unreadable property should throw")
-    void builtinUnreadablePropertyShouldThrow() {
+    @DisplayName("Missing builtin property should throw")
+    void missingBuiltinPropertyShouldThrow() {
         var vector2Class = new ExtensionBuiltinClass(
                 "Vector2", false,
                 List.of(), List.of(), List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("x", "float", false, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("y", "float")),
                 List.of()
         );
         var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(vector2Class), List.of(), List.of(), List.of());

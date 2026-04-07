@@ -113,6 +113,21 @@ public class ClassRegistryTest {
     }
 
     @Test
+    void builtinMembersShouldAppearOnRegistryPropertySurface() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        var vector3Class = registry.findBuiltinClass("Vector3");
+        assertNotNull(vector3Class);
+        assertEquals(List.of("x", "y", "z"), vector3Class.members().stream().map(ExtensionBuiltinClass.MemberInfo::name).toList());
+        assertTrue(vector3Class.getProperties().stream().map(PropertyDef::getName).toList().containsAll(List.of("x", "y", "z")));
+
+        var colorClass = registry.findBuiltinClass("Color");
+        assertNotNull(colorClass);
+        assertTrue(colorClass.members().stream().map(ExtensionBuiltinClass.MemberInfo::name).toList().containsAll(List.of("r", "g", "b", "a")));
+        assertTrue(colorClass.getProperties().stream().map(PropertyDef::getName).toList().containsAll(List.of("r", "g", "b", "a")));
+    }
+
+    @Test
     void findTypeDoesNotReturnForSingletonEnumOrFunction() throws IOException {
         var api = ExtensionApiLoader.loadDefault();
         var registry = new ClassRegistry(api);
@@ -416,13 +431,7 @@ public class ClassRegistryTest {
                 )),
                 List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.PropertyInfo(
-                        "items",
-                        "Array[FutureEnemy]",
-                        true,
-                        false,
-                        ""
-                )),
+                List.of(new ExtensionBuiltinClass.MemberInfo("items", "Array[FutureEnemy]")),
                 List.of()
         );
         var engineClass = new ExtensionGdClass(

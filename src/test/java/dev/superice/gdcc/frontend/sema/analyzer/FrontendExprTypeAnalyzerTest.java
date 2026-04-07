@@ -2238,7 +2238,7 @@ class FrontendExprTypeAnalyzerTest {
                 builtinClass.methods(),
                 builtinClass.enums(),
                 builtinClass.constructors(),
-                builtinClass.properties(),
+                builtinClass.members(),
                 builtinClass.constants()
         );
     }

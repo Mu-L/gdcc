@@ -259,7 +259,7 @@ public class CStorePropertyInsnGenTest {
     @Test
     @DisplayName("Builtin property should pass non-ref receiver with address-of")
     void builtinPropertyUsesAddressOfForReceiverVariable() {
-        var vector2Class = vector2Builtin(true);
+        var vector2Class = vector2Builtin();
         var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(vector2Class), List.of(), List.of(), List.of());
 
         var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
@@ -283,7 +283,7 @@ public class CStorePropertyInsnGenTest {
     @Test
     @DisplayName("Builtin ref receiver should not add extra address-of")
     void builtinRefReceiverDoesNotUseExtraAddressOf() {
-        var vector2Class = vector2Builtin(true);
+        var vector2Class = vector2Builtin();
         var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(vector2Class), List.of(), List.of(), List.of());
 
         var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
@@ -306,9 +306,9 @@ public class CStorePropertyInsnGenTest {
     }
 
     @Test
-    @DisplayName("Builtin non-writable property should throw")
-    void builtinNonWritablePropertyShouldThrow() {
-        var vector2Class = vector2Builtin(false);
+    @DisplayName("Missing builtin property should throw")
+    void missingBuiltinPropertyShouldThrow() {
+        var vector2Class = vector2Builtin();
         var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(vector2Class), List.of(), List.of(), List.of());
 
         var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
@@ -316,7 +316,7 @@ public class CStorePropertyInsnGenTest {
         func.setReturnType(GdVoidType.VOID);
         func.createAndAddVariable("vec", GdFloatVectorType.VECTOR2);
         func.createAndAddVariable("value", GdFloatType.FLOAT);
-        addEntryStoreAndReturn(func, new StorePropertyInsn("x", "vec", "value"));
+        addEntryStoreAndReturn(func, new StorePropertyInsn("y", "vec", "value"));
         gdccClass.addFunction(func);
 
         var module = new LirModule("test_module", List.of(gdccClass));
@@ -676,12 +676,12 @@ public class CStorePropertyInsnGenTest {
         func.setEntryBlockId("entry");
     }
 
-    private ExtensionBuiltinClass vector2Builtin(boolean writable) {
+    private ExtensionBuiltinClass vector2Builtin() {
         return new ExtensionBuiltinClass(
                 "Vector2", false,
                 List.of(), List.of(), List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("x", "float", true, writable, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("x", "float")),
                 List.of()
         );
     }

@@ -1720,7 +1720,7 @@ class FrontendChainBindingAnalyzerTest {
                                 List.of(new ExtensionFunctionArgument("value", "String", null, null))
                         )
                 ),
-                builtinClass.properties(),
+                builtinClass.members(),
                 builtinClass.constants()
         );
     }
@@ -1747,7 +1747,7 @@ class FrontendChainBindingAnalyzerTest {
                                 List.of(new ExtensionFunctionArgument("value", "String", null, null))
                         )
                 ),
-                builtinClass.properties(),
+                builtinClass.members(),
                 builtinClass.constants()
         );
     }
@@ -1781,7 +1781,7 @@ class FrontendChainBindingAnalyzerTest {
                 builtinClass.methods(),
                 builtinClass.enums(),
                 builtinClass.constructors(),
-                builtinClass.properties(),
+                builtinClass.members(),
                 builtinClass.constants()
         );
     }
