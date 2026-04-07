@@ -184,6 +184,11 @@ backend 侧其实已经具备 builtin property 读写能力：
 
 - 确认 read / write 两条 builtin member property path 都与真实默认 API 对齐
 
+当前状态：
+
+- 已完成：`CLoadPropertyInsnGenTest` / `CStorePropertyInsnGenTest` 现基于默认 API 覆盖 `Vector3.x`、`Color.r`、`Color.a` 等 member-backed property 的 getter/setter 生成，并继续锚定 missing member 的 fail-fast 边界
+- 已完成：`FrontendAssignmentSemanticSupportTest` / `FrontendExprTypeAnalyzerTest` 现覆盖 builtin member-backed property assignment route，确认 `vector.x = 1.0`、`color.a = 0.5` 走 ordinary writable contract，同时对类型不匹配与 missing member 继续 fail-closed
+
 实施建议：
 
 1. 补 backend/property parity tests，基于默认 API 而不是手工伪造 metadata
@@ -206,6 +211,12 @@ backend 侧其实已经具备 builtin property 读写能力：
 目标：
 
 - 把“builtin property access 支持、keyed access 仍不支持”的边界写成事实源，防止后续漂移
+
+当前状态：
+
+- 已完成：事实源文档现明确 builtin instance property read/write 都走 ordinary property route，分别 materialize 为 `LoadPropertyInsn` / `StorePropertyInsn`
+- 已完成：`frontend_rules.md` 已把 compile-ready builtin property access 与 unsupported builtin keyed access 的边界写成正式规则
+- 已完成：`ScopePropertyResolver` 注释已明确 shared resolver 只消费 normalized builtin property surface，不允许下游再加 JSON `members` 旁路
 
 实施建议：
 
@@ -278,3 +289,84 @@ backend 侧其实已经具备 builtin property 读写能力：
   - supported builtin property access
   - unsupported builtin keyed access
 - 相关单元测试覆盖 happy path 与 negative path，并严格锚定行为边界
+
+---
+
+## 7. Builtin Getter ABI Clarification
+
+### 7.1 Investigated concern
+
+近期有一个表面上看起来像 ABI 错误的担忧：
+
+- 如果生成 `godot_Color_get_r($color)` / `godot_Vector3_get_x($vector)`，
+- 而真实 gdextension-lite 签名是
+  - `godot_float godot_Color_get_r(const godot_Color *self)`
+  - `godot_float godot_Vector3_get_x(const godot_Vector3 *self)`
+
+那么看起来像是“少了 `&`”。
+
+### 7.2 End-to-end finding
+
+对 `FrontendLoweringToCProjectBuilderIntegrationTest#lowerFrontendBuiltinPropertyAbiModuleBuildNativeLibraryAndRunInGodot` 的真实生成物与 Godot 运行时验证后，结论是：
+
+- 这不是当前端到端产物中的实际 ABI bug
+- builtin 值类型参数在 generated C 的用户方法签名中本来就是指针：
+  - `RuntimeBuiltinPropertyAbiProbe_color_r(RuntimeBuiltinPropertyAbiProbe* $self, godot_Color* $color)`
+  - `RuntimeBuiltinPropertyAbiProbe_vector_x(RuntimeBuiltinPropertyAbiProbe* $self, godot_Vector3* $vector)`
+- GDExtension method bind wrapper 会先从 `Variant` 解包出栈上值，再以地址形式调用用户方法：
+  - `const godot_Color arg0 = godot_new_Color_with_Variant(...)`
+  - `function(p_instance, &arg0)`
+- 进入用户方法体后，frontend/C backend 当前会先把参数指针物化为本地值槽，再对该本地值槽取地址做 member getter：
+  - `godot_Color __gdcc_tmp_color_0 = godot_new_Color_with_Color($color);`
+  - `$cfg_tmp_v0 = __gdcc_tmp_color_0;`
+  - `godot_Color_get_r(&$cfg_tmp_v0);`
+
+因此，真实链路是：
+
+1. runtime wrapper 以 `godot_Color*` / `godot_Vector3*` 形式把 builtin 值参数传入用户方法；
+2. 用户方法把参数 materialize 成局部值；
+3. builtin property getter/setter 始终对“值槽地址”调用；
+4. 最终 ABI 与 gdextension-lite 头文件保持一致。
+
+### 7.3 Root cause of the confusion
+
+误判来自只看了局部 codegen 片段，而没有把以下几层放在一起看：
+
+- 函数参数签名生成：`func.ftl` + `CGenHelper.renderGdTypeRefInC(...)`
+- GDExtension method bind wrapper：`call_*` / `ptrcall_*`
+- 函数体内的参数物化与 slot write
+- builtin property getter 本身总是消费指向值语义 builtin 的地址
+
+单独看某个中间层的“`$color` 没有显式写 `&`”并不能推出最终 emitted C 违反 ABI。
+
+还需要额外区分两类测试视角：
+
+- unit 级 `CLoadPropertyInsnGenTest` 观察的是“body generator 在已有 ref-like receiver slot 上如何发出 getter call”
+- 端到端集成测试观察的是“method bind wrapper + 用户方法签名 + 函数体 materialization + getter call”拼起来后的真实 ABI 合同
+
+前者可以继续出现 `godot_Color_get_r($color)` 这类片段；后者才是判断 ABI 是否正确的最终事实源。
+
+### 7.4 Current contract
+
+后续实现必须继续满足以下合同：
+
+- 对 builtin 值类型形参，C 边界签名必须是指针 ABI，而不是按值传 struct
+- 对 builtin property getter/setter，最终调用点必须接收到“builtin value 的地址”
+- 参数 receiver 可以：
+  - 直接转发已有的指针参数，或
+  - 先 materialize 到局部值槽，再对局部值槽取地址
+- 构造结果、局部变量、临时值这类非 ref receiver，最终调用点必须显式走 `&slot`
+
+### 7.5 Follow-up plan
+
+当前这一条 concern 的修复方式不是修改 getter ABI 代码，而是：
+
+- 用端到端集成测试把真实合同锚定下来，避免以后再次被局部片段误导
+- 在事实源文档中明确写出“参数 ABI 是指针、property getter 消费值槽地址、函数体会先 materialize 参数值”
+- 后续若重构 builtin value 参数/slot materialization，必须保留上述 ABI 合同
+
+如果未来出现真正的 ABI 回归，应优先检查：
+
+- `renderGdTypeRefInC(...)` 是否仍对 builtin 值类型参数生成 `godot_<Builtin>*`
+- method bind wrapper 是否仍以地址把参数传给用户方法
+- builtin property load/store 路径是否仍对本地值槽地址调用 getter/setter

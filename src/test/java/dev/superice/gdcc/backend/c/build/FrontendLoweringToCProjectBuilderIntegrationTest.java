@@ -17,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -498,6 +499,141 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         assertFalse(
                 combinedOutput.contains("check failed."),
                 () -> "Constructor integration output should not include failure markers.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    @Test
+    void lowerFrontendBuiltinPropertyAbiModuleBuildNativeLibraryAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping frontend builtin property ABI integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_builtin_property_abi_runtime");
+        Files.createDirectories(tempDir);
+
+        var source = """
+                class_name BuiltinPropertyAbiProbe
+                extends Node
+                
+                func color_r(color: Color) -> float:
+                    return color.r
+                
+                func vector_x(vector: Vector3) -> float:
+                    return vector.x
+                
+                func constructed_color_r() -> float:
+                    return Color(0.25, 0.5, 0.75, 1.0).r
+                
+                func constructed_vector_y() -> float:
+                    return Vector3(1.0, 2.5, 3.0).y
+                
+                func local_color_g() -> float:
+                    var color: Color = Color(0.1, 0.4, 0.7, 1.0)
+                    return color.g
+                
+                func local_vector_z() -> float:
+                    var vector: Vector3 = Vector3(7.0, 8.0, 9.0)
+                    return vector.z
+                """;
+        var module = parseModule(
+                tempDir.resolve("builtin_property_abi_probe.gd"),
+                source,
+                Map.of("BuiltinPropertyAbiProbe", "RuntimeBuiltinPropertyAbiProbe")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals(1, lowered.getClassDefs().size());
+        assertEquals("RuntimeBuiltinPropertyAbiProbe", lowered.getClassDefs().getFirst().getName());
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_builtin_property_abi_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entrySource = Files.readString(projectDir.resolve("entry.c"));
+        var entryHeader = Files.readString(projectDir.resolve("entry.h"));
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+        assertTrue(
+                Pattern.compile(
+                                "RuntimeBuiltinPropertyAbiProbe_color_r\\s*\\(\\s*RuntimeBuiltinPropertyAbiProbe\\* \\$self\\s*,\\s*godot_Color\\* \\$color\\s*\\)",
+                                Pattern.DOTALL
+                        )
+                        .matcher(entryHeader)
+                        .find(),
+                () -> "Color parameter getter should use pointer ABI in generated signature.\nHeader:\n" + entryHeader
+        );
+        assertTrue(
+                Pattern.compile(
+                                "RuntimeBuiltinPropertyAbiProbe_vector_x\\s*\\(\\s*RuntimeBuiltinPropertyAbiProbe\\* \\$self\\s*,\\s*godot_Vector3\\* \\$vector\\s*\\)",
+                                Pattern.DOTALL
+                        )
+                        .matcher(entryHeader)
+                        .find(),
+                () -> "Vector3 parameter getter should use pointer ABI in generated signature.\nHeader:\n" + entryHeader
+        );
+        assertTrue(entrySource.contains("godot_new_Color_with_Color($color)"), () -> "Color parameter should be materialized from the pointer ABI into a value slot before property load.\nSource:\n" + entrySource);
+        assertTrue(entrySource.contains("godot_new_Vector3_with_Vector3($vector)"), () -> "Vector3 parameter should be materialized from the pointer ABI into a value slot before property load.\nSource:\n" + entrySource);
+        assertTrue(entrySource.contains("godot_Color_get_r(&"), () -> "Constructed/local Color receivers should pass an address.\nSource:\n" + entrySource);
+        assertTrue(entrySource.contains("godot_Color_get_g(&"), () -> "Local Color receiver should pass an address.\nSource:\n" + entrySource);
+        assertTrue(entrySource.contains("godot_Vector3_get_y(&"), () -> "Constructed Vector3 receiver should pass an address.\nSource:\n" + entrySource);
+        assertTrue(entrySource.contains("godot_Vector3_get_z(&"), () -> "Local Vector3 receiver should pass an address.\nSource:\n" + entrySource);
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "BuiltinPropertyAbiProbeNode",
+                        "RuntimeBuiltinPropertyAbiProbe",
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(builtinPropertyAbiTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend builtin property abi parameter check passed."),
+                () -> "Builtin parameter property read should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend builtin property abi temporary check passed."),
+                () -> "Builtin temporary/local property read should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend builtin property abi runtime class check passed."),
+                () -> "Builtin property ABI runtime class check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend builtin property abi parameter check failed."),
+                () -> "Builtin parameter property read should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend builtin property abi temporary check failed."),
+                () -> "Builtin temporary/local property read should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend builtin property abi runtime class check failed."),
+                () -> "Builtin property ABI runtime class check should not fail.\nOutput:\n" + combinedOutput
         );
     }
 
@@ -1101,6 +1237,42 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend dynamic call runtime class check passed.")
                     else:
                         push_error("frontend dynamic call runtime class check failed.")
+                """;
+    }
+
+    private static @NotNull String builtinPropertyAbiTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "BuiltinPropertyAbiProbeNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var color_r = float(target.call("color_r", Color(0.25, 0.5, 0.75, 1.0)))
+                    var vector_x = float(target.call("vector_x", Vector3(4.0, 5.0, 6.0)))
+                    if is_equal_approx(color_r, 0.25) and is_equal_approx(vector_x, 4.0):
+                        print("frontend builtin property abi parameter check passed.")
+                    else:
+                        push_error("frontend builtin property abi parameter check failed.")
+                
+                    var constructed_color_r = float(target.call("constructed_color_r"))
+                    var constructed_vector_y = float(target.call("constructed_vector_y"))
+                    var local_color_g = float(target.call("local_color_g"))
+                    var local_vector_z = float(target.call("local_vector_z"))
+                    if is_equal_approx(constructed_color_r, 0.25) and is_equal_approx(constructed_vector_y, 2.5) and is_equal_approx(local_color_g, 0.4) and is_equal_approx(local_vector_z, 9.0):
+                        print("frontend builtin property abi temporary check passed.")
+                    else:
+                        push_error("frontend builtin property abi temporary check failed.")
+                
+                    var runtime_class = String(target.get_class())
+                    if runtime_class == "RuntimeBuiltinPropertyAbiProbe" and target.is_class("RuntimeBuiltinPropertyAbiProbe") and not target.is_class("BuiltinPropertyAbiProbe"):
+                        print("frontend builtin property abi runtime class check passed.")
+                    else:
+                        push_error("frontend builtin property abi runtime class check failed.")
                 """;
     }
 

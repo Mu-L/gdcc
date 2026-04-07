@@ -92,6 +92,62 @@ class FrontendAssignmentSemanticSupportTest {
     }
 
     @Test
+    void resolveAssignmentExpressionTypeTreatsBuiltinMemberBackedPropertiesAsWritableTargets() throws Exception {
+        var analyzed = analyze(
+                "assignment_semantic_support_builtin_member_property.gd",
+                """
+                        class_name AssignmentSemanticSupportBuiltinMemberProperty
+                        extends RefCounted
+                        
+                        func ping(vector: Vector3, color: Color):
+                            vector.x = 1.0
+                            color.a = 0.5
+                            vector.x = ""
+                            vector.missing = 1.0
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+
+        for (var successIndex : List.of(0, 1)) {
+            var result = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                    support,
+                    assignments.get(successIndex),
+                    FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                    publishedResolver,
+                    false
+            );
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, result.expressionType().status());
+            assertEquals(GdVoidType.VOID, result.expressionType().publishedType());
+        }
+
+        var typeMismatch = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
+                assignments.get(2),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        assertTrue(typeMismatch.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, typeMismatch.expressionType().status());
+        assertTrue(typeMismatch.expressionType().detailReason().contains("not assignable"));
+        assertTrue(typeMismatch.expressionType().detailReason().contains("float"));
+
+        var missingMember = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
+                assignments.get(3),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        assertEquals(FrontendExpressionTypeStatus.FAILED, missingMember.expressionType().status());
+        assertTrue(missingMember.expressionType().detailReason().contains("missing"));
+        assertTrue(missingMember.expressionType().detailReason().contains("Vector3"));
+    }
+
+    @Test
     void resolveAssignmentExpressionTypeRejectsIllegalTargetsAndValueRequiredUsage() throws Exception {
         var analyzed = analyze(
                 "assignment_semantic_support_negative.gd",

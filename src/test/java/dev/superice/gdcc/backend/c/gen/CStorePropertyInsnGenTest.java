@@ -5,6 +5,7 @@ import dev.superice.gdcc.backend.ProjectInfo;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
+import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.lir.LirBasicBlock;
@@ -17,6 +18,7 @@ import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.lir.insn.StorePropertyInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdColorType;
 import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdFloatVectorType;
@@ -28,6 +30,7 @@ import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -303,6 +306,66 @@ public class CStorePropertyInsnGenTest {
         var body = codegen.generateFuncBody(gdccClass, func);
         assertTrue(body.contains("godot_Vector2_set_x($vec, $value);"));
         assertFalse(body.contains("godot_Vector2_set_x(&$vec, $value);"));
+    }
+
+    @Test
+    @DisplayName("Default API builtin member-backed properties should use builtin setter names")
+    void defaultApiBuiltinMemberBackedPropertiesShouldUseBuiltinSetterNames() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+
+        var vectorFunc = new LirFunctionDef("set_axis_x");
+        vectorFunc.setReturnType(GdVoidType.VOID);
+        vectorFunc.addParameter(new LirParameterDef("vector", GdFloatVectorType.VECTOR3, null, vectorFunc));
+        vectorFunc.addParameter(new LirParameterDef("value", GdFloatType.FLOAT, null, vectorFunc));
+        addEntryStoreAndReturn(vectorFunc, new StorePropertyInsn("x", "vector", "value"));
+        gdccClass.addFunction(vectorFunc);
+
+        var colorFunc = new LirFunctionDef("set_alpha");
+        colorFunc.setReturnType(GdVoidType.VOID);
+        colorFunc.addParameter(new LirParameterDef("color", GdColorType.COLOR, null, colorFunc));
+        colorFunc.addParameter(new LirParameterDef("alpha", GdFloatType.FLOAT, null, colorFunc));
+        addEntryStoreAndReturn(colorFunc, new StorePropertyInsn("a", "color", "alpha"));
+        gdccClass.addFunction(colorFunc);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(api, List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var vectorBody = codegen.generateFuncBody(gdccClass, vectorFunc);
+        assertTrue(vectorBody.contains("godot_Vector3_set_x($vector, $value);"), vectorBody);
+        assertFalse(vectorBody.contains("godot_Object_set"), vectorBody);
+
+        var colorBody = codegen.generateFuncBody(gdccClass, colorFunc);
+        assertTrue(colorBody.contains("godot_Color_set_a($color, $alpha);"), colorBody);
+        assertFalse(colorBody.contains("godot_Object_set"), colorBody);
+    }
+
+    @Test
+    @DisplayName("Default API missing builtin member should still fail-fast on store")
+    void defaultApiMissingBuiltinMemberShouldStillFailFastOnStore() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("set_missing_axis");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("vector", GdFloatVectorType.VECTOR3, null, func));
+        func.addParameter(new LirParameterDef("value", GdFloatType.FLOAT, null, func));
+        addEntryStoreAndReturn(func, new StorePropertyInsn("missing_axis", "vector", "value"));
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(api, List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertTrue(ex.getMessage().contains("missing_axis"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("Vector3"), ex.getMessage());
     }
 
     @Test

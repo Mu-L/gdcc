@@ -482,6 +482,10 @@ CFG / body-lowering 合同：
   - `vector.x`、`Color(...).r`、`Basis.IDENTITY.x` 在 CFG 中继续只是 ordinary `MemberLoadItem`
   - body lowering 对其统一发出 `LoadPropertyInsn`
   - 这条 contract 不会放宽 builtin keyed access；`vector["x"]` 仍不走这里
+- builtin instance property write 继续复用 ordinary assignment route：
+  - `vector.x = 1.0`、`color.a = 0.5` 在 CFG 中继续只是 ordinary `AssignmentItem`
+  - body lowering 对其统一发出 `StorePropertyInsn`
+  - builtin member writable / missing-property policy 仍以上游 published member fact 与 shared writable helper 为真源
 - body lowering 依据已发布的 constructor result type 选择 LIR：
   - builtin/container constructor -> `ConstructBuiltinInsn`
   - object constructor -> `ConstructObjectInsn`

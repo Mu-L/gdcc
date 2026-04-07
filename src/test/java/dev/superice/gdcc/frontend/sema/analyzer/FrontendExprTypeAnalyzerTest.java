@@ -773,6 +773,48 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
+    void analyzePublishesBuiltinMemberPropertyAssignmentTypesAndKeepsFailuresStrict() throws Exception {
+        var analyzed = analyze(
+                "expr_type_builtin_member_property_assignment.gd",
+                """
+                        class_name ExprTypeBuiltinMemberPropertyAssignment
+                        extends RefCounted
+                        
+                        func ping(vector: Vector3, color: Color):
+                            vector.x = 1.0
+                            color.a = 0.5
+                            vector.x = ""
+                            vector.missing = 1.0
+                        """
+        );
+
+        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+        for (var successIndex : List.of(0, 1)) {
+            var assignmentType = analyzed.analysisData().expressionTypes().get(assignments.get(successIndex));
+            assertNotNull(assignmentType);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, assignmentType.status());
+            assertEquals(GdVoidType.VOID, assignmentType.publishedType());
+        }
+
+        var typeMismatch = analyzed.analysisData().expressionTypes().get(assignments.get(2));
+        assertNotNull(typeMismatch);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, typeMismatch.status());
+        assertTrue(typeMismatch.detailReason().contains("not assignable"));
+        assertTrue(typeMismatch.detailReason().contains("float"));
+
+        var missingMember = analyzed.analysisData().expressionTypes().get(assignments.get(3));
+        assertNotNull(missingMember);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, missingMember.status());
+        assertTrue(missingMember.detailReason().contains("missing"));
+        assertTrue(missingMember.detailReason().contains("Vector3"));
+
+        assertEquals(1, diagnosticsByCategory(analyzed, "sema.expression_resolution").size());
+        assertEquals(1, diagnosticsByCategory(analyzed, "sema.member_resolution").size());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+    }
+
+    @Test
     void analyzePublishesCallableTypesForBareCallableValuesAndMethodReferences() throws Exception {
         var analyzed = analyze(
                 "expr_type_callable_values.gd",

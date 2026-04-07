@@ -5,6 +5,7 @@ import dev.superice.gdcc.backend.ProjectInfo;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
+import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.lir.LirBasicBlock;
@@ -17,6 +18,7 @@ import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdColorType;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdFloatVectorType;
 import dev.superice.gdcc.type.GdObjectType;
@@ -26,6 +28,7 @@ import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -417,6 +420,82 @@ public class CLoadPropertyInsnGenTest {
         var body = codegen.generateFuncBody(gdccClass, func);
         assertTrue(body.contains("godot_Vector2_get_x($vec)"));
         assertFalse(body.contains("godot_Vector2_get_x(&$vec)"));
+    }
+
+    @Test
+    @DisplayName("Default API builtin member-backed properties should use builtin getter names")
+    void defaultApiBuiltinMemberBackedPropertiesShouldUseBuiltinGetterNames() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+
+        var vectorFunc = new LirFunctionDef("axis_x");
+        vectorFunc.setReturnType(GdFloatType.FLOAT);
+        vectorFunc.addParameter(new LirParameterDef("vector", GdFloatVectorType.VECTOR3, null, vectorFunc));
+        vectorFunc.createAndAddVariable("axis", GdFloatType.FLOAT);
+        var vectorEntry = new LirBasicBlock("entry");
+        vectorEntry.appendInstruction(new LoadPropertyInsn("axis", "x", "vector"));
+        vectorEntry.appendInstruction(new ReturnInsn("axis"));
+        vectorFunc.addBasicBlock(vectorEntry);
+        vectorFunc.setEntryBlockId("entry");
+        gdccClass.addFunction(vectorFunc);
+
+        var colorFunc = new LirFunctionDef("red");
+        colorFunc.setReturnType(GdFloatType.FLOAT);
+        colorFunc.addParameter(new LirParameterDef("color", GdColorType.COLOR, null, colorFunc));
+        colorFunc.createAndAddVariable("channel", GdFloatType.FLOAT);
+        var colorEntry = new LirBasicBlock("entry");
+        colorEntry.appendInstruction(new LoadPropertyInsn("channel", "r", "color"));
+        colorEntry.appendInstruction(new ReturnInsn("channel"));
+        colorFunc.addBasicBlock(colorEntry);
+        colorFunc.setEntryBlockId("entry");
+        gdccClass.addFunction(colorFunc);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(api, List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var vectorBody = codegen.generateFuncBody(gdccClass, vectorFunc);
+        /// Unit-level body generation sees the builtin parameter as an already-usable ref slot.
+        /// The end-to-end ABI contract is covered separately by the integration test, where the
+        /// generated method wrapper passes a builtin-value pointer into the user method.
+        assertTrue(vectorBody.contains("godot_Vector3_get_x($vector)"), vectorBody);
+        assertFalse(vectorBody.contains("godot_Object_get"), vectorBody);
+
+        var colorBody = codegen.generateFuncBody(gdccClass, colorFunc);
+        assertTrue(colorBody.contains("godot_Color_get_r($color)"), colorBody);
+        assertFalse(colorBody.contains("godot_Object_get"), colorBody);
+    }
+
+    @Test
+    @DisplayName("Default API missing builtin member should still fail-fast on load")
+    void defaultApiMissingBuiltinMemberShouldStillFailFastOnLoad() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("missing_axis");
+        func.setReturnType(GdFloatType.FLOAT);
+        func.addParameter(new LirParameterDef("vector", GdFloatVectorType.VECTOR3, null, func));
+        func.createAndAddVariable("axis", GdFloatType.FLOAT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new LoadPropertyInsn("axis", "missing_axis", "vector"));
+        entry.appendInstruction(new ReturnInsn("axis"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(api, List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertTrue(ex.getMessage().contains("missing_axis"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("Vector3"), ex.getMessage());
     }
 
     @Test
