@@ -98,13 +98,17 @@ The intended interpretation is:
 For static typing:
 
 - frontend/shared semantic should answer this rule from `GdType` family information and published semantic facts
-- dynamic/`Variant` receiver routes cannot answer it statically, so they must defer to a runtime helper such as `gdcc_variant_requires_writeback(...)`
+- public code anchor: `FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(...)`
+- frontend writable-route lowering should first use the static shortcut:
+  - statically known shared/reference families skip the current writeback layer directly
+  - statically known value-semantic families apply the current layer directly
+- dynamic/`Variant` receiver routes are the only remaining runtime-open branch, so they must defer to a runtime helper such as `gdcc_variant_requires_writeback(...)`
 
 If this matrix changes, the following fact sources must be updated together:
 
 - this document
 - `frontend_complex_writable_target_plan.md`
-- receiver-side writable-route helpers in frontend lowering
+- `FrontendWritableTypeWritebackSupport` 与 receiver-side writable-route helpers in frontend lowering
 - runtime `Variant` writeback helper contracts in `gdcc_helper.h`
 
 

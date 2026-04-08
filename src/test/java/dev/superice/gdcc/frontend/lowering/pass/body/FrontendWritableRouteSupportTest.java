@@ -12,15 +12,23 @@ import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirBasicBlock;
+import dev.superice.gdcc.lir.LirInstruction;
+import dev.superice.gdcc.lir.insn.CallGlobalInsn;
+import dev.superice.gdcc.lir.insn.GoIfInsn;
+import dev.superice.gdcc.lir.insn.GotoInsn;
 import dev.superice.gdcc.lir.insn.LiteralStringNameInsn;
 import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.lir.insn.StorePropertyInsn;
 import dev.superice.gdcc.lir.insn.VariantGetNamedInsn;
 import dev.superice.gdcc.lir.insn.VariantSetIndexedInsn;
 import dev.superice.gdcc.lir.insn.VariantSetNamedInsn;
+import dev.superice.gdcc.type.GdBoolType;
+import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdPackedNumericArrayType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Point;
@@ -37,6 +45,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -294,6 +303,162 @@ class FrontendWritableRouteSupportTest {
                 () -> assertEquals("items", outerStore.propertyName()),
                 () -> assertEquals("self", outerStore.objectId()),
                 () -> assertEquals("items_slot", outerStore.valueId())
+        );
+    }
+
+    @Test
+    void reverseCommitWithRuntimeGateUsesStaticFastPathForConcreteCarrier() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.targetFunction().addBasicBlock(block);
+        session.ensureVariable("packed_slot", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("values"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "packed array route",
+                        "packed_slot",
+                        GdPackedNumericArrayType.PACKED_INT32_ARRAY
+                ),
+                new FrontendWritableRouteSupport.DirectSlotLeaf(
+                        "packed_slot",
+                        GdPackedNumericArrayType.PACKED_INT32_ARRAY
+                ),
+                List.of(new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "values"))
+        );
+
+        var emitterCalls = new ArrayList<String>();
+        var continuationBlock = FrontendWritableRouteSupport.reverseCommitWithRuntimeGate(
+                session,
+                block,
+                chain,
+                "packed_slot",
+                (_, _, _, currentCarrierSlotId) -> {
+                    emitterCalls.add(currentCarrierSlotId);
+                    return "unused_gate";
+                }
+        );
+        var instructions = block.getNonTerminatorInstructions();
+        var storeInsn = assertInstanceOf(StorePropertyInsn.class, instructions.getFirst());
+
+        assertAll(
+                () -> assertSame(block, continuationBlock),
+                () -> assertEquals(List.of(), emitterCalls),
+                () -> assertFalse(block.hasTerminator()),
+                () -> assertEquals(1, instructions.size()),
+                () -> assertEquals("self", storeInsn.objectId()),
+                () -> assertEquals("values", storeInsn.propertyName()),
+                () -> assertEquals("packed_slot", storeInsn.valueId())
+        );
+    }
+
+    @Test
+    void reverseCommitWithRuntimeGateSkipsSharedCarrierWithoutCallingEmitter() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.targetFunction().addBasicBlock(block);
+        session.ensureVariable("shared_slot", new GdArrayType(GdVariantType.VARIANT));
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("values"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "shared array route",
+                        "shared_slot",
+                        new GdArrayType(GdVariantType.VARIANT)
+                ),
+                new FrontendWritableRouteSupport.DirectSlotLeaf(
+                        "shared_slot",
+                        new GdArrayType(GdVariantType.VARIANT)
+                ),
+                List.of(new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "values"))
+        );
+
+        var emitterCalls = new ArrayList<String>();
+        var continuationBlock = FrontendWritableRouteSupport.reverseCommitWithRuntimeGate(
+                session,
+                block,
+                chain,
+                "shared_slot",
+                (_, _, _, currentCarrierSlotId) -> {
+                    emitterCalls.add(currentCarrierSlotId);
+                    return "unused_gate";
+                }
+        );
+
+        assertAll(
+                () -> assertSame(block, continuationBlock),
+                () -> assertEquals(List.of(), emitterCalls),
+                () -> assertTrue(block.getNonTerminatorInstructions().isEmpty()),
+                () -> assertFalse(block.hasTerminator())
+        );
+    }
+
+    @Test
+    void reverseCommitWithRuntimeGateBranchesForVariantCarrierAndContinuesWithPromotedCarrier() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.targetFunction().addBasicBlock(block);
+        session.ensureVariable("element_slot", GdVariantType.VARIANT);
+        session.ensureVariable("items_slot", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        session.ensureVariable("key_slot", GdIntType.INT);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("x"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot("nested owner route", "self", GdObjectType.OBJECT),
+                new FrontendWritableRouteSupport.DirectSlotLeaf("element_slot", GdVariantType.VARIANT),
+                List.of(
+                        new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "items"),
+                        new FrontendWritableRouteSupport.SubscriptCommitStep(
+                                "items_slot",
+                                null,
+                                "key_slot",
+                                FrontendSubscriptAccessSupport.AccessKind.INDEXED
+                        )
+                )
+        );
+        var blocksBefore = session.targetFunction().getBasicBlockCount();
+        var emittedRuntimeGateCarriers = new ArrayList<String>();
+        var continuationBlock = FrontendWritableRouteSupport.reverseCommitWithRuntimeGate(
+                session,
+                block,
+                chain,
+                "element_slot",
+                (innerSession, innerBlock, _, currentCarrierSlotId) -> {
+                    emittedRuntimeGateCarriers.add(currentCarrierSlotId);
+                    var gateSlotId = innerSession.allocateWritableRouteTemp("variant_requires_writeback", GdBoolType.BOOL);
+                    innerBlock.appendNonTerminatorInstruction(new CallGlobalInsn(
+                            gateSlotId,
+                            "gdcc_variant_requires_writeback",
+                            List.of(new LirInstruction.VariableOperand(currentCarrierSlotId))
+                    ));
+                    return gateSlotId;
+                }
+        );
+        var entryInstructions = block.getNonTerminatorInstructions();
+        var gateCallInsn = assertInstanceOf(CallGlobalInsn.class, entryInstructions.getFirst());
+        var entryTerminator = assertInstanceOf(GoIfInsn.class, block.getTerminator());
+        var applyBlock = session.requireBlock(entryTerminator.trueBbId());
+        var skipBlock = session.requireBlock(entryTerminator.falseBbId());
+        var continueBlock = session.requireBlock(assertInstanceOf(GotoInsn.class, applyBlock.getTerminator()).targetBbId());
+        var applyInstructions = applyBlock.getNonTerminatorInstructions();
+        var indexedStoreInsn = assertInstanceOf(VariantSetIndexedInsn.class, applyInstructions.getFirst());
+        var skipTerminator = assertInstanceOf(GotoInsn.class, skipBlock.getTerminator());
+        var outerInstructions = continueBlock.getNonTerminatorInstructions();
+        var outerStoreInsn = assertInstanceOf(StorePropertyInsn.class, outerInstructions.getFirst());
+
+        assertAll(
+                () -> assertSame(continueBlock, continuationBlock),
+                () -> assertEquals(List.of("element_slot"), emittedRuntimeGateCarriers),
+                () -> assertEquals(blocksBefore + 3, session.targetFunction().getBasicBlockCount()),
+                () -> assertEquals("gdcc_variant_requires_writeback", gateCallInsn.functionName()),
+                () -> assertEquals("element_slot", ((LirInstruction.VariableOperand) gateCallInsn.args().getFirst()).id()),
+                () -> assertEquals(gateCallInsn.resultId(), entryTerminator.conditionVarId()),
+                () -> assertEquals(1, applyInstructions.size()),
+                () -> assertEquals("items_slot", indexedStoreInsn.variantId()),
+                () -> assertEquals("key_slot", indexedStoreInsn.indexId()),
+                () -> assertEquals("element_slot", indexedStoreInsn.valueId()),
+                () -> assertEquals(assertInstanceOf(GotoInsn.class, applyBlock.getTerminator()).targetBbId(), skipTerminator.targetBbId()),
+                () -> assertEquals(1, outerInstructions.size()),
+                () -> assertEquals("self", outerStoreInsn.objectId()),
+                () -> assertEquals("items", outerStoreInsn.propertyName()),
+                () -> assertEquals("items_slot", outerStoreInsn.valueId())
         );
     }
 

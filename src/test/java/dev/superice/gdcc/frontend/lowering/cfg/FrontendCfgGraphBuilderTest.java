@@ -435,7 +435,7 @@ class FrontendCfgGraphBuilderTest {
         var assignmentCommit = assertInstanceOf(AssignmentItem.class, items.get(10));
         var returnValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(11));
         var assignmentPayload = requireNotNull(
-                assignmentCommit.writableRoutePayloadOrNull(),
+                assignmentCommit.writableRoutePayload(),
                 "plain subscript assignment should publish a writable target payload"
         );
         var assignmentCommitStep = assignmentPayload.reverseCommitSteps().getFirst();
@@ -539,7 +539,7 @@ class FrontendCfgGraphBuilderTest {
         var assignmentCommit = assertInstanceOf(AssignmentItem.class, items.get(6));
         var returnValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(7));
         var assignmentPayload = requireNotNull(
-                assignmentCommit.writableRoutePayloadOrNull(),
+                assignmentCommit.writableRoutePayload(),
                 "compound identifier assignment should publish a direct-slot payload"
         );
 
@@ -617,7 +617,7 @@ class FrontendCfgGraphBuilderTest {
         var compoundValue = assertInstanceOf(CompoundAssignmentBinaryOpItem.class, items.get(4));
         var assignmentCommit = assertInstanceOf(AssignmentItem.class, items.get(5));
         var assignmentPayload = requireNotNull(
-                assignmentCommit.writableRoutePayloadOrNull(),
+                assignmentCommit.writableRoutePayload(),
                 "compound property assignment should publish a property payload"
         );
 
@@ -696,7 +696,7 @@ class FrontendCfgGraphBuilderTest {
         var compoundValue = assertInstanceOf(CompoundAssignmentBinaryOpItem.class, items.get(5));
         var assignmentCommit = assertInstanceOf(AssignmentItem.class, items.get(6));
         var assignmentPayload = requireNotNull(
-                assignmentCommit.writableRoutePayloadOrNull(),
+                assignmentCommit.writableRoutePayload(),
                 "compound subscript assignment should publish a subscript payload"
         );
         var assignmentCommitStep = assignmentPayload.reverseCommitSteps().getFirst();
@@ -786,7 +786,7 @@ class FrontendCfgGraphBuilderTest {
         var compoundValue = assertInstanceOf(CompoundAssignmentBinaryOpItem.class, items.get(5));
         var assignmentCommit = assertInstanceOf(AssignmentItem.class, items.get(6));
         var assignmentPayload = requireNotNull(
-                assignmentCommit.writableRoutePayloadOrNull(),
+                assignmentCommit.writableRoutePayload(),
                 "compound attribute-subscript assignment should publish a nested writable payload"
         );
         var assignmentCommitStep = assignmentPayload.reverseCommitSteps().getFirst();

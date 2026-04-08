@@ -281,6 +281,7 @@ public record FrontendCfgGraph(
                             );
                         }
                     }
+                    validateStaticWritableRouteTerminalContract(payload, nodeId);
                 }
                 if (item instanceof ValueOpItem valueOpItem && valueOpItem.resultValueIdOrNull() != null) {
                     locallyPublishedValueIds.add(valueOpItem.resultValueIdOrNull());
@@ -289,9 +290,42 @@ public record FrontendCfgGraph(
         }
     }
 
+    /// `StaticPropertyCommitStep` is not explicitly tagged on the payload surface; it is encoded as a
+    /// `PROPERTY` descriptor rooted at `STATIC_CONTEXT` without a runtime container slot. Publication
+    /// must reject non-terminal occurrences early so body lowering never reaches the later
+    /// reverse-commit fail-fast path with a malformed chain.
+    private static void validateStaticWritableRouteTerminalContract(
+            @NotNull FrontendWritableRoutePayload payload,
+            @NotNull String nodeId
+    ) {
+        if (payload.root().kind() != FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT) {
+            return;
+        }
+        if (payload.leaf().kind() == FrontendWritableRoutePayload.LeafKind.PROPERTY
+                && payload.leaf().containerValueIdOrNull() == null
+                && !payload.reverseCommitSteps().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Frontend CFG writable route in sequence '"
+                            + nodeId
+                            + "' must keep a static property leaf terminal once rooted at STATIC_CONTEXT"
+            );
+        }
+        for (var index = 1; index < payload.reverseCommitSteps().size(); index++) {
+            var step = payload.reverseCommitSteps().get(index);
+            if (step.kind() == FrontendWritableRoutePayload.StepKind.PROPERTY
+                    && step.containerValueIdOrNull() == null) {
+                throw new IllegalArgumentException(
+                        "Frontend CFG writable route in sequence '"
+                                + nodeId
+                                + "' contains a non-terminal static property commit step"
+                );
+            }
+        }
+    }
+
     private static @Nullable FrontendWritableRoutePayload extractWritableRoutePayload(@NotNull SequenceItem item) {
         return switch (item) {
-            case AssignmentItem assignmentItem -> assignmentItem.writableRoutePayloadOrNull();
+            case AssignmentItem assignmentItem -> assignmentItem.writableRoutePayload();
             case CallItem callItem -> callItem.writableRoutePayloadOrNull();
             default -> null;
         };

@@ -249,9 +249,27 @@ class FrontendCfgGraphTest {
                 () -> assertEquals("v6", compoundItem.resultValueIdOrNull()),
                 () -> assertSame(assignmentExpression, assignmentItem.anchor()),
                 () -> assertEquals(List.of("slot0", "index0", "rhs3"), assignmentItem.operandValueIds()),
-                () -> assertSame(assignmentPayload, assignmentItem.writableRoutePayloadOrNull()),
+                () -> assertSame(assignmentPayload, assignmentItem.writableRoutePayload()),
                 () -> assertNull(assignmentItem.resultValueIdOrNull())
         );
+    }
+
+    @Test
+    void assignmentItemRejectsMissingWritableRoutePayload() {
+        var assignmentExpression = new AssignmentExpression("=", identifier("target"), identifier("rhs"), SYNTHETIC_RANGE);
+
+        var exception = assertThrows(
+                NullPointerException.class,
+                () -> new AssignmentItem(
+                        assignmentExpression,
+                        List.of("slot0"),
+                        "rhs0",
+                        null,
+                        null
+                )
+        );
+
+        assertTrue(exception.getMessage().contains("writableRoutePayload"));
     }
 
     @Test
@@ -398,6 +416,71 @@ class FrontendCfgGraphTest {
                 () -> assertTrue(exception.getMessage().contains("late0")),
                 () -> assertTrue(exception.getMessage().contains("entry"))
         );
+    }
+
+    @Test
+    void constructorRejectsNonTerminalStaticWritablePropertyStep() {
+        var assignmentExpression = new AssignmentExpression("=", identifier("target"), identifier("rhs"), SYNTHETIC_RANGE);
+        var invalidNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        invalidNodes.put(
+                "entry",
+                new FrontendCfgGraph.SequenceNode(
+                        "entry",
+                        List.of(
+                                new OpaqueExprValueItem(identifier("container"), "v0"),
+                                new OpaqueExprValueItem(identifier("key"), "v1"),
+                                new AssignmentItem(
+                                        assignmentExpression,
+                                        List.of("v0", "v1"),
+                                        "v0",
+                                        null,
+                                        new FrontendWritableRoutePayload(
+                                                assignmentExpression,
+                                                new FrontendWritableRoutePayload.RootDescriptor(
+                                                        FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT,
+                                                        identifier("Holder"),
+                                                        null
+                                                ),
+                                                new FrontendWritableRoutePayload.LeafDescriptor(
+                                                        FrontendWritableRoutePayload.LeafKind.SUBSCRIPT,
+                                                        assignmentExpression.left(),
+                                                        "v0",
+                                                        List.of("v1"),
+                                                        null,
+                                                        FrontendSubscriptAccessSupport.AccessKind.INDEXED
+                                                ),
+                                                List.of(
+                                                        new FrontendWritableRoutePayload.StepDescriptor(
+                                                                FrontendWritableRoutePayload.StepKind.SUBSCRIPT,
+                                                                assignmentExpression.left(),
+                                                                "v0",
+                                                                List.of("v1"),
+                                                                null,
+                                                                FrontendSubscriptAccessSupport.AccessKind.INDEXED
+                                                        ),
+                                                        new FrontendWritableRoutePayload.StepDescriptor(
+                                                                FrontendWritableRoutePayload.StepKind.PROPERTY,
+                                                                identifier("items"),
+                                                                null,
+                                                                List.of(),
+                                                                "items",
+                                                                null
+                                                        )
+                                                )
+                                        )
+                                )
+                        ),
+                        "stop"
+                )
+        );
+        invalidNodes.put("stop", new FrontendCfgGraph.StopNode("stop", FrontendCfgGraph.StopKind.RETURN, null));
+
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph("entry", invalidNodes)
+        );
+
+        assertTrue(exception.getMessage().contains("non-terminal static property commit step"), exception.getMessage());
     }
 
     @Test

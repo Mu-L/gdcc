@@ -91,6 +91,10 @@ call result type 的正式真源是 call anchor 对应的 `analysisData.expressi
 - body lowering 不得把同一条 receiver chain 再拆成额外的 per-step item，也不得回头重跑 AST receiver 解释
 - 当前实现已经支持 `CallItem` 直接发布 writable receiver payload，且 call receiver leaf materialization 会在 payload 存在时直接消费这条 frozen route
 - post-call reverse commit / runtime gate 仍由 `frontend_complex_writable_target_plan.md` 的后续步骤继续闭合，不在 dynamic dispatch 合同中重复定义
+- shared writable-route support 现已同时提供：
+  - 静态 gate 入口 `reverseCommit(..., ReverseCommitGateHook)`
+  - 动态 gate 入口 `reverseCommitWithRuntimeGate(...)`
+  dynamic call path 后续若接入 mutating receiver runtime gate，必须复用后者返回的 continuation block，而不是自建第二套 per-layer branch 拼装逻辑
 
 call-route / dispatch 的长合同仍以本文档为准；receiver-side writable chain / writeback 的长合同由 `frontend_complex_writable_target_plan.md` 约束。
 

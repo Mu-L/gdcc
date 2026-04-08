@@ -1,8 +1,11 @@
 package dev.superice.gdcc.frontend.lowering.pass.body;
 
 import dev.superice.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
+import dev.superice.gdcc.frontend.lowering.FrontendWritableTypeWritebackSupport;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.insn.AssignInsn;
+import dev.superice.gdcc.lir.insn.GoIfInsn;
+import dev.superice.gdcc.lir.insn.GotoInsn;
 import dev.superice.gdcc.lir.insn.LiteralStringNameInsn;
 import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.lir.insn.LoadStaticInsn;
@@ -23,26 +26,47 @@ import java.util.Objects;
 
 /// Shared frontend-only lowering support for writable access routes.
 ///
-/// This class does not own semantic analysis, AST child evaluation, or CFG publication. It consumes
-/// an already-frozen route description and performs only the body-lowering work that must stay
-/// shared between assignment targets, compound-assignment current-value reads, and future mutating
-/// receiver writeback:
-/// - materialize the leaf read
-/// - execute the leaf write
-/// - execute reverse commits back into outer owners
-/// - expose one explicit gate hook for runtime-gated writeback
+/// This class is the single body-lowering core for "mutate some inner writable place, then maybe
+/// write the updated carrier back into outer owners". The same mechanical workflow is needed by:
+/// - assignment targets
+/// - compound-assignment read/modify/write routes
+/// - mutating call receivers that will later need post-call writeback
 ///
-/// Current callers are in a transition state:
-/// - `CallItem` receiver lowering may already consume one frozen CFG payload directly
-/// - assignment/member/subscript paths still assemble some routes from the legacy published surface
+/// The support deliberately consumes only a frozen `FrontendWritableAccessChain`. It does not own:
+/// - semantic analysis
+/// - AST child evaluation
+/// - CFG item publication
+/// - call/assignment legality decisions
 ///
-/// The important invariant is already frozen here: once a caller constructs a
-/// `FrontendWritableAccessChain`, the support must not reopen AST child evaluation.
+/// Once a caller constructs the chain, this support must treat it as the only truth source and stay
+/// out of AST replay. That constraint is what keeps writeback behavior aligned across assignment and
+/// future mutating-call lowering instead of growing separate ad-hoc patches.
+///
+/// Two reverse-commit entrypoints intentionally coexist:
+/// - `reverseCommit(..., ReverseCommitGateHook)` is the Step-4 static gate path. It stays in one
+///   block and can only answer "apply this layer or skip it" at compile time.
+/// - `reverseCommitWithRuntimeGate(...)` is the Step-6-ready path. It still reuses the same carrier
+///   threading and static family shortcut, but when the current carrier is `Variant` it lets the
+///   caller emit a runtime bool condition and splices one per-layer branch shape into the LIR CFG.
 final class FrontendWritableRouteSupport {
     private FrontendWritableRouteSupport() {
     }
 
+    /// Trivial gate used by routes that must always apply every reverse-commit layer.
     static final @NotNull ReverseCommitGateHook ALWAYS_APPLY = (_, _) -> true;
+
+    /// Creates the Step-4 static writeback gate from the current carrier slot type.
+    ///
+    /// The family matrix itself lives in the public `frontend.lowering` helper so Step 4 assignment
+    /// lowering and Step 7+ callers cannot silently drift into separate copies.
+    static @NotNull ReverseCommitGateHook createStaticCarrierWritebackGate(
+            @NotNull FrontendBodyLoweringSession session
+    ) {
+        Objects.requireNonNull(session, "session must not be null");
+        return (_, currentCarrierSlotId) -> FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(
+                session.requireFunctionVariableType(currentCarrierSlotId)
+        );
+    }
 
     static @NotNull String materializeLeafRead(
             @NotNull FrontendBodyLoweringSession session,
@@ -136,7 +160,7 @@ final class FrontendWritableRouteSupport {
         };
     }
 
-    /// Walks reverse-commit steps from inner to outer owner.
+    /// Walks reverse-commit steps from inner to outer owner using compile-time gate decisions only.
     ///
     /// If a gate rejects one layer, only that layer's writeback is skipped. The carrier is still
     /// promoted to the next outer owner before the walk continues so gdcc stays aligned with
@@ -170,6 +194,93 @@ final class FrontendWritableRouteSupport {
                     terminalStep
             );
         }
+    }
+
+    /// Walks reverse-commit steps from inner to outer owner, inserting runtime gate branches when
+    /// the current carrier is statically `Variant`.
+    ///
+    /// This is the Step-6-ready companion of the boolean-only `reverseCommit(...)` API:
+    /// - statically known shared/reference carriers still use
+    ///   `FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(...)` as the fast
+    ///   path and skip the current layer without emitting any runtime branch
+    /// - statically known value-semantic carriers still apply inline in the current block
+    /// - only `Variant` carriers ask the caller to emit a runtime bool condition
+    ///
+    /// The returned block is the continuation block that outer lowering should keep appending to.
+    /// It may be the original `block` when no runtime branch was needed, or the last synthetic
+    /// post-gate block when one or more per-layer `GoIfInsn` regions were materialized.
+    static @NotNull LirBasicBlock reverseCommitWithRuntimeGate(
+            @NotNull FrontendBodyLoweringSession session,
+            @NotNull LirBasicBlock block,
+            @NotNull FrontendWritableAccessChain chain,
+            @NotNull String writtenBackValueSlotId,
+            @NotNull ReverseCommitRuntimeGateEmitter runtimeGateEmitter
+    ) {
+        Objects.requireNonNull(session, "session must not be null");
+        var currentBlock = Objects.requireNonNull(block, "block must not be null");
+        var actualChain = Objects.requireNonNull(chain, "chain must not be null");
+        var currentCarrierSlotId = StringUtil.requireNonBlank(writtenBackValueSlotId, "writtenBackValueSlotId");
+        var actualRuntimeGateEmitter = Objects.requireNonNull(
+                runtimeGateEmitter,
+                "runtimeGateEmitter must not be null"
+        );
+        var reverseCommitSteps = actualChain.reverseCommitSteps();
+        for (var index = reverseCommitSteps.size() - 1; index >= 0; index--) {
+            var step = reverseCommitSteps.get(index);
+            var terminalStep = index == 0;
+            var currentCarrierType = session.requireFunctionVariableType(currentCarrierSlotId);
+            if (!requiresRuntimeWritebackGate(currentCarrierType)) {
+                if (!FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(currentCarrierType)) {
+                    currentCarrierSlotId = nextOuterCarrierSlotId(step, currentCarrierSlotId, terminalStep);
+                    continue;
+                }
+                currentCarrierSlotId = appendReverseCommitStep(
+                        session,
+                        currentBlock,
+                        step,
+                        currentCarrierSlotId,
+                        terminalStep
+                );
+                continue;
+            }
+            var gateConditionSlotId = StringUtil.requireNonBlank(
+                    actualRuntimeGateEmitter.emitShouldApplyCondition(
+                            session,
+                            currentBlock,
+                            step,
+                            currentCarrierSlotId
+                    ),
+                    "gateConditionSlotId"
+            );
+            var applyBlock = session.createWritableRouteBlock("reverse_commit_apply");
+            var skipBlock = session.createWritableRouteBlock("reverse_commit_skip");
+            var continueBlock = session.createWritableRouteBlock("reverse_commit_continue");
+            currentBlock.setTerminator(new GoIfInsn(gateConditionSlotId, applyBlock.id(), skipBlock.id()));
+            var nextCarrierSlotId = nextOuterCarrierSlotId(step, currentCarrierSlotId, terminalStep);
+            var appliedCarrierSlotId = appendReverseCommitStep(
+                    session,
+                    applyBlock,
+                    step,
+                    currentCarrierSlotId,
+                    terminalStep
+            );
+            if (!appliedCarrierSlotId.equals(nextCarrierSlotId)) {
+                throw new IllegalStateException(
+                        "Runtime-gated reverse commit requires applied and skipped carrier promotion to agree, but step "
+                                + step.getClass().getSimpleName()
+                                + " produced '"
+                                + appliedCarrierSlotId
+                                + "' vs '"
+                                + nextCarrierSlotId
+                                + "'"
+                );
+            }
+            applyBlock.setTerminator(new GotoInsn(continueBlock.id()));
+            skipBlock.setTerminator(new GotoInsn(continueBlock.id()));
+            currentBlock = continueBlock;
+            currentCarrierSlotId = nextCarrierSlotId;
+        }
+        return currentBlock;
     }
 
     private static void materializeSubscriptLeafReadInto(
@@ -362,6 +473,18 @@ final class FrontendWritableRouteSupport {
         return new NamedMemberScratch(nameSlotId, namedBaseSlotId);
     }
 
+    /// The dynamic gate path only needs runtime branching for carriers whose writeback requirement
+    /// cannot be decided from the static family alone.
+    ///
+    /// At the moment that means `Variant` and only `Variant`: shared/reference families are skipped
+    /// by `FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(...)`, while
+    /// concrete value-semantic families apply inline with no extra branch. The runtime helper is
+    /// therefore a narrow completion of the static rule rather than a second, unrelated writeback
+    /// policy.
+    private static boolean requiresRuntimeWritebackGate(@NotNull GdType currentCarrierType) {
+        return Objects.requireNonNull(currentCarrierType, "currentCarrierType must not be null") instanceof GdVariantType;
+    }
+
     @FunctionalInterface
     interface ReverseCommitGateHook {
         /// `writtenBackValueSlotId` is the current carrier about to be written into this step.
@@ -371,6 +494,27 @@ final class FrontendWritableRouteSupport {
         boolean shouldApply(
                 @NotNull FrontendWritableCommitStep step,
                 @NotNull String writtenBackValueSlotId
+        );
+    }
+
+    @FunctionalInterface
+    interface ReverseCommitRuntimeGateEmitter {
+        /// Emits one bool condition into `block` for a runtime-open carrier and returns the slot id
+        /// consumed by the per-layer `GoIfInsn`.
+        ///
+        /// The emitter is intentionally narrow:
+        /// - it answers only the runtime-open branch (`Variant` today)
+        /// - it does not own carrier threading or reverse-commit structure
+        /// - it must not reopen AST or re-decide whether outer layers exist
+        ///
+        /// This keeps the shared support as the owner of the writeback walk while leaving the
+        /// actual bool materialization open to future helper calls such as
+        /// `gdcc_variant_requires_writeback(...)`.
+        @NotNull String emitShouldApplyCondition(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull FrontendWritableCommitStep step,
+                @NotNull String currentCarrierSlotId
         );
     }
 

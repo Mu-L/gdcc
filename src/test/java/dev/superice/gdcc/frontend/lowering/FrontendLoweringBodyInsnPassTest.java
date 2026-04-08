@@ -308,6 +308,95 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runSkipsOuterPropertyWritebackForSharedPropertyBackedAssignmentRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_shared_property_assignment.gd",
+                """
+                        class_name BodyInsnSharedPropertyAssignment
+                        extends RefCounted
+                        
+                        var payloads: Dictionary[int, int]
+                        
+                        func ping(seed: int) -> int:
+                            payloads[seed] = seed + 1
+                            return payloads[seed]
+                        """,
+                Map.of("BodyInsnSharedPropertyAssignment", "RuntimeBodyInsnSharedPropertyAssignment"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSharedPropertyAssignment",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var indexedStores = instructions.stream()
+                .filter(VariantSetIndexedInsn.class::isInstance)
+                .map(VariantSetIndexedInsn.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, indexedStores.size()),
+                () -> assertEquals(0, storeValueIdsForProperty(instructions, "payloads").size()),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runSkipsOuterPropertyWritebackForSharedPropertyBackedCompoundAssignmentRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_shared_property_compound.gd",
+                """
+                        class_name BodyInsnSharedPropertyCompound
+                        extends RefCounted
+                        
+                        var payloads: Dictionary[int, int]
+                        
+                        func delta(seed: int) -> int:
+                            return seed + 1
+                        
+                        func ping(seed: int) -> int:
+                            payloads[seed] += delta(seed)
+                            return payloads[seed]
+                        """,
+                Map.of("BodyInsnSharedPropertyCompound", "RuntimeBodyInsnSharedPropertyCompound"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSharedPropertyCompound",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var compoundInsn = requireOnlyInstruction(pingContext.targetFunction(), BinaryOpInsn.class);
+        var indexedStores = instructions.stream()
+                .filter(VariantSetIndexedInsn.class::isInstance)
+                .map(VariantSetIndexedInsn.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GodotOperator.ADD, compoundInsn.op()),
+                () -> assertEquals(1, indexedStores.size()),
+                () -> assertEquals(compoundInsn.resultId(), indexedStores.getFirst().valueId()),
+                () -> assertEquals(0, storeValueIdsForProperty(instructions, "payloads").size()),
+                () -> assertEquals(2, countInstructions(instructions, VariantGetIndexedInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
     void runMaterializesStraightLineExecutableBodyIntoRealBlocksAndInstructions() throws Exception {
         var prepared = prepareContext(
                 "body_insn_linear.gd",
@@ -1450,7 +1539,7 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
-    void runWritesBackPropertyBackedSubscriptAssignmentsThroughSingleCarrierSlot() throws Exception {
+    void runSkipsOuterWritebackForSharedArrayPropertyBackedSubscriptAssignments() throws Exception {
         var prepared = prepareContext(
                 "body_insn_property_subscript_writeback.gd",
                 """
@@ -1475,14 +1564,52 @@ class FrontendLoweringBodyInsnPassTest {
         new FrontendLoweringBodyInsnPass().run(prepared.context());
 
         var instructions = allInstructions(pingContext.targetFunction());
-        var indexedStore = requireOnlyInstruction(pingContext.targetFunction(), VariantSetIndexedInsn.class);
         var propertyStoreValueIds = storeValueIdsForProperty(instructions, "payloads");
 
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
                 () -> assertEquals(1, countInstructions(instructions, VariantSetIndexedInsn.class)),
-                () -> assertEquals(1, propertyStoreValueIds.size()),
-                () -> assertEquals(indexedStore.variantId(), propertyStoreValueIds.getFirst())
+                () -> assertEquals(0, propertyStoreValueIds.size())
+        );
+    }
+
+    @Test
+    void runWritesBackValueSemanticBuiltinPropertyChainAssignmentRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_builtin_property_writeback.gd",
+                """
+                        class_name BodyInsnBuiltinPropertyWriteback
+                        extends Node2D
+                        
+                        func ping(seed: float) -> float:
+                            position.x = seed
+                            return position.x
+                        """,
+                Map.of("BodyInsnBuiltinPropertyWriteback", "RuntimeBodyInsnBuiltinPropertyWriteback"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnBuiltinPropertyWriteback",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var propertyStores = instructions.stream()
+                .filter(StorePropertyInsn.class::isInstance)
+                .map(StorePropertyInsn.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(List.of("x", "position"), propertyStores.stream().map(StorePropertyInsn::propertyName).toList()),
+                () -> assertEquals(propertyStores.getFirst().objectId(), propertyStores.getLast().valueId()),
+                () -> assertEquals("self", propertyStores.getLast().objectId()),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
         );
     }
 

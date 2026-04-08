@@ -28,6 +28,7 @@ import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.type.GdNilType;
+import dev.superice.gdcc.type.GdContainerType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
@@ -53,7 +54,8 @@ import java.util.Set;
 /// - published semantic tables already accepted by compile gate
 /// - declared temp/local/merge slots
 /// - block materialization order
-/// - processor registries for CFG nodes, sequence items, opaque expressions, and assignment targets
+/// - processor registries for CFG nodes, sequence items, and opaque expressions
+/// - one dedicated writable-route entry for published assignment targets
 ///
 /// Processors may query this session for already-frozen information, but they must not rebuild
 /// semantic facts or invent alternate evaluation order.
@@ -68,12 +70,9 @@ public final class FrontendBodyLoweringSession {
     private final @NotNull FrontendInsnLoweringProcessorRegistry<FrontendCfgGraph.NodeDef, Void> cfgNodeProcessors;
     private final @NotNull FrontendInsnLoweringProcessorRegistry<SequenceItem, Void> sequenceItemProcessors;
     private final @NotNull FrontendInsnLoweringProcessorRegistry<Expression, OpaqueExprLoweringContext> opaqueExprProcessors;
-    private final @NotNull FrontendInsnLoweringProcessorRegistry<Expression, AssignmentTargetLoweringContext>
-            assignmentTargetProcessors;
-    private final @NotNull FrontendInsnLoweringProcessorRegistry<Node, AssignmentTargetLoweringContext>
-            attributeStepProcessors;
     private int boundaryMaterializationCounter;
     private int writableRouteMaterializationCounter;
+    private int writableRouteBlockCounter;
 
     public FrontendBodyLoweringSession(
             @NotNull FunctionLoweringContext functionContext,
@@ -93,8 +92,6 @@ public final class FrontendBodyLoweringSession {
         this.cfgNodeProcessors = FrontendCfgNodeInsnLoweringProcessors.createRegistry();
         this.sequenceItemProcessors = FrontendSequenceItemInsnLoweringProcessors.createRegistry();
         this.opaqueExprProcessors = FrontendOpaqueExprInsnLoweringProcessors.createRegistry();
-        this.assignmentTargetProcessors = FrontendAssignmentTargetInsnLoweringProcessors.createTargetRegistry();
-        this.attributeStepProcessors = FrontendAssignmentTargetInsnLoweringProcessors.createAttributeStepRegistry();
     }
 
     public void run() {
@@ -115,20 +112,7 @@ public final class FrontendBodyLoweringSession {
     }
 
     void lowerAssignmentTarget(@NotNull LirBasicBlock block, @NotNull AssignmentItem item, @NotNull String rhsSlotId) {
-        assignmentTargetProcessors.lower(
-                this,
-                block,
-                item.assignment().left(),
-                new AssignmentTargetLoweringContext(item, rhsSlotId)
-        );
-    }
-
-    void lowerAttributeAssignmentStep(
-            @NotNull LirBasicBlock block,
-            @NotNull Node attributeStep,
-            @NotNull AssignmentTargetLoweringContext context
-    ) {
-        attributeStepProcessors.lower(this, block, attributeStep, context);
+        FrontendAssignmentTargetInsnLoweringProcessors.lowerPublishedWritableRoute(this, block, item, rhsSlotId);
     }
 
     @NotNull FrontendBinding requireBinding(@NotNull Node useSite) {
@@ -362,8 +346,10 @@ public final class FrontendBodyLoweringSession {
                 requireSelfSlot();
                 yield "self";
             }
-            case VALUE_ID -> slotIdForValue(Objects.requireNonNull(root.valueIdOrNull(), "VALUE_ID root must publish valueIdOrNull"));
-            case STATIC_CONTEXT -> throw new IllegalStateException("STATIC_CONTEXT root cannot materialize a direct-slot leaf");
+            case VALUE_ID ->
+                    slotIdForValue(Objects.requireNonNull(root.valueIdOrNull(), "VALUE_ID root must publish valueIdOrNull"));
+            case STATIC_CONTEXT ->
+                    throw new IllegalStateException("STATIC_CONTEXT root cannot materialize a direct-slot leaf");
         };
     }
 
@@ -380,7 +366,8 @@ public final class FrontendBodyLoweringSession {
                 requireSelfSlot();
                 yield "self";
             }
-            case VALUE_ID -> slotIdForValue(Objects.requireNonNull(root.valueIdOrNull(), "VALUE_ID root must publish valueIdOrNull"));
+            case VALUE_ID ->
+                    slotIdForValue(Objects.requireNonNull(root.valueIdOrNull(), "VALUE_ID root must publish valueIdOrNull"));
             case STATIC_CONTEXT -> throw new IllegalStateException(
                     "STATIC_CONTEXT root requires an explicit container value id for non-property writable routes"
             );
@@ -417,9 +404,6 @@ public final class FrontendBodyLoweringSession {
             @NotNull FrontendWritableRoutePayload.RootDescriptor root,
             @NotNull Node propertyAnchor
     ) {
-        if (root.kind() == FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT) {
-            return true;
-        }
         return switch (Objects.requireNonNull(propertyAnchor, "propertyAnchor must not be null")) {
             case IdentifierExpression _ -> {
                 var binding = requireBinding(propertyAnchor);
@@ -429,46 +413,127 @@ public final class FrontendBodyLoweringSession {
                 var resolvedMember = requireResolvedMember(propertyAnchor);
                 yield resolvedMember.receiverKind() == dev.superice.gdcc.frontend.sema.FrontendReceiverKind.TYPE_META;
             }
-            default -> false;
+            default -> root.kind() == FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT
+                    && root.anchor() == propertyAnchor;
         };
     }
 
-    @SuppressWarnings("SwitchStatementWithTooFewBranches")
     private @NotNull String requireStaticWritableReceiverName(
             @NotNull FrontendWritableRoutePayload.RootDescriptor root,
             @NotNull Node propertyAnchor
     ) {
+        if (root.kind() == FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT && root.anchor() == propertyAnchor) {
+            return currentClassName();
+        }
         return switch (Objects.requireNonNull(propertyAnchor, "propertyAnchor must not be null")) {
             case dev.superice.gdparser.frontend.ast.AttributePropertyStep _ -> requireStaticReceiverName(
                     requireResolvedMember(propertyAnchor).receiverType()
             );
             case IdentifierExpression _ -> currentClassName();
-            default -> switch (root.kind()) {
-                case STATIC_CONTEXT -> currentClassName();
-                default -> throw new IllegalStateException(
-                        "Static writable property route requires a type-meta or static-binding anchor"
-                );
-            };
+            default -> throw new IllegalStateException(
+                    "Static writable property route requires a type-meta or static-binding anchor"
+            );
         };
     }
 
     private @NotNull GdType requireWritableLeafType(@NotNull FrontendWritableRoutePayload payload) {
-        if (payload.leaf().kind() == FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT
-                && payload.root().kind() == FrontendWritableRoutePayload.RootKind.VALUE_ID) {
-            return requireValueType(Objects.requireNonNull(
-                    payload.root().valueIdOrNull(),
+        var published = analysisData.expressionTypes().get(payload.leaf().anchor());
+        if (published != null && published.publishedType() != null) {
+            return published.publishedType();
+        }
+        return switch (payload.leaf().kind()) {
+            case DIRECT_SLOT -> requireWritableDirectLeafType(payload.root());
+            case PROPERTY -> requireWritablePropertyLeafType(payload.leaf().anchor());
+            case SUBSCRIPT -> requireWritableSubscriptLeafType(payload.root(), payload.leaf());
+        };
+    }
+
+    private @NotNull GdType requireWritableDirectLeafType(
+            @NotNull FrontendWritableRoutePayload.RootDescriptor root
+    ) {
+        return switch (Objects.requireNonNull(root, "root must not be null").kind()) {
+            case DIRECT_SLOT -> requireFunctionVariableType(resolveDirectWritableRootSlot(root.anchor()));
+            case SELF_CONTEXT -> {
+                requireSelfSlot();
+                yield requireFunctionVariableType("self");
+            }
+            case VALUE_ID -> requireValueType(Objects.requireNonNull(
+                    root.valueIdOrNull(),
                     "VALUE_ID root must publish valueIdOrNull"
             ));
-        }
-        var published = analysisData.expressionTypes().get(payload.leaf().anchor());
-        if (published == null || published.publishedType() == null) {
-            throw new IllegalStateException(
-                    "Writable route leaf anchor "
-                            + payload.leaf().anchor().getClass().getSimpleName()
-                            + " is missing a lowering-ready published type"
+            case STATIC_CONTEXT -> throw new IllegalStateException(
+                    "STATIC_CONTEXT root cannot materialize a direct-slot leaf type"
             );
+        };
+    }
+
+    private @NotNull GdType requireWritablePropertyLeafType(@NotNull Node propertyAnchor) {
+        return switch (Objects.requireNonNull(propertyAnchor, "propertyAnchor must not be null")) {
+            case IdentifierExpression _ -> requireWritableBindingStorageType(requireBinding(propertyAnchor));
+            case dev.superice.gdparser.frontend.ast.AttributePropertyStep _ -> Objects.requireNonNull(
+                    requireResolvedMember(propertyAnchor).resultType(),
+                    "Resolved property leaf must publish resultType"
+            );
+            default -> throw new IllegalStateException(
+                    "Writable property leaf type requires IdentifierExpression or AttributePropertyStep anchor"
+            );
+        };
+    }
+
+    private @NotNull GdType requireWritableSubscriptLeafType(
+            @NotNull FrontendWritableRoutePayload.RootDescriptor root,
+            @NotNull FrontendWritableRoutePayload.LeafDescriptor leaf
+    ) {
+        var containerType = requireWritableContainerType(root, leaf.containerValueIdOrNull());
+        return switch (containerType) {
+            case GdVariantType _ -> GdVariantType.VARIANT;
+            case GdContainerType container -> container.getValueType();
+            default -> throw new IllegalStateException(
+                    "Writable subscript leaf requires container-family or Variant carrier, but got "
+                            + containerType.getTypeName()
+            );
+        };
+    }
+
+    private @NotNull GdType requireWritableContainerType(
+            @NotNull FrontendWritableRoutePayload.RootDescriptor root,
+            @Nullable String containerValueIdOrNull
+    ) {
+        if (containerValueIdOrNull != null) {
+            return requireValueType(containerValueIdOrNull);
         }
-        return published.publishedType();
+        return switch (Objects.requireNonNull(root, "root must not be null").kind()) {
+            case DIRECT_SLOT -> requireFunctionVariableType(resolveDirectWritableRootSlot(root.anchor()));
+            case SELF_CONTEXT -> {
+                requireSelfSlot();
+                yield requireFunctionVariableType("self");
+            }
+            case STATIC_CONTEXT -> throw new IllegalStateException(
+                    "STATIC_CONTEXT root requires an explicit container value id for non-property writable routes"
+            );
+            case VALUE_ID -> requireValueType(Objects.requireNonNull(
+                    root.valueIdOrNull(),
+                    "VALUE_ID root must publish valueIdOrNull"
+            ));
+        };
+    }
+
+    private @NotNull GdType requireWritableBindingStorageType(@NotNull FrontendBinding binding) {
+        return switch (Objects.requireNonNull(binding, "binding must not be null").kind()) {
+            case LOCAL_VAR, PARAMETER, CAPTURE, SELF -> requireFunctionVariableType(binding.symbolName());
+            case PROPERTY -> switch (Objects.requireNonNull(
+                    binding.declarationSite(),
+                    "Property binding must carry declaration metadata"
+            )) {
+                case PropertyDef propertyDef -> propertyDef.getType();
+                default -> throw new IllegalStateException(
+                        "Property binding '" + binding.symbolName() + "' does not carry property metadata"
+                );
+            };
+            default -> throw new IllegalStateException(
+                    "Binding '" + binding.symbolName() + "' is not backed by writable storage"
+            );
+        };
     }
 
     void requireSelfSlot() {
@@ -531,29 +596,6 @@ public final class FrontendBodyLoweringSession {
             throw new IllegalStateException("Missing lowered function variable '" + variableId + "'");
         }
         return variable.type();
-    }
-
-    /// Resolves the concrete storage type for one already-published bare assignment binding.
-    ///
-    /// Local/parameter/capture targets reuse the lowered function variable table, while property
-    /// targets must carry shared property metadata so stores can materialize `Variant` boundaries
-    /// without reopening resolver logic in the body pass.
-    @NotNull GdType requireBindingAssignmentTargetType(@NotNull FrontendBinding binding) {
-        return switch (Objects.requireNonNull(binding, "binding must not be null").kind()) {
-            case LOCAL_VAR, PARAMETER, CAPTURE -> requireFunctionVariableType(binding.symbolName());
-            case PROPERTY -> switch (Objects.requireNonNull(
-                    binding.declarationSite(),
-                    "Property binding must carry declaration metadata"
-            )) {
-                case PropertyDef propertyDef -> propertyDef.getType();
-                default -> throw new IllegalStateException(
-                        "Property binding '" + binding.symbolName() + "' does not carry property metadata"
-                );
-            };
-            default -> throw new IllegalStateException(
-                    "Binding '" + binding.symbolName() + "' is not an assignment-backed storage location"
-            );
-        };
     }
 
     @NotNull LirFunctionDef targetFunction() {
@@ -720,6 +762,22 @@ public final class FrontendBodyLoweringSession {
         return slotId;
     }
 
+    /// Allocates one synthetic basic block owned by writable-route lowering.
+    ///
+    /// The writable-route runtime gate path may need to split the current lexical block into
+    /// `apply` / `skip` / `continue` regions. Those blocks are not frontend CFG nodes; they are
+    /// body-lowering artifacts that must still live in the target LIR function so later validation
+    /// and codegen can see the real branch structure.
+    @NotNull LirBasicBlock createWritableRouteBlock(@NotNull String purpose) {
+        var blockId = "cfg_writable_bb_"
+                + StringUtil.requireNonBlank(purpose, "purpose")
+                + "_"
+                + writableRouteBlockCounter++;
+        var block = new LirBasicBlock(blockId);
+        function.addBasicBlock(block);
+        return block;
+    }
+
     @NotNull IllegalStateException unsupportedSequenceItem(@NotNull SequenceItem item, @NotNull String detail) {
         return new IllegalStateException(
                 item.getClass().getSimpleName()
@@ -869,13 +927,4 @@ public final class FrontendBodyLoweringSession {
         }
     }
 
-    record AssignmentTargetLoweringContext(
-            @NotNull AssignmentItem item,
-            @NotNull String rhsSlotId
-    ) {
-        AssignmentTargetLoweringContext {
-            Objects.requireNonNull(item, "item must not be null");
-            rhsSlotId = Objects.requireNonNull(rhsSlotId, "rhsSlotId must not be null");
-        }
-    }
 }

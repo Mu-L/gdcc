@@ -126,6 +126,106 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     }
 
     @Test
+    void lowerFrontendBuiltinChainedPropertyWritebackBuildNativeLibraryAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping builtin chained writeback integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_builtin_chained_writeback_runtime");
+        Files.createDirectories(tempDir);
+
+        var source = """
+                class_name BuiltinChainWritebackSmoke
+                extends Node2D
+                
+                func assign_position_x(value: float) -> float:
+                    position.x = value
+                    return position.x
+                
+                func bump_position_x(delta: float) -> float:
+                    position.x += delta
+                    return position.x
+                """;
+        var module = parseModule(
+                tempDir.resolve("builtin_chain_writeback_smoke.gd"),
+                source,
+                Map.of("BuiltinChainWritebackSmoke", "RuntimeBuiltinChainWritebackSmoke")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals(1, lowered.getClassDefs().size());
+        assertEquals("RuntimeBuiltinChainWritebackSmoke", lowered.getClassDefs().getFirst().getName());
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_builtin_chained_writeback_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entrySource = Files.readString(projectDir.resolve("entry.c"));
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+        assertTrue(entrySource.contains("GD_STATIC_SN(u8\"RuntimeBuiltinChainWritebackSmoke\")"), entrySource);
+        assertFalse(entrySource.contains("GD_STATIC_SN(u8\"BuiltinChainWritebackSmoke\")"), entrySource);
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "BuiltinChainWritebackNode",
+                        "RuntimeBuiltinChainWritebackSmoke",
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(builtinChainedWritebackTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend builtin chained writeback assignment check passed."),
+                () -> "Builtin chained assignment runtime check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend builtin chained writeback compound check passed."),
+                () -> "Builtin chained compound runtime check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend builtin chained writeback runtime class check passed."),
+                () -> "Builtin chained runtime class check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend builtin chained writeback assignment check failed."),
+                () -> "Builtin chained assignment runtime check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend builtin chained writeback compound check failed."),
+                () -> "Builtin chained compound runtime check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend builtin chained writeback runtime class check failed."),
+                () -> "Builtin chained runtime class check should not fail.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    @Test
     void lowerFrontendPropertyInitializerModuleBuildNativeLibraryAndRunInGodot() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping frontend property initializer integration test");
@@ -1061,6 +1161,38 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend lowering runtime class remap check passed.")
                     else:
                         push_error("frontend lowering runtime class remap check failed.")
+                """;
+    }
+
+    private static @NotNull String builtinChainedWritebackTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "BuiltinChainWritebackNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var assigned = float(target.call("assign_position_x", 6.5))
+                    if is_equal_approx(assigned, 6.5) and is_equal_approx(target.position.x, 6.5):
+                        print("frontend builtin chained writeback assignment check passed.")
+                    else:
+                        push_error("frontend builtin chained writeback assignment check failed.")
+                
+                    var bumped = float(target.call("bump_position_x", 1.25))
+                    if is_equal_approx(bumped, 7.75) and is_equal_approx(target.position.x, 7.75):
+                        print("frontend builtin chained writeback compound check passed.")
+                    else:
+                        push_error("frontend builtin chained writeback compound check failed.")
+                
+                    var runtime_class = String(target.get_class())
+                    if runtime_class == "RuntimeBuiltinChainWritebackSmoke" and target.is_class("RuntimeBuiltinChainWritebackSmoke") and not target.is_class("BuiltinChainWritebackSmoke"):
+                        print("frontend builtin chained writeback runtime class check passed.")
+                    else:
+                        push_error("frontend builtin chained writeback runtime class check failed.")
                 """;
     }
 

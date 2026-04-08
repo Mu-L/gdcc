@@ -196,6 +196,7 @@ plain assignment、compound assignment 与 constructor materialization 当前各
 - `AssignmentItem`
   - 只表示最终 store commit
   - target receiver/index operand 与将要写回的 RHS value id 都必须预先冻结
+  - 对所有 lowering-ready assignment target，mandatory `writableRoutePayload` 都必须同时冻结；body lowering 不再接受缺失 payload 的 assignment commit
 - `CompoundAssignmentBinaryOpItem`
   - 只表示 compound assignment 的当前值读取结果与 RHS 之间的 binary op
   - 不承载最终写回
@@ -210,9 +211,12 @@ plain assignment、compound assignment 与 constructor materialization 当前各
   - call result runtime type 的真源是 call anchor 对应的 `expressionTypes()`；`resolvedCalls()` 只负责 route fact，不是 `DYNAMIC` call result type 的唯一来源
 
 当前 body lowering 侧已经把 writable-route 的 leaf read / leaf write / reverse commit 共用逻辑收敛到 package-private
-`FrontendWritableRouteSupport`。当前 CFG 已经能通过 `FrontendWritableRoutePayload` 在 `CallItem` / `AssignmentItem` 上冻结整条
-writable route，graph publication 也会校验这类 payload 的本地 value-id 引用顺序。assignment lowering 仍暂时保留
-legacy `targetOperandValueIds` 作为迁移期兼容 surface；call receiver leaf 则在 payload 存在时优先直接消费 frozen route。
+`FrontendWritableRouteSupport`。current-carrier family 的静态 writeback matrix 则收口到 public
+`FrontendWritableTypeWritebackSupport`，避免 Step 4 assignment lowering、Step 6 runtime gate 与后续测试各自复制一份 family
+表。当前 CFG 已经能通过 `FrontendWritableRoutePayload` 在 `CallItem` / `AssignmentItem` 上冻结整条 writable route，graph
+publication 也会校验这类 payload 的本地 value-id 引用顺序，并额外拒绝 non-terminal static property commit step。
+assignment final-store lowering 已经切到 payload-only route；legacy `targetOperandValueIds` 只继续保留给 source-order
+sequencing 与 compound current-target read。call receiver leaf 则在 payload 存在时优先直接消费 frozen route。
 
 其中 compound assignment 的 source-order 合同固定为：
 
@@ -220,7 +224,7 @@ legacy `targetOperandValueIds` 作为迁移期兼容 surface；call receiver lea
 2. 再基于这些 frozen operand 读取当前 target value
 3. 再求值 RHS
 4. 再发 `CompoundAssignmentBinaryOpItem`
-5. 最后用 `AssignmentItem` 走普通 store 路径提交结果
+5. 最后用 `AssignmentItem` 走 payload-backed writable-route store/commit 提交结果
 
 value id 当前“基本单一定义”，但有一条刻意保留的窄例外：
 
@@ -557,6 +561,7 @@ target 支持面：
 CFG 合同：
 
 - `AssignmentItem` 继续只表示最终 store commit
+- lowering-ready assignment target 必须同时发布 mandatory `AssignmentItem.writableRoutePayload`
 - `CompoundAssignmentBinaryOpItem` 显式冻结：
   - assignment anchor
   - binary operator lexeme
@@ -571,7 +576,7 @@ body-lowering 合同：
 - `CompoundAssignmentBinaryOpItem` 直接 lower 为 `BinaryOpInsn`
 - compound-op processor 只消费 CFG 已冻结的 binary lexeme 与 operand value ids
 - compound-op processor 本身不插入额外的 assignment-boundary `(un)pack`
-- 最终写回继续统一走 `FrontendAssignmentTargetInsnLoweringProcessors`
+- 最终写回统一走 `FrontendAssignmentTargetInsnLoweringProcessors` 的 payload-only writable-route path
 - compound temp slot 的类型必须是“真实 binary 结果类型”，而不是最终 assignment target 类型
 - `Variant` pack/unpack 只允许保留在最终 assignment/store boundary，不能前移到 `BinaryOpInsn`
 

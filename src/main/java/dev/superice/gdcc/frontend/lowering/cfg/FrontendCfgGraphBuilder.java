@@ -835,9 +835,7 @@ public final class FrontendCfgGraphBuilder {
                 targetOperandsBuild.valueIds(),
                 rhsBuild.resultValueId(),
                 null,
-                targetOperandsBuild.writableRoutePayloadOrNull() == null
-                        ? null
-                        : targetOperandsBuild.writableRoutePayloadOrNull().withRouteAnchor(assignmentExpression)
+                targetOperandsBuild.writableRoutePayload().withRouteAnchor(assignmentExpression)
         ));
         return rhsBuild.cursor();
     }
@@ -876,9 +874,7 @@ public final class FrontendCfgGraphBuilder {
                 targetOperandsBuild.valueIds(),
                 compoundResultValueId,
                 null,
-                targetOperandsBuild.writableRoutePayloadOrNull() == null
-                        ? null
-                        : targetOperandsBuild.writableRoutePayloadOrNull().withRouteAnchor(assignmentExpression)
+                targetOperandsBuild.writableRoutePayload().withRouteAnchor(assignmentExpression)
         ));
         return rhsBuild.cursor();
     }
@@ -888,6 +884,9 @@ public final class FrontendCfgGraphBuilder {
     /// The target AST itself remains on `AssignmentItem`, but any child expressions with real
     /// evaluation order, such as chain prefixes or subscript arguments, are materialized here so
     /// later lowering does not need to recurse back into the target subtree to discover them.
+    ///
+    /// Every currently supported assignment target must also publish one writable-route payload here.
+    /// Step-4 body lowering no longer has an AST-replay fallback for final stores.
     private @NotNull AssignmentTargetBuild buildAssignmentTargetOperands(
             @NotNull BuildCursor cursor,
             @NotNull Expression targetExpression
@@ -2053,17 +2052,15 @@ public final class FrontendCfgGraphBuilder {
     private record AssignmentTargetBuild(
             @NotNull BuildCursor cursor,
             @NotNull List<String> valueIds,
-            @Nullable FrontendWritableRoutePayload writableRoutePayloadOrNull
+            @NotNull FrontendWritableRoutePayload writableRoutePayload
     ) {
         private AssignmentTargetBuild {
             Objects.requireNonNull(cursor, "cursor must not be null");
             valueIds = List.copyOf(Objects.requireNonNull(valueIds, "valueIds must not be null"));
-            if (writableRoutePayloadOrNull != null) {
-                Objects.requireNonNull(
-                        writableRoutePayloadOrNull,
-                        "writableRoutePayloadOrNull must not be null"
-                );
-            }
+            Objects.requireNonNull(
+                    writableRoutePayload,
+                    "writableRoutePayload must not be null"
+            );
         }
     }
 
