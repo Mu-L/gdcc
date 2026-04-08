@@ -242,7 +242,7 @@ class FrontendWritableRouteSupportTest {
     }
 
     @Test
-    void reverseCommitSkipsRejectedInnerStepAndContinuesWithPromotedOuterCarrier() throws Exception {
+    void reverseCommitUsesPromotedCarrierWhenGateRejectsInnerButAllowsOuter() throws Exception {
         var session = prepareSession();
         var block = new LirBasicBlock("entry");
         session.ensureVariable("element_slot", GdVariantType.VARIANT);
@@ -266,6 +266,7 @@ class FrontendWritableRouteSupportTest {
 
         var carrierSlotId = FrontendWritableRouteSupport.writeLeaf(session, block, chain, "rhs_slot");
         var observedCarriers = new ArrayList<String>();
+        var gateDecisions = new ArrayList<Boolean>();
         FrontendWritableRouteSupport.reverseCommit(
                 session,
                 block,
@@ -273,26 +274,26 @@ class FrontendWritableRouteSupportTest {
                 carrierSlotId,
                 (_, currentCarrierSlotId) -> {
                     observedCarriers.add(currentCarrierSlotId);
-                    return observedCarriers.size() != 1;
+                    var allow = observedCarriers.size() == 2;
+                    gateDecisions.add(allow);
+                    return allow;
                 }
         );
         var instructions = block.getNonTerminatorInstructions();
-        var propertyStores = instructions.stream()
-                .filter(StorePropertyInsn.class::isInstance)
-                .map(StorePropertyInsn.class::cast)
-                .toList();
+        var leafStore = assertInstanceOf(StorePropertyInsn.class, instructions.get(0));
+        var outerStore = assertInstanceOf(StorePropertyInsn.class, instructions.get(1));
 
         assertAll(
                 () -> assertEquals(List.of("element_slot", "items_slot"), observedCarriers),
+                () -> assertEquals(List.of(false, true), gateDecisions),
                 () -> assertEquals(2, instructions.size()),
-                () -> assertEquals(0, instructions.stream().filter(VariantSetIndexedInsn.class::isInstance).count()),
-                () -> assertEquals(2, propertyStores.size()),
-                () -> assertEquals("x", propertyStores.getFirst().propertyName()),
-                () -> assertEquals("element_slot", propertyStores.getFirst().objectId()),
-                () -> assertEquals("rhs_slot", propertyStores.getFirst().valueId()),
-                () -> assertEquals("items", propertyStores.get(1).propertyName()),
-                () -> assertEquals("self", propertyStores.get(1).objectId()),
-                () -> assertEquals("items_slot", propertyStores.get(1).valueId())
+                () -> assertFalse(instructions.stream().anyMatch(VariantSetIndexedInsn.class::isInstance)),
+                () -> assertEquals("x", leafStore.propertyName()),
+                () -> assertEquals("element_slot", leafStore.objectId()),
+                () -> assertEquals("rhs_slot", leafStore.valueId()),
+                () -> assertEquals("items", outerStore.propertyName()),
+                () -> assertEquals("self", outerStore.objectId()),
+                () -> assertEquals("items_slot", outerStore.valueId())
         );
     }
 
