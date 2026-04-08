@@ -1,6 +1,6 @@
 # Frontend Dynamic Call Lowering Implementation
 
-> Updated: 2026-04-06
+> Updated: 2026-04-08
 >
 > 本文档是 frontend `DYNAMIC` method-call lowering 的事实源。
 > 不再记录阶段性步骤、完成进度或实施流水账；若合同变化，应直接改写当前状态。
@@ -24,6 +24,7 @@ frontend 当前正式支持的 dynamic call surface 是：
 - `FrontendResolvedCall(status = DYNAMIC, callKind = DYNAMIC_FALLBACK)`
 - receiver route 必须是 instance-style runtime value
 - call lowering 继续复用现有 `CallItem` 与 `CallMethodInsn`
+- 这条复用合同只冻结 call instruction surface，不再把 receiver 语义冻结成“永久 direct pass-through”
 
 这条路由覆盖的典型来源包括：
 
@@ -78,6 +79,19 @@ call result type 的正式真源是 call anchor 对应的 `analysisData.expressi
 - `DYNAMIC` call 继续发布 `Variant`
 - body lowering 不得回退为从 `resolvedCall.returnType()` 为 `DYNAMIC` call 二次推导结果类型
 
+### 3.3 Receiver writable access-chain 真源
+
+本文件冻结的是 dynamic call 的 route / result-type / argument-boundary 合同，但不再把 receiver 一侧硬编码成“总是扁平 slot 直通”。
+
+当某个 dynamic instance call 还同时参与 mutating receiver writeback 时：
+
+- CFG builder 必须继续复用同一个 `CallItem`
+- writable receiver access chain 必须作为同一个 `CallItem` 上的单个 frozen payload 发布
+- body lowering 必须整体消费这条 frozen chain 做 leaf selection 与 post-call commit
+- body lowering 不得把同一条 receiver chain 再拆成额外的 per-step item，也不得回头重跑 AST receiver 解释
+
+call-route / dispatch 的长合同仍以本文档为准；receiver-side writable chain / writeback 的长合同由 `frontend_complex_writable_target_plan.md` 约束。
+
 ---
 
 ## 4. Lowering 合同
@@ -92,16 +106,17 @@ compile gate、CFG builder 与 body lowering 对 call 的 lowering-ready surface
 
 若这些非 lowering-ready 状态仍流入 body lowering，应作为 invariant violation fail-fast。
 
-### 4.2 `DYNAMIC_FALLBACK -> CallMethodInsn`
+### 4.2 `DYNAMIC_FALLBACK` 继续复用 `CallMethodInsn` surface
 
 dynamic route 的 lowering 当前冻结为：
 
-- `DYNAMIC_FALLBACK` 只能 lower 为普通 `CallMethodInsn`
+- `DYNAMIC_FALLBACK` 的 call emission 继续 lower 为普通 `CallMethodInsn`
 - receiver 必须是 `FrontendReceiverKind.INSTANCE`
 - `methodName` 继续使用已发布的 `callableName`
 - 不得把该路由改写成 `CallStaticMethodInsn`
 - 不得把该路由改写成 `CallGlobalInsn`
 - 不得新增 `CallDynamicMethodInsn` 一类的新指令来承接它
+- 这条合同只冻结“调用指令长什么样”；若同一 call site 已发布 writable receiver access-chain payload，receiver 侧仍可在同一条 `CallMethodInsn` 前后附着 leaf selection / post-call commit
 
 ### 4.3 参数与结果边界
 
@@ -113,7 +128,8 @@ exact route 与 dynamic route 的参数物化边界必须继续分离：
 - `DYNAMIC_FALLBACK` route
   - body lowering 不读取 exact callable signature
   - body lowering 不为参数臆造 fixed parameter type
-  - 已求值的 operand slot 直接透传给 `CallMethodInsn`
+  - 已求值的 argument slot 直接透传给 `CallMethodInsn`
+  - receiver 侧若已被 CFG 发布为 writable access-chain payload，则由独立 writable-route logic 处理，不属于 ordinary argument boundary 合同
 
 dynamic call 的 published result slot 继续固定为 `Variant`。
 
@@ -139,9 +155,10 @@ frontend body lowering 不承担以下职责：
 - 为 `DYNAMIC` call 恢复 fixed callable signature
 - 在 call emission 阶段把 dynamic route 重新收紧成 exact route
 
-frontend 重新介入的位置只有一个：
+frontend 重新介入的位置只有两个，而且都必须受已发布事实约束：
 
 - 当 dynamic call 已发布的 `Variant` 结果继续跨越 ordinary typed boundary 时，frontend 负责插入对应的普通 boundary `(un)pack`
+- 当同一个 dynamic instance call 已发布 writable receiver access-chain payload 时，frontend 负责在同一条 `CallMethodInsn` 前后执行 leaf selection / runtime-gated post-call commit；frontend 不得为此重建 dynamic dispatch 或重做 callable resolution
 
 ---
 
@@ -166,6 +183,7 @@ frontend 重新介入的位置只有一个：
   - `runLowersDynamicInstanceCallsIntoCallMethodInsnWithVariantResultSlot`
   - `runLetsDynamicCallResultsCrossTypedCallBoundariesThroughOrdinaryUnpack`
   - `runFailsFastWhenSyntheticDynamicFallbackDoesNotUseInstanceReceiverRoute`
+  - mutating dynamic receiver route 一旦发布 writable access-chain payload，body lowering 必须整体消费该 payload，而不是重新拆分 receiver chain
 - `FrontendLoweringToCProjectBuilderIntegrationTest`
   - `lowerFrontendDynamicInstanceCallRoutesBuildNativeLibraryAndRunInGodot`
 - `FrontendCompileCheckAnalyzerTest`
@@ -181,6 +199,7 @@ frontend 重新介入的位置只有一个：
 - body lowering 只消费 graph + published semantic facts，不能回退成第二套 call resolver
 - route fact 与 result type fact 必须分离建模：`resolvedCalls()` 管 route，`expressionTypes()` 管 result type
 - ordinary typed-boundary conversion 与 runtime-open dynamic dispatch 是两条并列合同，不能混写成同一层责任
+- dynamic route 继续复用 `CallMethodInsn` surface，但这不等于 receiver side 永远只能是 direct pass-through；mutating receiver writeback 应作为并列的 receiver-side 合同叠加其上
 
 后续若要扩张 dynamic call surface，必须继续按以下顺序推进：
 

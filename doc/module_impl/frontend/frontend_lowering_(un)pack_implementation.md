@@ -173,6 +173,7 @@ ordinary call boundary 当前固定为：
   - body lowering 不读取 exact callable signature
   - 已求值的 argument slot 直接透传给 `CallMethodInsn`
   - 该 route 本身不插入 fixed-parameter ordinary boundary `(un)pack`
+  - 若 receiver 侧还带有 writable access-chain payload，则该 payload 由独立 receiver-side writable-route logic 消费，不属于 ordinary call boundary helper 的职责
 
 dynamic route 的 ordinary boundary 只会发生在它发布出来的 `Variant` 结果后续再次流入 typed boundary 时。
 

@@ -291,9 +291,12 @@ final class FrontendSequenceItemInsnLoweringProcessors {
     /// or guess between global/static/instance call families once compile-ready facts exist. It
     /// only materializes the already-approved argument-side `Variant` boundaries required by the
     /// selected callable signature for exact routes. Runtime-open `DYNAMIC_FALLBACK` instance calls
-    /// reuse the ordinary `CallMethodInsn` surface and forward their already-evaluated operands.
-    /// Dynamic dispatch stays on the backend route; later typed consumers of the published
-    /// `Variant` result still use the ordinary frontend boundary helper.
+    /// reuse the ordinary `CallMethodInsn` surface; this processor must not bake in a second
+    /// contract that the receiver is always a direct pass-through slot. If CFG later publishes one
+    /// frozen writable receiver route for a mutating call, that whole route must be consumed around
+    /// the same `CallMethodInsn` rather than split into ad-hoc step items here. Dynamic dispatch
+    /// stays on the backend route; later typed consumers of the published `Variant` result still
+    /// use the ordinary frontend boundary helper.
     private static final class FrontendCallInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<CallItem, Void> {
         @Override

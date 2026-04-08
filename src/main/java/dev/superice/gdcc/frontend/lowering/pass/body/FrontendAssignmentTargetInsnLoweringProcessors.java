@@ -23,6 +23,10 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
         );
     }
 
+    /// This registry is assignment-only.
+    /// Writable receiver chains used by mutating calls must be lowered from one frozen route
+    /// payload, not replayed through per-step item lowering, otherwise the call path loses the
+    /// owner provenance needed for reverse commit.
     static @NotNull FrontendInsnLoweringProcessorRegistry<Node, FrontendBodyLoweringSession.AssignmentTargetLoweringContext>
     createAttributeStepRegistry() {
         return FrontendInsnLoweringProcessorRegistry.of(

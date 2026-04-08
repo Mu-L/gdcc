@@ -204,7 +204,9 @@ plain assignment、compound assignment 与 constructor materialization 当前各
   - 同时承载 ordinary call 与 constructor call
   - runtime-open `DYNAMIC_FALLBACK` instance call 继续复用同一个 item，不新增 dynamic-call 专用 CFG item
   - constructor route 不新增专用 CFG item
-  - CFG 只负责冻结 operand 顺序、anchor 与 result value id
+  - CFG 继续负责冻结 operand 顺序、anchor 与 result value id
+  - 若某个 call site 后续需要 mutating receiver writeback，则同一个 `CallItem` 还必须承载单个 writable receiver access-chain payload
+  - 这条 chain payload 必须以“整条 route”的形式冻结；CFG 不得为同一个 call receiver 再发布一串额外 step item 让 body lowering 事后拼装
   - call result runtime type 的真源是 call anchor 对应的 `expressionTypes()`；`resolvedCalls()` 只负责 route fact，不是 `DYNAMIC` call result type 的唯一来源
 
 其中 compound assignment 的 source-order 合同固定为：
@@ -446,6 +448,7 @@ ordinary `Variant` boundary materialization 现在已经冻结为 executable-bod
 - `DYNAMIC_FALLBACK` instance call
   - frontend 不读取 callable signature，也不做 fixed-parameter boundary materialization
   - 已求值的 argument slot 直接透传给 `CallMethodInsn`
+  - receiver 若已由 CFG 发布为 writable access-chain payload，则必须走独立 receiver-side writable-route core；这不属于 ordinary argument boundary 合同
   - backend dynamic dispatch 继续承担 runtime-open call 的实际分派与直接 `Variant` 结果发布
   - 该 `Variant` 结果若随后跨越 ordinary typed boundary，再由 frontend ordinary boundary helper 做后续 `(un)pack`
 - return

@@ -66,6 +66,47 @@
   - We do not explicitly model "TypeType" in the type system; instead, we use a `StringName` to represent the type name as the implementation detail.
   - When we detect `some_str_name.new()`, we treat it as a constructor call for the type named by `some_str_name`.
 
+## Mutating Receiver Writeback Families
+
+- This section defines the shared type-system fact used by frontend writable-route lowering and backend runtime helpers to decide whether a mutating call on a receiver may need reverse writeback into an outer owner.
+- The question answered here is:
+  - "If this receiver family is mutated through a leaf access route, does the updated leaf need to be written back into the outer owner?"
+- This is intentionally different from backend-local questions such as:
+  - "Can this type be used as the `self` operand of a particular `variant_set_*` codegen path?"
+- Therefore backend generators such as `IndexStoreInsnGen` are not the truth source of this rule. They may consume or mirror it locally, but they must not define it.
+
+The current shared rule is:
+
+- does not require writeback:
+  - primitive family
+  - `Object` family
+  - shared/reference container family (`Array`, `Dictionary`)
+- requires writeback:
+  - other instance-call-capable value-semantic builtin families, including packed arrays
+
+The intended interpretation is:
+
+- primitive family:
+  - no mutating receiver route should rely on reverse owner commit
+- `Object` family:
+  - mutation happens through reference identity, so outer-owner writeback is not the semantic carrier
+- shared/reference container family:
+  - `Array` / `Dictionary` ownership is not modeled as "mutate leaf then commit into owner" in the same way as value-semantic builtin structs
+- value-semantic builtin families such as `String`, `StringName`, `NodePath`, `Color`, `Vector*`, `Basis`, `Transform*`, `Quaternion`, `Rect*`, `Plane`, `AABB`, `Projection`, `Callable`, `Signal`, `RID`, `Packed*Array`:
+  - if a mutating call targets a leaf reached through property/subscript/nested access, the leaf may need reverse writeback to preserve Godot-observable behavior
+
+For static typing:
+
+- frontend/shared semantic should answer this rule from `GdType` family information and published semantic facts
+- dynamic/`Variant` receiver routes cannot answer it statically, so they must defer to a runtime helper such as `gdcc_variant_requires_writeback(...)`
+
+If this matrix changes, the following fact sources must be updated together:
+
+- this document
+- `frontend_complex_writable_target_plan.md`
+- receiver-side writable-route helpers in frontend lowering
+- runtime `Variant` writeback helper contracts in `gdcc_helper.h`
+
 
 ## Serialization & Text Representation
 - Each type should export a stable string representation for documentation, diagnostics, and script annotations.
