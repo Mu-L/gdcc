@@ -17,13 +17,26 @@ import java.util.Objects;
 /// call order without reconstructing the receiver shape from the original AST. `callAnchor` is either
 /// the bare `CallExpression` root or the owning `AttributeCallStep`, and `callableName` freezes the
 /// semantic route name that later lowering should use instead of re-reading the callee subtree.
+/// If the receiver also participates in writable-route lowering, `writableRoutePayloadOrNull`
+/// publishes that owner/leaf/writeback shape separately from the ordinary call operands.
 public record CallItem(
         @NotNull Node callAnchor,
         @NotNull String callableName,
         @Nullable String receiverValueIdOrNull,
         @NotNull List<String> argumentValueIds,
-        @NotNull String resultValueId
+        @NotNull String resultValueId,
+        @Nullable FrontendWritableRoutePayload writableRoutePayloadOrNull
 ) implements ValueOpItem {
+    public CallItem(
+            @NotNull Node callAnchor,
+            @NotNull String callableName,
+            @Nullable String receiverValueIdOrNull,
+            @NotNull List<String> argumentValueIds,
+            @NotNull String resultValueId
+    ) {
+        this(callAnchor, callableName, receiverValueIdOrNull, argumentValueIds, resultValueId, null);
+    }
+
     public CallItem {
         Objects.requireNonNull(callAnchor, "callAnchor must not be null");
         callableName = StringUtil.requireNonBlank(callableName, "callableName");
@@ -33,6 +46,9 @@ public record CallItem(
         );
         argumentValueIds = FrontendCfgItemSupport.copyValueIds(argumentValueIds, "argumentValueIds");
         resultValueId = FrontendCfgGraph.validateValueId(resultValueId, "resultValueId");
+        if (writableRoutePayloadOrNull != null && writableRoutePayloadOrNull.routeAnchor() != callAnchor) {
+            throw new IllegalArgumentException("CallItem writable route anchor must match callAnchor");
+        }
     }
 
     @Override

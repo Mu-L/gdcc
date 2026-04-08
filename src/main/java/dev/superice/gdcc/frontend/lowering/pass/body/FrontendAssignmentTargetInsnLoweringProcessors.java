@@ -1,5 +1,6 @@
 package dev.superice.gdcc.frontend.lowering.pass.body;
 
+import dev.superice.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.insn.*;
 import dev.superice.gdcc.type.GdVariantType;
@@ -205,7 +206,7 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
                             baseSlotId,
                             null,
                             keySlotId,
-                            FrontendSubscriptInsnSupport.determineAccessKind(
+                            FrontendSubscriptAccessSupport.determineAccessKind(
                                     session.requireValueType(baseValueId),
                                     session.requireValueType(keyValueId)
                             ),
@@ -351,7 +352,7 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
                             receiverSlotId,
                             node.name(),
                             keySlotId,
-                            FrontendSubscriptInsnSupport.determineAccessKind(
+                            FrontendSubscriptAccessSupport.determineAccessKind(
                                     GdVariantType.VARIANT,
                                     session.requireValueType(keyValueId)
                             ),

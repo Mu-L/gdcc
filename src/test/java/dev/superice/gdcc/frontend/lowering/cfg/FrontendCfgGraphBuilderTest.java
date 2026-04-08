@@ -1,10 +1,12 @@
 package dev.superice.gdcc.frontend.lowering.cfg;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
@@ -54,6 +56,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -180,6 +184,10 @@ class FrontendCfgGraphBuilderTest {
         var fetchHelperValue = assertInstanceOf(CallItem.class, items.get(7));
         var fetchCallValue = assertInstanceOf(CallItem.class, items.get(8));
         var valueRead = assertInstanceOf(MemberLoadItem.class, items.get(9));
+        var fetchCallPayload = requireNotNull(
+                fetchCallValue.writableRoutePayloadOrNull(),
+                "attribute call should publish a writable receiver payload"
+        );
 
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
@@ -215,10 +223,83 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertEquals("fetch", fetchCallValue.callableName()),
                 () -> assertEquals(List.of("v5", "v7"), fetchCallValue.operandValueIds()),
                 () -> assertEquals("v8", fetchCallValue.resultValueId()),
+                () -> assertSame(fetchStep, fetchCallPayload.routeAnchor()),
+                () -> assertEquals(FrontendWritableRoutePayload.RootKind.VALUE_ID, fetchCallPayload.root().kind()),
+                () -> assertSame(buildCall, fetchCallPayload.root().anchor()),
+                () -> assertEquals(buildCallValue.resultValueId(), fetchCallPayload.root().valueIdOrNull()),
+                () -> assertEquals(FrontendWritableRoutePayload.LeafKind.SUBSCRIPT, fetchCallPayload.leaf().kind()),
+                () -> assertSame(payloadsStep, fetchCallPayload.leaf().anchor()),
+                () -> assertEquals(buildCallValue.resultValueId(), fetchCallPayload.leaf().containerValueIdOrNull()),
+                () -> assertEquals(List.of(payloadsHelperValue.resultValueId()), fetchCallPayload.leaf().operandValueIds()),
+                () -> assertEquals("payloads", fetchCallPayload.leaf().memberNameOrNull()),
+                () -> assertEquals(
+                        FrontendSubscriptAccessSupport.AccessKind.INDEXED,
+                        fetchCallPayload.leaf().subscriptAccessKindOrNull()
+                ),
+                () -> assertTrue(fetchCallPayload.reverseCommitSteps().isEmpty()),
                 () -> assertEquals(valueStep, valueRead.anchor()),
                 () -> assertEquals("value", valueRead.memberName()),
                 () -> assertEquals(List.of("v8"), valueRead.operandValueIds()),
                 () -> assertEquals("v9", valueRead.resultValueId())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesDirectSlotWritableReceiverPayloadForInstanceCalls() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_direct_slot_receiver_call.gd",
+                """
+                        class_name CfgBuilderDirectSlotReceiverCall
+                        extends RefCounted
+                        
+                        func ping(values: PackedInt32Array, seed: int) -> void:
+                            values.push_back(seed)
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderDirectSlotReceiverCall",
+                        "RuntimeCfgBuilderDirectSlotReceiverCall"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
+        var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
+        var callStep = assertInstanceOf(AttributeCallStep.class, expression.steps().getFirst());
+        var seed = assertInstanceOf(IdentifierExpression.class, callStep.arguments().getFirst());
+
+        var items = entryNode.items();
+        var receiverValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(0));
+        var seedValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(1));
+        var callValue = assertInstanceOf(CallItem.class, items.get(2));
+        var callPayload = requireNotNull(
+                callValue.writableRoutePayloadOrNull(),
+                "instance call receiver should publish a writable payload"
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(3, items.size()),
+                () -> assertSame(receiver, receiverValue.expression()),
+                () -> assertSame(seed, seedValue.expression()),
+                () -> assertSame(callStep, callValue.anchor()),
+                () -> assertEquals("push_back", callValue.callableName()),
+                () -> assertEquals(receiverValue.resultValueId(), callValue.receiverValueIdOrNull()),
+                () -> assertEquals(List.of(seedValue.resultValueId()), callValue.argumentValueIds()),
+                () -> assertSame(callStep, callPayload.routeAnchor()),
+                () -> assertEquals(FrontendWritableRoutePayload.RootKind.DIRECT_SLOT, callPayload.root().kind()),
+                () -> assertSame(receiver, callPayload.root().anchor()),
+                () -> assertNull(callPayload.root().valueIdOrNull()),
+                () -> assertEquals(FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT, callPayload.leaf().kind()),
+                () -> assertSame(receiver, callPayload.leaf().anchor()),
+                () -> assertNull(callPayload.leaf().containerValueIdOrNull()),
+                () -> assertEquals(List.of(), callPayload.leaf().operandValueIds()),
+                () -> assertNull(callPayload.leaf().memberNameOrNull()),
+                () -> assertNull(callPayload.leaf().subscriptAccessKindOrNull()),
+                () -> assertTrue(callPayload.reverseCommitSteps().isEmpty())
         );
     }
 
@@ -353,6 +434,11 @@ class FrontendCfgGraphBuilderTest {
         var rhsProduceValue = assertInstanceOf(CallItem.class, items.get(9));
         var assignmentCommit = assertInstanceOf(AssignmentItem.class, items.get(10));
         var returnValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(11));
+        var assignmentPayload = requireNotNull(
+                assignmentCommit.writableRoutePayloadOrNull(),
+                "plain subscript assignment should publish a writable target payload"
+        );
+        var assignmentCommitStep = assignmentPayload.reverseCommitSteps().getFirst();
 
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
@@ -386,6 +472,26 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertEquals(List.of("v4", "v6"), assignmentCommit.targetOperandValueIds()),
                 () -> assertEquals("v8", assignmentCommit.rhsValueId()),
                 () -> assertEquals(List.of("v4", "v6", "v8"), assignmentCommit.operandValueIds()),
+                () -> assertSame(assignmentExpression, assignmentPayload.routeAnchor()),
+                () -> assertEquals(FrontendWritableRoutePayload.RootKind.SELF_CONTEXT, assignmentPayload.root().kind()),
+                () -> assertSame(targetBase, assignmentPayload.root().anchor()),
+                () -> assertNull(assignmentPayload.root().valueIdOrNull()),
+                () -> assertEquals(FrontendWritableRoutePayload.LeafKind.SUBSCRIPT, assignmentPayload.leaf().kind()),
+                () -> assertSame(targetSubscript, assignmentPayload.leaf().anchor()),
+                () -> assertEquals(targetBaseValue.resultValueId(), assignmentPayload.leaf().containerValueIdOrNull()),
+                () -> assertEquals(List.of(indexHelperValue.resultValueId()), assignmentPayload.leaf().operandValueIds()),
+                () -> assertNull(assignmentPayload.leaf().memberNameOrNull()),
+                () -> assertEquals(
+                        FrontendSubscriptAccessSupport.AccessKind.INDEXED,
+                        assignmentPayload.leaf().subscriptAccessKindOrNull()
+                ),
+                () -> assertEquals(1, assignmentPayload.reverseCommitSteps().size()),
+                () -> assertEquals(FrontendWritableRoutePayload.StepKind.PROPERTY, assignmentCommitStep.kind()),
+                () -> assertSame(targetBase, assignmentCommitStep.anchor()),
+                () -> assertNull(assignmentCommitStep.containerValueIdOrNull()),
+                () -> assertEquals(List.of(), assignmentCommitStep.operandValueIds()),
+                () -> assertEquals("items", assignmentCommitStep.memberNameOrNull()),
+                () -> assertNull(assignmentCommitStep.subscriptAccessKindOrNull()),
                 () -> assertEquals("v9", returnValue.resultValueId()),
                 () -> assertEquals("v9", stopNode.returnValueIdOrNull())
         );
@@ -432,6 +538,10 @@ class FrontendCfgGraphBuilderTest {
         var compoundValue = assertInstanceOf(CompoundAssignmentBinaryOpItem.class, items.get(5));
         var assignmentCommit = assertInstanceOf(AssignmentItem.class, items.get(6));
         var returnValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(7));
+        var assignmentPayload = requireNotNull(
+                assignmentCommit.writableRoutePayloadOrNull(),
+                "compound identifier assignment should publish a direct-slot payload"
+        );
 
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
@@ -456,6 +566,15 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertEquals(List.of(), assignmentCommit.targetOperandValueIds()),
                 () -> assertEquals("v4", assignmentCommit.rhsValueId()),
                 () -> assertEquals(List.of("v4"), assignmentCommit.operandValueIds()),
+                () -> assertSame(assignmentExpression, assignmentPayload.routeAnchor()),
+                () -> assertEquals(FrontendWritableRoutePayload.RootKind.DIRECT_SLOT, assignmentPayload.root().kind()),
+                () -> assertSame(targetIdentifier, assignmentPayload.root().anchor()),
+                () -> assertNull(assignmentPayload.root().valueIdOrNull()),
+                () -> assertEquals(FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT, assignmentPayload.leaf().kind()),
+                () -> assertSame(targetIdentifier, assignmentPayload.leaf().anchor()),
+                () -> assertNull(assignmentPayload.leaf().containerValueIdOrNull()),
+                () -> assertEquals(List.of(), assignmentPayload.leaf().operandValueIds()),
+                () -> assertTrue(assignmentPayload.reverseCommitSteps().isEmpty()),
                 () -> assertEquals("v5", returnValue.resultValueId()),
                 () -> assertEquals("v5", stopNode.returnValueIdOrNull())
         );
@@ -497,6 +616,10 @@ class FrontendCfgGraphBuilderTest {
         var rhsCallValue = assertInstanceOf(CallItem.class, items.get(3));
         var compoundValue = assertInstanceOf(CompoundAssignmentBinaryOpItem.class, items.get(4));
         var assignmentCommit = assertInstanceOf(AssignmentItem.class, items.get(5));
+        var assignmentPayload = requireNotNull(
+                assignmentCommit.writableRoutePayloadOrNull(),
+                "compound property assignment should publish a property payload"
+        );
 
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
@@ -518,7 +641,17 @@ class FrontendCfgGraphBuilderTest {
                         compoundValue.operandValueIds()
                 ),
                 () -> assertEquals(List.of(receiverValue.resultValueId()), assignmentCommit.targetOperandValueIds()),
-                () -> assertEquals(compoundValue.resultValueId(), assignmentCommit.rhsValueId())
+                () -> assertEquals(compoundValue.resultValueId(), assignmentCommit.rhsValueId()),
+                () -> assertSame(assignmentExpression, assignmentPayload.routeAnchor()),
+                () -> assertEquals(FrontendWritableRoutePayload.RootKind.DIRECT_SLOT, assignmentPayload.root().kind()),
+                () -> assertSame(targetAttribute.base(), assignmentPayload.root().anchor()),
+                () -> assertEquals(FrontendWritableRoutePayload.LeafKind.PROPERTY, assignmentPayload.leaf().kind()),
+                () -> assertSame(propertyStep, assignmentPayload.leaf().anchor()),
+                () -> assertNull(assignmentPayload.leaf().containerValueIdOrNull()),
+                () -> assertEquals(List.of(), assignmentPayload.leaf().operandValueIds()),
+                () -> assertEquals("hp", assignmentPayload.leaf().memberNameOrNull()),
+                () -> assertNull(assignmentPayload.leaf().subscriptAccessKindOrNull()),
+                () -> assertTrue(assignmentPayload.reverseCommitSteps().isEmpty())
         );
     }
 
@@ -562,6 +695,11 @@ class FrontendCfgGraphBuilderTest {
         var rhsCallValue = assertInstanceOf(CallItem.class, items.get(4));
         var compoundValue = assertInstanceOf(CompoundAssignmentBinaryOpItem.class, items.get(5));
         var assignmentCommit = assertInstanceOf(AssignmentItem.class, items.get(6));
+        var assignmentPayload = requireNotNull(
+                assignmentCommit.writableRoutePayloadOrNull(),
+                "compound subscript assignment should publish a subscript payload"
+        );
+        var assignmentCommitStep = assignmentPayload.reverseCommitSteps().getFirst();
 
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
@@ -586,7 +724,23 @@ class FrontendCfgGraphBuilderTest {
                         List.of(baseValue.resultValueId(), indexCallValue.resultValueId()),
                         assignmentCommit.targetOperandValueIds()
                 ),
-                () -> assertEquals(compoundValue.resultValueId(), assignmentCommit.rhsValueId())
+                () -> assertEquals(compoundValue.resultValueId(), assignmentCommit.rhsValueId()),
+                () -> assertSame(assignmentExpression, assignmentPayload.routeAnchor()),
+                () -> assertEquals(FrontendWritableRoutePayload.RootKind.SELF_CONTEXT, assignmentPayload.root().kind()),
+                () -> assertSame(targetSubscript.base(), assignmentPayload.root().anchor()),
+                () -> assertEquals(FrontendWritableRoutePayload.LeafKind.SUBSCRIPT, assignmentPayload.leaf().kind()),
+                () -> assertSame(targetSubscript, assignmentPayload.leaf().anchor()),
+                () -> assertEquals(baseValue.resultValueId(), assignmentPayload.leaf().containerValueIdOrNull()),
+                () -> assertEquals(List.of(indexCallValue.resultValueId()), assignmentPayload.leaf().operandValueIds()),
+                () -> assertNull(assignmentPayload.leaf().memberNameOrNull()),
+                () -> assertEquals(
+                        FrontendSubscriptAccessSupport.AccessKind.INDEXED,
+                        assignmentPayload.leaf().subscriptAccessKindOrNull()
+                ),
+                () -> assertEquals(1, assignmentPayload.reverseCommitSteps().size()),
+                () -> assertEquals(FrontendWritableRoutePayload.StepKind.PROPERTY, assignmentCommitStep.kind()),
+                () -> assertSame(targetSubscript.base(), assignmentCommitStep.anchor()),
+                () -> assertEquals("items", assignmentCommitStep.memberNameOrNull())
         );
     }
 
@@ -631,6 +785,11 @@ class FrontendCfgGraphBuilderTest {
         var rhsCallValue = assertInstanceOf(CallItem.class, items.get(4));
         var compoundValue = assertInstanceOf(CompoundAssignmentBinaryOpItem.class, items.get(5));
         var assignmentCommit = assertInstanceOf(AssignmentItem.class, items.get(6));
+        var assignmentPayload = requireNotNull(
+                assignmentCommit.writableRoutePayloadOrNull(),
+                "compound attribute-subscript assignment should publish a nested writable payload"
+        );
+        var assignmentCommitStep = assignmentPayload.reverseCommitSteps().getFirst();
 
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
@@ -654,7 +813,23 @@ class FrontendCfgGraphBuilderTest {
                         List.of(baseValue.resultValueId(), indexValue.resultValueId()),
                         assignmentCommit.targetOperandValueIds()
                 ),
-                () -> assertEquals(compoundValue.resultValueId(), assignmentCommit.rhsValueId())
+                () -> assertEquals(compoundValue.resultValueId(), assignmentCommit.rhsValueId()),
+                () -> assertSame(assignmentExpression, assignmentPayload.routeAnchor()),
+                () -> assertEquals(FrontendWritableRoutePayload.RootKind.SELF_CONTEXT, assignmentPayload.root().kind()),
+                () -> assertSame(targetAttribute.base(), assignmentPayload.root().anchor()),
+                () -> assertEquals(FrontendWritableRoutePayload.LeafKind.SUBSCRIPT, assignmentPayload.leaf().kind()),
+                () -> assertSame(targetStep, assignmentPayload.leaf().anchor()),
+                () -> assertEquals(baseValue.resultValueId(), assignmentPayload.leaf().containerValueIdOrNull()),
+                () -> assertEquals(List.of(indexValue.resultValueId()), assignmentPayload.leaf().operandValueIds()),
+                () -> assertEquals("payloads", assignmentPayload.leaf().memberNameOrNull()),
+                () -> assertEquals(
+                        FrontendSubscriptAccessSupport.AccessKind.INDEXED,
+                        assignmentPayload.leaf().subscriptAccessKindOrNull()
+                ),
+                () -> assertEquals(1, assignmentPayload.reverseCommitSteps().size()),
+                () -> assertEquals(FrontendWritableRoutePayload.StepKind.PROPERTY, assignmentCommitStep.kind()),
+                () -> assertSame(targetAttribute.base(), assignmentCommitStep.anchor()),
+                () -> assertEquals("holder", assignmentCommitStep.memberNameOrNull())
         );
     }
 
@@ -1476,6 +1651,11 @@ class FrontendCfgGraphBuilderTest {
             }
         }
         throw new AssertionError("Missing reachable branch for condition root " + conditionRoot.getClass().getSimpleName());
+    }
+
+    private static <T> @NotNull T requireNotNull(T value, @NotNull String detail) {
+        assertNotNull(value, detail);
+        return value;
     }
 
     private static @NotNull AnalyzedFunction analyzeFunction(

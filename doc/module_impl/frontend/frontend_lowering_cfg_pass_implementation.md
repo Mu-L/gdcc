@@ -210,8 +210,9 @@ plain assignment、compound assignment 与 constructor materialization 当前各
   - call result runtime type 的真源是 call anchor 对应的 `expressionTypes()`；`resolvedCalls()` 只负责 route fact，不是 `DYNAMIC` call result type 的唯一来源
 
 当前 body lowering 侧已经把 writable-route 的 leaf read / leaf write / reverse commit 共用逻辑收敛到 package-private
-`FrontendWritableRouteSupport`。在 CFG payload 尚未扩展完成之前，assignment / member load / subscript load / direct-slot call receiver
-仍基于现有 published operand surface 组装 route，但 lowering 不再各自维护一套平行 writeback 逻辑。
+`FrontendWritableRouteSupport`。当前 CFG 已经能通过 `FrontendWritableRoutePayload` 在 `CallItem` / `AssignmentItem` 上冻结整条
+writable route，graph publication 也会校验这类 payload 的本地 value-id 引用顺序。assignment lowering 仍暂时保留
+legacy `targetOperandValueIds` 作为迁移期兼容 surface；call receiver leaf 则在 payload 存在时优先直接消费 frozen route。
 
 其中 compound assignment 的 source-order 合同固定为：
 

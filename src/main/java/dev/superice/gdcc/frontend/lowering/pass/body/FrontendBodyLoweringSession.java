@@ -5,6 +5,7 @@ import dev.superice.gdcc.frontend.lowering.FunctionLoweringContext;
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
@@ -32,7 +33,9 @@ import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.Expression;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -205,12 +208,19 @@ public final class FrontendBodyLoweringSession {
 
     /// Materializes the current call-receiver leaf through the shared writable-route support.
     ///
-    /// Current `CallItem` publication still exposes only the direct-slot subset because it does not
-    /// yet carry a frozen writable-route payload. Routing even the trivial receiver path through the
-    /// shared support keeps call lowering on the same leaf-selection entry point as
-    /// assignment/compound-assignment routes and avoids a second receiver-specific helper stack.
+    /// When `CallItem` already carries one frozen writable-route payload, this method must consume that
+    /// payload directly instead of rebuilding receiver provenance from `receiverValueIdOrNull`.
+    /// Only legacy items without payload still fall back to the old direct-slot subset.
     @NotNull String materializeCallReceiverLeaf(@NotNull LirBasicBlock block, @NotNull CallItem item) {
         Objects.requireNonNull(block, "block must not be null");
+        if (item.writableRoutePayloadOrNull() != null) {
+            return FrontendWritableRouteSupport.materializeLeafRead(
+                    this,
+                    block,
+                    requireWritableAccessChain(item.writableRoutePayloadOrNull()),
+                    "call_receiver"
+            );
+        }
         var receiverSlotId = resolveInstanceCallReceiver(Objects.requireNonNull(item, "item must not be null"));
         var receiverType = item.receiverValueIdOrNull() == null
                 ? requireFunctionVariableType(receiverSlotId)
@@ -222,6 +232,243 @@ public final class FrontendBodyLoweringSession {
                 List.of()
         );
         return FrontendWritableRouteSupport.materializeLeafRead(this, block, chain, "call_receiver");
+    }
+
+    @NotNull FrontendWritableRouteSupport.FrontendWritableAccessChain requireWritableAccessChain(
+            @NotNull FrontendWritableRoutePayload payload
+    ) {
+        var actualPayload = Objects.requireNonNull(payload, "payload must not be null");
+        return new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                actualPayload.routeAnchor(),
+                materializeWritableRouteRoot(actualPayload.root()),
+                materializeWritableLeaf(actualPayload),
+                actualPayload.reverseCommitSteps().stream()
+                        .map(step -> materializeWritableCommitStep(actualPayload.root(), step))
+                        .toList()
+        );
+    }
+
+    private @NotNull FrontendWritableRouteSupport.FrontendWritableRoot materializeWritableRouteRoot(
+            @NotNull FrontendWritableRoutePayload.RootDescriptor root
+    ) {
+        return switch (Objects.requireNonNull(root, "root must not be null").kind()) {
+            case DIRECT_SLOT -> {
+                var slotId = resolveDirectWritableRootSlot(root.anchor());
+                yield new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "direct slot route",
+                        slotId,
+                        requireFunctionVariableType(slotId)
+                );
+            }
+            case SELF_CONTEXT -> {
+                requireSelfSlot();
+                yield new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "implicit self route",
+                        "self",
+                        requireFunctionVariableType("self")
+                );
+            }
+            case STATIC_CONTEXT -> new FrontendWritableRouteSupport.FrontendWritableRoot(
+                    "static route",
+                    null,
+                    new GdObjectType(currentClassName())
+            );
+            case VALUE_ID -> {
+                var valueId = Objects.requireNonNull(root.valueIdOrNull(), "VALUE_ID root must publish valueIdOrNull");
+                yield new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "value route",
+                        slotIdForValue(valueId),
+                        requireValueType(valueId)
+                );
+            }
+        };
+    }
+
+    private @NotNull FrontendWritableRouteSupport.FrontendWritableLeaf materializeWritableLeaf(
+            @NotNull FrontendWritableRoutePayload payload
+    ) {
+        var root = payload.root();
+        var leaf = payload.leaf();
+        var leafType = requireWritableLeafType(payload);
+        return switch (leaf.kind()) {
+            case DIRECT_SLOT -> new FrontendWritableRouteSupport.DirectSlotLeaf(
+                    resolveDirectWritableLeafSlot(root),
+                    leafType
+            );
+            case PROPERTY -> {
+                var propertyName = Objects.requireNonNull(leaf.memberNameOrNull(), "PROPERTY leaf must publish memberNameOrNull");
+                if (isStaticWritablePropertyRoute(root, leaf.anchor())) {
+                    yield new FrontendWritableRouteSupport.StaticPropertyLeaf(
+                            requireStaticWritableReceiverName(root, leaf.anchor()),
+                            propertyName,
+                            leafType
+                    );
+                }
+                yield new FrontendWritableRouteSupport.InstancePropertyLeaf(
+                        resolveWritableContainerSlot(root, leaf.containerValueIdOrNull()),
+                        propertyName,
+                        leafType
+                );
+            }
+            case SUBSCRIPT -> new FrontendWritableRouteSupport.SubscriptLeaf(
+                    resolveWritableContainerSlot(root, leaf.containerValueIdOrNull()),
+                    leaf.memberNameOrNull(),
+                    slotIdForValue(leaf.operandValueIds().getFirst()),
+                    Objects.requireNonNull(
+                            leaf.subscriptAccessKindOrNull(),
+                            "SUBSCRIPT leaf must publish subscriptAccessKindOrNull"
+                    ),
+                    leafType
+            );
+        };
+    }
+
+    private @NotNull FrontendWritableRouteSupport.FrontendWritableCommitStep materializeWritableCommitStep(
+            @NotNull FrontendWritableRoutePayload.RootDescriptor root,
+            @NotNull FrontendWritableRoutePayload.StepDescriptor step
+    ) {
+        return switch (Objects.requireNonNull(step, "step must not be null").kind()) {
+            case PROPERTY -> {
+                var propertyName = Objects.requireNonNull(step.memberNameOrNull(), "PROPERTY step must publish memberNameOrNull");
+                if (isStaticWritablePropertyRoute(root, step.anchor())) {
+                    yield new FrontendWritableRouteSupport.StaticPropertyCommitStep(
+                            requireStaticWritableReceiverName(root, step.anchor()),
+                            propertyName
+                    );
+                }
+                yield new FrontendWritableRouteSupport.InstancePropertyCommitStep(
+                        resolveWritableContainerSlot(root, step.containerValueIdOrNull()),
+                        propertyName
+                );
+            }
+            case SUBSCRIPT -> new FrontendWritableRouteSupport.SubscriptCommitStep(
+                    resolveWritableContainerSlot(root, step.containerValueIdOrNull()),
+                    step.memberNameOrNull(),
+                    slotIdForValue(step.operandValueIds().getFirst()),
+                    Objects.requireNonNull(
+                            step.subscriptAccessKindOrNull(),
+                            "SUBSCRIPT step must publish subscriptAccessKindOrNull"
+                    )
+            );
+        };
+    }
+
+    private @NotNull String resolveDirectWritableLeafSlot(
+            @NotNull FrontendWritableRoutePayload.RootDescriptor root
+    ) {
+        return switch (Objects.requireNonNull(root, "root must not be null").kind()) {
+            case DIRECT_SLOT -> resolveDirectWritableRootSlot(root.anchor());
+            case SELF_CONTEXT -> {
+                requireSelfSlot();
+                yield "self";
+            }
+            case VALUE_ID -> slotIdForValue(Objects.requireNonNull(root.valueIdOrNull(), "VALUE_ID root must publish valueIdOrNull"));
+            case STATIC_CONTEXT -> throw new IllegalStateException("STATIC_CONTEXT root cannot materialize a direct-slot leaf");
+        };
+    }
+
+    private @NotNull String resolveWritableContainerSlot(
+            @NotNull FrontendWritableRoutePayload.RootDescriptor root,
+            @Nullable String containerValueIdOrNull
+    ) {
+        if (containerValueIdOrNull != null) {
+            return slotIdForValue(containerValueIdOrNull);
+        }
+        return switch (Objects.requireNonNull(root, "root must not be null").kind()) {
+            case DIRECT_SLOT -> resolveDirectWritableRootSlot(root.anchor());
+            case SELF_CONTEXT -> {
+                requireSelfSlot();
+                yield "self";
+            }
+            case VALUE_ID -> slotIdForValue(Objects.requireNonNull(root.valueIdOrNull(), "VALUE_ID root must publish valueIdOrNull"));
+            case STATIC_CONTEXT -> throw new IllegalStateException(
+                    "STATIC_CONTEXT root requires an explicit container value id for non-property writable routes"
+            );
+        };
+    }
+
+    private @NotNull String resolveDirectWritableRootSlot(@NotNull Node rootAnchor) {
+        return switch (Objects.requireNonNull(rootAnchor, "rootAnchor must not be null")) {
+            case SelfExpression _ -> {
+                requireSelfSlot();
+                yield "self";
+            }
+            case IdentifierExpression _ -> {
+                var binding = requireBinding(rootAnchor);
+                yield switch (binding.kind()) {
+                    case LOCAL_VAR, PARAMETER, CAPTURE -> binding.symbolName();
+                    case SELF -> {
+                        requireSelfSlot();
+                        yield "self";
+                    }
+                    default -> throw new IllegalStateException(
+                            "DIRECT_SLOT writable root requires a storage-backed binding, but got " + binding.kind()
+                    );
+                };
+            }
+            default -> throw new IllegalStateException(
+                    "DIRECT_SLOT writable root requires IdentifierExpression or SelfExpression, but got "
+                            + rootAnchor.getClass().getSimpleName()
+            );
+        };
+    }
+
+    private boolean isStaticWritablePropertyRoute(
+            @NotNull FrontendWritableRoutePayload.RootDescriptor root,
+            @NotNull Node propertyAnchor
+    ) {
+        if (root.kind() == FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT) {
+            return true;
+        }
+        return switch (Objects.requireNonNull(propertyAnchor, "propertyAnchor must not be null")) {
+            case IdentifierExpression _ -> {
+                var binding = requireBinding(propertyAnchor);
+                yield isStaticPropertyBinding(binding);
+            }
+            case dev.superice.gdparser.frontend.ast.AttributePropertyStep _ -> {
+                var resolvedMember = requireResolvedMember(propertyAnchor);
+                yield resolvedMember.receiverKind() == dev.superice.gdcc.frontend.sema.FrontendReceiverKind.TYPE_META;
+            }
+            default -> false;
+        };
+    }
+
+    @SuppressWarnings("SwitchStatementWithTooFewBranches")
+    private @NotNull String requireStaticWritableReceiverName(
+            @NotNull FrontendWritableRoutePayload.RootDescriptor root,
+            @NotNull Node propertyAnchor
+    ) {
+        return switch (Objects.requireNonNull(propertyAnchor, "propertyAnchor must not be null")) {
+            case dev.superice.gdparser.frontend.ast.AttributePropertyStep _ -> requireStaticReceiverName(
+                    requireResolvedMember(propertyAnchor).receiverType()
+            );
+            case IdentifierExpression _ -> currentClassName();
+            default -> switch (root.kind()) {
+                case STATIC_CONTEXT -> currentClassName();
+                default -> throw new IllegalStateException(
+                        "Static writable property route requires a type-meta or static-binding anchor"
+                );
+            };
+        };
+    }
+
+    private @NotNull GdType requireWritableLeafType(@NotNull FrontendWritableRoutePayload payload) {
+        if (payload.leaf().kind() == FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT
+                && payload.root().kind() == FrontendWritableRoutePayload.RootKind.VALUE_ID) {
+            return requireValueType(Objects.requireNonNull(
+                    payload.root().valueIdOrNull(),
+                    "VALUE_ID root must publish valueIdOrNull"
+            ));
+        }
+        var published = analysisData.expressionTypes().get(payload.leaf().anchor());
+        if (published == null || published.publishedType() == null) {
+            throw new IllegalStateException(
+                    "Writable route leaf anchor "
+                            + payload.leaf().anchor().getClass().getSimpleName()
+                            + " is missing a lowering-ready published type"
+            );
+        }
+        return published.publishedType();
     }
 
     void requireSelfSlot() {

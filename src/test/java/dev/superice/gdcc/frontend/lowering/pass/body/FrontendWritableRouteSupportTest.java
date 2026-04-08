@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.lowering.pass.body;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import dev.superice.gdcc.frontend.lowering.FrontendLoweringContext;
 import dev.superice.gdcc.frontend.lowering.FunctionLoweringContext;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
@@ -108,7 +109,7 @@ class FrontendWritableRouteSupportTest {
                         "receiver_slot",
                         "payloads",
                         "key_slot",
-                        FrontendSubscriptInsnSupport.SubscriptAccessKind.INDEXED,
+                        FrontendSubscriptAccessSupport.AccessKind.INDEXED,
                         GdVariantType.VARIANT
                 ),
                 List.of()
@@ -152,7 +153,7 @@ class FrontendWritableRouteSupportTest {
                         "payload_slot",
                         null,
                         "key_slot",
-                        FrontendSubscriptInsnSupport.SubscriptAccessKind.INDEXED,
+                        FrontendSubscriptAccessSupport.AccessKind.INDEXED,
                         GdVariantType.VARIANT
                 ),
                 List.of(new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "payloads"))
@@ -196,7 +197,7 @@ class FrontendWritableRouteSupportTest {
                         "receiver_slot",
                         null,
                         " ",
-                        FrontendSubscriptInsnSupport.SubscriptAccessKind.INDEXED,
+                        FrontendSubscriptAccessSupport.AccessKind.INDEXED,
                         GdVariantType.VARIANT
                 )
         );

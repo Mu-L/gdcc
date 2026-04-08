@@ -1,11 +1,13 @@
 package dev.superice.gdcc.frontend.lowering.cfg;
 
 import dev.superice.gdcc.enums.GodotOperator;
+import dev.superice.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CastItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
@@ -27,6 +29,7 @@ import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import dev.superice.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
+import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -57,6 +60,8 @@ import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
+import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -508,8 +513,7 @@ public final class FrontendCfgGraphBuilder {
         for (var stepIndex = 0; stepIndex < attributeExpression.steps().size(); stepIndex++) {
             var step = attributeExpression.steps().get(stepIndex);
             currentBuild = applyAttributeStep(
-                    currentBuild.cursor(),
-                    currentBuild.resultValueId(),
+                    currentBuild,
                     step,
                     stepIndex + 1 == attributeExpression.steps().size() ? preferredResultValueId : null
             );
@@ -549,8 +553,7 @@ public final class FrontendCfgGraphBuilder {
         for (var stepIndex = 1; stepIndex < attributeExpression.steps().size(); stepIndex++) {
             var step = attributeExpression.steps().get(stepIndex);
             currentBuild = applyAttributeStep(
-                    currentBuild.cursor(),
-                    currentBuild.resultValueId(),
+                    currentBuild,
                     step,
                     stepIndex + 1 == attributeExpression.steps().size() ? preferredResultValueId : null
             );
@@ -571,7 +574,7 @@ public final class FrontendCfgGraphBuilder {
                 null,
                 resultValueId
         ));
-        return new ValueBuild(cursor, resultValueId);
+        return valueRootBuild(cursor, attributePropertyStep, resultValueId);
     }
 
     private @NotNull ValueBuild buildTypeMetaHeadCallStep(
@@ -589,7 +592,7 @@ public final class FrontendCfgGraphBuilder {
                 argumentsBuild.valueIds(),
                 resultValueId
         ));
-        return new ValueBuild(argumentsBuild.cursor(), resultValueId);
+        return valueRootBuild(argumentsBuild.cursor(), attributeCallStep, resultValueId);
     }
 
     /// Bare call lowering consumes the published `resolvedCalls()` fact directly.
@@ -621,7 +624,7 @@ public final class FrontendCfgGraphBuilder {
                 argumentsBuild.valueIds(),
                 resultValueId
         ));
-        return new ValueBuild(argumentsBuild.cursor(), resultValueId);
+        return valueRootBuild(argumentsBuild.cursor(), callExpression, resultValueId);
     }
 
     /// Plain subscripts first materialize their base and arguments, then commit one explicit indexed
@@ -641,7 +644,21 @@ public final class FrontendCfgGraphBuilder {
                 argumentsBuild.valueIds(),
                 resultValueId
         ));
-        return new ValueBuild(argumentsBuild.cursor(), resultValueId);
+        return new ValueBuild(
+                argumentsBuild.cursor(),
+                subscriptExpression,
+                resultValueId,
+                appendSubscriptWritableRoute(
+                        baseBuild,
+                        subscriptExpression,
+                        argumentsBuild.valueIds(),
+                        determineWritableSubscriptAccessKind(
+                                subscriptExpression,
+                                requireWritableRouteAnchorType(subscriptExpression.base()),
+                                requireWritableRouteAnchorType(subscriptExpression.arguments().getFirst())
+                        )
+                )
+        );
     }
 
     /// Cast expressions are still compile-blocked by the default pipeline, but the item contract is
@@ -659,7 +676,7 @@ public final class FrontendCfgGraphBuilder {
                 operandBuild.resultValueId(),
                 resultValueId
         ));
-        return new ValueBuild(operandBuild.cursor(), resultValueId);
+        return new ValueBuild(operandBuild.cursor(), castExpression, resultValueId, null);
     }
 
     /// Type-test expressions share the same “child first, then one explicit result item” contract as
@@ -677,7 +694,7 @@ public final class FrontendCfgGraphBuilder {
                 operandBuild.resultValueId(),
                 resultValueId
         ));
-        return new ValueBuild(operandBuild.cursor(), resultValueId);
+        return new ValueBuild(operandBuild.cursor(), typeTestExpression, resultValueId, null);
     }
 
     /// Value-context `and` / `or` reuse the condition builder so only the necessary operand path is
@@ -742,7 +759,7 @@ public final class FrontendCfgGraphBuilder {
                 resultValueId,
                 mergeSequence.id()
         );
-        return new ValueBuild(new BuildCursor(entryBuild.entryId(), mergeSequence), resultValueId);
+        return new ValueBuild(new BuildCursor(entryBuild.entryId(), mergeSequence), binaryExpression, resultValueId, null);
     }
 
     /// Condition-context `and` / `or` split the left fragment first, then only build the right
@@ -817,7 +834,10 @@ public final class FrontendCfgGraphBuilder {
                 assignmentExpression,
                 targetOperandsBuild.valueIds(),
                 rhsBuild.resultValueId(),
-                null
+                null,
+                targetOperandsBuild.writableRoutePayloadOrNull() == null
+                        ? null
+                        : targetOperandsBuild.writableRoutePayloadOrNull().withRouteAnchor(assignmentExpression)
         ));
         return rhsBuild.cursor();
     }
@@ -855,7 +875,10 @@ public final class FrontendCfgGraphBuilder {
                 assignmentExpression,
                 targetOperandsBuild.valueIds(),
                 compoundResultValueId,
-                null
+                null,
+                targetOperandsBuild.writableRoutePayloadOrNull() == null
+                        ? null
+                        : targetOperandsBuild.writableRoutePayloadOrNull().withRouteAnchor(assignmentExpression)
         ));
         return rhsBuild.cursor();
     }
@@ -865,12 +888,16 @@ public final class FrontendCfgGraphBuilder {
     /// The target AST itself remains on `AssignmentItem`, but any child expressions with real
     /// evaluation order, such as chain prefixes or subscript arguments, are materialized here so
     /// later lowering does not need to recurse back into the target subtree to discover them.
-    private @NotNull ValueListBuild buildAssignmentTargetOperands(
+    private @NotNull AssignmentTargetBuild buildAssignmentTargetOperands(
             @NotNull BuildCursor cursor,
             @NotNull Expression targetExpression
     ) {
         return switch (targetExpression) {
-            case IdentifierExpression _ -> new ValueListBuild(cursor, List.of());
+            case IdentifierExpression identifierExpression -> new AssignmentTargetBuild(
+                    cursor,
+                    List.of(),
+                    buildIdentifierWritableRoute(identifierExpression)
+            );
             case AttributeExpression attributeExpression -> buildAttributeTargetOperands(cursor, attributeExpression);
             case SubscriptExpression subscriptExpression -> {
                 var operands = new ArrayList<String>(1 + subscriptExpression.arguments().size());
@@ -878,7 +905,20 @@ public final class FrontendCfgGraphBuilder {
                 operands.add(baseBuild.resultValueId());
                 var argumentsBuild = buildArgumentValues(baseBuild.cursor(), subscriptExpression.arguments());
                 operands.addAll(argumentsBuild.valueIds());
-                yield new ValueListBuild(argumentsBuild.cursor(), List.copyOf(operands));
+                yield new AssignmentTargetBuild(
+                        argumentsBuild.cursor(),
+                        List.copyOf(operands),
+                        appendSubscriptWritableRoute(
+                                baseBuild,
+                                subscriptExpression,
+                                argumentsBuild.valueIds(),
+                                determineWritableSubscriptAccessKind(
+                                        subscriptExpression,
+                                        requireWritableRouteAnchorType(subscriptExpression.base()),
+                                        requireWritableRouteAnchorType(subscriptExpression.arguments().getFirst())
+                                )
+                        ).withRouteAnchor(subscriptExpression)
+                );
             }
             default -> throw unsupportedReachableAssignmentTarget(targetExpression);
         };
@@ -917,7 +957,7 @@ public final class FrontendCfgGraphBuilder {
     /// - `obj.items[i] = rhs` publishes the receiver value for `obj` plus the index operand ids
     /// - `obj.a().items[i] = rhs` first builds `obj.a()` as explicit prefix value-ops, then exports
     ///   the final target receiver/index operands
-    private @NotNull ValueListBuild buildAttributeTargetOperands(
+    private @NotNull AssignmentTargetBuild buildAttributeTargetOperands(
             @NotNull BuildCursor cursor,
             @NotNull AttributeExpression attributeExpression
     ) {
@@ -927,26 +967,39 @@ public final class FrontendCfgGraphBuilder {
 
         var currentBuild = buildAssignmentTargetValue(cursor, attributeExpression.base());
         for (var stepIndex = 0; stepIndex + 1 < attributeExpression.steps().size(); stepIndex++) {
-            currentBuild = applyAttributeStep(
-                    currentBuild.cursor(),
-                    currentBuild.resultValueId(),
-                    attributeExpression.steps().get(stepIndex),
-                    null
-            );
+            currentBuild = applyAttributeStep(currentBuild, attributeExpression.steps().get(stepIndex), null);
         }
 
         var finalStep = attributeExpression.steps().getLast();
         return switch (finalStep) {
-            case AttributePropertyStep _ -> new ValueListBuild(
+            case AttributePropertyStep attributePropertyStep -> new AssignmentTargetBuild(
                     currentBuild.cursor(),
-                    List.of(currentBuild.resultValueId())
+                    List.of(currentBuild.resultValueId()),
+                    appendPropertyWritableRoute(
+                            currentBuild,
+                            attributePropertyStep,
+                            attributePropertyStep.name()
+                    ).withRouteAnchor(attributeExpression)
             );
             case AttributeSubscriptStep attributeSubscriptStep -> {
                 var operands = new ArrayList<String>(1 + attributeSubscriptStep.arguments().size());
                 operands.add(currentBuild.resultValueId());
                 var argumentsBuild = buildArgumentValues(currentBuild.cursor(), attributeSubscriptStep.arguments());
                 operands.addAll(argumentsBuild.valueIds());
-                yield new ValueListBuild(argumentsBuild.cursor(), List.copyOf(operands));
+                yield new AssignmentTargetBuild(
+                        argumentsBuild.cursor(),
+                        List.copyOf(operands),
+                        appendSubscriptWritableRoute(
+                                currentBuild,
+                                attributeSubscriptStep,
+                                argumentsBuild.valueIds(),
+                                determineWritableSubscriptAccessKind(
+                                        attributeSubscriptStep,
+                                        requireWritableRouteAnchorType(currentBuild.valueAnchor()),
+                                        requireWritableRouteAnchorType(attributeSubscriptStep.arguments().getFirst())
+                                )
+                        ).withRouteAnchor(attributeExpression)
+                );
             }
             default -> throw new IllegalStateException(
                     "Assignment target step '"
@@ -987,7 +1040,7 @@ public final class FrontendCfgGraphBuilder {
                         receiverValueId,
                         resultValueId
                 ));
-                yield new ValueBuild(cursor, resultValueId);
+                yield new ValueBuild(cursor, attributePropertyStep, resultValueId, null);
             }
             case AttributeSubscriptStep attributeSubscriptStep -> {
                 var receiverValueId = requireFrozenTargetOperandValue(
@@ -1004,7 +1057,7 @@ public final class FrontendCfgGraphBuilder {
                         requireFrozenTargetTrailingOperands(frozenTargetOperandValueIds, attributeExpression),
                         resultValueId
                 ));
-                yield new ValueBuild(cursor, resultValueId);
+                yield new ValueBuild(cursor, attributeSubscriptStep, resultValueId, null);
             }
             default -> throw new IllegalStateException(
                     "Compound assignment target step '"
@@ -1033,7 +1086,7 @@ public final class FrontendCfgGraphBuilder {
                 requireFrozenTargetTrailingOperands(frozenTargetOperandValueIds, subscriptExpression),
                 resultValueId
         ));
-        return new ValueBuild(cursor, resultValueId);
+        return new ValueBuild(cursor, subscriptExpression, resultValueId, null);
     }
 
     /// Assignment-target prefixes are not always part of the ordinary published `expressionTypes()`
@@ -1075,7 +1128,7 @@ public final class FrontendCfgGraphBuilder {
         }
         var currentBuild = buildAssignmentTargetValue(cursor, attributeExpression.base());
         for (var step : attributeExpression.steps()) {
-            currentBuild = applyAttributeStep(currentBuild.cursor(), currentBuild.resultValueId(), step, null);
+            currentBuild = applyAttributeStep(currentBuild, step, null);
         }
         return currentBuild;
     }
@@ -1094,7 +1147,21 @@ public final class FrontendCfgGraphBuilder {
                 argumentsBuild.valueIds(),
                 resultValueId
         ));
-        return new ValueBuild(argumentsBuild.cursor(), resultValueId);
+        return new ValueBuild(
+                argumentsBuild.cursor(),
+                subscriptExpression,
+                resultValueId,
+                appendSubscriptWritableRoute(
+                        baseBuild,
+                        subscriptExpression,
+                        argumentsBuild.valueIds(),
+                        determineWritableSubscriptAccessKind(
+                                subscriptExpression,
+                                requireWritableRouteAnchorType(subscriptExpression.base()),
+                                requireWritableRouteAnchorType(subscriptExpression.arguments().getFirst())
+                        )
+                )
+        );
     }
 
     /// Applies one attribute-chain step to the current receiver value and returns the produced value id.
@@ -1103,8 +1170,7 @@ public final class FrontendCfgGraphBuilder {
     /// the receiver value id arrives from the previous chain segment, step-local arguments are built
     /// before the item is appended, and the returned value id becomes the receiver for the next step.
     private @NotNull ValueBuild applyAttributeStep(
-            @NotNull BuildCursor cursor,
-            @NotNull String receiverValueId,
+            @NotNull ValueBuild receiverBuild,
             @NotNull AttributeStep step,
             @Nullable String preferredResultValueId
     ) {
@@ -1112,38 +1178,62 @@ public final class FrontendCfgGraphBuilder {
             case AttributePropertyStep attributePropertyStep -> {
                 var publishedMember = requireLoweringReadyMember(attributePropertyStep);
                 var resultValueId = chooseResultValueId(preferredResultValueId);
-                cursor.currentSequence().items().add(new MemberLoadItem(
+                receiverBuild.cursor().currentSequence().items().add(new MemberLoadItem(
                         attributePropertyStep,
                         publishedMember.memberName(),
-                        receiverValueId,
+                        receiverBuild.resultValueId(),
                         resultValueId
                 ));
-                yield new ValueBuild(cursor, resultValueId);
+                yield new ValueBuild(
+                        receiverBuild.cursor(),
+                        attributePropertyStep,
+                        resultValueId,
+                        appendPropertyWritableRoute(
+                                receiverBuild,
+                                attributePropertyStep,
+                                publishedMember.memberName()
+                        )
+                );
             }
             case AttributeCallStep attributeCallStep -> {
                 var publishedCall = requireLoweringReadyCall(attributeCallStep);
-                var argumentsBuild = buildArgumentValues(cursor, attributeCallStep.arguments());
+                var argumentsBuild = buildArgumentValues(receiverBuild.cursor(), attributeCallStep.arguments());
                 var resultValueId = chooseResultValueId(preferredResultValueId);
                 argumentsBuild.cursor().currentSequence().items().add(new CallItem(
                         attributeCallStep,
                         publishedCall.callableName(),
-                        receiverValueId,
+                        receiverBuild.resultValueId(),
                         argumentsBuild.valueIds(),
-                        resultValueId
+                        resultValueId,
+                        routePayloadOrValueRoot(receiverBuild).withRouteAnchor(attributeCallStep)
                 ));
-                yield new ValueBuild(argumentsBuild.cursor(), resultValueId);
+                yield valueRootBuild(argumentsBuild.cursor(), attributeCallStep, resultValueId);
             }
             case AttributeSubscriptStep attributeSubscriptStep -> {
-                var argumentsBuild = buildArgumentValues(cursor, attributeSubscriptStep.arguments());
+                var argumentsBuild = buildArgumentValues(receiverBuild.cursor(), attributeSubscriptStep.arguments());
                 var resultValueId = chooseResultValueId(preferredResultValueId);
                 argumentsBuild.cursor().currentSequence().items().add(new SubscriptLoadItem(
                         attributeSubscriptStep,
                         attributeSubscriptStep.name(),
-                        receiverValueId,
+                        receiverBuild.resultValueId(),
                         argumentsBuild.valueIds(),
                         resultValueId
                 ));
-                yield new ValueBuild(argumentsBuild.cursor(), resultValueId);
+                yield new ValueBuild(
+                        argumentsBuild.cursor(),
+                        attributeSubscriptStep,
+                        resultValueId,
+                        appendSubscriptWritableRoute(
+                                receiverBuild,
+                                attributeSubscriptStep,
+                                argumentsBuild.valueIds(),
+                                determineWritableSubscriptAccessKind(
+                                        attributeSubscriptStep,
+                                        requireWritableRouteAnchorType(receiverBuild.valueAnchor()),
+                                        requireWritableRouteAnchorType(attributeSubscriptStep.arguments().getFirst())
+                                )
+                        )
+                );
             }
             default -> throw new IllegalStateException(
                     "Unsupported attribute step in frontend CFG builder: " + step.getClass().getSimpleName()
@@ -1175,7 +1265,230 @@ public final class FrontendCfgGraphBuilder {
     ) {
         var resultValueId = chooseResultValueId(preferredResultValueId);
         cursor.currentSequence().items().add(new OpaqueExprValueItem(expression, operandValueIds, resultValueId));
-        return new ValueBuild(cursor, resultValueId);
+        return new ValueBuild(
+                cursor,
+                expression,
+                resultValueId,
+                routePayloadForOpaqueExpression(expression)
+        );
+    }
+
+    /// Ordinary value publication and writable-route publication are deliberately kept separate:
+    /// CFG items still own evaluation order, while the route payload only freezes how a later
+    /// mutation on the published value could be written back into its owner chain.
+    private @Nullable FrontendWritableRoutePayload routePayloadForOpaqueExpression(@NotNull Expression expression) {
+        return switch (expression) {
+            case IdentifierExpression identifierExpression -> buildIdentifierWritableRoute(identifierExpression);
+            case SelfExpression selfExpression -> new FrontendWritableRoutePayload(
+                    selfExpression,
+                    new FrontendWritableRoutePayload.RootDescriptor(
+                            FrontendWritableRoutePayload.RootKind.DIRECT_SLOT,
+                            selfExpression,
+                            null
+                    ),
+                    new FrontendWritableRoutePayload.LeafDescriptor(
+                            FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT,
+                            selfExpression,
+                            null,
+                            List.of(),
+                            null,
+                            null
+                    ),
+                    List.of()
+            );
+            default -> null;
+        };
+    }
+
+    private @NotNull FrontendWritableRoutePayload buildIdentifierWritableRoute(
+            @NotNull IdentifierExpression identifierExpression
+    ) {
+        var binding = requirePublishedBinding(identifierExpression);
+        return switch (binding.kind()) {
+            case LOCAL_VAR, PARAMETER, CAPTURE, SELF -> new FrontendWritableRoutePayload(
+                    identifierExpression,
+                    new FrontendWritableRoutePayload.RootDescriptor(
+                            FrontendWritableRoutePayload.RootKind.DIRECT_SLOT,
+                            identifierExpression,
+                            null
+                    ),
+                    new FrontendWritableRoutePayload.LeafDescriptor(
+                            FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT,
+                            identifierExpression,
+                            null,
+                            List.of(),
+                            null,
+                            null
+                    ),
+                    List.of()
+            );
+            case PROPERTY -> new FrontendWritableRoutePayload(
+                    identifierExpression,
+                    new FrontendWritableRoutePayload.RootDescriptor(
+                            isStaticPropertyBinding(binding)
+                                    ? FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT
+                                    : FrontendWritableRoutePayload.RootKind.SELF_CONTEXT,
+                            identifierExpression,
+                            null
+                    ),
+                    new FrontendWritableRoutePayload.LeafDescriptor(
+                            FrontendWritableRoutePayload.LeafKind.PROPERTY,
+                            identifierExpression,
+                            null,
+                            List.of(),
+                            binding.symbolName(),
+                            null
+                    ),
+                    List.of()
+            );
+            default -> throw new IllegalStateException(
+                    "Identifier writable-route publication is not supported for binding kind " + binding.kind()
+            );
+        };
+    }
+
+    private @NotNull FrontendWritableRoutePayload routePayloadOrValueRoot(@NotNull ValueBuild valueBuild) {
+        return valueBuild.writableRoutePayloadOrNull() != null
+                ? valueBuild.writableRoutePayloadOrNull()
+                : valueRootRoutePayload(valueBuild.valueAnchor(), valueBuild.resultValueId());
+    }
+
+    private @NotNull ValueBuild valueRootBuild(
+            @NotNull BuildCursor cursor,
+            @NotNull Node valueAnchor,
+            @NotNull String resultValueId
+    ) {
+        return new ValueBuild(cursor, valueAnchor, resultValueId, valueRootRoutePayload(valueAnchor, resultValueId));
+    }
+
+    private @NotNull FrontendWritableRoutePayload valueRootRoutePayload(
+            @NotNull Node valueAnchor,
+            @NotNull String resultValueId
+    ) {
+        return new FrontendWritableRoutePayload(
+                valueAnchor,
+                new FrontendWritableRoutePayload.RootDescriptor(
+                        FrontendWritableRoutePayload.RootKind.VALUE_ID,
+                        valueAnchor,
+                        resultValueId
+                ),
+                new FrontendWritableRoutePayload.LeafDescriptor(
+                        FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT,
+                        valueAnchor,
+                        null,
+                        List.of(),
+                        null,
+                        null
+                ),
+                List.of()
+        );
+    }
+
+    private @NotNull FrontendWritableRoutePayload appendPropertyWritableRoute(
+            @NotNull ValueBuild receiverBuild,
+            @NotNull Node propertyAnchor,
+            @NotNull String propertyName
+    ) {
+        var baseRoute = routePayloadOrValueRoot(receiverBuild);
+        return new FrontendWritableRoutePayload(
+                propertyAnchor,
+                baseRoute.root(),
+                new FrontendWritableRoutePayload.LeafDescriptor(
+                        FrontendWritableRoutePayload.LeafKind.PROPERTY,
+                        propertyAnchor,
+                        useImplicitRootContainer(baseRoute) ? null : receiverBuild.resultValueId(),
+                        List.of(),
+                        StringUtil.requireNonBlank(propertyName, "propertyName"),
+                        null
+                ),
+                appendPromotedLeaf(baseRoute)
+        );
+    }
+
+    private @NotNull FrontendWritableRoutePayload appendSubscriptWritableRoute(
+            @NotNull ValueBuild receiverBuild,
+            @NotNull Node subscriptAnchor,
+            @NotNull List<String> keyValueIds,
+            @NotNull FrontendSubscriptAccessSupport.AccessKind accessKind
+    ) {
+        var baseRoute = routePayloadOrValueRoot(receiverBuild);
+        requireSingleWritableRouteKey(subscriptAnchor, keyValueIds);
+        return new FrontendWritableRoutePayload(
+                subscriptAnchor,
+                baseRoute.root(),
+                new FrontendWritableRoutePayload.LeafDescriptor(
+                        FrontendWritableRoutePayload.LeafKind.SUBSCRIPT,
+                        subscriptAnchor,
+                        useImplicitRootContainer(baseRoute) ? null : receiverBuild.resultValueId(),
+                        List.copyOf(keyValueIds),
+                        subscriptAnchor instanceof AttributeSubscriptStep attributeSubscriptStep
+                                ? attributeSubscriptStep.name()
+                                : null,
+                        Objects.requireNonNull(accessKind, "accessKind must not be null")
+                ),
+                appendPromotedLeaf(baseRoute)
+        );
+    }
+
+    private boolean useImplicitRootContainer(@NotNull FrontendWritableRoutePayload routePayload) {
+        return routePayload.reverseCommitSteps().isEmpty()
+                && routePayload.leaf().kind() == FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT
+                && routePayload.root().kind() != FrontendWritableRoutePayload.RootKind.VALUE_ID;
+    }
+
+    private @NotNull List<FrontendWritableRoutePayload.StepDescriptor> appendPromotedLeaf(
+            @NotNull FrontendWritableRoutePayload routePayload
+    ) {
+        var steps = new ArrayList<>(routePayload.reverseCommitSteps());
+        var promoted = promoteLeafToCommitStep(routePayload.leaf());
+        if (promoted != null) {
+            steps.add(promoted);
+        }
+        return List.copyOf(steps);
+    }
+
+    private @Nullable FrontendWritableRoutePayload.StepDescriptor promoteLeafToCommitStep(
+            @NotNull FrontendWritableRoutePayload.LeafDescriptor leaf
+    ) {
+        return switch (leaf.kind()) {
+            case DIRECT_SLOT -> null;
+            case PROPERTY -> new FrontendWritableRoutePayload.StepDescriptor(
+                    FrontendWritableRoutePayload.StepKind.PROPERTY,
+                    leaf.anchor(),
+                    leaf.containerValueIdOrNull(),
+                    List.of(),
+                    leaf.memberNameOrNull(),
+                    null
+            );
+            case SUBSCRIPT -> new FrontendWritableRoutePayload.StepDescriptor(
+                    FrontendWritableRoutePayload.StepKind.SUBSCRIPT,
+                    leaf.anchor(),
+                    leaf.containerValueIdOrNull(),
+                    leaf.operandValueIds(),
+                    leaf.memberNameOrNull(),
+                    leaf.subscriptAccessKindOrNull()
+            );
+        };
+    }
+
+    private @NotNull FrontendSubscriptAccessSupport.AccessKind determineWritableSubscriptAccessKind(
+            @NotNull Node subscriptAnchor,
+            @NotNull GdType receiverType,
+            @NotNull GdType keyType
+    ) {
+        return FrontendSubscriptAccessSupport.determineAccessKind(
+                subscriptAnchor instanceof AttributeSubscriptStep ? GdVariantType.VARIANT : receiverType,
+                keyType
+        );
+    }
+
+    private void requireSingleWritableRouteKey(@NotNull Node anchor, @NotNull List<String> keyValueIds) {
+        if (keyValueIds.size() != 1) {
+            throw new IllegalStateException(
+                    "Writable-route publication currently supports exactly one subscript key for "
+                            + anchor.getClass().getSimpleName()
+            );
+        }
     }
 
     private void publishMergedBooleanWriteSequence(
@@ -1502,6 +1815,59 @@ public final class FrontendCfgGraphBuilder {
         );
     }
 
+    private @NotNull FrontendBinding requirePublishedBinding(@NotNull Node useSite) {
+        var binding = requireAnalysisData().symbolBindings().get(Objects.requireNonNull(useSite, "useSite must not be null"));
+        if (binding == null) {
+            throw new IllegalStateException("Missing published symbol binding for " + useSite.getClass().getSimpleName());
+        }
+        return binding;
+    }
+
+    private boolean isStaticPropertyBinding(@NotNull FrontendBinding binding) {
+        return binding.kind() == FrontendBindingKind.PROPERTY
+                && binding.declarationSite() instanceof dev.superice.gdcc.scope.PropertyDef propertyDef
+                && propertyDef.isStatic();
+    }
+
+    /// Writable-route publication must resolve access families and payload leaf types from already
+    /// published semantic facts instead of re-running chain reduction.
+    ///
+    /// Some assignment-target prefixes are still analyzed through the shared semantic surface where a
+    /// trusted binding-backed leaf such as `items` may expose slot/property metadata without also
+    /// publishing an `expressionTypes()` entry for that identifier use site. Writable-route freezing is
+    /// still allowed to consume those binding-backed types because the route stays within the same
+    /// compile-checked owner chain and does not reopen general expression inference.
+    private @NotNull GdType requireWritableRouteAnchorType(@NotNull Node anchor) {
+        var publishedType = requireAnalysisData().expressionTypes().get(Objects.requireNonNull(anchor, "anchor must not be null"));
+        if (publishedType != null) {
+            if (publishedType.publishedType() != null) {
+                return publishedType.publishedType();
+            }
+            throw new IllegalStateException(
+                    "Writable-route publication requires a lowering-ready type for "
+                            + anchor.getClass().getSimpleName()
+                            + ", but got "
+                            + publishedType.status()
+            );
+        }
+        var binding = requireAnalysisData().symbolBindings().get(anchor);
+        if (binding != null && binding.declarationSite() instanceof Node declarationNode) {
+            var slotType = requireAnalysisData().slotTypes().get(declarationNode);
+            if (slotType != null) {
+                return slotType;
+            }
+        }
+        if (binding != null
+                && binding.kind() == FrontendBindingKind.PROPERTY
+                && binding.declarationSite() instanceof dev.superice.gdcc.scope.PropertyDef propertyDef) {
+            return propertyDef.getType();
+        }
+        throw new IllegalStateException(
+                "Writable-route publication is missing a published expression type for "
+                        + anchor.getClass().getSimpleName()
+        );
+    }
+
     /// Compile-ready lowering must only see expressions whose type facts already stabilized to a
     /// lowering-safe state.
     ///
@@ -1673,11 +2039,31 @@ public final class FrontendCfgGraphBuilder {
 
     private record ValueBuild(
             @NotNull BuildCursor cursor,
-            @NotNull String resultValueId
+            @NotNull Node valueAnchor,
+            @NotNull String resultValueId,
+            @Nullable FrontendWritableRoutePayload writableRoutePayloadOrNull
     ) {
         private ValueBuild {
             Objects.requireNonNull(cursor, "cursor must not be null");
+            Objects.requireNonNull(valueAnchor, "valueAnchor must not be null");
             resultValueId = FrontendCfgGraph.validateValueId(resultValueId, "resultValueId");
+        }
+    }
+
+    private record AssignmentTargetBuild(
+            @NotNull BuildCursor cursor,
+            @NotNull List<String> valueIds,
+            @Nullable FrontendWritableRoutePayload writableRoutePayloadOrNull
+    ) {
+        private AssignmentTargetBuild {
+            Objects.requireNonNull(cursor, "cursor must not be null");
+            valueIds = List.copyOf(Objects.requireNonNull(valueIds, "valueIds must not be null"));
+            if (writableRoutePayloadOrNull != null) {
+                Objects.requireNonNull(
+                        writableRoutePayloadOrNull,
+                        "writableRoutePayloadOrNull must not be null"
+                );
+            }
         }
     }
 

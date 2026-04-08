@@ -1,5 +1,8 @@
 package dev.superice.gdcc.frontend.lowering.cfg;
 
+import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.ValueOpItem;
@@ -36,6 +39,7 @@ public record FrontendCfgGraph(
         validateSuccessorTargets(nodes);
         validateMergeSourceContracts(nodes);
         validateValueProducerContracts(nodes);
+        validateWritableRouteContracts(nodes);
     }
 
     public boolean hasNode(@NotNull String nodeId) {
@@ -252,6 +256,45 @@ public record FrontendCfgGraph(
                 }
             }
         }
+    }
+
+    /// Writable-route payloads must stay self-contained at graph publication time:
+    /// - every referenced value id must already have been published earlier in the same sequence
+    /// - descriptor shapes must stay mechanically well-formed so later lowering never has to guess
+    private static void validateWritableRouteContracts(@NotNull Map<String, NodeDef> nodes) {
+        for (var node : nodes.values()) {
+            if (!(node instanceof SequenceNode(var nodeId, var items, _))) {
+                continue;
+            }
+            var locallyPublishedValueIds = new ArrayList<String>();
+            for (var item : items) {
+                var payload = extractWritableRoutePayload(item);
+                if (payload != null) {
+                    for (var valueId : payload.referencedValueIds()) {
+                        if (!locallyPublishedValueIds.contains(valueId)) {
+                            throw new IllegalArgumentException(
+                                    "Frontend CFG writable route in sequence '"
+                                            + nodeId
+                                            + "' references value id '"
+                                            + valueId
+                                            + "' before it is published locally"
+                            );
+                        }
+                    }
+                }
+                if (item instanceof ValueOpItem valueOpItem && valueOpItem.resultValueIdOrNull() != null) {
+                    locallyPublishedValueIds.add(valueOpItem.resultValueIdOrNull());
+                }
+            }
+        }
+    }
+
+    private static @Nullable FrontendWritableRoutePayload extractWritableRoutePayload(@NotNull SequenceItem item) {
+        return switch (item) {
+            case AssignmentItem assignmentItem -> assignmentItem.writableRoutePayloadOrNull();
+            case CallItem callItem -> callItem.writableRoutePayloadOrNull();
+            default -> null;
+        };
     }
 
     private static void validateTargetNode(

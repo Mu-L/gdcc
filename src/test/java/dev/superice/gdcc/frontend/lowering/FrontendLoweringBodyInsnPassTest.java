@@ -790,6 +790,46 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runConsumesDirectSlotReceiverPayloadWithoutCallingThroughCfgTempReceiver() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_direct_slot_receiver_payload.gd",
+                """
+                        class_name BodyInsnDirectSlotReceiverPayload
+                        extends RefCounted
+                        
+                        func ping(values: PackedInt32Array, seed: int) -> void:
+                            values.push_back(seed)
+                        """,
+                Map.of(
+                        "BodyInsnDirectSlotReceiverPayload",
+                        "RuntimeBodyInsnDirectSlotReceiverPayload"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDirectSlotReceiverPayload",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var callInsn = requireOnlyInstruction(pingContext.targetFunction(), CallMethodInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("push_back", callInsn.methodName()),
+                () -> assertEquals("values", callInsn.objectId()),
+                () -> assertFalse(callInsn.objectId().startsWith("cfg_tmp_"), callInsn.objectId()),
+                () -> assertEquals("cfg_tmp_v1", onlyVariableOperandId(callInsn.args())),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
     void runLowersDynamicInstanceCallsIntoCallMethodInsnWithVariantResultSlot() throws Exception {
         var prepared = prepareContext(
                 "body_insn_dynamic_call.gd",
@@ -821,7 +861,8 @@ class FrontendLoweringBodyInsnPassTest {
         assertNotNull(resultVariable, () -> "Missing lowered variable for " + callResultId);
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
-                () -> assertTrue(callInsn.objectId().startsWith("cfg_tmp_"), callInsn.objectId()),
+                () -> assertEquals("worker", callInsn.objectId()),
+                () -> assertFalse(callInsn.objectId().startsWith("cfg_tmp_"), callInsn.objectId()),
                 () -> assertEquals("ping", callInsn.methodName()),
                 () -> assertEquals(GdVariantType.VARIANT, resultVariable.type()),
                 () -> assertEquals(callResultId, returnInsn.returnValueId()),
@@ -876,7 +917,8 @@ class FrontendLoweringBodyInsnPassTest {
         assertNotNull(dynamicResultVariable, () -> "Missing lowered variable for " + dynamicResultId);
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
-                () -> assertTrue(dynamicSizeCall.objectId().startsWith("cfg_tmp_"), dynamicSizeCall.objectId()),
+                () -> assertEquals("worker", dynamicSizeCall.objectId()),
+                () -> assertFalse(dynamicSizeCall.objectId().startsWith("cfg_tmp_"), dynamicSizeCall.objectId()),
                 () -> assertEquals(GdVariantType.VARIANT, dynamicResultVariable.type()),
                 () -> assertEquals(dynamicResultId, unpackInsn.variantId()),
                 () -> assertEquals(unpackInsn.resultId(), onlyVariableOperandId(exactTakeCall.args())),

@@ -15,13 +15,25 @@ import java.util.Objects;
 /// target in source order, while `rhsValueId` points to the already-evaluated right-hand side.
 /// `resultValueIdOrNull` remains optional because future lowering may need to preserve
 /// assignment-as-expression semantics for some source forms, while statement-root assignments only
-/// commit state and publish no new value.
+/// commit state and publish no new value. If the target also participates in writable-route
+/// lowering, `writableRoutePayloadOrNull` publishes that frozen owner/leaf/writeback shape
+/// alongside the legacy operand list.
 public record AssignmentItem(
         @NotNull AssignmentExpression assignment,
         @NotNull List<String> targetOperandValueIds,
         @NotNull String rhsValueId,
-        @Nullable String resultValueIdOrNull
+        @Nullable String resultValueIdOrNull,
+        @Nullable FrontendWritableRoutePayload writableRoutePayloadOrNull
 ) implements ValueOpItem {
+    public AssignmentItem(
+            @NotNull AssignmentExpression assignment,
+            @NotNull List<String> targetOperandValueIds,
+            @NotNull String rhsValueId,
+            @Nullable String resultValueIdOrNull
+    ) {
+        this(assignment, targetOperandValueIds, rhsValueId, resultValueIdOrNull, null);
+    }
+
     public AssignmentItem {
         Objects.requireNonNull(assignment, "assignment must not be null");
         targetOperandValueIds = FrontendCfgItemSupport.copyValueIds(targetOperandValueIds, "targetOperandValueIds");
@@ -30,6 +42,9 @@ public record AssignmentItem(
                 resultValueIdOrNull,
                 "resultValueIdOrNull"
         );
+        if (writableRoutePayloadOrNull != null && writableRoutePayloadOrNull.routeAnchor() != assignment) {
+            throw new IllegalArgumentException("AssignmentItem writable route anchor must match assignment");
+        }
     }
 
     @Override

@@ -1,5 +1,6 @@
 package dev.superice.gdcc.frontend.lowering.pass.body;
 
+import dev.superice.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.insn.AssignInsn;
 import dev.superice.gdcc.lir.insn.LiteralStringNameInsn;
@@ -31,10 +32,12 @@ import java.util.Objects;
 /// - execute reverse commits back into outer owners
 /// - expose one explicit gate hook for runtime-gated writeback
 ///
-/// Current callers still assemble these routes from the existing body-lowering surface because CFG
-/// has not published the full writable-route payload yet. The important invariant is already frozen
-/// here: once a caller constructs a `FrontendWritableAccessChain`, the support must not reopen AST
-/// child evaluation.
+/// Current callers are in a transition state:
+/// - `CallItem` receiver lowering may already consume one frozen CFG payload directly
+/// - assignment/member/subscript paths still assemble some routes from the legacy published surface
+///
+/// The important invariant is already frozen here: once a caller constructs a
+/// `FrontendWritableAccessChain`, the support must not reopen AST child evaluation.
 final class FrontendWritableRouteSupport {
     private FrontendWritableRouteSupport() {
     }
@@ -445,7 +448,7 @@ final class FrontendWritableRouteSupport {
             @NotNull String baseOrReceiverSlotId,
             @Nullable String memberNameOrNull,
             @NotNull String keySlotId,
-            @NotNull FrontendSubscriptInsnSupport.SubscriptAccessKind accessKind,
+            @NotNull FrontendSubscriptAccessSupport.AccessKind accessKind,
             @NotNull GdType valueType
     ) implements FrontendWritableLeaf {
         SubscriptLeaf {
@@ -511,7 +514,7 @@ final class FrontendWritableRouteSupport {
             @NotNull String baseOrReceiverSlotId,
             @Nullable String memberNameOrNull,
             @NotNull String keySlotId,
-            @NotNull FrontendSubscriptInsnSupport.SubscriptAccessKind accessKind
+            @NotNull FrontendSubscriptAccessSupport.AccessKind accessKind
     ) implements FrontendWritableCommitStep {
         SubscriptCommitStep {
             baseOrReceiverSlotId = StringUtil.requireNonBlank(baseOrReceiverSlotId, "baseOrReceiverSlotId");

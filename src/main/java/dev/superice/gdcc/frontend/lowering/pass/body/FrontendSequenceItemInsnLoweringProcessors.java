@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.lowering.pass.body;
 
 import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.frontend.lowering.FrontendBodyLoweringSupport;
+import dev.superice.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
@@ -471,11 +472,11 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var keySlotId = session.slotIdForValue(keyValueId);
             var keyType = session.requireValueType(keyValueId);
             var accessKind = node.memberNameOrNull() == null
-                    ? FrontendSubscriptInsnSupport.determineAccessKind(
+                    ? FrontendSubscriptAccessSupport.determineAccessKind(
                     session.requireValueType(node.baseValueId()),
                     keyType
             )
-                    : FrontendSubscriptInsnSupport.determineAccessKind(GdVariantType.VARIANT, keyType);
+                    : FrontendSubscriptAccessSupport.determineAccessKind(GdVariantType.VARIANT, keyType);
             var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
                     node.anchor(),
                     new FrontendWritableRouteSupport.FrontendWritableRoot(
