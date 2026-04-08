@@ -29,6 +29,7 @@ import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -184,9 +185,206 @@ class FrontendWritableRouteSupportTest {
                 gatedBlock,
                 chain,
                 carrierSlotId,
-                (unusedStep, unusedWrittenBackValueSlotId) -> false
+                (_, _) -> false
         );
         assertTrue(gatedBlock.getNonTerminatorInstructions().isEmpty());
+    }
+
+    @Test
+    void reverseCommitThreadsCarrierAcrossMultipleSteps() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.ensureVariable("element_slot", GdVariantType.VARIANT);
+        session.ensureVariable("items_slot", GdVariantType.VARIANT);
+        session.ensureVariable("key_slot", GdIntType.INT);
+        session.ensureVariable("rhs_slot", GdIntType.INT);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("x"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot("nested owner route", "self", GdObjectType.OBJECT),
+                new FrontendWritableRouteSupport.InstancePropertyLeaf("element_slot", "x", GdIntType.INT),
+                List.of(
+                        new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "items"),
+                        new FrontendWritableRouteSupport.SubscriptCommitStep(
+                                "items_slot",
+                                null,
+                                "key_slot",
+                                FrontendSubscriptAccessSupport.AccessKind.INDEXED
+                        )
+                )
+        );
+
+        var carrierSlotId = FrontendWritableRouteSupport.writeLeaf(session, block, chain, "rhs_slot");
+        FrontendWritableRouteSupport.reverseCommit(
+                session,
+                block,
+                chain,
+                carrierSlotId,
+                FrontendWritableRouteSupport.ALWAYS_APPLY
+        );
+        var instructions = block.getNonTerminatorInstructions();
+        var leafStore = assertInstanceOf(StorePropertyInsn.class, instructions.get(0));
+        var indexedStore = assertInstanceOf(VariantSetIndexedInsn.class, instructions.get(1));
+        var outerStore = assertInstanceOf(StorePropertyInsn.class, instructions.get(2));
+
+        assertAll(
+                () -> assertEquals("element_slot", carrierSlotId),
+                () -> assertEquals(3, instructions.size()),
+                () -> assertEquals("x", leafStore.propertyName()),
+                () -> assertEquals("element_slot", leafStore.objectId()),
+                () -> assertEquals("rhs_slot", leafStore.valueId()),
+                () -> assertEquals("items_slot", indexedStore.variantId()),
+                () -> assertEquals("key_slot", indexedStore.indexId()),
+                () -> assertEquals("element_slot", indexedStore.valueId()),
+                () -> assertEquals("items", outerStore.propertyName()),
+                () -> assertEquals("self", outerStore.objectId()),
+                () -> assertEquals("items_slot", outerStore.valueId())
+        );
+    }
+
+    @Test
+    void reverseCommitSkipsRejectedInnerStepAndContinuesWithPromotedOuterCarrier() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.ensureVariable("element_slot", GdVariantType.VARIANT);
+        session.ensureVariable("items_slot", GdVariantType.VARIANT);
+        session.ensureVariable("key_slot", GdIntType.INT);
+        session.ensureVariable("rhs_slot", GdIntType.INT);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("x"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot("nested owner route", "self", GdObjectType.OBJECT),
+                new FrontendWritableRouteSupport.InstancePropertyLeaf("element_slot", "x", GdIntType.INT),
+                List.of(
+                        new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "items"),
+                        new FrontendWritableRouteSupport.SubscriptCommitStep(
+                                "items_slot",
+                                null,
+                                "key_slot",
+                                FrontendSubscriptAccessSupport.AccessKind.INDEXED
+                        )
+                )
+        );
+
+        var carrierSlotId = FrontendWritableRouteSupport.writeLeaf(session, block, chain, "rhs_slot");
+        var observedCarriers = new ArrayList<String>();
+        FrontendWritableRouteSupport.reverseCommit(
+                session,
+                block,
+                chain,
+                carrierSlotId,
+                (_, currentCarrierSlotId) -> {
+                    observedCarriers.add(currentCarrierSlotId);
+                    return observedCarriers.size() != 1;
+                }
+        );
+        var instructions = block.getNonTerminatorInstructions();
+        var propertyStores = instructions.stream()
+                .filter(StorePropertyInsn.class::isInstance)
+                .map(StorePropertyInsn.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertEquals(List.of("element_slot", "items_slot"), observedCarriers),
+                () -> assertEquals(2, instructions.size()),
+                () -> assertEquals(0, instructions.stream().filter(VariantSetIndexedInsn.class::isInstance).count()),
+                () -> assertEquals(2, propertyStores.size()),
+                () -> assertEquals("x", propertyStores.getFirst().propertyName()),
+                () -> assertEquals("element_slot", propertyStores.getFirst().objectId()),
+                () -> assertEquals("rhs_slot", propertyStores.getFirst().valueId()),
+                () -> assertEquals("items", propertyStores.get(1).propertyName()),
+                () -> assertEquals("self", propertyStores.get(1).objectId()),
+                () -> assertEquals("items_slot", propertyStores.get(1).valueId())
+        );
+    }
+
+    @Test
+    void reverseCommitUpdatesCarrierBeforeGatingOuterStep() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.ensureVariable("element_slot", GdVariantType.VARIANT);
+        session.ensureVariable("items_slot", GdVariantType.VARIANT);
+        session.ensureVariable("key_slot", GdIntType.INT);
+        session.ensureVariable("rhs_slot", GdIntType.INT);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("x"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot("nested owner route", "self", GdObjectType.OBJECT),
+                new FrontendWritableRouteSupport.InstancePropertyLeaf("element_slot", "x", GdIntType.INT),
+                List.of(
+                        new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "items"),
+                        new FrontendWritableRouteSupport.SubscriptCommitStep(
+                                "items_slot",
+                                null,
+                                "key_slot",
+                                FrontendSubscriptAccessSupport.AccessKind.INDEXED
+                        )
+                )
+        );
+
+        var carrierSlotId = FrontendWritableRouteSupport.writeLeaf(session, block, chain, "rhs_slot");
+        var observedCarriers = new ArrayList<String>();
+        FrontendWritableRouteSupport.reverseCommit(
+                session,
+                block,
+                chain,
+                carrierSlotId,
+                (_, currentCarrierSlotId) -> {
+                    observedCarriers.add(currentCarrierSlotId);
+                    return observedCarriers.size() == 1;
+                }
+        );
+        var instructions = block.getNonTerminatorInstructions();
+        var propertyStores = instructions.stream()
+                .filter(StorePropertyInsn.class::isInstance)
+                .map(StorePropertyInsn.class::cast)
+                .toList();
+        var indexedStores = instructions.stream()
+                .filter(VariantSetIndexedInsn.class::isInstance)
+                .map(VariantSetIndexedInsn.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertEquals(List.of("element_slot", "items_slot"), observedCarriers),
+                () -> assertEquals(2, instructions.size()),
+                () -> assertEquals(1, propertyStores.size()),
+                () -> assertEquals("x", propertyStores.getFirst().propertyName()),
+                () -> assertEquals("element_slot", propertyStores.getFirst().objectId()),
+                () -> assertEquals("rhs_slot", propertyStores.getFirst().valueId()),
+                () -> assertEquals(1, indexedStores.size()),
+                () -> assertEquals("items_slot", indexedStores.getFirst().variantId()),
+                () -> assertEquals("key_slot", indexedStores.getFirst().indexId()),
+                () -> assertEquals("element_slot", indexedStores.getFirst().valueId())
+        );
+    }
+
+    @Test
+    void reverseCommitFailsFastWhenStaticPropertyCommitIsNotTerminal() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.ensureVariable("value_slot", GdVariantType.VARIANT);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("value"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot("malformed route", "value_slot", GdVariantType.VARIANT),
+                new FrontendWritableRouteSupport.DirectSlotLeaf("value_slot", GdVariantType.VARIANT),
+                List.of(
+                        new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "payloads"),
+                        new FrontendWritableRouteSupport.StaticPropertyCommitStep("RuntimeWritableRouteHelper", "payload")
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> FrontendWritableRouteSupport.reverseCommit(
+                        session,
+                        block,
+                        chain,
+                        "value_slot",
+                        FrontendWritableRouteSupport.ALWAYS_APPLY
+                )
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("StaticPropertyCommitStep")),
+                () -> assertTrue(block.getNonTerminatorInstructions().isEmpty())
+        );
     }
 
     @Test

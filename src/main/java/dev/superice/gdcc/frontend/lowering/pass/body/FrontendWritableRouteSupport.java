@@ -136,6 +136,11 @@ final class FrontendWritableRouteSupport {
         };
     }
 
+    /// Walks reverse-commit steps from inner to outer owner.
+    ///
+    /// If a gate rejects one layer, only that layer's writeback is skipped. The carrier is still
+    /// promoted to the next outer owner before the walk continues so gdcc stays aligned with
+    /// Godot's per-layer `JUMP_IF_SHARED` behavior.
     static void reverseCommit(
             @NotNull FrontendBodyLoweringSession session,
             @NotNull LirBasicBlock block,
@@ -149,12 +154,21 @@ final class FrontendWritableRouteSupport {
         var actualWrittenBackValueSlotId = StringUtil.requireNonBlank(writtenBackValueSlotId, "writtenBackValueSlotId");
         var actualGateHook = gateHook == null ? ALWAYS_APPLY : gateHook;
         var reverseCommitSteps = actualChain.reverseCommitSteps();
+        var currentCarrierSlotId = actualWrittenBackValueSlotId;
         for (var index = reverseCommitSteps.size() - 1; index >= 0; index--) {
             var step = reverseCommitSteps.get(index);
-            if (!actualGateHook.shouldApply(step, actualWrittenBackValueSlotId)) {
+            var terminalStep = index == 0;
+            if (!actualGateHook.shouldApply(step, currentCarrierSlotId)) {
+                currentCarrierSlotId = nextOuterCarrierSlotId(step, currentCarrierSlotId, terminalStep);
                 continue;
             }
-            appendReverseCommitStep(session, block, step, actualWrittenBackValueSlotId);
+            currentCarrierSlotId = appendReverseCommitStep(
+                    session,
+                    block,
+                    step,
+                    currentCarrierSlotId,
+                    terminalStep
+            );
         }
     }
 
@@ -228,23 +242,45 @@ final class FrontendWritableRouteSupport {
         return leaf.baseOrReceiverSlotId();
     }
 
-    private static void appendReverseCommitStep(
+    /// Emits one reverse-commit step and returns the next outer owner carrier.
+    ///
+    /// Multi-step routes such as `self.items[i].x += 1` require this explicit carrier threading:
+    /// - writing `x` yields the mutated `element`
+    /// - committing `items[i]` yields the mutated `items`
+    /// - committing `self.items` then observes that updated `items` carrier
+    ///
+    /// Reusing the original leaf carrier for every step would silently corrupt outer writeback.
+    /// Skipping one step also does not terminate the walk: Godot emits one `JUMP_IF_SHARED` region per
+    /// layer, so a skipped inner writeback still promotes the carrier to the next outer owner.
+    private static @NotNull String appendReverseCommitStep(
             @NotNull FrontendBodyLoweringSession session,
             @NotNull LirBasicBlock block,
             @NotNull FrontendWritableCommitStep step,
-            @NotNull String writtenBackValueSlotId
+            @NotNull String writtenBackValueSlotId,
+            boolean terminalStep
     ) {
-        switch (step) {
-            case InstancePropertyCommitStep propertyStep -> block.appendNonTerminatorInstruction(new StorePropertyInsn(
-                    propertyStep.propertyName(),
-                    propertyStep.receiverSlotId(),
-                    writtenBackValueSlotId
-            ));
-            case StaticPropertyCommitStep propertyStep -> block.appendNonTerminatorInstruction(new StoreStaticInsn(
-                    propertyStep.receiverTypeName(),
-                    propertyStep.propertyName(),
-                    writtenBackValueSlotId
-            ));
+        return switch (step) {
+            case InstancePropertyCommitStep propertyStep -> {
+                block.appendNonTerminatorInstruction(new StorePropertyInsn(
+                        propertyStep.propertyName(),
+                        propertyStep.receiverSlotId(),
+                        writtenBackValueSlotId
+                ));
+                yield nextOuterCarrierSlotId(propertyStep, writtenBackValueSlotId, terminalStep);
+            }
+            case StaticPropertyCommitStep propertyStep -> {
+                if (!terminalStep) {
+                    throw new IllegalStateException(
+                            "StaticPropertyCommitStep must be terminal in reverse commit, but outer steps still remain"
+                    );
+                }
+                block.appendNonTerminatorInstruction(new StoreStaticInsn(
+                        propertyStep.receiverTypeName(),
+                        propertyStep.propertyName(),
+                        writtenBackValueSlotId
+                ));
+                yield writtenBackValueSlotId;
+            }
             case SubscriptCommitStep subscriptStep -> {
                 if (subscriptStep.memberNameOrNull() == null) {
                     FrontendSubscriptInsnSupport.appendStore(
@@ -254,7 +290,7 @@ final class FrontendWritableRouteSupport {
                             writtenBackValueSlotId,
                             subscriptStep.accessKind()
                     );
-                    return;
+                    yield nextOuterCarrierSlotId(subscriptStep, writtenBackValueSlotId, terminalStep);
                 }
                 var scratch = materializeNamedMemberScratch(
                         session,
@@ -275,8 +311,33 @@ final class FrontendWritableRouteSupport {
                         scratch.nameSlotId(),
                         scratch.namedBaseSlotId()
                 ));
+                yield nextOuterCarrierSlotId(subscriptStep, writtenBackValueSlotId, terminalStep);
             }
-        }
+        };
+    }
+
+    /// Computes the carrier visible to the next outer reverse-commit layer.
+    ///
+    /// This helper is shared by both the applied and skipped-step paths so gate semantics stay
+    /// isomorphic to Godot: `JUMP_IF_SHARED` skips only the current layer's writeback block, but the
+    /// compiler still promotes `assigned = info.base` before continuing with outer layers.
+    private static @NotNull String nextOuterCarrierSlotId(
+            @NotNull FrontendWritableCommitStep step,
+            @NotNull String writtenBackValueSlotId,
+            boolean terminalStep
+    ) {
+        return switch (step) {
+            case InstancePropertyCommitStep propertyStep -> propertyStep.receiverSlotId();
+            case StaticPropertyCommitStep _ -> {
+                if (!terminalStep) {
+                    throw new IllegalStateException(
+                            "StaticPropertyCommitStep must be terminal in reverse commit, but outer steps still remain"
+                    );
+                }
+                yield writtenBackValueSlotId;
+            }
+            case SubscriptCommitStep subscriptStep -> subscriptStep.baseOrReceiverSlotId();
+        };
     }
 
     private static @NotNull NamedMemberScratch materializeNamedMemberScratch(
@@ -303,6 +364,10 @@ final class FrontendWritableRouteSupport {
 
     @FunctionalInterface
     interface ReverseCommitGateHook {
+        /// `writtenBackValueSlotId` is the current carrier about to be written into this step.
+        /// Returning false skips only the current step's writeback. The carrier is still promoted to
+        /// the next outer owner so later layers can keep checking their own runtime gate, matching
+        /// Godot's per-layer `JUMP_IF_SHARED` regions.
         boolean shouldApply(
                 @NotNull FrontendWritableCommitStep step,
                 @NotNull String writtenBackValueSlotId
@@ -467,7 +532,8 @@ final class FrontendWritableRouteSupport {
     /// `FrontendWritableCommitStep` exists because mutating the leaf is often not enough. For
     /// value-semantic chains such as `self.payloads[i] = rhs`, the indexed store mutates the inner
     /// container first, then that mutated container must be written back into `self.payloads`, and
-    /// possibly further outward if the chain is longer.
+    /// possibly further outward if the chain is longer. Each applied step therefore produces the
+    /// next outer owner carrier consumed by the following reverse-commit step.
     ///
     /// This type deliberately mirrors only the operations needed for *reverse* commit:
     /// - property commit
@@ -494,6 +560,7 @@ final class FrontendWritableRouteSupport {
     }
 
     /// Writes the mutated carrier back into `TypeName.property`.
+    /// This is a terminal reverse-commit step because there is no outer runtime owner slot to return.
     record StaticPropertyCommitStep(
             @NotNull String receiverTypeName,
             @NotNull String propertyName
@@ -509,7 +576,8 @@ final class FrontendWritableRouteSupport {
     /// This is used both for plain `base[key]` routes and for attribute-subscript cases where the
     /// effective subscript base first comes from `receiver.member`. In the latter case the step keeps
     /// `memberNameOrNull` so reverse commit can rebuild the same named-base writeback shape instead of
-    /// assuming the base was already a standalone slot.
+    /// assuming the base was already a standalone slot. After the write completes, the next carrier is
+    /// always the owning base/receiver slot itself.
     record SubscriptCommitStep(
             @NotNull String baseOrReceiverSlotId,
             @Nullable String memberNameOrNull,
