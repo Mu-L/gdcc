@@ -1,6 +1,6 @@
 # Backend 对象所有权与生命周期对齐实施计划
 
-> Status: In Progress (`Step 1-3` completed on 2026-04-09)  
+> Status: In Progress (`Step 1-4` completed on 2026-04-10)  
 > Scope: `src/main/java/dev/superice/gdcc/backend/c/**`, `src/main/c/codegen/**`  
 > 校对基线: 2026-04-09  
 > 上游对齐基线: Godot `755fa449c4aa94fdf2c58e2b726fd62efde07e09`
@@ -299,6 +299,22 @@ Godot 并不会因为局部变量离开作用域而自动 `free()` / `queue_free
   - borrowed field return 不产生 missing retain
 
 ### Step 4. 锁定 `__finally__` auto-cleanup 只处理 managed slots
+
+#### 当前状态
+
+- Status: Completed on 2026-04-10
+- Tightened the managed-slot cleanup contract in:
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/DestructInsnGen.java`
+- Synced Step 4 facts into:
+  - `doc/gdcc_ownership_lifecycle_spec.md`
+  - `doc/gdcc_c_backend.md`
+  - `doc/module_impl/backend/cbodybuilder_implementation.md`
+- Added regression anchors in:
+  - `src/test/java/dev/superice/gdcc/backend/c/gen/CDestructInsnGenTest.java`
+  - `src/test/java/dev/superice/gdcc/backend/c/gen/CPhaseAControlFlowAndFinallyTest.java`
+- Verified with:
+  - `.\\gradlew.bat test --tests CDestructInsnGenTest --tests CPhaseAControlFlowAndFinallyTest --tests CBodyBuilderPhaseCTest --no-daemon --info --console=plain`
 
 #### 修改范围
 

@@ -66,15 +66,16 @@ public final class DestructInsnGen implements CInsnGen<DestructInsn> {
                                         @NotNull LirVariable variable) {
         var refCountedStatus = bodyBuilder.classRegistry().getRefCountedStatus(objectType);
         if (insn.getProvenance() == LifecycleProvenance.AUTO_GENERATED && refCountedStatus == RefCountedStatus.NO) {
-            // AUTO_GENERATED object cleanup models local scope-exit maintenance only for reference-managed objects.
-            // Non-RefCounted objects follow Godot's explicit lifetime contract and must not be destroyed here.
+            // AUTO_GENERATED cleanup is about managed local slots still owned by the current function, not
+            // about destroying every object value that happens to be live at scope exit. Definite
+            // non-RefCounted objects stay under Godot's explicit lifetime contract and must be skipped here.
             return;
         }
-        var releaseFunc = switch (refCountedStatus) {
+        var cleanupFunction = switch (refCountedStatus) {
             case RefCountedStatus.YES -> "release_object";
             case RefCountedStatus.UNKNOWN -> "try_release_object";
             case RefCountedStatus.NO -> "try_destroy_object";
         };
-        bodyBuilder.callVoid(releaseFunc, List.of(bodyBuilder.valueOfVar(variable)));
+        bodyBuilder.callVoid(cleanupFunction, List.of(bodyBuilder.valueOfVar(variable)));
     }
 }

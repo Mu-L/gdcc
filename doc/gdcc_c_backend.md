@@ -156,6 +156,7 @@ Object category rules:
   - owned source -> consume directly into `_return_val`
   - do not add a blanket retain step for all returns at function end
 - `__finally__` auto-cleanup is limited to managed local slots.
+  It cleans up slots the current function still owns, not arbitrary object values that happen to be live.
   `_return_val`, moved-out return sources, `ref` locals, and definite non-`RefCounted` locals are outside that blanket cleanup set.
 - Explicitly reject these maintenance shortcuts:
   - “retain every object return once before function exit”

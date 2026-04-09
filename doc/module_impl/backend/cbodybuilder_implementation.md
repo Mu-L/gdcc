@@ -133,6 +133,7 @@
 - `CCodegen` 的 `__finally__` auto-destruction 目前只覆盖：
   - value-semantic destroyable locals
   - `RefCountedStatus.YES/UNKNOWN` 的对象 locals
+- finally cleanup 针对的是“当前函数仍然持有的 managed local slot”，不是对所有仍然活着的对象值统一做一次 release。
 - `RefCountedStatus.NO` 的对象 local 不会自动生成 cleanup；这类对象遵循 Godot 的显式生命周期合同，不因离开局部作用域而自动 `free` / destroy。
 
 ### 4.3 明确拒绝的误读

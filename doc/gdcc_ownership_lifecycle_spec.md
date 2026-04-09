@@ -120,11 +120,15 @@ Select operation by `RefCountedStatus`:
 
 Automatic local cleanup rule:
 
+- `AUTO_GENERATED` `destruct` in `__finally__` is slot-based cleanup for managed locals still owned by the
+  current function, not a blanket rule over every live object value.
 - `AUTO_GENERATED` `destruct` in `__finally__` must never destroy definite non-`RefCounted` object locals.
 - Scope-exit cleanup for object locals is only allowed to release reference-managed object slots:
   - `YES` -> `release_object`
   - `UNKNOWN` -> `try_release_object`
   - `NO` -> no cleanup
+- `_return_val` is the hidden return-publish slot, not a normal local variable entry, so it is excluded from
+  the auto-cleanup set by contract.
 - This matches Godot's contract where non-`RefCounted` objects stay under explicit user-managed lifetime (`free`, `queue_free`, etc.) even when stored in local variables.
 
 ### 3.7 Constraints

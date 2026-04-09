@@ -254,6 +254,43 @@ public class CPhaseAControlFlowAndFinallyTest {
     }
 
     @Test
+    @DisplayName("generate should auto-cleanup unknown object locals but never inject cleanup for _return_val")
+    void generateShouldAutoCleanupUnknownObjectLocalsButExcludeReturnSlot() {
+        var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("object_func");
+        var unknownObjectType = new GdObjectType("UnknownObject");
+        func.setReturnType(unknownObjectType);
+        func.addParameter(new LirParameterDef("param", unknownObjectType, null, func));
+        func.createAndAddVariable("mysteryLocal", unknownObjectType);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new ReturnInsn("param"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        clazz.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        codegen.generate();
+
+        var finallyBlock = func.getBasicBlock("__finally__");
+        assertNotNull(finallyBlock);
+        var destructIds = finallyBlock.getInstructions().stream()
+                .filter(DestructInsn.class::isInstance)
+                .map(DestructInsn.class::cast)
+                .map(DestructInsn::variableId)
+                .toList();
+        assertTrue(destructIds.contains("mysteryLocal"), "Unknown object locals should stay in managed auto-cleanup set.");
+        assertFalse(destructIds.contains("_return_val"), "The hidden return-publish slot must never be auto-cleaned as a local variable.");
+        assertEquals("_return_val", assertInstanceOf(ReturnInsn.class, finallyBlock.getInstructions().getLast()).returnValueId());
+
+        var body = codegen.generateFuncBody(clazz, func);
+        assertTrue(body.contains("try_release_object($mysteryLocal);"), body);
+        assertFalse(body.contains("try_release_object(_return_val);"), body);
+        assertFalse(body.contains("release_object(_return_val);"), body);
+    }
+
+    @Test
     @DisplayName("generate should keep existing __finally__ instructions and append missing ones")
     void generateShouldKeepExistingFinallyForVoidFunction() {
         var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
