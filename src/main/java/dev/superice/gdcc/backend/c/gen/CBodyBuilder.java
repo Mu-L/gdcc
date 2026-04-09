@@ -637,6 +637,11 @@ public final class CBodyBuilder {
         return this;
     }
 
+    /// Returns a value from the current function.
+    /// Generated non-void LIR must publish through `_return_val` and let `__finally__` emit the
+    /// terminal return. The direct-return branch below remains a low-level escape hatch for manual
+    /// builder use and tests, but `ControlFlowIntegrityValidator` rejects non-void `__finally__`
+    /// blocks that try to return anything other than `_return_val`.
     public @NotNull CBodyBuilder returnValue(@NotNull ValueRef value) {
         var returnType = func.getReturnType();
         if (returnType instanceof GdVoidType) {
@@ -680,6 +685,9 @@ public final class CBodyBuilder {
         }
 
         if (returnType instanceof GdObjectType objType) {
+            // This branch is intentionally not the published LIR return surface for non-void
+            // functions. It exists so the builder can still emit direct C returns in manual/test
+            // scenarios after the value has already been prepared.
             var sourceObjType = value.type() instanceof GdObjectType objectType ? objectType : null;
             returnCode = convertPtrIfNeeded(returnCode, value.ptrKind(), sourceObjType, objType);
         }
@@ -697,6 +705,9 @@ public final class CBodyBuilder {
         return this;
     }
 
+    /// Only ordinary local object slots may transfer ownership directly into `_return_val`.
+    /// Parameters, ref aliases, captures, and non-slot expressions stay on the borrowed-return path,
+    /// so the publish boundary itself performs the retain when needed.
     private @Nullable VarValue resolveMovedObjectReturnSource(@NotNull ValueRef value, @NotNull GdType returnType) {
         if (!(returnType instanceof GdObjectType)) {
             return null;
@@ -706,6 +717,9 @@ public final class CBodyBuilder {
         }
         var variable = varValue.variable();
         if (variable.ref() || func.checkVariableParameter(variable.id())) {
+            return null;
+        }
+        if (func.getCapture(variable.id()) != null) {
             return null;
         }
         return varValue;

@@ -4,6 +4,7 @@ import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.ProjectInfo;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.enums.LifecycleProvenance;
+import dev.superice.gdcc.exception.InvalidControlFlowGraphException;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.lir.LirBasicBlock;
@@ -107,6 +108,61 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         assertTrue(body.contains("return _return_val;"));
         assertFalse(body.contains("Return value variable ID _return_val does not exist"));
+    }
+
+    @Test
+    @DisplayName("non-void __finally__ must return _return_val sentinel")
+    void nonVoidFinallyMustReturnReturnSlotSentinel() {
+        var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("int_func");
+        func.setReturnType(GdIntType.INT);
+        func.createAndAddVariable("result", GdIntType.INT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new GotoInsn("__finally__"));
+        func.addBasicBlock(entry);
+
+        var finallyBlock = new LirBasicBlock("__finally__");
+        finallyBlock.appendInstruction(new ReturnInsn("result"));
+        func.addBasicBlock(finallyBlock);
+        func.setEntryBlockId("entry");
+        clazz.addFunction(func);
+
+        var codegen = newCodegen(new LirModule("test_module", List.of(clazz)), List.of(clazz));
+        var ex = assertThrows(InvalidControlFlowGraphException.class, () -> codegen.generateFuncBody(clazz, func));
+
+        assertTrue(ex.getMessage().contains("_return_val"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("moved local object return should clear source before finally cleanup and never release _return_val")
+    void movedLocalObjectReturnShouldClearSourceBeforeFinallyCleanup() {
+        var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("resource_func");
+        func.setReturnType(new GdObjectType("RefCounted"));
+        func.createAndAddVariable("obj", new GdObjectType("RefCounted"));
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new ReturnInsn("obj"));
+        func.addBasicBlock(entry);
+
+        var finallyBlock = new LirBasicBlock("__finally__");
+        finallyBlock.appendInstruction(new DestructInsn("obj", LifecycleProvenance.AUTO_GENERATED));
+        finallyBlock.appendInstruction(new ReturnInsn("_return_val"));
+        func.addBasicBlock(finallyBlock);
+        func.setEntryBlockId("entry");
+        clazz.addFunction(func);
+
+        var codegen = newCodegen(new LirModule("test_module", List.of(clazz)), List.of(clazz));
+        var body = codegen.generateFuncBody(clazz, func);
+
+        assertTrue(body.contains("_return_val = $obj;"), body);
+        assertTrue(body.contains("$obj = NULL;"), body);
+        assertTrue(body.contains("release_object($obj);"), body);
+        assertFalse(body.contains("release_object(_return_val);"), body);
+        assertTrue(body.contains("return _return_val;"), body);
+        assertTrue(body.indexOf("$obj = NULL;") < body.indexOf("release_object($obj);"),
+                "Move-return source must be cleared before auto cleanup. Actual:\n" + body);
     }
 
     @Test

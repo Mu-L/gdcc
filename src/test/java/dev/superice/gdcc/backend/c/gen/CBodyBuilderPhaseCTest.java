@@ -642,6 +642,29 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
+        @DisplayName("Returning borrowed object expression outside finally should retain return slot without move")
+        void testReturnBorrowedObjectExpressionOutsideFinallyUsesOwn() {
+            var objectBuilder = createBuilderWithReturnType(new GdObjectType("RefCounted"));
+            objectBuilder.beginBasicBlock("__prepare__");
+            var borrowedValue = objectBuilder.valueOfExpr(
+                    "self->cached_resource",
+                    new GdObjectType("RefCounted"),
+                    CBodyBuilder.PtrKind.GODOT_PTR
+            );
+
+            objectBuilder.returnValue(borrowedValue);
+
+            var result = objectBuilder.build();
+            assertTrue(result.contains("_return_val = self->cached_resource;"),
+                    "Borrowed field/property style return should still publish through the return slot");
+            assertTrue(result.contains("own_object(_return_val);"),
+                    "Borrowed field/property style return should retain at the publish boundary");
+            assertFalse(result.contains("cached_resource = NULL;"),
+                    "Borrowed expression return must not trigger move-return source clearing");
+            assertTrue(result.contains("goto __finally__;"), "Non-finally return should jump to __finally__");
+        }
+
+        @Test
         @DisplayName("Returning value from void function should fail")
         void testReturnValueFromVoidFunctionFails() {
             var value = builder.valueOfExpr("1", GdIntType.INT);

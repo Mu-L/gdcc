@@ -212,6 +212,9 @@ Object category rules:
   - For non-void functions, the return value is assigned to an implicit `_return_val` variable.
   - Control flow then jumps to `__finally__`.
 - Only `__finally__` emits the actual `return` statement.
+  - For non-void functions, the only valid backend-IR terminator in `__finally__` is `ReturnInsn("_return_val")`.
+    Direct `ReturnInsn(<user-var>)` in `__finally__` is rejected by control-flow validation so object returns
+    cannot bypass the `_return_val` publish boundary.
 - For non-void functions, `_return_val` is declared at the top of the `__prepare__` block.
   - `_return_val` does not require automatic destruction.
 - Once `_return_val` is written, a goto to `__finally__` is emitted immediately, so `_return_val` is always live until the end of the function, and its value is published through return flow. 

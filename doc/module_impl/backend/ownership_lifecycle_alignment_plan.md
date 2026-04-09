@@ -1,6 +1,6 @@
 # Backend 对象所有权与生命周期对齐实施计划
 
-> Status: In Progress (`Step 1-2` completed on 2026-04-09)  
+> Status: In Progress (`Step 1-3` completed on 2026-04-09)  
 > Scope: `src/main/java/dev/superice/gdcc/backend/c/**`, `src/main/c/codegen/**`  
 > 校对基线: 2026-04-09  
 > 上游对齐基线: Godot `755fa449c4aa94fdf2c58e2b726fd62efde07e09`
@@ -247,6 +247,24 @@ Godot 并不会因为局部变量离开作用域而自动 `free()` / `queue_free
 
 ### Step 3. 强化 `_return_val` 发布路径
 
+#### 当前状态
+
+- Status: Completed on 2026-04-09
+- Tightened the published return surface with:
+  - `src/main/java/dev/superice/gdcc/lir/validation/ControlFlowIntegrityValidator.java`
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/ControlFlowInsnGen.java`
+- Synced return-boundary facts into:
+  - `doc/gdcc_ownership_lifecycle_spec.md`
+  - `doc/gdcc_c_backend.md`
+  - `doc/module_impl/backend/cbodybuilder_implementation.md`
+- Added regression anchors in:
+  - `src/test/java/dev/superice/gdcc/lir/validation/ControlFlowIntegrityValidatorTest.java`
+  - `src/test/java/dev/superice/gdcc/backend/c/gen/CBodyBuilderPhaseCTest.java`
+  - `src/test/java/dev/superice/gdcc/backend/c/gen/CPhaseAControlFlowAndFinallyTest.java`
+- Verified with:
+  - `.\\gradlew.bat test --tests ControlFlowIntegrityValidatorTest --tests CBodyBuilderPhaseCTest --tests CPhaseAControlFlowAndFinallyTest --no-daemon --info --console=plain`
+
 #### 修改范围
 
 - `src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
@@ -257,7 +275,7 @@ Godot 并不会因为局部变量离开作用域而自动 `free()` / `queue_free
 - 把 object return publish 明确收口为“写 `_return_val`”
 - 保持 current move-return 策略保守：
   - 仅允许普通本地 object slot move 到 `_return_val`
-  - parameter / `ref` / field read / expression value 不参与 move-return
+  - parameter / `ref` / capture / field read / expression value 不参与 move-return
 - 在实现和注释中明确：
   - `_return_val` retain/consume 决策发生在 slot-write 时
   - 不是函数尾部统一 own

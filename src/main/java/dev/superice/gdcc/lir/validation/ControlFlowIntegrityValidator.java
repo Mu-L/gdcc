@@ -4,10 +4,14 @@ import dev.superice.gdcc.exception.InvalidControlFlowGraphException;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.insn.ControlFlowInstruction;
+import dev.superice.gdcc.lir.insn.ReturnInsn;
+import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 
 /// Validates block-local terminator rules and function-level successor integrity.
 public final class ControlFlowIntegrityValidator {
+    private static final String RETURN_SLOT_ID = "_return_val";
+
     public void validateFunction(@NotNull LirFunctionDef func) {
         validateEntryBlock(func);
         for (var block : func) {
@@ -51,6 +55,9 @@ public final class ControlFlowIntegrityValidator {
                         "control-flow terminator must be the last instruction in the block");
             }
             validateSuccessorTargets(func, block, index, controlFlowInstruction);
+            if (controlFlowInstruction instanceof ReturnInsn returnInsn) {
+                validateReturnSurface(func, block, index, returnInsn);
+            }
         }
     }
 
@@ -63,6 +70,36 @@ public final class ControlFlowIntegrityValidator {
                 throw invalid(func, block, index, instruction,
                         "successor block '" + successorId + "' does not exist");
             }
+        }
+    }
+
+    /// Non-void functions publish through `_return_val`.
+    /// On the LIR surface, the only valid `__finally__` terminator is `ReturnInsn("_return_val")`;
+    /// direct `ReturnInsn(<user-var>)` in `__finally__` would bypass the publish slot and drift
+    /// away from the backend ownership contract.
+    private void validateReturnSurface(@NotNull LirFunctionDef func,
+                                       @NotNull LirBasicBlock block,
+                                       int index,
+                                       @NotNull ReturnInsn returnInsn) {
+        var returnValueId = returnInsn.returnValueId();
+        if ("__finally__".equals(block.id())) {
+            if (func.getReturnType() instanceof GdVoidType) {
+                if (returnValueId != null) {
+                    throw invalid(func, block, index, returnInsn,
+                            "void __finally__ block must end with bare return");
+                }
+                return;
+            }
+            if (!RETURN_SLOT_ID.equals(returnValueId)) {
+                throw invalid(func, block, index, returnInsn,
+                        "non-void __finally__ block must return " + RETURN_SLOT_ID);
+            }
+            return;
+        }
+
+        if (RETURN_SLOT_ID.equals(returnValueId)) {
+            throw invalid(func, block, index, returnInsn,
+                    RETURN_SLOT_ID + " sentinel can only be returned from __finally__");
         }
     }
 

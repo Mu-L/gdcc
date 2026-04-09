@@ -116,6 +116,9 @@
 - 非 `__finally__` 中的 `returnValue(...)`：写 `_return_val` 后 `goto __finally__`。
 - 非 `__finally__` 中的 `returnVoid()`：仅允许 void 函数并 `goto __finally__`。
 - `returnTerminal()` 仅允许在 `__finally__` 返回 `_return_val`。
+- 对生成后的 backend LIR，非 `void` `__finally__` 只能以 `ReturnInsn("_return_val")` 结束。
+  `ControlFlowIntegrityValidator` 会拒绝 `ReturnInsn(<user-var>)` 之类会绕过 `_return_val` 发布边界的形态。
+  `CBodyBuilder.returnValue(...)` 中保留的 finally-direct-return 分支只服务于手工 builder/test 场景，不属于正常 LIR surface。
 
 ### 4.2 `_return_val` 语义
 
@@ -123,7 +126,8 @@
 - 对象返回槽写入复用对象槽位写入语义（含 own/release/转换）：
   - borrowed source -> `_return_val` retain
   - owned source -> `_return_val` consume
-- 当返回值来自本地 owning object slot 时，Builder 会把该 slot move 到 `_return_val` 并清空源槽，避免 `__finally__` auto-destruction 释放已发布的返回对象。
+- 当返回值来自普通本地 owning object slot 时，Builder 会把该 slot move 到 `_return_val` 并清空源槽，避免 `__finally__` auto-destruction 释放已发布的返回对象。
+  parameter、`ref` alias、capture，以及 field/property 这类非 slot expression 不参与 move-return，而是继续走 `_return_val` retain。
 - 非对象返回槽目前保持 direct assignment（不走 `emitNonObjectSlotWrite`）。
 - `_return_val` 不属于变量表 auto-cleanup 集合；它是 return publish 边界，而不是普通 local slot。
 - `CCodegen` 的 `__finally__` auto-destruction 目前只覆盖：

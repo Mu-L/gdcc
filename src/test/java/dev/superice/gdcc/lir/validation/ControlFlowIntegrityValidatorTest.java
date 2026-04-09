@@ -6,6 +6,7 @@ import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.insn.GoIfInsn;
 import dev.superice.gdcc.lir.insn.GotoInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.Test;
 
@@ -65,9 +66,49 @@ public class ControlFlowIntegrityValidatorTest {
         assertTrue(exception.getMessage().contains("missing"), exception.getMessage());
     }
 
+    @Test
+    public void validateFunction_rejectsNonVoidFinallyReturningUserVariable() {
+        var function = newIntFunction("broken_finally_return");
+        function.createAndAddVariable("value", GdIntType.INT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.setTerminator(new GotoInsn("__finally__"));
+        var finallyBlock = new LirBasicBlock("__finally__");
+        finallyBlock.setTerminator(new ReturnInsn("value"));
+        function.addBasicBlock(entry);
+        function.addBasicBlock(finallyBlock);
+        function.setEntryBlockId("entry");
+
+        var exception = assertThrows(InvalidControlFlowGraphException.class,
+                () -> validator.validateFunction(function));
+
+        assertTrue(exception.getMessage().contains("_return_val"), exception.getMessage());
+    }
+
+    @Test
+    public void validateFunction_rejectsReturningReturnSlotOutsideFinally() {
+        var function = newIntFunction("broken_return_slot_use");
+
+        var entry = new LirBasicBlock("entry");
+        entry.setTerminator(new ReturnInsn("_return_val"));
+        function.addBasicBlock(entry);
+        function.setEntryBlockId("entry");
+
+        var exception = assertThrows(InvalidControlFlowGraphException.class,
+                () -> validator.validateFunction(function));
+
+        assertTrue(exception.getMessage().contains("__finally__"), exception.getMessage());
+    }
+
     private static LirFunctionDef newVoidFunction(String name) {
         var function = new LirFunctionDef(name);
         function.setReturnType(GdVoidType.VOID);
+        return function;
+    }
+
+    private static LirFunctionDef newIntFunction(String name) {
+        var function = new LirFunctionDef(name);
+        function.setReturnType(GdIntType.INT);
         return function;
     }
 }

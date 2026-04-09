@@ -100,6 +100,8 @@ Implementation note:
   - write `_return_val` with `OWNED` rhs semantics
   - clear the source slot before entering `__finally__`
   - this prevents local auto-destruction from releasing the published return object again
+- On the LIR surface, a non-`void` `__finally__` block must terminate with `ReturnInsn("_return_val")`.
+  Direct `ReturnInsn(<user-var>)` in `__finally__` is invalid backend IR and is rejected before C emission.
 - `_return_val` is outside the LIR variable table auto-destruction scope (it is published through return flow).
 
 ### 3.5 Discard Rules
