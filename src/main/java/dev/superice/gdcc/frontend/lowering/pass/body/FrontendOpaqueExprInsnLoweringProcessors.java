@@ -45,6 +45,11 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
     /// This processor is allowed to choose only among binding-backed runtime load routes
     /// (local/parameter/capture/property/self); it must not re-run any scope lookup or member
     /// inference.
+    ///
+    /// `FrontendTopBindingAnalyzer` publishes `FrontendBindingKind.SELF` only for explicit
+    /// `SelfExpression`. If an `IdentifierExpression` arrives here with binding kind `SELF`, some
+    /// earlier publication step violated that contract and body lowering must fail fast instead of
+    /// silently recovering to `"self"`.
     private static final class FrontendIdentifierOpaqueExprInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<IdentifierExpression, FrontendBodyLoweringSession.OpaqueExprLoweringContext> {
         @Override
@@ -63,7 +68,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
             var binding = session.requireBinding(node);
             var resultSlotId = session.resultSlotId(item);
             switch (binding.kind()) {
-                case SELF -> block.appendNonTerminatorInstruction(new AssignInsn(resultSlotId, "self"));
+                case SELF -> throw session.identifierSelfBindingContractViolation(node, "Identifier value lowering");
                 case LOCAL_VAR, PARAMETER, CAPTURE ->
                         block.appendNonTerminatorInstruction(new AssignInsn(resultSlotId, binding.symbolName()));
                 case PROPERTY -> {

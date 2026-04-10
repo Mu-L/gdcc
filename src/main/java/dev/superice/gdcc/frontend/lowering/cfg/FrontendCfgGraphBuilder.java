@@ -1,12 +1,14 @@
 package dev.superice.gdcc.frontend.lowering.cfg;
 
 import dev.superice.gdcc.enums.GodotOperator;
+import dev.superice.gdcc.frontend.lowering.FrontendCallMutabilitySupport;
 import dev.superice.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CastItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
@@ -1196,6 +1198,11 @@ public final class FrontendCfgGraphBuilder {
             }
             case AttributeCallStep attributeCallStep -> {
                 var publishedCall = requireLoweringReadyCall(attributeCallStep);
+                receiverBuild = maybePublishDirectSlotReceiverAlias(
+                        receiverBuild,
+                        publishedCall,
+                        attributeCallStep.arguments()
+                );
                 var argumentsBuild = buildArgumentValues(receiverBuild.cursor(), attributeCallStep.arguments());
                 var resultValueId = chooseResultValueId(preferredResultValueId);
                 var receiverRoute = routePayloadOrValueRoot(receiverBuild);
@@ -1282,6 +1289,24 @@ public final class FrontendCfgGraphBuilder {
         );
     }
 
+    /// Step 6 keeps alias publication narrower than generic identifier/self lowering: this item is
+    /// reserved for direct-slot mutating receivers whose dedicated value id must stay bound to one
+    /// trusted source slot instead of becoming a dead `cfg_tmp_*`.
+    private @NotNull ValueBuild emitDirectSlotAliasValue(
+            @NotNull BuildCursor cursor,
+            @NotNull Expression expression,
+            @Nullable String preferredResultValueId
+    ) {
+        var resultValueId = chooseResultValueId(preferredResultValueId);
+        cursor.currentSequence().items().add(new DirectSlotAliasValueItem(expression, resultValueId));
+        return new ValueBuild(
+                cursor,
+                expression,
+                resultValueId,
+                routePayloadForOpaqueExpression(expression)
+        );
+    }
+
     /// Ordinary value publication and writable-route publication are deliberately kept separate:
     /// CFG items still own evaluation order, while the route payload only freezes how a later
     /// mutation on the published value could be written back into its owner chain.
@@ -1314,7 +1339,7 @@ public final class FrontendCfgGraphBuilder {
     ) {
         var binding = requirePublishedBinding(identifierExpression);
         return switch (binding.kind()) {
-            case LOCAL_VAR, PARAMETER, CAPTURE, SELF -> new FrontendWritableRoutePayload(
+            case LOCAL_VAR, PARAMETER, CAPTURE -> new FrontendWritableRoutePayload(
                     identifierExpression,
                     new FrontendWritableRoutePayload.RootDescriptor(
                             FrontendWritableRoutePayload.RootKind.DIRECT_SLOT,
@@ -1330,6 +1355,9 @@ public final class FrontendCfgGraphBuilder {
                             null
                     ),
                     List.of()
+            );
+            case SELF -> throw new IllegalStateException(
+                    "Identifier writable-route publication must use explicit SelfExpression instead of binding kind SELF"
             );
             case PROPERTY -> new FrontendWritableRoutePayload(
                     identifierExpression,
@@ -1360,6 +1388,178 @@ public final class FrontendCfgGraphBuilder {
         return valueBuild.writableRoutePayloadOrNull() != null
                 ? valueBuild.writableRoutePayloadOrNull()
                 : valueRootRoutePayload(valueBuild.valueAnchor(), valueBuild.resultValueId());
+    }
+
+    /// Direct-slot alias publication is valid only for the narrow mutating-receiver surface:
+    /// - the receiver is already a direct-slot writable root
+    /// - the current publication is still the generic opaque temp path
+    /// - the receiver belongs to one explicit root category (`SelfExpression`, `LOCAL_VAR`,
+    ///   `PARAMETER`) instead of an implicit/self-context fallback
+    /// - `CAPTURE` is intentionally excluded until lambda/capture lowering semantics are frozen;
+    ///   otherwise Step 6 would prematurely promise alias behavior for a deferred surface
+    /// - for identifier-backed roots, later argument evaluation must stay inside a proven
+    ///   no-rebinding subset; otherwise Step 6 deliberately keeps the ordinary temp snapshot
+    private @NotNull ValueBuild maybePublishDirectSlotReceiverAlias(
+            @NotNull ValueBuild receiverBuild,
+            @NotNull FrontendResolvedCall publishedCall,
+            @NotNull List<Expression> arguments
+    ) {
+        if (!FrontendCallMutabilitySupport.mayMutateReceiver(publishedCall)) {
+            return receiverBuild;
+        }
+        var routePayload = receiverBuild.writableRoutePayloadOrNull();
+        if (routePayload == null
+                || routePayload.root().kind() != FrontendWritableRoutePayload.RootKind.DIRECT_SLOT
+                || routePayload.leaf().kind() != FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT) {
+            return receiverBuild;
+        }
+        if (!(receiverBuild.valueAnchor() instanceof IdentifierExpression || receiverBuild.valueAnchor() instanceof SelfExpression)) {
+            return receiverBuild;
+        }
+        var items = receiverBuild.cursor().currentSequence().items();
+        if (!(items.getLast() instanceof OpaqueExprValueItem opaqueValueItem)
+                || !opaqueValueItem.resultValueId().equals(receiverBuild.resultValueId())
+                || opaqueValueItem.expression() != receiverBuild.valueAnchor()) {
+            return receiverBuild;
+        }
+        var aliasRoot = requireDirectSlotAliasRoot((Expression) receiverBuild.valueAnchor());
+        if (!shouldPublishDirectSlotAlias(aliasRoot, arguments)) {
+            return receiverBuild;
+        }
+        items.removeLast();
+        return emitDirectSlotAliasValue(
+                receiverBuild.cursor(),
+                (Expression) receiverBuild.valueAnchor(),
+                receiverBuild.resultValueId()
+        );
+    }
+
+    /// Alias safety is phrased in terms of caller storage semantics, not one hard-coded AST node:
+    /// - explicit `self` is always stable because user code cannot rebind the `self` slot
+    /// - local/parameter/capture roots only alias when every later argument stays inside a proven
+    ///   no-rebinding subset
+    /// - anything effect-open or future/unknown falls back to the existing ordinary temp snapshot so
+    ///   newly added rebinding forms cannot silently tunnel through alias publication
+    private @NotNull DirectSlotAliasRoot requireDirectSlotAliasRoot(@NotNull Expression expression) {
+        return switch (expression) {
+            case SelfExpression selfExpression -> new DirectSlotAliasRoot(
+                    selfExpression,
+                    DirectSlotAliasRootKind.EXPLICIT_SELF
+            );
+            case IdentifierExpression identifierExpression -> {
+                var binding = requirePublishedBinding(identifierExpression);
+                yield switch (binding.kind()) {
+                    case LOCAL_VAR -> new DirectSlotAliasRoot(identifierExpression, DirectSlotAliasRootKind.LOCAL_VAR);
+                    case PARAMETER -> new DirectSlotAliasRoot(identifierExpression, DirectSlotAliasRootKind.PARAMETER);
+                    case CAPTURE -> throw new IllegalStateException(
+                            "Direct-slot alias publication does not support CAPTURE binding before lambda/capture semantics are implemented"
+                    );
+                    case SELF -> throw new IllegalStateException(
+                            "Direct-slot alias publication must use explicit SelfExpression instead of identifier binding kind SELF"
+                    );
+                    default -> throw new IllegalStateException(
+                            "Direct-slot alias publication requires LOCAL_VAR/PARAMETER binding, but got "
+                                    + binding.kind()
+                    );
+                };
+            }
+            default -> throw new IllegalStateException(
+                    "Direct-slot alias publication requires IdentifierExpression or SelfExpression, but got "
+                            + expression.getClass().getSimpleName()
+            );
+        };
+    }
+
+    private boolean shouldPublishDirectSlotAlias(
+            @NotNull DirectSlotAliasRoot aliasRoot,
+            @NotNull List<Expression> arguments
+    ) {
+        if (aliasRoot.kind() == DirectSlotAliasRootKind.EXPLICIT_SELF) {
+            return true;
+        }
+        return classifyDirectSlotAliasArguments(arguments) == DirectSlotAliasArgumentSafety.SAFE_TO_ALIAS;
+    }
+
+    private @NotNull DirectSlotAliasArgumentSafety classifyDirectSlotAliasArguments(
+            @NotNull List<Expression> arguments
+    ) {
+        var safety = DirectSlotAliasArgumentSafety.SAFE_TO_ALIAS;
+        for (var argument : arguments) {
+            safety = mergeDirectSlotAliasArgumentSafety(safety, classifyDirectSlotAliasArgument(argument));
+            if (safety == DirectSlotAliasArgumentSafety.REQUIRES_SNAPSHOT) {
+                return safety;
+            }
+        }
+        return safety;
+    }
+
+    /// This classifier is intentionally conservative. Step 6 only aliases identifier-backed receiver
+    /// roots across argument evaluation when the entire later subtree is already known to be
+    /// no-rebinding for caller direct-slot storage. Current value-level calls are still treated as
+    /// effect-open because future lambda/capture/callable surfaces could otherwise start rebinding the
+    /// same root through an ordinary-looking `CallExpression` without touching alias publication code.
+    private @NotNull DirectSlotAliasArgumentSafety classifyDirectSlotAliasArgument(@NotNull Expression expression) {
+        return switch (expression) {
+            case IdentifierExpression _, LiteralExpression _, SelfExpression _ ->
+                    DirectSlotAliasArgumentSafety.SAFE_TO_ALIAS;
+            case UnaryExpression unaryExpression -> classifyDirectSlotAliasArgument(unaryExpression.operand());
+            case BinaryExpression binaryExpression -> mergeDirectSlotAliasArgumentSafety(
+                    classifyDirectSlotAliasArgument(binaryExpression.left()),
+                    classifyDirectSlotAliasArgument(binaryExpression.right())
+            );
+            case CastExpression castExpression -> classifyDirectSlotAliasArgument(castExpression.value());
+            case TypeTestExpression typeTestExpression -> classifyDirectSlotAliasArgument(typeTestExpression.value());
+            case ConditionalExpression conditionalExpression -> mergeDirectSlotAliasArgumentSafety(
+                    mergeDirectSlotAliasArgumentSafety(
+                            classifyDirectSlotAliasArgument(conditionalExpression.condition()),
+                            classifyDirectSlotAliasArgument(conditionalExpression.left())
+                    ),
+                    classifyDirectSlotAliasArgument(conditionalExpression.right())
+            );
+            case SubscriptExpression subscriptExpression -> mergeDirectSlotAliasArgumentSafety(
+                    classifyDirectSlotAliasArgument(subscriptExpression.base()),
+                    classifyDirectSlotAliasArguments(subscriptExpression.arguments())
+            );
+            case AttributeExpression attributeExpression ->
+                    classifyDirectSlotAliasAttributeArgument(attributeExpression);
+            case AssignmentExpression _, CallExpression _ -> DirectSlotAliasArgumentSafety.REQUIRES_SNAPSHOT;
+            default -> DirectSlotAliasArgumentSafety.REQUIRES_SNAPSHOT;
+        };
+    }
+
+    private @NotNull DirectSlotAliasArgumentSafety classifyDirectSlotAliasAttributeArgument(
+            @NotNull AttributeExpression attributeExpression
+    ) {
+        var safety = classifyDirectSlotAliasArgument(attributeExpression.base());
+        for (var step : attributeExpression.steps()) {
+            safety = mergeDirectSlotAliasArgumentSafety(safety, classifyDirectSlotAliasAttributeStep(step));
+            if (safety == DirectSlotAliasArgumentSafety.REQUIRES_SNAPSHOT) {
+                return safety;
+            }
+        }
+        return safety;
+    }
+
+    private @NotNull DirectSlotAliasArgumentSafety classifyDirectSlotAliasAttributeStep(
+            @NotNull AttributeStep step
+    ) {
+        return switch (step) {
+            case AttributePropertyStep _ -> DirectSlotAliasArgumentSafety.SAFE_TO_ALIAS;
+            case AttributeSubscriptStep attributeSubscriptStep ->
+                    classifyDirectSlotAliasArguments(attributeSubscriptStep.arguments());
+            case AttributeCallStep _ -> DirectSlotAliasArgumentSafety.REQUIRES_SNAPSHOT;
+            default -> DirectSlotAliasArgumentSafety.REQUIRES_SNAPSHOT;
+        };
+    }
+
+    private @NotNull DirectSlotAliasArgumentSafety mergeDirectSlotAliasArgumentSafety(
+            @NotNull DirectSlotAliasArgumentSafety left,
+            @NotNull DirectSlotAliasArgumentSafety right
+    ) {
+        return left == DirectSlotAliasArgumentSafety.REQUIRES_SNAPSHOT
+                || right == DirectSlotAliasArgumentSafety.REQUIRES_SNAPSHOT
+                ? DirectSlotAliasArgumentSafety.REQUIRES_SNAPSHOT
+                : DirectSlotAliasArgumentSafety.SAFE_TO_ALIAS;
     }
 
     private @NotNull ValueBuild valueRootBuild(
@@ -2132,6 +2332,27 @@ public final class FrontendCfgGraphBuilder {
             Objects.requireNonNull(continueTargetId, "continueTargetId must not be null");
             Objects.requireNonNull(breakTargetId, "breakTargetId must not be null");
         }
+    }
+
+    private record DirectSlotAliasRoot(
+            @NotNull Expression expression,
+            @NotNull DirectSlotAliasRootKind kind
+    ) {
+        private DirectSlotAliasRoot {
+            Objects.requireNonNull(expression, "expression must not be null");
+            Objects.requireNonNull(kind, "kind must not be null");
+        }
+    }
+
+    private enum DirectSlotAliasRootKind {
+        EXPLICIT_SELF,
+        LOCAL_VAR,
+        PARAMETER
+    }
+
+    private enum DirectSlotAliasArgumentSafety {
+        SAFE_TO_ALIAS,
+        REQUIRES_SNAPSHOT
     }
 
     private static final class BlockState {

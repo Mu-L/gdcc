@@ -5,6 +5,7 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CastItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
@@ -30,6 +31,7 @@ import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.LinkedHashMap;
 import java.util.Objects;
@@ -60,6 +62,35 @@ public final class FrontendBodyLoweringSupport {
         return "cfg_cond_bool_" + StringUtil.requireNonBlank(valueId, "valueId");
     }
 
+    public enum CfgValueMaterializationKind {
+        TEMP_SLOT,
+        MERGE_SLOT,
+        SOURCE_SLOT_ALIAS
+    }
+
+    /// Published runtime facts for one frontend CFG value id.
+    ///
+    /// Most produced value ids still lower into one temp-backed slot, but merge results and Step 6
+    /// direct-slot aliases intentionally do not share that default shape.
+    public record CfgValueMaterialization(
+            @NotNull GdType type,
+            @NotNull CfgValueMaterializationKind kind,
+            @Nullable Node aliasSourceAnchorOrNull
+    ) {
+        public CfgValueMaterialization {
+            Objects.requireNonNull(type, "type must not be null");
+            Objects.requireNonNull(kind, "kind must not be null");
+            if (kind == CfgValueMaterializationKind.SOURCE_SLOT_ALIAS && aliasSourceAnchorOrNull == null) {
+                throw new IllegalArgumentException("SOURCE_SLOT_ALIAS materialization requires aliasSourceAnchorOrNull");
+            }
+            if (kind != CfgValueMaterializationKind.SOURCE_SLOT_ALIAS && aliasSourceAnchorOrNull != null) {
+                throw new IllegalArgumentException(
+                        kind + " materialization must not carry aliasSourceAnchorOrNull"
+                );
+            }
+        }
+    }
+
     public static @NotNull GdType requireSourceLocalSlotType(
             @NotNull FrontendAnalysisData analysisData,
             @NotNull VariableDeclaration declaration
@@ -75,13 +106,13 @@ public final class FrontendBodyLoweringSupport {
         return slotType;
     }
 
-    /// Collects runtime slot types for all frontend CFG value ids.
+    /// Collects runtime materialization facts for all frontend CFG value ids.
     ///
     /// This pass intentionally consumes the graph in published node/item order. Graph publication
     /// therefore must already have enforced the branch-result merge rule that every `MergeValueItem`
     /// sources a value produced earlier in the same sequence node; this collector does not try to
     /// recover from cross-sequence merge dependencies.
-    public static @NotNull SequencedMap<String, GdType> collectCfgValueSlotTypes(
+    public static @NotNull SequencedMap<String, CfgValueMaterialization> collectCfgValueMaterializations(
             @NotNull FrontendCfgGraph graph,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull ClassRegistry classRegistry
@@ -89,13 +120,18 @@ public final class FrontendBodyLoweringSupport {
         Objects.requireNonNull(graph, "graph must not be null");
         Objects.requireNonNull(analysisData, "analysisData must not be null");
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
-        var valueTypes = new LinkedHashMap<String, GdType>();
+        var materializations = new LinkedHashMap<String, CfgValueMaterialization>();
         for (var nodeId : graph.nodeIds()) {
             switch (graph.requireNode(nodeId)) {
                 case FrontendCfgGraph.SequenceNode(_, var items, _) -> {
                     for (var item : items) {
                         if (item instanceof ValueOpItem valueOpItem) {
-                            collectProducedValueType(valueTypes, valueOpItem, analysisData, classRegistry);
+                            collectProducedValueMaterialization(
+                                    materializations,
+                                    valueOpItem,
+                                    analysisData,
+                                    classRegistry
+                            );
                         }
                     }
                 }
@@ -103,11 +139,24 @@ public final class FrontendBodyLoweringSupport {
                 }
             }
         }
+        return materializations;
+    }
+
+    /// Convenience projection for callers that only need the published runtime type.
+    public static @NotNull SequencedMap<String, GdType> collectCfgValueSlotTypes(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull ClassRegistry classRegistry
+    ) {
+        var valueTypes = new LinkedHashMap<String, GdType>();
+        for (var entry : collectCfgValueMaterializations(graph, analysisData, classRegistry).entrySet()) {
+            valueTypes.put(entry.getKey(), entry.getValue().type());
+        }
         return valueTypes;
     }
 
-    private static void collectProducedValueType(
-            @NotNull SequencedMap<String, GdType> valueTypes,
+    private static void collectProducedValueMaterialization(
+            @NotNull SequencedMap<String, CfgValueMaterialization> materializations,
             @NotNull ValueOpItem item,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull ClassRegistry classRegistry
@@ -116,53 +165,82 @@ public final class FrontendBodyLoweringSupport {
         if (resultValueId == null) {
             return;
         }
-        var resolvedType = requireProducedValueType(item, analysisData, classRegistry, valueTypes);
-        var previous = valueTypes.putIfAbsent(resultValueId, resolvedType);
-        if (previous != null && !previous.equals(resolvedType)) {
+        var materialization = requireProducedValueMaterialization(item, analysisData, classRegistry, materializations);
+        var previous = materializations.putIfAbsent(resultValueId, materialization);
+        if (previous != null && !previous.equals(materialization)) {
             throw new IllegalStateException(
-                    "Conflicting published types for value id '"
+                    "Conflicting published materializations for value id '"
                             + resultValueId
                             + "': "
-                            + previous.getTypeName()
+                            + previous
                             + " vs "
-                            + resolvedType.getTypeName()
+                            + materialization
             );
         }
     }
 
-    private static @NotNull GdType requireProducedValueType(
+    private static @NotNull CfgValueMaterialization requireProducedValueMaterialization(
             @NotNull ValueOpItem item,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull ClassRegistry classRegistry,
-            @NotNull SequencedMap<String, GdType> resolvedValueTypes
+            @NotNull SequencedMap<String, CfgValueMaterialization> resolvedMaterializations
     ) {
         return switch (item) {
-            case BoolConstantItem _ -> GdBoolType.BOOL;
-            case MergeValueItem mergeValueItem -> requireResolvedValueType(
-                    resolvedValueTypes,
-                    mergeValueItem.sourceValueId()
+            case BoolConstantItem _ -> new CfgValueMaterialization(
+                    GdBoolType.BOOL,
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
             );
-            case OpaqueExprValueItem opaqueExprValueItem -> requireOpaqueValueType(
-                    analysisData,
-                    opaqueExprValueItem.expression()
+            case MergeValueItem mergeValueItem -> new CfgValueMaterialization(
+                    requireResolvedValueType(resolvedMaterializations, mergeValueItem.sourceValueId()),
+                    CfgValueMaterializationKind.MERGE_SLOT,
+                    null
             );
-            case CompoundAssignmentBinaryOpItem compoundAssignmentItem -> requireCompoundAssignmentResultType(
-                    compoundAssignmentItem,
-                    classRegistry,
-                    resolvedValueTypes
+            case DirectSlotAliasValueItem aliasValueItem -> new CfgValueMaterialization(
+                    requireOpaqueValueType(analysisData, aliasValueItem.expression()),
+                    CfgValueMaterializationKind.SOURCE_SLOT_ALIAS,
+                    aliasValueItem.expression()
             );
-            case CallItem callItem -> requireCallReturnType(analysisData, callItem.anchor());
-            case MemberLoadItem memberLoadItem -> requireMemberResultType(analysisData, memberLoadItem.anchor());
-            case SubscriptLoadItem subscriptLoadItem -> requireSubscriptResultType(
-                    analysisData,
-                    classRegistry,
-                    subscriptLoadItem,
-                    resolvedValueTypes
+            case OpaqueExprValueItem opaqueExprValueItem -> new CfgValueMaterialization(
+                    requireOpaqueValueType(analysisData, opaqueExprValueItem.expression()),
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
             );
-            case CastItem castItem -> requireExpressionType(analysisData, castItem.expression());
-            case TypeTestItem _ -> GdBoolType.BOOL;
-            case dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem assignmentItem ->
-                    requireAssignmentResultType(analysisData, assignmentItem);
+            case CompoundAssignmentBinaryOpItem compoundAssignmentItem -> new CfgValueMaterialization(
+                    requireCompoundAssignmentResultType(compoundAssignmentItem, classRegistry, resolvedMaterializations),
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
+            case CallItem callItem -> new CfgValueMaterialization(
+                    requireCallReturnType(analysisData, callItem.anchor()),
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
+            case MemberLoadItem memberLoadItem -> new CfgValueMaterialization(
+                    requireMemberResultType(analysisData, memberLoadItem.anchor()),
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
+            case SubscriptLoadItem subscriptLoadItem -> new CfgValueMaterialization(
+                    requireSubscriptResultType(analysisData, classRegistry, subscriptLoadItem, resolvedMaterializations),
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
+            case CastItem castItem -> new CfgValueMaterialization(
+                    requireExpressionType(analysisData, castItem.expression()),
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
+            case TypeTestItem _ -> new CfgValueMaterialization(
+                    GdBoolType.BOOL,
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
+            case dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem assignmentItem -> new CfgValueMaterialization(
+                    requireAssignmentResultType(analysisData, assignmentItem),
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
             case dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem _ ->
                     throw new IllegalStateException("LocalDeclarationItem must not publish a result value id");
         };
@@ -210,17 +288,25 @@ public final class FrontendBodyLoweringSupport {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull ClassRegistry classRegistry,
             @NotNull SubscriptLoadItem subscriptLoadItem,
-            @NotNull SequencedMap<String, GdType> resolvedValueTypes
+            @NotNull SequencedMap<String, CfgValueMaterialization> resolvedMaterializations
     ) {
         if (subscriptLoadItem.anchor() instanceof Expression expression) {
             if (analysisData.expressionTypes().get(expression) == null) {
-                return requireCompoundAssignmentSubscriptResultType(classRegistry, subscriptLoadItem, resolvedValueTypes);
+                return requireCompoundAssignmentSubscriptResultType(
+                        classRegistry,
+                        subscriptLoadItem,
+                        resolvedMaterializations
+                );
             }
             return requireExpressionType(analysisData, expression);
         }
         if (subscriptLoadItem.anchor() instanceof AttributeSubscriptStep attributeSubscriptStep) {
             if (analysisData.expressionTypes().get(attributeSubscriptStep) == null) {
-                return requireCompoundAssignmentSubscriptResultType(classRegistry, subscriptLoadItem, resolvedValueTypes);
+                return requireCompoundAssignmentSubscriptResultType(
+                        classRegistry,
+                        subscriptLoadItem,
+                        resolvedMaterializations
+                );
             }
             return requireLoweringReadyExpressionType(
                     analysisData,
@@ -228,7 +314,9 @@ public final class FrontendBodyLoweringSupport {
                     "AttributeSubscriptStep '" + attributeSubscriptStep.name() + "[...]'"
             );
         }
-        throw new IllegalStateException("Unsupported subscript anchor: " + subscriptLoadItem.anchor().getClass().getSimpleName());
+        throw new IllegalStateException(
+                "Unsupported subscript anchor: " + subscriptLoadItem.anchor().getClass().getSimpleName()
+        );
     }
 
     /// Assignment-target prefixes may materialize identifier/self leaves through the opaque route
@@ -312,11 +400,11 @@ public final class FrontendBodyLoweringSupport {
     }
 
     private static @NotNull GdType requireResolvedValueType(
-            @NotNull SequencedMap<String, GdType> resolvedValueTypes,
+            @NotNull SequencedMap<String, CfgValueMaterialization> resolvedMaterializations,
             @NotNull String valueId
     ) {
-        var resolvedType = resolvedValueTypes.get(StringUtil.requireNonBlank(valueId, "valueId"));
-        if (resolvedType == null) {
+        var resolvedMaterialization = resolvedMaterializations.get(StringUtil.requireNonBlank(valueId, "valueId"));
+        if (resolvedMaterialization == null) {
             throw new IllegalStateException(
                     "Missing previously resolved value type for '"
                             + valueId
@@ -324,7 +412,7 @@ public final class FrontendBodyLoweringSupport {
                             + "on a not-yet-published source value."
             );
         }
-        return resolvedType;
+        return resolvedMaterialization.type();
     }
 
     /// Compound-assignment result slots must carry the real binary-operation result type instead of
@@ -337,15 +425,15 @@ public final class FrontendBodyLoweringSupport {
     private static @NotNull GdType requireCompoundAssignmentResultType(
             @NotNull CompoundAssignmentBinaryOpItem compoundAssignmentItem,
             @NotNull ClassRegistry classRegistry,
-            @NotNull SequencedMap<String, GdType> resolvedValueTypes
+            @NotNull SequencedMap<String, CfgValueMaterialization> resolvedMaterializations
     ) {
         var currentTargetType = requireCompoundOperandValueType(
-                resolvedValueTypes,
+                resolvedMaterializations,
                 compoundAssignmentItem.currentTargetValueId(),
                 "current target"
         );
         var rhsType = requireCompoundOperandValueType(
-                resolvedValueTypes,
+                resolvedMaterializations,
                 compoundAssignmentItem.rhsValueId(),
                 "rhs"
         );
@@ -377,13 +465,13 @@ public final class FrontendBodyLoweringSupport {
     }
 
     private static @NotNull GdType requireCompoundOperandValueType(
-            @NotNull SequencedMap<String, GdType> resolvedValueTypes,
+            @NotNull SequencedMap<String, CfgValueMaterialization> resolvedMaterializations,
             @NotNull String valueId,
             @NotNull String role
     ) {
-        var resolvedType = resolvedValueTypes.get(StringUtil.requireNonBlank(valueId, "valueId"));
-        if (resolvedType != null) {
-            return resolvedType;
+        var resolvedMaterialization = resolvedMaterializations.get(StringUtil.requireNonBlank(valueId, "valueId"));
+        if (resolvedMaterialization != null) {
+            return resolvedMaterialization.type();
         }
         throw new IllegalStateException(
                 "Compound assignment body-lowering contract is missing the published "
@@ -401,13 +489,13 @@ public final class FrontendBodyLoweringSupport {
     private static @NotNull GdType requireCompoundAssignmentSubscriptResultType(
             @NotNull ClassRegistry classRegistry,
             @NotNull SubscriptLoadItem subscriptLoadItem,
-            @NotNull SequencedMap<String, GdType> resolvedValueTypes
+            @NotNull SequencedMap<String, CfgValueMaterialization> resolvedMaterializations
     ) {
         var receiverType = subscriptLoadItem.memberNameOrNull() == null
-                ? requireResolvedValueType(resolvedValueTypes, subscriptLoadItem.baseValueId())
+                ? requireResolvedValueType(resolvedMaterializations, subscriptLoadItem.baseValueId())
                 : GdVariantType.VARIANT;
         var argumentTypes = subscriptLoadItem.argumentValueIds().stream()
-                .map(valueId -> requireResolvedValueType(resolvedValueTypes, valueId))
+                .map(valueId -> requireResolvedValueType(resolvedMaterializations, valueId))
                 .toList();
         var resolvedType = new FrontendSubscriptSemanticSupport(classRegistry).resolveSubscriptType(
                 receiverType,

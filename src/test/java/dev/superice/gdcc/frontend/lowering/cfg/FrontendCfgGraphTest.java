@@ -5,7 +5,9 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
+import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
@@ -14,10 +16,13 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -26,6 +31,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -107,6 +113,17 @@ class FrontendCfgGraphTest {
                 () -> assertTrue(keyMismatch.getMessage().contains("node id mismatch")),
                 () -> assertTrue(brokenTarget.getMessage().contains("missing falseTargetId"))
         );
+    }
+
+    @Test
+    void directSlotAliasValueItemRejectsNonDirectSlotExpressionRoots() {
+        var callExpression = new CallExpression(identifier("callee"), List.of(), SYNTHETIC_RANGE);
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> new DirectSlotAliasValueItem(callExpression, "v0")
+        );
+
+        assertTrue(exception.getMessage().contains("IdentifierExpression or SelfExpression"));
     }
 
     @Test
@@ -204,6 +221,11 @@ class FrontendCfgGraphTest {
         var callItem = new CallItem(expression, "build", "recv2", List.of("arg1", "arg2"), "v3", callPayload);
         var boolItem = new BoolConstantItem(expression, true, "v4");
         var mergeItem = new MergeValueItem(expression, "v4", "v5");
+        var aliasItem = new DirectSlotAliasValueItem(expression, "v8");
+        var localDeclarationItem = new LocalDeclarationItem(
+                new VariableDeclaration(DeclarationKind.VAR, "local", null, null, false, "var_stmt", SYNTHETIC_RANGE),
+                "init0"
+        );
         var compoundItem = new CompoundAssignmentBinaryOpItem(
                 new AssignmentExpression("+=", identifier("target"), expression, SYNTHETIC_RANGE),
                 "+",
@@ -216,6 +238,13 @@ class FrontendCfgGraphTest {
                 List.of("slot0", "index0"),
                 "rhs3",
                 null,
+                assignmentPayload
+        );
+        var assignmentValueItem = new AssignmentItem(
+                assignmentExpression,
+                List.of("slot0", "index0"),
+                "rhs3",
+                "v9",
                 assignmentPayload
         );
 
@@ -245,12 +274,27 @@ class FrontendCfgGraphTest {
                 () -> assertSame(expression, mergeItem.anchor()),
                 () -> assertEquals(List.of("v4"), mergeItem.operandValueIds()),
                 () -> assertEquals("v5", mergeItem.resultValueIdOrNull()),
+                () -> assertSame(expression, aliasItem.anchor()),
+                () -> assertEquals(List.of(), aliasItem.operandValueIds()),
+                () -> assertEquals("v8", aliasItem.resultValueIdOrNull()),
+                () -> assertSame(localDeclarationItem.declaration(), localDeclarationItem.anchor()),
+                () -> assertEquals(List.of("init0"), localDeclarationItem.operandValueIds()),
                 () -> assertEquals(List.of("current0", "rhs3"), compoundItem.operandValueIds()),
                 () -> assertEquals("v6", compoundItem.resultValueIdOrNull()),
                 () -> assertSame(assignmentExpression, assignmentItem.anchor()),
                 () -> assertEquals(List.of("slot0", "index0", "rhs3"), assignmentItem.operandValueIds()),
                 () -> assertSame(assignmentPayload, assignmentItem.writableRoutePayload()),
-                () -> assertNull(assignmentItem.resultValueIdOrNull())
+                () -> assertNull(assignmentItem.resultValueIdOrNull()),
+                () -> assertEquals("v9", assignmentValueItem.resultValueIdOrNull()),
+                () -> assertTrue(opaqueValue.hasStandaloneMaterializationSlot()),
+                () -> assertTrue(callItem.hasStandaloneMaterializationSlot()),
+                () -> assertTrue(boolItem.hasStandaloneMaterializationSlot()),
+                () -> assertTrue(mergeItem.hasStandaloneMaterializationSlot()),
+                () -> assertTrue(compoundItem.hasStandaloneMaterializationSlot()),
+                () -> assertTrue(assignmentValueItem.hasStandaloneMaterializationSlot()),
+                () -> assertFalse(aliasItem.hasStandaloneMaterializationSlot()),
+                () -> assertTrue(localDeclarationItem.hasStandaloneMaterializationSlot()),
+                () -> assertFalse(assignmentItem.hasStandaloneMaterializationSlot())
         );
     }
 
@@ -373,7 +417,7 @@ class FrontendCfgGraphTest {
     }
 
     @Test
-    void constructorRejectsWritableRoutePayloadReferencingLaterLocalValue() {
+    void constructorRejectsPayloadBackedCallWithoutDedicatedReceiverValueSlot() {
         var routeAnchor = identifier("call");
         var invalidPayload = new FrontendWritableRoutePayload(
                 routeAnchor,
@@ -399,6 +443,59 @@ class FrontendCfgGraphTest {
                         "entry",
                         List.of(
                                 new CallItem(routeAnchor, "build", null, List.of(), "v0", invalidPayload),
+                                new BoolConstantItem(identifier("late"), true, "late0")
+                        ),
+                        "stop"
+                )
+        );
+        nodes.put("stop", new FrontendCfgGraph.StopNode("stop", FrontendCfgGraph.StopKind.RETURN, "v0"));
+
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph("entry", nodes)
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("writable call")),
+                () -> assertTrue(exception.getMessage().contains("receiverValueIdOrNull")),
+                () -> assertTrue(exception.getMessage().contains("entry"))
+        );
+    }
+
+    @Test
+    void constructorRejectsWritableRoutePayloadReferencingLaterLocalValue() {
+        var assignment = new AssignmentExpression("=", identifier("target"), identifier("rhs"), SYNTHETIC_RANGE);
+        var invalidPayload = new FrontendWritableRoutePayload(
+                assignment,
+                new FrontendWritableRoutePayload.RootDescriptor(
+                        FrontendWritableRoutePayload.RootKind.VALUE_ID,
+                        assignment,
+                        "late0"
+                ),
+                new FrontendWritableRoutePayload.LeafDescriptor(
+                        FrontendWritableRoutePayload.LeafKind.PROPERTY,
+                        assignment,
+                        "late0",
+                        List.of(),
+                        "payload",
+                        null
+                ),
+                List.of()
+        );
+        var nodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        nodes.put(
+                "entry",
+                new FrontendCfgGraph.SequenceNode(
+                        "entry",
+                        List.of(
+                                new BoolConstantItem(identifier("seed"), true, "v0"),
+                                new AssignmentItem(
+                                        assignment,
+                                        List.of(),
+                                        "v0",
+                                        null,
+                                        invalidPayload
+                                ),
                                 new BoolConstantItem(identifier("late"), true, "late0")
                         ),
                         "stop"

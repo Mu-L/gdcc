@@ -7,7 +7,6 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
-import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
@@ -42,11 +41,9 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.SequencedMap;
-import java.util.Set;
 
 /// Stateful carrier for one function-body lowering run.
 ///
@@ -66,8 +63,7 @@ public final class FrontendBodyLoweringSession {
     private final @NotNull FrontendCfgGraph graph;
     private final @NotNull LirFunctionDef function;
     private final @NotNull ClassRegistry classRegistry;
-    private final @NotNull SequencedMap<String, GdType> valueTypes;
-    private final @NotNull Set<String> mergeValueIds;
+    private final @NotNull SequencedMap<String, FrontendBodyLoweringSupport.CfgValueMaterialization> valueMaterializations;
     private final @NotNull FrontendInsnLoweringProcessorRegistry<FrontendCfgGraph.NodeDef, Void> cfgNodeProcessors;
     private final @NotNull FrontendInsnLoweringProcessorRegistry<SequenceItem, Void> sequenceItemProcessors;
     private final @NotNull FrontendInsnLoweringProcessorRegistry<Expression, OpaqueExprLoweringContext> opaqueExprProcessors;
@@ -84,12 +80,11 @@ public final class FrontendBodyLoweringSession {
         this.graph = functionContext.requireFrontendCfgGraph();
         this.function = functionContext.targetFunction();
         this.classRegistry = Objects.requireNonNull(classRegistry, "classRegistry must not be null");
-        this.valueTypes = FrontendBodyLoweringSupport.collectCfgValueSlotTypes(
+        this.valueMaterializations = FrontendBodyLoweringSupport.collectCfgValueMaterializations(
                 graph,
                 analysisData,
                 this.classRegistry
         );
-        this.mergeValueIds = collectMergeValueIds(graph);
         this.cfgNodeProcessors = FrontendCfgNodeInsnLoweringProcessors.createRegistry();
         this.sequenceItemProcessors = FrontendSequenceItemInsnLoweringProcessors.createRegistry();
         this.opaqueExprProcessors = FrontendOpaqueExprInsnLoweringProcessors.createRegistry();
@@ -122,6 +117,21 @@ public final class FrontendBodyLoweringSession {
             throw new IllegalStateException("Missing published symbol binding for " + useSite.getClass().getSimpleName());
         }
         return binding;
+    }
+
+    /// `FrontendTopBindingAnalyzer` only publishes binding kind `SELF` for explicit
+    /// `SelfExpression`. Any identifier node that still carries `SELF` means some earlier
+    /// publication step leaked an impossible surface into lowering, so all body-lowering entry
+    /// points must reject it consistently instead of silently rewriting the identifier to `self`.
+    @NotNull IllegalStateException identifierSelfBindingContractViolation(
+            @NotNull IdentifierExpression identifierExpression,
+            @NotNull String contractDetail
+    ) {
+        Objects.requireNonNull(identifierExpression, "identifierExpression must not be null");
+        return new IllegalStateException(
+                StringUtil.requireNonBlank(contractDetail, "contractDetail")
+                        + " must use explicit SelfExpression instead of identifier binding kind SELF"
+        );
     }
 
     /// Consumes one lowering-ready published call fact.
@@ -195,19 +205,14 @@ public final class FrontendBodyLoweringSession {
     ///
     /// When the CFG has already published one concrete receiver value id, that slot is the direct
     /// receiver leaf and must be reused as-is. The writable-route payload then exists only to carry
-    /// post-call reverse-commit provenance. The one exception is a direct-slot payload: in that case
-    /// the payload still maps the synthetic CFG temp back to the trusted source/local slot that the
-    /// call should mutate in place. Non-direct payload-backed calls must therefore arrive with one
-    /// dedicated `receiverValueIdOrNull`; body lowering does not repair a missing receiver slot by
-    /// re-reading the leaf from the payload.
+    /// post-call reverse-commit provenance. Step 6 intentionally moved the old direct-slot repair
+    /// logic into publication/materialization: if some payload-backed call needs a real source slot
+    /// here, its dedicated `receiverValueIdOrNull` must already be an alias-backed value id.
+    /// Body lowering therefore never re-reads a payload-backed leaf on demand.
     @NotNull String materializeCallReceiverLeaf(@NotNull LirBasicBlock block, @NotNull CallItem item) {
         Objects.requireNonNull(block, "block must not be null");
         var actualItem = Objects.requireNonNull(item, "item must not be null");
         if (actualItem.writableRoutePayloadOrNull() != null) {
-            var chain = requireWritableAccessChain(actualItem.writableRoutePayloadOrNull());
-            if (chain.leaf() instanceof FrontendWritableRouteSupport.DirectSlotLeaf) {
-                return FrontendWritableRouteSupport.materializeLeafRead(this, block, chain, "call_receiver");
-            }
             if (actualItem.receiverValueIdOrNull() != null) {
                 return slotIdForValue(actualItem.receiverValueIdOrNull());
             }
@@ -393,14 +398,14 @@ public final class FrontendBodyLoweringSession {
                 requireSelfSlot();
                 yield "self";
             }
-            case IdentifierExpression _ -> {
-                var binding = requireBinding(rootAnchor);
+            case IdentifierExpression identifierExpression -> {
+                var binding = requireBinding(identifierExpression);
                 yield switch (binding.kind()) {
                     case LOCAL_VAR, PARAMETER, CAPTURE -> binding.symbolName();
-                    case SELF -> {
-                        requireSelfSlot();
-                        yield "self";
-                    }
+                    case SELF -> throw identifierSelfBindingContractViolation(
+                            identifierExpression,
+                            "DIRECT_SLOT writable root"
+                    );
                     default -> throw new IllegalStateException(
                             "DIRECT_SLOT writable root requires a storage-backed binding, but got " + binding.kind()
                     );
@@ -533,7 +538,10 @@ public final class FrontendBodyLoweringSession {
 
     private @NotNull GdType requireWritableBindingStorageType(@NotNull FrontendBinding binding) {
         return switch (Objects.requireNonNull(binding, "binding must not be null").kind()) {
-            case LOCAL_VAR, PARAMETER, CAPTURE, SELF -> requireFunctionVariableType(binding.symbolName());
+            case LOCAL_VAR, PARAMETER, CAPTURE -> requireFunctionVariableType(binding.symbolName());
+            case SELF -> throw new IllegalStateException(
+                    "Writable binding storage lookup must use explicit SelfExpression instead of binding kind SELF"
+            );
             case PROPERTY -> switch (Objects.requireNonNull(
                     binding.declarationSite(),
                     "Property binding must carry declaration metadata"
@@ -582,17 +590,20 @@ public final class FrontendBodyLoweringSession {
     }
 
     @NotNull GdType requireValueType(@NotNull String valueId) {
-        var valueType = valueTypes.get(Objects.requireNonNull(valueId, "valueId must not be null"));
-        if (valueType == null) {
-            throw new IllegalStateException("Missing published type for frontend CFG value id '" + valueId + "'");
-        }
-        return valueType;
+        var materialization = requireValueMaterialization(valueId);
+        return materialization.type();
     }
 
     @NotNull String slotIdForValue(@NotNull String valueId) {
-        return mergeValueIds.contains(valueId)
-                ? FrontendBodyLoweringSupport.mergeSlotId(valueId)
-                : FrontendBodyLoweringSupport.cfgTempSlotId(valueId);
+        var materialization = requireValueMaterialization(valueId);
+        return switch (materialization.kind()) {
+            case TEMP_SLOT -> FrontendBodyLoweringSupport.cfgTempSlotId(valueId);
+            case MERGE_SLOT -> FrontendBodyLoweringSupport.mergeSlotId(valueId);
+            case SOURCE_SLOT_ALIAS -> resolveDirectWritableRootSlot(Objects.requireNonNull(
+                    materialization.aliasSourceAnchorOrNull(),
+                    "SOURCE_SLOT_ALIAS materialization must carry aliasSourceAnchorOrNull"
+            ));
+        };
     }
 
     @NotNull String resultSlotId(@NotNull OpaqueExprValueItem item) {
@@ -838,12 +849,19 @@ public final class FrontendBodyLoweringSession {
     }
 
     private void declareCfgValueSlots() {
-        for (var entry : valueTypes.entrySet()) {
+        for (var entry : valueMaterializations.entrySet()) {
             var valueId = entry.getKey();
-            var slotId = mergeValueIds.contains(valueId)
-                    ? FrontendBodyLoweringSupport.mergeSlotId(valueId)
-                    : FrontendBodyLoweringSupport.cfgTempSlotId(valueId);
-            ensureVariable(slotId, entry.getValue());
+            var materialization = entry.getValue();
+            switch (materialization.kind()) {
+                case TEMP_SLOT ->
+                        ensureVariable(FrontendBodyLoweringSupport.cfgTempSlotId(valueId), materialization.type());
+                case MERGE_SLOT ->
+                        ensureVariable(FrontendBodyLoweringSupport.mergeSlotId(valueId), materialization.type());
+                case SOURCE_SLOT_ALIAS -> {
+                    // Alias-backed values intentionally reuse an existing trusted source slot instead of
+                    // declaring a second `cfg_tmp_*` variable that call lowering would never truly consume.
+                }
+            }
         }
     }
 
@@ -919,19 +937,12 @@ public final class FrontendBodyLoweringSession {
                 .toList();
     }
 
-    private static @NotNull Set<String> collectMergeValueIds(@NotNull FrontendCfgGraph graph) {
-        var mergeValueIds = new LinkedHashSet<String>();
-        for (var nodeId : graph.nodeIds()) {
-            if (!(graph.requireNode(nodeId) instanceof FrontendCfgGraph.SequenceNode(_, var items, _))) {
-                continue;
-            }
-            for (var item : items) {
-                if (item instanceof MergeValueItem mergeValueItem) {
-                    mergeValueIds.add(mergeValueItem.resultValueId());
-                }
-            }
+    private @NotNull FrontendBodyLoweringSupport.CfgValueMaterialization requireValueMaterialization(@NotNull String valueId) {
+        var materialization = valueMaterializations.get(Objects.requireNonNull(valueId, "valueId must not be null"));
+        if (materialization == null) {
+            throw new IllegalStateException("Missing published materialization for frontend CFG value id '" + valueId + "'");
         }
-        return Set.copyOf(mergeValueIds);
+        return materialization;
     }
 
     record OpaqueExprLoweringContext(@NotNull OpaqueExprValueItem item) {

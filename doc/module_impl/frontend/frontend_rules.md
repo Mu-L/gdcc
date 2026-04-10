@@ -72,8 +72,15 @@
 - `assert` 的 compile-only block 不改变这条 source-level 合同；真正的 backend / lowering 缺口必须继续留在 compile gate，而不是反向污染 shared type-check 规则。
 - backend/LIR 的 control-flow 仍保持 bool-only 边界；当未来接上 frontend -> LIR lowering 时，必须在 lowering 侧补上显式 truthiness / condition normalization，不得再反向把 frontend 收紧成 undocumented strict-bool dialect。
 - lowering 侧的 condition normalization 合同已经冻结：`bool` 直接 branch，`Variant` 只做 `unpack_variant -> bool temp -> GoIfInsn`，其余 stable type 必须先 `pack_variant` 再 `unpack_variant`，不得绕过这条路径。
-- body lowering 的三类局部变量命名必须固定：CFG value temp slot 用 `cfg_tmp_<valueId>`，merge slot 用 `cfg_merge_<valueId>`，source-level local 直接沿用源码名；不得在实现期临时发明第二套命名。
-- `OpaqueExprValueItem` 当前只允许承载 leaf / eager unary / 非短路 eager binary；`and` / `or`、assignment-as-opaque、以及绕过 dedicated item 的 attribute / call / subscript 必须视为协议违例。
+- body lowering 的 slot/materialization 命名必须固定：temp-backed CFG value 继续用 `cfg_tmp_<valueId>`，merge-backed value 继续用 `cfg_merge_<valueId>`，source-level local 直接沿用源码名；Step 6 的 direct-slot alias value 则故意不声明独立 `cfg_tmp_*` 变量。
+- `OpaqueExprValueItem` 当前只允许承载 ordinary leaf / eager unary / 非短路 eager binary；`and` / `or`、assignment-as-opaque、以及绕过 dedicated item 的 attribute / call / subscript 必须视为协议违例。direct-slot mutating receiver 的 alias publication 现已通过独立 `DirectSlotAliasValueItem` 收口，不再借 `OpaqueExprValueItem(identifier/self)` 让 body lowering 事后修正。
+- direct-slot receiver alias 的安全性必须写成显式语义合同，而不是“扫描参数 AST 里有没有某个节点名”：
+  - explicit `SelfExpression` 可直接 alias，因为 `self` slot 不可被用户代码重绑定
+  - `LOCAL_VAR` / `PARAMETER` root 只有在后续 argument subtree 全部落在 proven no-rebinding 子集时才允许 alias
+  - `CAPTURE` 当前不在 alias root 支持面内；lambda/capture lowering 与 storage semantics 仍 deferred，不能提前承诺 capture-backed live-slot alias
+  - `IdentifierExpression + SELF` 不是合法 alias/input surface；当前 analyzer 只会对 explicit `SelfExpression` 发布 `SELF`，所以 builder 与 body lowering 都必须 fail-fast，不能把它静默恢复成 `"self"`
+  - `receiverValueIdOrNull == null` 的 implicit self fallback 仍是另一条 call execution 路径，不能和 explicit `SelfExpression` 或非法 `IdentifierExpression + SELF` 混为一谈
+  - nested `CallExpression`、`AttributeCallStep`、以及其它 effect-open / 未分类 argument surface 必须回退 ordinary temp snapshot，避免 future rebinding form 静默穿透 alias
 - value-context `and` / `or` 的 LIR 形态必须保持为“branch + branch-local bool constant + merge slot assign”；不得生成 `BinaryOpInsn(AND/OR)`。
 - `FrontendTopBindingAnalyzer` 当前只发布 symbol category，不区分 read / write / call 等 usage 语义；assignment 左值链头等 use-site 也可能进入 `symbolBindings()`。
 - 若后续 frontend 需要记录完整用法，必须扩展 `FrontendBinding` 模型，不要依赖当前 binding kind 反推读写调用语义。

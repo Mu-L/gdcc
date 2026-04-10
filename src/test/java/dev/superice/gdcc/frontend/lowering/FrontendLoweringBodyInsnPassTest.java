@@ -18,6 +18,8 @@ import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringClassSkeletonPas
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringFunctionPreparationPass;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
+import dev.superice.gdcc.frontend.sema.FrontendBinding;
+import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
@@ -52,8 +54,12 @@ import dev.superice.gdcc.lir.insn.VariantSetKeyedInsn;
 import dev.superice.gdcc.lir.insn.VariantSetNamedInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
@@ -305,6 +311,89 @@ class FrontendLoweringBodyInsnPassTest {
 
         assertTrue(exception.getMessage().contains("Compound assignment body-lowering contract"), exception.getMessage());
         assertTrue(exception.getMessage().contains("unsupported binary operator"), exception.getMessage());
+    }
+
+    @Test
+    void runFailsFastWhenIdentifierValueBindingPretendsToBeSelf() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_identifier_self_binding_value.gd",
+                """
+                        class_name BodyInsnIdentifierSelfBindingValue
+                        extends RefCounted
+                        
+                        func ping(value: int) -> int:
+                            return value
+                        """,
+                Map.of(
+                        "BodyInsnIdentifierSelfBindingValue",
+                        "RuntimeBodyInsnIdentifierSelfBindingValue"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnIdentifierSelfBindingValue",
+                "ping"
+        );
+        var rootBlock = assertInstanceOf(dev.superice.gdparser.frontend.ast.Block.class, pingContext.loweringRoot());
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var value = assertInstanceOf(IdentifierExpression.class, returnStatement.value());
+        rewriteBindingKindToSelf(pingContext.analysisData().symbolBindings(), value);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(exception.getMessage().contains("Identifier value lowering"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("explicit SelfExpression"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("binding kind SELF"), exception.getMessage())
+        );
+    }
+
+    @Test
+    void runFailsFastWhenDirectSlotReceiverIdentifierPretendsToBeSelf() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_identifier_self_binding_receiver.gd",
+                """
+                        class_name BodyInsnIdentifierSelfBindingReceiver
+                        extends RefCounted
+                        
+                        func ping(values: PackedInt32Array, seed: int) -> void:
+                            values.push_back(seed)
+                        """,
+                Map.of(
+                        "BodyInsnIdentifierSelfBindingReceiver",
+                        "RuntimeBodyInsnIdentifierSelfBindingReceiver"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnIdentifierSelfBindingReceiver",
+                "ping"
+        );
+        var rootBlock = assertInstanceOf(dev.superice.gdparser.frontend.ast.Block.class, pingContext.loweringRoot());
+        var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
+        var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
+        rewriteBindingKindToSelf(pingContext.analysisData().symbolBindings(), receiver);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(exception.getMessage().contains("DIRECT_SLOT writable root"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("explicit SelfExpression"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("binding kind SELF"), exception.getMessage())
+        );
     }
 
     @Test
@@ -913,8 +1002,104 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals("values", callInsn.objectId()),
                 () -> assertFalse(callInsn.objectId().startsWith("cfg_tmp_"), callInsn.objectId()),
                 () -> assertEquals("cfg_tmp_v1", onlyVariableOperandId(callInsn.args())),
+                () -> assertFalse(pingContext.targetFunction().getVariables().containsKey("cfg_tmp_v0")),
+                () -> assertTrue(assignSourcesByTarget(instructions).values().stream().noneMatch("values"::equals)),
                 () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
                 () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runFallsBackToSnapshotReceiverWhenArgumentContainsNestedCall() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_receiver_snapshot_fallback.gd",
+                """
+                        class_name BodyInsnReceiverSnapshotFallback
+                        extends RefCounted
+                        
+                        func helper(value: int) -> int:
+                            return value + 1
+                        
+                        func ping(values: PackedInt32Array, seed: int) -> void:
+                            values.push_back(helper(seed))
+                        """,
+                Map.of(
+                        "BodyInsnReceiverSnapshotFallback",
+                        "RuntimeBodyInsnReceiverSnapshotFallback"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnReceiverSnapshotFallback",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var callMethodInstructions = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .toList();
+        var helperInsn = callMethodInstructions.stream()
+                .filter(insn -> insn.methodName().equals("helper"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing helper call"));
+        var pushBackInsn = callMethodInstructions.stream()
+                .filter(insn -> insn.methodName().equals("push_back"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing push_back call"));
+        var receiverSnapshotSource = assignSourcesByTarget(instructions).get(pushBackInsn.objectId());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(2, callMethodInstructions.size()),
+                () -> assertEquals("self", helperInsn.objectId()),
+                () -> assertTrue(pushBackInsn.objectId().startsWith("cfg_tmp_"), pushBackInsn.objectId()),
+                () -> assertEquals("values", receiverSnapshotSource),
+                () -> assertTrue(pingContext.targetFunction().getVariables().containsKey(pushBackInsn.objectId())),
+                () -> assertNotEquals("values", pushBackInsn.objectId())
+        );
+    }
+
+    @Test
+    void runKeepsNonMutatingDirectSlotReceiverOnOrdinaryTempSurface() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_non_mutating_direct_slot_receiver.gd",
+                """
+                        class_name BodyInsnNonMutatingDirectSlotReceiver
+                        extends RefCounted
+                        
+                        func ping(values: PackedInt32Array) -> int:
+                            return values.size()
+                        """,
+                Map.of(
+                        "BodyInsnNonMutatingDirectSlotReceiver",
+                        "RuntimeBodyInsnNonMutatingDirectSlotReceiver"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnNonMutatingDirectSlotReceiver",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var callInsn = requireOnlyInstruction(pingContext.targetFunction(), CallMethodInsn.class);
+        var assignSources = assignSourcesByTarget(instructions);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("size", callInsn.methodName()),
+                () -> assertEquals("cfg_tmp_v0", callInsn.objectId()),
+                () -> assertEquals("values", assignSources.get("cfg_tmp_v0")),
+                () -> assertTrue(pingContext.targetFunction().getVariables().containsKey("cfg_tmp_v0"))
         );
     }
 
@@ -1171,8 +1356,8 @@ class FrontendLoweringBodyInsnPassTest {
         assertNotNull(resultVariable, () -> "Missing lowered variable for " + callResultId);
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
-                () -> assertEquals("worker", callInsn.objectId()),
-                () -> assertFalse(callInsn.objectId().startsWith("cfg_tmp_"), callInsn.objectId()),
+                () -> assertEquals("cfg_tmp_v0", callInsn.objectId()),
+                () -> assertEquals("worker", assignSourcesByTarget(instructions).get("cfg_tmp_v0")),
                 () -> assertEquals("ping", callInsn.methodName()),
                 () -> assertEquals(GdVariantType.VARIANT, resultVariable.type()),
                 () -> assertEquals(callResultId, returnInsn.returnValueId()),
@@ -1227,12 +1412,50 @@ class FrontendLoweringBodyInsnPassTest {
         assertNotNull(dynamicResultVariable, () -> "Missing lowered variable for " + dynamicResultId);
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
-                () -> assertEquals("worker", dynamicSizeCall.objectId()),
-                () -> assertFalse(dynamicSizeCall.objectId().startsWith("cfg_tmp_"), dynamicSizeCall.objectId()),
+                () -> assertEquals("cfg_tmp_v0", dynamicSizeCall.objectId()),
+                () -> assertEquals("worker", assignSourcesByTarget(instructions).get("cfg_tmp_v0")),
                 () -> assertEquals(GdVariantType.VARIANT, dynamicResultVariable.type()),
                 () -> assertEquals(dynamicResultId, unpackInsn.variantId()),
                 () -> assertEquals(unpackInsn.resultId(), onlyVariableOperandId(exactTakeCall.args())),
                 () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersExplicitSelfMutatingReceiverWithoutReceiverDeadTemp() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_self_receiver_alias.gd",
+                """
+                        class_name BodyInsnSelfReceiverAlias
+                        extends RefCounted
+                        
+                        func touch(seed: int) -> void:
+                            pass
+                        
+                        func ping(seed: int) -> void:
+                            self.touch(seed)
+                        """,
+                Map.of("BodyInsnSelfReceiverAlias", "RuntimeBodyInsnSelfReceiverAlias"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSelfReceiverAlias",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var callInsn = requireOnlyInstruction(pingContext.targetFunction(), CallMethodInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("self", callInsn.objectId()),
+                () -> assertEquals("touch", callInsn.methodName()),
+                () -> assertFalse(pingContext.targetFunction().getVariables().containsKey("cfg_tmp_v0")),
+                () -> assertTrue(assignSourcesByTarget(instructions).values().stream().noneMatch("self"::equals))
         );
     }
 
@@ -2071,6 +2294,21 @@ class FrontendLoweringBodyInsnPassTest {
         );
 
         assertTrue(exception.getMessage().contains("parameter default"), exception.getMessage());
+    }
+
+    private static void rewriteBindingKindToSelf(
+            @NotNull Map<Node, FrontendBinding> bindings,
+            @NotNull IdentifierExpression identifierExpression
+    ) {
+        var originalBinding = bindings.get(identifierExpression);
+        bindings.put(
+                identifierExpression,
+                new FrontendBinding(
+                        "self",
+                        FrontendBindingKind.SELF,
+                        originalBinding == null ? identifierExpression : originalBinding.declarationSite()
+                )
+        );
     }
 
     private static @NotNull PreparedContext prepareContext(

@@ -15,12 +15,28 @@ import java.util.List;
 /// one outward-facing result id may be written by multiple `MergeValueItem`s on mutually-exclusive
 /// paths. Any code that collects producers for a value id must therefore handle multiple producers
 /// instead of assuming a unique reverse lookup.
-public sealed interface ValueOpItem extends SequenceItem permits OpaqueExprValueItem, LocalDeclarationItem,
-        AssignmentItem, CompoundAssignmentBinaryOpItem, MemberLoadItem, SubscriptLoadItem, CallItem, CastItem,
-        TypeTestItem, MergeValueItem, BoolConstantItem {
+///
+/// Not every published value id materializes into one `cfg_tmp_*` variable:
+/// - ordinary producers still lower into temp-backed slots
+/// - merge producers write one shared `cfg_merge_*` slot
+/// - the Step 6 direct-slot alias item intentionally keeps a value id bound to one trusted source
+///   slot so call lowering can consume it without inventing a dead temp first
+public sealed interface ValueOpItem extends SequenceItem permits OpaqueExprValueItem, DirectSlotAliasValueItem,
+        LocalDeclarationItem, AssignmentItem, CompoundAssignmentBinaryOpItem, MemberLoadItem, SubscriptLoadItem,
+        CallItem, CastItem, TypeTestItem, MergeValueItem, BoolConstantItem {
     /// Result value id published by this item, or `null` when the item only commits state.
     @Nullable String resultValueIdOrNull();
 
     /// Already-materialized operand ids consumed by this item in source evaluation order.
     @NotNull List<String> operandValueIds();
+
+    /// Whether this item's published result is backed by one standalone lowering-owned slot.
+    ///
+    /// `true` means later passes can expect this item to own one standalone materialization slot by
+    /// default. Only the narrow non-slot-backed exceptions override this:
+    /// - `DirectSlotAliasValueItem` reuses one trusted source slot instead of allocating a new slot
+    /// - `AssignmentItem` returns `false` when it is statement-shaped and publishes no result value
+    default boolean hasStandaloneMaterializationSlot() {
+        return true;
+    }
 }

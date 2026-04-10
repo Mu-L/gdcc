@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.lowering.cfg;
 
 import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
@@ -39,6 +40,7 @@ public record FrontendCfgGraph(
         validateSuccessorTargets(nodes);
         validateMergeSourceContracts(nodes);
         validateValueProducerContracts(nodes);
+        validateDirectSlotAliasContracts(nodes);
         validateWritableRouteContracts(nodes);
     }
 
@@ -253,6 +255,40 @@ public record FrontendCfgGraph(
                 }
                 if (item instanceof ValueOpItem valueOpItem && valueOpItem.resultValueIdOrNull() != null) {
                     locallyPublishedValueIds.add(valueOpItem.resultValueIdOrNull());
+                }
+            }
+        }
+    }
+
+    private static void validateDirectSlotAliasContracts(@NotNull Map<String, NodeDef> nodes) {
+        for (var node : nodes.values()) {
+            if (!(node instanceof SequenceNode(var nodeId, var items, _))) {
+                continue;
+            }
+            for (var item : items) {
+                if (!(item instanceof DirectSlotAliasValueItem aliasValueItem)) {
+                    continue;
+                }
+                if (!(aliasValueItem.expression() instanceof Expression expression)) {
+                    throw new IllegalArgumentException(
+                            "Frontend CFG direct-slot alias in sequence '"
+                                    + nodeId
+                                    + "' must anchor a lowering expression"
+                    );
+                }
+                if (!aliasValueItem.operandValueIds().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Frontend CFG direct-slot alias in sequence '"
+                                    + nodeId
+                                    + "' must not carry operandValueIds"
+                    );
+                }
+                if (aliasValueItem.resultValueId().isBlank()) {
+                    throw new IllegalArgumentException(
+                            "Frontend CFG direct-slot alias in sequence '"
+                                    + nodeId
+                                    + "' must publish one non-blank result value id"
+                    );
                 }
             }
         }

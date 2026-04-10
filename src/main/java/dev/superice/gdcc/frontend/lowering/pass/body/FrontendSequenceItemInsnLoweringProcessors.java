@@ -9,6 +9,7 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CastItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
@@ -66,6 +67,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 new FrontendBoolConstantInsnLoweringProcessor(),
                 new FrontendMergeValueInsnLoweringProcessor(),
                 new FrontendOpaqueExprValueInsnLoweringProcessor(),
+                new FrontendDirectSlotAliasInsnLoweringProcessor(),
                 new FrontendCallInsnLoweringProcessor(),
                 new FrontendMemberLoadInsnLoweringProcessor(),
                 new FrontendSubscriptLoadInsnLoweringProcessor(),
@@ -286,6 +288,27 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 Objects.requireNonNull(handling, "handling must not be null");
                 detail = Objects.requireNonNull(detail, "detail must not be null");
             }
+        }
+    }
+
+    /// Direct-slot alias values are publication-only. They intentionally reuse one trusted source slot
+    /// and therefore emit no standalone instruction or temp declaration during body lowering.
+    private static final class FrontendDirectSlotAliasInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<DirectSlotAliasValueItem, Void> {
+        @Override
+        public @NotNull Class<DirectSlotAliasValueItem> nodeType() {
+            return DirectSlotAliasValueItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull DirectSlotAliasValueItem node,
+                @Nullable Void context
+        ) {
+            session.slotIdForValue(node.resultValueId());
+            return block;
         }
     }
 

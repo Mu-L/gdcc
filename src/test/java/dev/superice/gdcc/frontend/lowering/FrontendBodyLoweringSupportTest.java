@@ -5,6 +5,8 @@ import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraphBuilder;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.ValueOpItem;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
@@ -32,6 +34,8 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -144,6 +148,117 @@ class FrontendBodyLoweringSupportTest {
         );
 
         assertEquals(GdVariantType.VARIANT, valueTypes.get(compoundItem.resultValueId()));
+    }
+
+    @Test
+    void collectCfgValueMaterializationsMarksDirectSlotMutatingReceiverAsSourceSlotAlias() throws Exception {
+        var analyzed = analyzeFunction(
+                "body_lowering_support_direct_slot_alias.gd",
+                """
+                        class_name BodyLoweringSupportDirectSlotAlias
+                        extends RefCounted
+                        
+                        func ping(values: PackedInt32Array, seed: int) -> void:
+                            values.push_back(seed)
+                        """,
+                "ping",
+                Map.of("BodyLoweringSupportDirectSlotAlias", "RuntimeBodyLoweringSupportDirectSlotAlias")
+        );
+
+        var graph = new FrontendCfgGraphBuilder()
+                .buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+                .graph();
+        var aliasItem = collectReachableValueItems(graph).stream()
+                .filter(DirectSlotAliasValueItem.class::isInstance)
+                .map(DirectSlotAliasValueItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing DirectSlotAliasValueItem"));
+        var materializations = FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                graph,
+                analyzed.analysisData(),
+                new ClassRegistry(ExtensionApiLoader.loadDefault())
+        );
+        var materialization = materializations.get(aliasItem.resultValueId());
+
+        assertAll(
+                () -> assertEquals(
+                        FrontendBodyLoweringSupport.CfgValueMaterializationKind.SOURCE_SLOT_ALIAS,
+                        materialization.kind()
+                ),
+                () -> assertSame(aliasItem.expression(), materialization.aliasSourceAnchorOrNull())
+        );
+    }
+
+    @Test
+    void collectCfgValueMaterializationsKeepsOrdinaryIdentifierAndSelfReadsTempBacked() throws Exception {
+        var identifierAnalyzed = analyzeFunction(
+                "body_lowering_support_identifier_read.gd",
+                """
+                        class_name BodyLoweringSupportIdentifierRead
+                        extends RefCounted
+                        
+                        func ping(values: PackedInt32Array) -> PackedInt32Array:
+                            return values
+                        """,
+                "ping",
+                Map.of(
+                        "BodyLoweringSupportIdentifierRead",
+                        "RuntimeBodyLoweringSupportIdentifierRead"
+                )
+        );
+        var identifierGraph = new FrontendCfgGraphBuilder()
+                .buildExecutableBody(identifierAnalyzed.function().body(), identifierAnalyzed.analysisData())
+                .graph();
+        var identifierValue = assertInstanceOf(
+                OpaqueExprValueItem.class,
+                collectReachableValueItems(identifierGraph).getFirst()
+        );
+        var identifierMaterialization = FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                identifierGraph,
+                identifierAnalyzed.analysisData(),
+                new ClassRegistry(ExtensionApiLoader.loadDefault())
+        ).get(identifierValue.resultValueId());
+
+        var selfAnalyzed = analyzeFunction(
+                "body_lowering_support_self_read.gd",
+                """
+                        class_name BodyLoweringSupportSelfRead
+                        extends RefCounted
+                        
+                        func ping() -> BodyLoweringSupportSelfRead:
+                            return self
+                        """,
+                "ping",
+                Map.of(
+                        "BodyLoweringSupportSelfRead",
+                        "RuntimeBodyLoweringSupportSelfRead"
+                )
+        );
+        var selfGraph = new FrontendCfgGraphBuilder()
+                .buildExecutableBody(selfAnalyzed.function().body(), selfAnalyzed.analysisData())
+                .graph();
+        var selfValue = assertInstanceOf(
+                OpaqueExprValueItem.class,
+                collectReachableValueItems(selfGraph).getFirst()
+        );
+        var selfMaterialization = FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                selfGraph,
+                selfAnalyzed.analysisData(),
+                new ClassRegistry(ExtensionApiLoader.loadDefault())
+        ).get(selfValue.resultValueId());
+
+        assertAll(
+                () -> assertEquals(
+                        FrontendBodyLoweringSupport.CfgValueMaterializationKind.TEMP_SLOT,
+                        identifierMaterialization.kind()
+                ),
+                () -> assertEquals(
+                        FrontendBodyLoweringSupport.CfgValueMaterializationKind.TEMP_SLOT,
+                        selfMaterialization.kind()
+                ),
+                () -> assertNull(identifierMaterialization.aliasSourceAnchorOrNull()),
+                () -> assertNull(selfMaterialization.aliasSourceAnchorOrNull())
+        );
     }
 
     @Test

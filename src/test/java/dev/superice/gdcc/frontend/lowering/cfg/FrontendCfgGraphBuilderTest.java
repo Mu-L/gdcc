@@ -6,6 +6,7 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
@@ -21,6 +22,8 @@ import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendWhileRegion;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
+import dev.superice.gdcc.frontend.sema.FrontendBinding;
+import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
@@ -31,12 +34,16 @@ import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.Point;
+import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
+import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
@@ -63,6 +70,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendCfgGraphBuilderTest {
+    private static final Range SYNTHETIC_RANGE = new Range(0, 1, new Point(0, 0), new Point(0, 1));
+
     @Test
     void buildExecutableBodyFailsFastForBreakWithoutLoopFrame() throws Exception {
         var analyzed = analyzeFunction(
@@ -282,7 +291,7 @@ class FrontendCfgGraphBuilderTest {
         var seed = assertInstanceOf(IdentifierExpression.class, callStep.arguments().getFirst());
 
         var items = entryNode.items();
-        var receiverValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(0));
+        var receiverValue = assertInstanceOf(DirectSlotAliasValueItem.class, items.get(0));
         var seedValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(1));
         var callValue = assertInstanceOf(CallItem.class, items.get(2));
         var callPayload = requireNotNull(
@@ -310,6 +319,450 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertNull(callPayload.leaf().memberNameOrNull()),
                 () -> assertNull(callPayload.leaf().subscriptAccessKindOrNull()),
                 () -> assertTrue(callPayload.reverseCommitSteps().isEmpty())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesDirectSlotAliasValueForExplicitSelfMutatingReceiverCalls() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_self_receiver_call.gd",
+                """
+                        class_name CfgBuilderSelfReceiverCall
+                        extends RefCounted
+                        
+                        func touch(seed: int) -> void:
+                            pass
+                        
+                        func ping(seed: int) -> void:
+                            self.touch(seed)
+                        """,
+                "ping",
+                Map.of("CfgBuilderSelfReceiverCall", "RuntimeCfgBuilderSelfReceiverCall")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
+        var receiver = assertInstanceOf(SelfExpression.class, expression.base());
+        var callStep = assertInstanceOf(AttributeCallStep.class, expression.steps().getFirst());
+        var seed = assertInstanceOf(IdentifierExpression.class, callStep.arguments().getFirst());
+        var items = entryNode.items();
+        var receiverValue = assertInstanceOf(DirectSlotAliasValueItem.class, items.get(0));
+        var seedValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(1));
+        var callValue = assertInstanceOf(CallItem.class, items.get(2));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(3, items.size()),
+                () -> assertSame(receiver, receiverValue.expression()),
+                () -> assertSame(seed, seedValue.expression()),
+                () -> assertSame(callStep, callValue.anchor()),
+                () -> assertEquals(receiverValue.resultValueId(), callValue.receiverValueIdOrNull())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyKeepsIdentifierAliasForCompositeNoRebindingArguments() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_identifier_receiver_binary_argument.gd",
+                """
+                        class_name CfgBuilderIdentifierReceiverBinaryArgument
+                        extends RefCounted
+                        
+                        func ping(values: PackedInt32Array, seed: int, offset: int) -> void:
+                            values.push_back(seed + offset)
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderIdentifierReceiverBinaryArgument",
+                        "RuntimeCfgBuilderIdentifierReceiverBinaryArgument"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
+        var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
+        var callStep = assertInstanceOf(AttributeCallStep.class, expression.steps().getFirst());
+        var binaryArgument = assertInstanceOf(BinaryExpression.class, callStep.arguments().getFirst());
+        var seed = assertInstanceOf(IdentifierExpression.class, binaryArgument.left());
+        var offset = assertInstanceOf(IdentifierExpression.class, binaryArgument.right());
+        var items = entryNode.items();
+        var receiverValue = assertInstanceOf(DirectSlotAliasValueItem.class, items.get(0));
+        var seedValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(1));
+        var offsetValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(2));
+        var binaryValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(3));
+        var callValue = assertInstanceOf(CallItem.class, items.get(4));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(5, items.size()),
+                () -> assertSame(receiver, receiverValue.expression()),
+                () -> assertSame(seed, seedValue.expression()),
+                () -> assertSame(offset, offsetValue.expression()),
+                () -> assertSame(binaryArgument, binaryValue.expression()),
+                () -> assertEquals(List.of(seedValue.resultValueId(), offsetValue.resultValueId()), binaryValue.operandValueIds()),
+                () -> assertSame(callStep, callValue.anchor()),
+                () -> assertEquals(receiverValue.resultValueId(), callValue.receiverValueIdOrNull()),
+                () -> assertEquals(List.of(binaryValue.resultValueId()), callValue.argumentValueIds())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyKeepsIdentifierReceiverOnSnapshotSurfaceWhenArgumentContainsNestedCall() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_identifier_receiver_nested_call.gd",
+                """
+                        class_name CfgBuilderIdentifierReceiverNestedCall
+                        extends RefCounted
+                        
+                        func helper(value: int) -> int:
+                            return value + 1
+                        
+                        func ping(values: PackedInt32Array, seed: int) -> void:
+                            values.push_back(helper(seed))
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderIdentifierReceiverNestedCall",
+                        "RuntimeCfgBuilderIdentifierReceiverNestedCall"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
+        var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
+        var callStep = assertInstanceOf(AttributeCallStep.class, expression.steps().getFirst());
+        var helperCallExpression = assertInstanceOf(CallExpression.class, callStep.arguments().getFirst());
+        var seed = assertInstanceOf(IdentifierExpression.class, helperCallExpression.arguments().getFirst());
+        var items = entryNode.items();
+        var receiverValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(0));
+        var seedValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(1));
+        var helperCallValue = assertInstanceOf(CallItem.class, items.get(2));
+        var outerCallValue = assertInstanceOf(CallItem.class, items.get(3));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(4, items.size()),
+                () -> assertSame(receiver, receiverValue.expression()),
+                () -> assertSame(seed, seedValue.expression()),
+                () -> assertSame(helperCallExpression, helperCallValue.anchor()),
+                () -> assertEquals(List.of(seedValue.resultValueId()), helperCallValue.argumentValueIds()),
+                () -> assertSame(callStep, outerCallValue.anchor()),
+                () -> assertEquals("push_back", outerCallValue.callableName()),
+                () -> assertEquals(receiverValue.resultValueId(), outerCallValue.receiverValueIdOrNull()),
+                () -> assertEquals(List.of(helperCallValue.resultValueId()), outerCallValue.argumentValueIds())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyStillPublishesSelfAliasWhenArgumentContainsNestedCall() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_self_receiver_nested_call.gd",
+                """
+                        class_name CfgBuilderSelfReceiverNestedCall
+                        extends RefCounted
+                        
+                        func helper(value: int) -> int:
+                            return value + 1
+                        
+                        func touch(value: int) -> void:
+                            pass
+                        
+                        func ping(seed: int) -> void:
+                            self.touch(helper(seed))
+                        """,
+                "ping",
+                Map.of("CfgBuilderSelfReceiverNestedCall", "RuntimeCfgBuilderSelfReceiverNestedCall")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
+        var receiver = assertInstanceOf(SelfExpression.class, expression.base());
+        var callStep = assertInstanceOf(AttributeCallStep.class, expression.steps().getFirst());
+        var helperCallExpression = assertInstanceOf(CallExpression.class, callStep.arguments().getFirst());
+        var seed = assertInstanceOf(IdentifierExpression.class, helperCallExpression.arguments().getFirst());
+        var items = entryNode.items();
+        var receiverValue = assertInstanceOf(DirectSlotAliasValueItem.class, items.get(0));
+        var seedValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(1));
+        var helperCallValue = assertInstanceOf(CallItem.class, items.get(2));
+        var outerCallValue = assertInstanceOf(CallItem.class, items.get(3));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(4, items.size()),
+                () -> assertSame(receiver, receiverValue.expression()),
+                () -> assertSame(seed, seedValue.expression()),
+                () -> assertSame(helperCallExpression, helperCallValue.anchor()),
+                () -> assertSame(callStep, outerCallValue.anchor()),
+                () -> assertEquals(receiverValue.resultValueId(), outerCallValue.receiverValueIdOrNull()),
+                () -> assertEquals(List.of(helperCallValue.resultValueId()), outerCallValue.argumentValueIds())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyKeepsOrdinaryIdentifierReadOnOpaqueValueSurface() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_identifier_read_surface.gd",
+                """
+                        class_name CfgBuilderIdentifierReadSurface
+                        extends RefCounted
+                        
+                        func ping(values: PackedInt32Array) -> PackedInt32Array:
+                            return values
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderIdentifierReadSurface",
+                        "RuntimeCfgBuilderIdentifierReadSurface"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode("stop_1"));
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var receiver = assertInstanceOf(IdentifierExpression.class, returnStatement.value());
+        var valueItem = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().getFirst());
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(1, entryNode.items().size()),
+                () -> assertSame(receiver, valueItem.expression()),
+                () -> assertEquals(List.of(), valueItem.operandValueIds()),
+                () -> assertEquals(valueItem.resultValueId(), stopNode.returnValueIdOrNull()),
+                () -> assertTrue(entryNode.items().stream().noneMatch(DirectSlotAliasValueItem.class::isInstance))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyKeepsOrdinarySelfReadOnOpaqueValueSurface() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_self_read_surface.gd",
+                """
+                        class_name CfgBuilderSelfReadSurface
+                        extends RefCounted
+                        
+                        func ping() -> CfgBuilderSelfReadSurface:
+                            return self
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderSelfReadSurface",
+                        "RuntimeCfgBuilderSelfReadSurface"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode("stop_1"));
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var selfExpression = assertInstanceOf(SelfExpression.class, returnStatement.value());
+        var valueItem = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().getFirst());
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(1, entryNode.items().size()),
+                () -> assertSame(selfExpression, valueItem.expression()),
+                () -> assertEquals(List.of(), valueItem.operandValueIds()),
+                () -> assertEquals(valueItem.resultValueId(), stopNode.returnValueIdOrNull()),
+                () -> assertTrue(entryNode.items().stream().noneMatch(DirectSlotAliasValueItem.class::isInstance))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyFailsFastWhenReceiverBindingIsCaptureAliasRoot() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_capture_receiver_alias.gd",
+                """
+                        class_name CfgBuilderCaptureReceiverAlias
+                        extends RefCounted
+                        
+                        func ping(values: PackedInt32Array, seed: int) -> void:
+                            values.push_back(seed)
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderCaptureReceiverAlias",
+                        "RuntimeCfgBuilderCaptureReceiverAlias"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
+        var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
+        var originalBinding = analyzed.analysisData().symbolBindings().get(receiver);
+        analyzed.analysisData().symbolBindings().put(
+                receiver,
+                new FrontendBinding(
+                        "values",
+                        FrontendBindingKind.CAPTURE,
+                        originalBinding == null ? receiver : originalBinding.declarationSite()
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData())
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertTrue(exception.getMessage().contains("does not support CAPTURE binding"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("lambda/capture semantics"), exception.getMessage())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyFailsFastWhenWritableIdentifierBindingPretendsToBeSelf() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_identifier_self_writable_route.gd",
+                """
+                        class_name CfgBuilderIdentifierSelfWritableRoute
+                        extends RefCounted
+                        
+                        func ping(seed: int) -> int:
+                            var value := seed
+                            value = seed + 1
+                            return value
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderIdentifierSelfWritableRoute",
+                        "RuntimeCfgBuilderIdentifierSelfWritableRoute"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var assignmentStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().get(1));
+        var assignmentExpression = assertInstanceOf(AssignmentExpression.class, assignmentStatement.expression());
+        var target = assertInstanceOf(IdentifierExpression.class, assignmentExpression.left());
+        var originalBinding = analyzed.analysisData().symbolBindings().get(target);
+        analyzed.analysisData().symbolBindings().put(
+                target,
+                new FrontendBinding(
+                        "self",
+                        FrontendBindingKind.SELF,
+                        originalBinding == null ? target : originalBinding.declarationSite()
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData())
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertTrue(
+                        exception.getMessage().contains(
+                                "Identifier writable-route publication must use explicit SelfExpression"
+                        ),
+                        exception.getMessage()
+                ),
+                () -> assertTrue(exception.getMessage().contains("binding kind SELF"), exception.getMessage())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyFailsFastWhenReceiverIdentifierPretendsToBeSelfBinding() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_identifier_self_receiver_alias.gd",
+                """
+                        class_name CfgBuilderIdentifierSelfReceiverAlias
+                        extends RefCounted
+                        
+                        func ping(values: PackedInt32Array, seed: int) -> void:
+                            values.push_back(seed)
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderIdentifierSelfReceiverAlias",
+                        "RuntimeCfgBuilderIdentifierSelfReceiverAlias"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
+        var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
+        var originalBinding = analyzed.analysisData().symbolBindings().get(receiver);
+        analyzed.analysisData().symbolBindings().put(
+                receiver,
+                new FrontendBinding(
+                        "self",
+                        FrontendBindingKind.SELF,
+                        originalBinding == null ? receiver : originalBinding.declarationSite()
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData())
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertTrue(exception.getMessage().contains("explicit SelfExpression"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("binding kind SELF"), exception.getMessage())
+        );
+    }
+
+    @Test
+    void classifyDirectSlotAliasArgumentsRequiresSnapshotForAssignmentExpression() throws Exception {
+        var assignmentExpression = new AssignmentExpression("=", identifier("values"), identifier("other"), SYNTHETIC_RANGE);
+
+        assertEquals(
+                "REQUIRES_SNAPSHOT",
+                invokeAliasArgumentSafety(List.of(assignmentExpression))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyKeepsNonMutatingDirectSlotReceiverOnOpaqueValueSurface() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_non_mutating_receiver_call.gd",
+                """
+                        class_name CfgBuilderNonMutatingReceiverCall
+                        extends RefCounted
+                        
+                        func ping(values: PackedInt32Array) -> int:
+                            return values.size()
+                        """,
+                "ping",
+                Map.of("CfgBuilderNonMutatingReceiverCall", "RuntimeCfgBuilderNonMutatingReceiverCall")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
+        var callStep = assertInstanceOf(AttributeCallStep.class, expression.steps().getFirst());
+        var items = entryNode.items();
+        var receiverValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(0));
+        var callValue = assertInstanceOf(CallItem.class, items.get(1));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(2, items.size()),
+                () -> assertSame(receiver, receiverValue.expression()),
+                () -> assertSame(callStep, callValue.anchor()),
+                () -> assertEquals(receiverValue.resultValueId(), callValue.receiverValueIdOrNull())
         );
     }
 
@@ -1666,6 +2119,18 @@ class FrontendCfgGraphBuilderTest {
     private static <T> @NotNull T requireNotNull(T value, @NotNull String detail) {
         assertNotNull(value, detail);
         return value;
+    }
+
+    private static @NotNull String invokeAliasArgumentSafety(
+            @NotNull List<? extends Expression> arguments
+    ) throws Exception {
+        var method = FrontendCfgGraphBuilder.class.getDeclaredMethod("classifyDirectSlotAliasArguments", List.class);
+        method.setAccessible(true);
+        return ((Enum<?>) method.invoke(new FrontendCfgGraphBuilder(), arguments)).name();
+    }
+
+    private static @NotNull IdentifierExpression identifier(@NotNull String name) {
+        return new IdentifierExpression(name, SYNTHETIC_RANGE);
     }
 
     private static @NotNull AnalyzedFunction analyzeFunction(

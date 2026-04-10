@@ -56,4 +56,9 @@ public record AssignmentItem(
         operands.add(rhsValueId);
         return List.copyOf(operands);
     }
+
+    @Override
+    public boolean hasStandaloneMaterializationSlot() {
+        return resultValueIdOrNull != null;
+    }
 }
