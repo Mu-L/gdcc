@@ -89,7 +89,12 @@ call result type 的正式真源是 call anchor 对应的 `analysisData.expressi
 - writable receiver access chain 必须作为同一个 `CallItem` 上的单个 frozen payload 发布
 - body lowering 必须整体消费这条 frozen chain 做 leaf selection 与 post-call commit
 - body lowering 不得把同一条 receiver chain 再拆成额外的 per-step item，也不得回头重跑 AST receiver 解释
-- 当前实现已经支持 `CallItem` 直接发布 writable receiver payload，且 call receiver leaf materialization 会在 payload 存在时直接消费这条 frozen route
+- 当前实现已经支持 `CallItem` 直接发布 writable receiver payload
+- exact `RESOLVED` instance route 现已冻结为：
+  - `CallMethodInsn.objectId` 优先复用 CFG 已发布的 receiver value slot
+  - payload-backed call 若缺失 dedicated `receiverValueIdOrNull`，属于 publication invariant violation；body lowering 不会再回退成按 payload 临时重读 receiver leaf
+  - 同一个 payload 仅负责 exact route 的 post-call reverse commit
+  - 若 receiver leaf 是 direct-slot payload，则 lowering 仍需把 synthetic CFG temp 映射回真实源 slot
 - post-call reverse commit / runtime gate 仍由 `frontend_complex_writable_target_plan.md` 的后续步骤继续闭合，不在 dynamic dispatch 合同中重复定义
 - shared writable-route support 现已同时提供：
   - 静态 gate 入口 `reverseCommit(..., ReverseCommitGateHook)`

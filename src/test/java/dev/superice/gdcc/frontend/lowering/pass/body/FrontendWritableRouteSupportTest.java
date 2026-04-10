@@ -4,6 +4,9 @@ import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import dev.superice.gdcc.frontend.lowering.FrontendLoweringContext;
 import dev.superice.gdcc.frontend.lowering.FunctionLoweringContext;
+import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
+import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringBuildCfgPass;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringClassSkeletonPass;
@@ -24,7 +27,6 @@ import dev.superice.gdcc.lir.insn.VariantSetIndexedInsn;
 import dev.superice.gdcc.lir.insn.VariantSetNamedInsn;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdArrayType;
-import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
@@ -98,6 +100,31 @@ class FrontendWritableRouteSupportTest {
                 () -> assertEquals("leaf_result", loadInsn.resultId()),
                 () -> assertEquals("payload", loadInsn.propertyName()),
                 () -> assertEquals("self", loadInsn.objectId())
+        );
+    }
+
+    @Test
+    void materializeCallReceiverLeafRejectsPayloadBackedCallWithoutDedicatedReceiverSlot() throws Exception {
+        var fixture = prepareMutatingCallFixture();
+        var block = new LirBasicBlock("entry");
+        var invalidCallItem = new CallItem(
+                fixture.callItem().anchor(),
+                fixture.callItem().callableName(),
+                null,
+                fixture.callItem().argumentValueIds(),
+                fixture.callItem().resultValueId(),
+                fixture.callItem().writableRoutePayloadOrNull()
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> fixture.session().materializeCallReceiverLeaf(block, invalidCallItem)
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("receiverValueIdOrNull")),
+                () -> assertTrue(exception.getMessage().contains("push_back")),
+                () -> assertTrue(block.getNonTerminatorInstructions().isEmpty())
         );
     }
 
@@ -610,6 +637,53 @@ class FrontendWritableRouteSupportTest {
         );
     }
 
+    private static @NotNull MutatingCallFixture prepareMutatingCallFixture() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var module = parseModule(
+                List.of(new SourceFixture(
+                        "writable_route_call_helper.gd",
+                        """
+                                class_name WritableRouteCallHelper
+                                extends RefCounted
+                                
+                                var payloads: PackedInt32Array
+                                
+                                func mutate(seed: int) -> void:
+                                    payloads.push_back(seed)
+                                """
+                )),
+                Map.of("WritableRouteCallHelper", "RuntimeWritableRouteCallHelper")
+        );
+        var context = new FrontendLoweringContext(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        new FrontendLoweringAnalysisPass().run(context);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected lowering diagnostics: " + diagnostics.snapshot());
+        var functionContext = context.requireFunctionLoweringContexts().stream()
+                .filter(candidate -> candidate.kind() == FunctionLoweringContext.Kind.EXECUTABLE_BODY)
+                .filter(candidate -> candidate.owningClass().getName().equals("RuntimeWritableRouteCallHelper"))
+                .filter(candidate -> candidate.targetFunction().getName().equals("mutate"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "Missing executable body context for RuntimeWritableRouteCallHelper.mutate"
+                ));
+        var session = new FrontendBodyLoweringSession(functionContext, context.classRegistry());
+        var graph = functionContext.requireFrontendCfgGraph();
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("seq_0"));
+        var callItem = entryNode.items().stream()
+                .filter(CallItem.class::isInstance)
+                .map(CallItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing published mutating call item"));
+        assertInstanceOf(FrontendWritableRoutePayload.class, callItem.writableRoutePayloadOrNull());
+        return new MutatingCallFixture(session, callItem);
+    }
+
     private static @NotNull FrontendModule parseModule(
             @NotNull List<SourceFixture> fixtures,
             @NotNull Map<String, String> topLevelCanonicalNameMap
@@ -639,6 +713,12 @@ class FrontendWritableRouteSupportTest {
     private record SourceFixture(
             @NotNull String fileName,
             @NotNull String source
+    ) {
+    }
+
+    private record MutatingCallFixture(
+            @NotNull FrontendBodyLoweringSession session,
+            @NotNull CallItem callItem
     ) {
     }
 }

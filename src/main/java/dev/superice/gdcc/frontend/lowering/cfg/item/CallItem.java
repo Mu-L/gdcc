@@ -18,7 +18,10 @@ import java.util.Objects;
 /// the bare `CallExpression` root or the owning `AttributeCallStep`, and `callableName` freezes the
 /// semantic route name that later lowering should use instead of re-reading the callee subtree.
 /// If the receiver also participates in writable-route lowering, `writableRoutePayloadOrNull`
-/// publishes that owner/leaf/writeback shape separately from the ordinary call operands.
+/// publishes that owner/leaf/writeback shape separately from the ordinary call operands. That
+/// payload never replaces the dedicated receiver operand slot for ordinary instance-call execution:
+/// payload-backed calls must still publish `receiverValueIdOrNull` so body lowering can reuse the
+/// already-frozen receiver value instead of re-reading the leaf.
 public record CallItem(
         @NotNull Node callAnchor,
         @NotNull String callableName,

@@ -919,6 +919,227 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runWritesBackPropertyBackedValueSemanticReceiverAfterResolvedMutatingCall() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_property_mutating_call.gd",
+                """
+                        class_name BodyInsnPropertyMutatingCall
+                        extends RefCounted
+                        
+                        var payloads: PackedInt32Array
+                        
+                        func ping(seed: Variant) -> void:
+                            payloads.push_back(seed)
+                        """,
+                Map.of(
+                        "BodyInsnPropertyMutatingCall",
+                        "RuntimeBodyInsnPropertyMutatingCall"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnPropertyMutatingCall",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var propertyLoad = requireOnlyInstruction(pingContext.targetFunction(), LoadPropertyInsn.class);
+        var unpackInsn = requireOnlyInstruction(pingContext.targetFunction(), UnpackVariantInsn.class);
+        var callInsn = requireOnlyInstruction(pingContext.targetFunction(), CallMethodInsn.class);
+        var propertyStore = requireOnlyInstruction(pingContext.targetFunction(), StorePropertyInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("payloads", propertyLoad.propertyName()),
+                () -> assertEquals("push_back", callInsn.methodName()),
+                () -> assertEquals(propertyLoad.resultId(), callInsn.objectId()),
+                () -> assertEquals(unpackInsn.resultId(), onlyVariableOperandId(callInsn.args())),
+                () -> assertEquals("payloads", propertyStore.propertyName()),
+                () -> assertEquals("self", propertyStore.objectId()),
+                () -> assertEquals(callInsn.objectId(), propertyStore.valueId()),
+                () -> assertTrue(instructionIndex(instructions, propertyLoad) < instructionIndex(instructions, unpackInsn)),
+                () -> assertTrue(instructionIndex(instructions, unpackInsn) < instructionIndex(instructions, callInsn)),
+                () -> assertTrue(instructionIndex(instructions, callInsn) < instructionIndex(instructions, propertyStore))
+        );
+    }
+
+    @Test
+    void runWritesBackNestedMutatingCallIntoSharedDictionaryElementWithoutOuterPropertyStore() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_nested_mutating_call.gd",
+                """
+                        class_name BodyInsnNestedMutatingCall
+                        extends RefCounted
+                        
+                        var payloads: Dictionary[int, PackedInt32Array]
+                        
+                        func ping(index: int, seed: int) -> void:
+                            payloads[index].push_back(seed)
+                        """,
+                Map.of(
+                        "BodyInsnNestedMutatingCall",
+                        "RuntimeBodyInsnNestedMutatingCall"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnNestedMutatingCall",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var propertyLoad = requireOnlyInstruction(pingContext.targetFunction(), LoadPropertyInsn.class);
+        var indexedLoad = requireOnlyInstruction(pingContext.targetFunction(), VariantGetIndexedInsn.class);
+        var callInsn = requireOnlyInstruction(pingContext.targetFunction(), CallMethodInsn.class);
+        var indexedStore = requireOnlyInstruction(pingContext.targetFunction(), VariantSetIndexedInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("payloads", propertyLoad.propertyName()),
+                () -> assertEquals(propertyLoad.resultId(), indexedLoad.variantId()),
+                () -> assertEquals(indexedLoad.resultId(), callInsn.objectId()),
+                () -> assertEquals("push_back", callInsn.methodName()),
+                () -> assertEquals(propertyLoad.resultId(), indexedStore.variantId()),
+                () -> assertEquals(callInsn.objectId(), indexedStore.valueId()),
+                () -> assertEquals(0, storeValueIdsForProperty(instructions, "payloads").size()),
+                () -> assertTrue(instructionIndex(instructions, propertyLoad) < instructionIndex(instructions, indexedLoad)),
+                () -> assertTrue(instructionIndex(instructions, indexedLoad) < instructionIndex(instructions, callInsn)),
+                () -> assertTrue(instructionIndex(instructions, callInsn) < instructionIndex(instructions, indexedStore))
+        );
+    }
+
+    @Test
+    void runSkipsPropertyWritebackForConstValueSemanticMethodCall() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_const_value_semantic_call.gd",
+                """
+                        class_name BodyInsnConstValueSemanticCall
+                        extends RefCounted
+                        
+                        var payloads: PackedInt32Array
+                        
+                        func ping() -> int:
+                            return payloads.size()
+                        """,
+                Map.of(
+                        "BodyInsnConstValueSemanticCall",
+                        "RuntimeBodyInsnConstValueSemanticCall"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConstValueSemanticCall",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var propertyLoad = requireOnlyInstruction(pingContext.targetFunction(), LoadPropertyInsn.class);
+        var callInsn = requireOnlyInstruction(pingContext.targetFunction(), CallMethodInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("payloads", propertyLoad.propertyName()),
+                () -> assertEquals(propertyLoad.resultId(), callInsn.objectId()),
+                () -> assertEquals("size", callInsn.methodName()),
+                () -> assertEquals(0, storeValueIdsForProperty(instructions, "payloads").size())
+        );
+    }
+
+    @Test
+    void runSkipsPropertyWritebackForSharedArrayReceiverCall() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_shared_array_receiver_call.gd",
+                """
+                        class_name BodyInsnSharedArrayReceiverCall
+                        extends RefCounted
+                        
+                        var payloads: Array[int]
+                        
+                        func ping(seed: int) -> void:
+                            payloads.append(seed)
+                        """,
+                Map.of(
+                        "BodyInsnSharedArrayReceiverCall",
+                        "RuntimeBodyInsnSharedArrayReceiverCall"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSharedArrayReceiverCall",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var propertyLoad = requireOnlyInstruction(pingContext.targetFunction(), LoadPropertyInsn.class);
+        var callInsn = requireOnlyInstruction(pingContext.targetFunction(), CallMethodInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("payloads", propertyLoad.propertyName()),
+                () -> assertEquals(propertyLoad.resultId(), callInsn.objectId()),
+                () -> assertEquals("append", callInsn.methodName()),
+                () -> assertEquals(0, storeValueIdsForProperty(instructions, "payloads").size())
+        );
+    }
+
+    @Test
+    void runSkipsPropertyWritebackForObjectReceiverCall() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_object_receiver_call.gd",
+                """
+                        class_name BodyInsnObjectReceiverCall
+                        extends RefCounted
+                        
+                        var host: Node
+                        
+                        func ping() -> void:
+                            host.queue_free()
+                        """,
+                Map.of(
+                        "BodyInsnObjectReceiverCall",
+                        "RuntimeBodyInsnObjectReceiverCall"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnObjectReceiverCall",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var propertyLoad = requireOnlyInstruction(pingContext.targetFunction(), LoadPropertyInsn.class);
+        var callInsn = requireOnlyInstruction(pingContext.targetFunction(), CallMethodInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("host", propertyLoad.propertyName()),
+                () -> assertEquals(propertyLoad.resultId(), callInsn.objectId()),
+                () -> assertEquals("queue_free", callInsn.methodName()),
+                () -> assertEquals(0, storeValueIdsForProperty(instructions, "host").size())
+        );
+    }
+
+    @Test
     void runLowersDynamicInstanceCallsIntoCallMethodInsnWithVariantResultSlot() throws Exception {
         var prepared = prepareContext(
                 "body_insn_dynamic_call.gd",
@@ -2003,6 +2224,19 @@ class FrontendLoweringBodyInsnPassTest {
     private static @NotNull String onlyVariableOperandId(@NotNull List<LirInstruction.Operand> operands) {
         assertEquals(1, operands.size(), "Expected exactly one variable argument");
         return assertInstanceOf(LirInstruction.VariableOperand.class, operands.getFirst()).id();
+    }
+
+    private static int instructionIndex(
+            @NotNull List<LirInstruction> instructions,
+            @NotNull LirInstruction targetInstruction
+    ) {
+        for (var index = 0; index < instructions.size(); index++) {
+            if (instructions.get(index) == targetInstruction) {
+                return index;
+            }
+        }
+        fail("Instruction not found in emitted instruction list: " + targetInstruction);
+        return -1;
     }
 
     private static @NotNull String requireSingleMergeValueId(@NotNull FrontendCfgGraph graph) {

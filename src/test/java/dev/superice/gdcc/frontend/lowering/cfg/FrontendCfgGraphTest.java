@@ -419,6 +419,49 @@ class FrontendCfgGraphTest {
     }
 
     @Test
+    void constructorRejectsWritableCallPayloadWithoutDedicatedReceiverValue() {
+        var routeAnchor = identifier("call");
+        var payload = new FrontendWritableRoutePayload(
+                routeAnchor,
+                new FrontendWritableRoutePayload.RootDescriptor(
+                        FrontendWritableRoutePayload.RootKind.SELF_CONTEXT,
+                        routeAnchor,
+                        null
+                ),
+                new FrontendWritableRoutePayload.LeafDescriptor(
+                        FrontendWritableRoutePayload.LeafKind.PROPERTY,
+                        identifier("payload"),
+                        null,
+                        List.of(),
+                        "payload",
+                        null
+                ),
+                List.of()
+        );
+        var nodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        nodes.put(
+                "entry",
+                new FrontendCfgGraph.SequenceNode(
+                        "entry",
+                        List.of(new CallItem(routeAnchor, "push_back", null, List.of(), "v0", payload)),
+                        "stop"
+                )
+        );
+        nodes.put("stop", new FrontendCfgGraph.StopNode("stop", FrontendCfgGraph.StopKind.RETURN, "v0"));
+
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph("entry", nodes)
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("writable call")),
+                () -> assertTrue(exception.getMessage().contains("receiverValueIdOrNull")),
+                () -> assertTrue(exception.getMessage().contains("entry"))
+        );
+    }
+
+    @Test
     void constructorRejectsNonTerminalStaticWritablePropertyStep() {
         var assignmentExpression = new AssignmentExpression("=", identifier("target"), identifier("rhs"), SYNTHETIC_RANGE);
         var invalidNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();

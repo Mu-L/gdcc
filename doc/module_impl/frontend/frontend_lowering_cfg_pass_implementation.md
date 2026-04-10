@@ -208,6 +208,7 @@ plain assignment、compound assignment 与 constructor materialization 当前各
   - CFG 继续负责冻结 operand 顺序、anchor 与 result value id
   - 若某个 call site 后续需要 mutating receiver writeback，则同一个 `CallItem` 还必须承载单个 writable receiver access-chain payload
   - 这条 chain payload 必须以“整条 route”的形式冻结；CFG 不得为同一个 call receiver 再发布一串额外 step item 让 body lowering 事后拼装
+  - 对 property/subscript receiver call，payload 的 `reverseCommitSteps` 还必须包含“当前 leaf 提升后的第一层 commit step”；否则 body lowering 只有 receiver provenance，却没有真正可执行的 post-call writeback plan
   - call result runtime type 的真源是 call anchor 对应的 `expressionTypes()`；`resolvedCalls()` 只负责 route fact，不是 `DYNAMIC` call result type 的唯一来源
 
 当前 body lowering 侧已经把 writable-route 的 leaf read / leaf write / reverse commit 共用逻辑收敛到 package-private
@@ -216,7 +217,10 @@ plain assignment、compound assignment 与 constructor materialization 当前各
 表。当前 CFG 已经能通过 `FrontendWritableRoutePayload` 在 `CallItem` / `AssignmentItem` 上冻结整条 writable route，graph
 publication 也会校验这类 payload 的本地 value-id 引用顺序，并额外拒绝 non-terminal static property commit step。
 assignment final-store lowering 已经切到 payload-only route；legacy `targetOperandValueIds` 只继续保留给 source-order
-sequencing 与 compound current-target read。call receiver leaf 则在 payload 存在时优先直接消费 frozen route。
+sequencing 与 compound current-target read。exact instance-call receiver 则优先复用 CFG 已发布的 receiver value slot，
+payload 只继续承载 post-call reverse commit；payload-backed call 若缺失 dedicated receiver value slot 现在会在
+graph publication / body-lowering invariant 处直接失败，不再静默回退成 leaf 重读；direct-slot payload 是唯一一个仍需把
+synthetic CFG temp 映射回真实源 slot 的特例。
 
 其中 compound assignment 的 source-order 合同固定为：
 

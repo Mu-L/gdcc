@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.lowering.pass.body;
 
 import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.frontend.lowering.FrontendBodyLoweringSupport;
+import dev.superice.gdcc.frontend.lowering.FrontendCallMutabilitySupport;
 import dev.superice.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
@@ -293,9 +294,10 @@ final class FrontendSequenceItemInsnLoweringProcessors {
     /// reuse the ordinary `CallMethodInsn` surface; this processor must not bake in a second
     /// contract that the receiver is always a direct pass-through slot. If CFG later publishes one
     /// frozen writable receiver route for a mutating call, that whole route must be consumed around
-    /// the same `CallMethodInsn` rather than split into ad-hoc step items here. Dynamic dispatch
-    /// stays on the backend route; later typed consumers of the published `Variant` result still
-    /// use the ordinary frontend boundary helper.
+    /// the same `CallMethodInsn` rather than split into ad-hoc step items here. Exact `RESOLVED`
+    /// instance calls already use that route to drive post-call reverse commit when the declaration
+    /// may mutate the receiver; dynamic dispatch stays on the backend route for now, and later typed
+    /// consumers of the published `Variant` result still use the ordinary frontend boundary helper.
     private static final class FrontendCallInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<CallItem, Void> {
         @Override
@@ -312,15 +314,29 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         ) {
             var resolvedCall = session.requireResolvedCall(node.anchor());
             var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
-            var arguments = session.materializeCallArguments(block, node, resolvedCall);
             switch (resolvedCall.callKind()) {
-                case INSTANCE_METHOD -> block.appendNonTerminatorInstruction(new CallMethodInsn(
-                        resultSlotId,
-                        resolvedCall.callableName(),
-                        session.materializeCallReceiverLeaf(block, node),
-                        arguments
-                ));
+                case INSTANCE_METHOD -> {
+                    var mutatingReceiverRoute = resolvedMutatingReceiverRouteOrNull(session, node, resolvedCall);
+                    var receiverSlotId = session.materializeCallReceiverLeaf(block, node);
+                    var arguments = session.materializeCallArguments(block, node, resolvedCall);
+                    block.appendNonTerminatorInstruction(new CallMethodInsn(
+                            resultSlotId,
+                            resolvedCall.callableName(),
+                            receiverSlotId,
+                            arguments
+                    ));
+                    if (mutatingReceiverRoute != null) {
+                        FrontendWritableRouteSupport.reverseCommit(
+                                session,
+                                block,
+                                mutatingReceiverRoute,
+                                receiverSlotId,
+                                FrontendWritableRouteSupport.createStaticCarrierWritebackGate(session)
+                        );
+                    }
+                }
                 case STATIC_METHOD -> {
+                    var arguments = session.materializeCallArguments(block, node, resolvedCall);
                     if (resolvedCall.receiverType() == null) {
                         block.appendNonTerminatorInstruction(new CallGlobalInsn(
                                 resultSlotId,
@@ -337,6 +353,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     ));
                 }
                 case CONSTRUCTOR -> {
+                    var arguments = session.materializeCallArguments(block, node, resolvedCall);
                     var constructorResultType = Objects.requireNonNull(
                             resolvedCall.returnType(),
                             "resolved constructor call must carry a result type"
@@ -360,10 +377,12 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                                         + resolvedCall.receiverKind()
                         );
                     }
+                    var receiverSlotId = session.materializeCallReceiverLeaf(block, node);
+                    var arguments = session.materializeCallArguments(block, node, resolvedCall);
                     block.appendNonTerminatorInstruction(new CallMethodInsn(
                             resultSlotId,
                             resolvedCall.callableName(),
-                            session.materializeCallReceiverLeaf(block, node),
+                            receiverSlotId,
                             arguments
                     ));
                 }
@@ -372,6 +391,22 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                         "call route is not lowering-ready: " + resolvedCall.callKind()
                 );
             }
+        }
+
+        /// Exact instance-call post-commit is enabled only for already-published writable receiver
+        /// routes whose declaration metadata says the receiver may mutate. Family-specific writeback
+        /// decisions stay in `FrontendWritableRouteSupport` via the shared static gate so nested
+        /// routes keep using the same per-layer carrier threading as assignment lowering.
+        private @Nullable FrontendWritableRouteSupport.FrontendWritableAccessChain resolvedMutatingReceiverRouteOrNull(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull CallItem node,
+                @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedCall resolvedCall
+        ) {
+            if (!FrontendCallMutabilitySupport.mayMutateReceiver(resolvedCall)
+                    || node.writableRoutePayloadOrNull() == null) {
+                return null;
+            }
+            return session.requireWritableAccessChain(node.writableRoutePayloadOrNull());
         }
     }
 

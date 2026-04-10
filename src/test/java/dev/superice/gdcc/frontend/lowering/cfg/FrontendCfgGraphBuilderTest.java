@@ -188,6 +188,7 @@ class FrontendCfgGraphBuilderTest {
                 fetchCallValue.writableRoutePayloadOrNull(),
                 "attribute call should publish a writable receiver payload"
         );
+        var fetchCommitStep = fetchCallPayload.reverseCommitSteps().getFirst();
 
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
@@ -236,7 +237,16 @@ class FrontendCfgGraphBuilderTest {
                         FrontendSubscriptAccessSupport.AccessKind.INDEXED,
                         fetchCallPayload.leaf().subscriptAccessKindOrNull()
                 ),
-                () -> assertTrue(fetchCallPayload.reverseCommitSteps().isEmpty()),
+                () -> assertEquals(1, fetchCallPayload.reverseCommitSteps().size()),
+                () -> assertEquals(FrontendWritableRoutePayload.StepKind.SUBSCRIPT, fetchCommitStep.kind()),
+                () -> assertSame(payloadsStep, fetchCommitStep.anchor()),
+                () -> assertEquals(buildCallValue.resultValueId(), fetchCommitStep.containerValueIdOrNull()),
+                () -> assertEquals(List.of(payloadsHelperValue.resultValueId()), fetchCommitStep.operandValueIds()),
+                () -> assertEquals("payloads", fetchCommitStep.memberNameOrNull()),
+                () -> assertEquals(
+                        FrontendSubscriptAccessSupport.AccessKind.INDEXED,
+                        fetchCommitStep.subscriptAccessKindOrNull()
+                ),
                 () -> assertEquals(valueStep, valueRead.anchor()),
                 () -> assertEquals("value", valueRead.memberName()),
                 () -> assertEquals(List.of("v8"), valueRead.operandValueIds()),

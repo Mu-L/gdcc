@@ -1198,13 +1198,23 @@ public final class FrontendCfgGraphBuilder {
                 var publishedCall = requireLoweringReadyCall(attributeCallStep);
                 var argumentsBuild = buildArgumentValues(receiverBuild.cursor(), attributeCallStep.arguments());
                 var resultValueId = chooseResultValueId(preferredResultValueId);
+                var receiverRoute = routePayloadOrValueRoot(receiverBuild);
                 argumentsBuild.cursor().currentSequence().items().add(new CallItem(
                         attributeCallStep,
                         publishedCall.callableName(),
                         receiverBuild.resultValueId(),
                         argumentsBuild.valueIds(),
                         resultValueId,
-                        routePayloadOrValueRoot(receiverBuild).withRouteAnchor(attributeCallStep)
+                        // Mutating call receivers reuse the current receiver leaf as the call object and
+                        // therefore need the promoted leaf to appear in reverseCommitSteps. Without this,
+                        // property/subscript receivers would carry provenance but no actual post-call
+                        // writeback plan.
+                        new FrontendWritableRoutePayload(
+                                attributeCallStep,
+                                receiverRoute.root(),
+                                receiverRoute.leaf(),
+                                appendPromotedLeaf(receiverRoute)
+                        )
                 ));
                 yield valueRootBuild(argumentsBuild.cursor(), attributeCallStep, resultValueId);
             }

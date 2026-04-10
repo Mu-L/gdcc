@@ -192,25 +192,37 @@ public final class FrontendBodyLoweringSession {
 
     /// Materializes the current call-receiver leaf through the shared writable-route support.
     ///
-    /// When `CallItem` already carries one frozen writable-route payload, this method must consume that
-    /// payload directly instead of rebuilding receiver provenance from `receiverValueIdOrNull`.
-    /// Only legacy items without payload still fall back to the old direct-slot subset.
+    /// When the CFG has already published one concrete receiver value id, that slot is the direct
+    /// receiver leaf and must be reused as-is. The writable-route payload then exists only to carry
+    /// post-call reverse-commit provenance. The one exception is a direct-slot payload: in that case
+    /// the payload still maps the synthetic CFG temp back to the trusted source/local slot that the
+    /// call should mutate in place. Non-direct payload-backed calls must therefore arrive with one
+    /// dedicated `receiverValueIdOrNull`; body lowering does not repair a missing receiver slot by
+    /// re-reading the leaf from the payload.
     @NotNull String materializeCallReceiverLeaf(@NotNull LirBasicBlock block, @NotNull CallItem item) {
         Objects.requireNonNull(block, "block must not be null");
-        if (item.writableRoutePayloadOrNull() != null) {
-            return FrontendWritableRouteSupport.materializeLeafRead(
-                    this,
-                    block,
-                    requireWritableAccessChain(item.writableRoutePayloadOrNull()),
-                    "call_receiver"
+        var actualItem = Objects.requireNonNull(item, "item must not be null");
+        if (actualItem.writableRoutePayloadOrNull() != null) {
+            var chain = requireWritableAccessChain(actualItem.writableRoutePayloadOrNull());
+            if (chain.leaf() instanceof FrontendWritableRouteSupport.DirectSlotLeaf) {
+                return FrontendWritableRouteSupport.materializeLeafRead(this, block, chain, "call_receiver");
+            }
+            if (actualItem.receiverValueIdOrNull() != null) {
+                return slotIdForValue(actualItem.receiverValueIdOrNull());
+            }
+            throw new IllegalStateException(
+                    "Payload-backed call '"
+                            + actualItem.callableName()
+                            + "' must publish dedicated receiverValueIdOrNull before body lowering"
             );
         }
-        var receiverSlotId = resolveInstanceCallReceiver(Objects.requireNonNull(item, "item must not be null"));
-        var receiverType = item.receiverValueIdOrNull() == null
-                ? requireFunctionVariableType(receiverSlotId)
-                : requireValueType(item.receiverValueIdOrNull());
+        if (actualItem.receiverValueIdOrNull() != null) {
+            return slotIdForValue(actualItem.receiverValueIdOrNull());
+        }
+        var receiverSlotId = resolveInstanceCallReceiver(actualItem);
+        var receiverType = requireFunctionVariableType(receiverSlotId);
         var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
-                item.anchor(),
+                actualItem.anchor(),
                 new FrontendWritableRouteSupport.FrontendWritableRoot("call receiver", receiverSlotId, receiverType),
                 new FrontendWritableRouteSupport.DirectSlotLeaf(receiverSlotId, receiverType),
                 List.of()

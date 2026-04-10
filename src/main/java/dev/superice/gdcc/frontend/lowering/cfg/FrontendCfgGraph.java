@@ -261,6 +261,8 @@ public record FrontendCfgGraph(
     /// Writable-route payloads must stay self-contained at graph publication time:
     /// - every referenced value id must already have been published earlier in the same sequence
     /// - descriptor shapes must stay mechanically well-formed so later lowering never has to guess
+    /// - payload-backed mutating calls must also publish one dedicated receiver value slot instead of
+    ///   leaving body lowering to re-read the receiver leaf on demand
     private static void validateWritableRouteContracts(@NotNull Map<String, NodeDef> nodes) {
         for (var node : nodes.values()) {
             if (!(node instanceof SequenceNode(var nodeId, var items, _))) {
@@ -270,6 +272,7 @@ public record FrontendCfgGraph(
             for (var item : items) {
                 var payload = extractWritableRoutePayload(item);
                 if (payload != null) {
+                    validateCallWritableReceiverContract(item, nodeId);
                     for (var valueId : payload.referencedValueIds()) {
                         if (!locallyPublishedValueIds.contains(valueId)) {
                             throw new IllegalArgumentException(
@@ -287,6 +290,19 @@ public record FrontendCfgGraph(
                     locallyPublishedValueIds.add(valueOpItem.resultValueIdOrNull());
                 }
             }
+        }
+    }
+
+    private static void validateCallWritableReceiverContract(@NotNull SequenceItem item, @NotNull String nodeId) {
+        if (!(item instanceof CallItem callItem) || callItem.writableRoutePayloadOrNull() == null) {
+            return;
+        }
+        if (callItem.receiverValueIdOrNull() == null) {
+            throw new IllegalArgumentException(
+                    "Frontend CFG writable call in sequence '"
+                            + nodeId
+                            + "' must publish dedicated receiverValueIdOrNull together with writableRoutePayload"
+            );
         }
     }
 
