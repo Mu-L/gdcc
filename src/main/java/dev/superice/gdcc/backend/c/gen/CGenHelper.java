@@ -521,8 +521,14 @@ public final class CGenHelper {
         );
     }
 
+    /// Property registration keeps the current export/non-export base-usage split
+    /// while reusing the same outward Variant encoding as method args/returns.
+    public @NotNull BoundMetadata renderPropertyMetadata(@NotNull PropertyDef propertyDef) {
+        return renderBoundMetadata(propertyDef.getType(), renderPropertyBaseUsageEnum(propertyDef));
+    }
+
     public @NotNull String renderPropertyUsageEnum(@NotNull PropertyDef propertyDef) {
-        return renderBoundMetadata(propertyDef.getType(), renderPropertyBaseUsageEnum(propertyDef)).usageExpr();
+        return renderPropertyMetadata(propertyDef).usageExpr();
     }
 
     private @NotNull String renderPropertyBaseUsageEnum(@NotNull PropertyDef propertyDef) {

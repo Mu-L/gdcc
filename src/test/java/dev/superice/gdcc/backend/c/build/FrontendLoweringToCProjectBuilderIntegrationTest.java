@@ -1058,6 +1058,129 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     }
 
     @Test
+    void lowerFrontendVariantPropertyAbiBuildNativeLibraryAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping Variant property ABI integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_variant_property_abi_runtime");
+        Files.createDirectories(tempDir);
+
+        var source = """
+                class_name VariantPropertyAbiSmoke
+                extends Node
+                
+                var payload: Variant
+                @export var visible_payload: Variant
+                var score: int
+                
+                func read_payload_size() -> int:
+                    return payload.size()
+                
+                func read_visible_payload_size() -> int:
+                    return visible_payload.size()
+                
+                func read_score() -> int:
+                    return score
+                """;
+        var module = parseModule(
+                tempDir.resolve("variant_property_abi_smoke.gd"),
+                source,
+                Map.of("VariantPropertyAbiSmoke", "RuntimeVariantPropertyAbiSmoke")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals(1, lowered.getClassDefs().size());
+        assertEquals("RuntimeVariantPropertyAbiSmoke", lowered.getClassDefs().getFirst().getName());
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_variant_property_abi_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entrySource = Files.readString(projectDir.resolve("entry.c"));
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+        assertTrue(
+                entrySource.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"payload\"), GDEXTENSION_VARIANT_TYPE_NIL, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), class_name, godot_PROPERTY_USAGE_NO_EDITOR | godot_PROPERTY_USAGE_NIL_IS_VARIANT,"),
+                () -> "Non-export Variant property should publish NIL + NO_EDITOR | NIL_IS_VARIANT.\nSource:\n" + entrySource
+        );
+        assertTrue(
+                entrySource.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"visible_payload\"), GDEXTENSION_VARIANT_TYPE_NIL, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), class_name, godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT,"),
+                () -> "Export Variant property should publish NIL + DEFAULT | NIL_IS_VARIANT.\nSource:\n" + entrySource
+        );
+        assertTrue(
+                entrySource.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"score\"), GDEXTENSION_VARIANT_TYPE_INT, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), class_name, godot_PROPERTY_USAGE_NO_EDITOR,"),
+                () -> "Non-Variant property should keep its original property metadata shape.\nSource:\n" + entrySource
+        );
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "VariantPropertyAbiSmokeNode",
+                        "RuntimeVariantPropertyAbiSmoke",
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(variantPropertyAbiTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend Variant property ABI hidden property check passed."),
+                () -> "Hidden Variant property check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend Variant property ABI exported property check passed."),
+                () -> "Exported Variant property check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend Variant property ABI non-Variant property check passed."),
+                () -> "Non-Variant property check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend Variant property ABI runtime class check passed."),
+                () -> "Variant property ABI runtime class check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend Variant property ABI hidden property check failed."),
+                () -> "Hidden Variant property check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend Variant property ABI exported property check failed."),
+                () -> "Exported Variant property check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend Variant property ABI non-Variant property check failed."),
+                () -> "Non-Variant property check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend Variant property ABI runtime class check failed."),
+                () -> "Variant property ABI runtime class check should not fail.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    @Test
     void lowerFrontendDynamicVariantReceiverWritebackBuildNativeLibraryAndRunInGodot() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping frontend dynamic Variant writeback integration test");
@@ -1765,6 +1888,48 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend Variant method ABI runtime class check passed.")
                     else:
                         push_error("frontend Variant method ABI runtime class check failed.")
+                """;
+    }
+
+    private static @NotNull String variantPropertyAbiTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "VariantPropertyAbiSmokeNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    target.payload = PackedInt32Array([4, 5])
+                    var payload = target.payload
+                    var payload_size = int(target.call("read_payload_size"))
+                    if typeof(payload) == TYPE_PACKED_INT32_ARRAY and payload.size() == 2 and payload[1] == 5 and payload_size == 2:
+                        print("frontend Variant property ABI hidden property check passed.")
+                    else:
+                        push_error("frontend Variant property ABI hidden property check failed.")
+                
+                    target.visible_payload = PackedInt32Array([6, 7, 8])
+                    var visible_payload = target.visible_payload
+                    var visible_payload_size = int(target.call("read_visible_payload_size"))
+                    if typeof(visible_payload) == TYPE_PACKED_INT32_ARRAY and visible_payload.size() == 3 and visible_payload[0] == 6 and visible_payload_size == 3:
+                        print("frontend Variant property ABI exported property check passed.")
+                    else:
+                        push_error("frontend Variant property ABI exported property check failed.")
+                
+                    target.score = 9
+                    if int(target.score) == 9 and int(target.call("read_score")) == 9:
+                        print("frontend Variant property ABI non-Variant property check passed.")
+                    else:
+                        push_error("frontend Variant property ABI non-Variant property check failed.")
+                
+                    var runtime_class = String(target.get_class())
+                    if runtime_class == "RuntimeVariantPropertyAbiSmoke" and target.is_class("RuntimeVariantPropertyAbiSmoke") and not target.is_class("VariantPropertyAbiSmoke"):
+                        print("frontend Variant property ABI runtime class check passed.")
+                    else:
+                        push_error("frontend Variant property ABI runtime class check failed.")
                 """;
     }
 

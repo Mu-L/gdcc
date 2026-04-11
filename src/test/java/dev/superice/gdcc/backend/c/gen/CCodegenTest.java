@@ -258,6 +258,46 @@ public class CCodegenTest {
     }
 
     @Test
+    public void generatesVariantPropertyBindingMetadataAndKeepsNonVariantPropertyShape() throws Exception {
+        var workerClass = new LirClassDef("VariantPropertyOwner", "Node");
+        workerClass.addProperty(new LirPropertyDef("hidden_payload", GdVariantType.VARIANT));
+        workerClass.addProperty(new LirPropertyDef("visible_payload", GdVariantType.VARIANT, false, null, null, null, Map.of("export", "")));
+        workerClass.addProperty(new LirPropertyDef("hidden_score", GdIntType.INT));
+        workerClass.addProperty(new LirPropertyDef("visible_score", GdIntType.INT, false, null, null, null, Map.of("export", "")));
+
+        var module = new LirModule("variant_property_bind_metadata_module", List.of(workerClass));
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var cCode = new String(files.getFirst().contentWriter());
+
+        assertEquals(4, countOccurrences(cCode, "gdcc_bind_property_full("), cCode);
+        assertFalse(cCode.contains("gdcc_bind_property(class_name,"), cCode);
+        assertTrue(
+                cCode.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"hidden_payload\"), GDEXTENSION_VARIANT_TYPE_NIL, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), class_name, godot_PROPERTY_USAGE_NO_EDITOR | godot_PROPERTY_USAGE_NIL_IS_VARIANT, GD_STATIC_SN(u8\"_field_getter_hidden_payload\"), GD_STATIC_SN(u8\"_field_setter_hidden_payload\"));"),
+                cCode
+        );
+        assertTrue(
+                cCode.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"visible_payload\"), GDEXTENSION_VARIANT_TYPE_NIL, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), class_name, godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT, GD_STATIC_SN(u8\"_field_getter_visible_payload\"), GD_STATIC_SN(u8\"_field_setter_visible_payload\"));"),
+                cCode
+        );
+        assertTrue(
+                cCode.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"hidden_score\"), GDEXTENSION_VARIANT_TYPE_INT, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), class_name, godot_PROPERTY_USAGE_NO_EDITOR, GD_STATIC_SN(u8\"_field_getter_hidden_score\"), GD_STATIC_SN(u8\"_field_setter_hidden_score\"));"),
+                cCode
+        );
+        assertTrue(
+                cCode.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"visible_score\"), GDEXTENSION_VARIANT_TYPE_INT, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), class_name, godot_PROPERTY_USAGE_DEFAULT, GD_STATIC_SN(u8\"_field_getter_visible_score\"), GD_STATIC_SN(u8\"_field_setter_visible_score\"));"),
+                cCode
+        );
+    }
+
+    @Test
     public void generateCreatesDefaultPropertyInitHelperWhenInitFuncIsUnset() throws Exception {
         var workerClass = new LirClassDef("GDWorkerNode", "Node");
         var property = new LirPropertyDef("ready_value", GdIntType.INT);

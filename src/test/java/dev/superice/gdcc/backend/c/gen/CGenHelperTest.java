@@ -263,6 +263,17 @@ class CGenHelperTest {
     }
 
     @Test
+    @DisplayName("renderPropertyMetadata should encode Variant property as outward NIL")
+    void renderPropertyMetadataShouldEncodeVariantPropertyAsNil() {
+        var property = new LirPropertyDef("payload", GdVariantType.VARIANT, false, null, null, null, Map.of());
+
+        var metadata = helper.renderPropertyMetadata(property);
+
+        assertEquals("GDEXTENSION_VARIANT_TYPE_NIL", metadata.typeEnumLiteral());
+        assertEquals("godot_PROPERTY_USAGE_NO_EDITOR | godot_PROPERTY_USAGE_NIL_IS_VARIANT", metadata.usageExpr());
+    }
+
+    @Test
     @DisplayName("renderPropertyUsageEnum should keep non-export Variant property hidden in editor")
     void renderPropertyUsageEnumShouldKeepNonExportVariantHidden() {
         var property = new LirPropertyDef("payload", GdVariantType.VARIANT, false, null, null, null, Map.of());

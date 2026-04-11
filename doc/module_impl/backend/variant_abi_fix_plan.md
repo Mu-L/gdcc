@@ -338,6 +338,13 @@ generated `call_func` wrapper 必须满足：
     - usage
   - `entry.c.ftl` 改为调用 full 版本
 
+状态（2026-04-11）：
+
+- 已完成。
+- `gdcc_bind.h` 已新增 `gdcc_bind_property_full(...)`，property registration 不再受旧 helper 仅接受 `type + usage` 的入口限制。
+- `entry.c.ftl` 已切到 `gdcc_bind_property_full(...) + helper.renderPropertyMetadata(property)`，因此 `Variant` property 可以稳定发布 `NIL + PROPERTY_USAGE_NIL_IS_VARIANT`。
+- property-class slot 当前仍显式传入 owner `class_name`，避免本 patch 顺手漂移 object/typed property 的既有 `class_name` surface。
+
 验收：
 
 - `Variant` property 注册时 outward type 为 `NIL`
@@ -353,6 +360,13 @@ generated `call_func` wrapper 必须满足：
   - `@export` property 仍保留 editor 可见性
   - non-export property 仍保持 `NO_EDITOR`
   - `Variant` 额外 flag 只作为 additive change，不覆盖既有 usage 语义
+
+状态（2026-04-11）：
+
+- 已完成。
+- `renderPropertyMetadata(...)` 现在复用 `renderBoundMetadata(...) + renderPropertyBaseUsageEnum(...)`，继续沿用原来的 export / non-export 可见性分流。
+- 新增的 `NIL_IS_VARIANT` 只在 `Variant` property 上做 additive 叠加，不会覆盖 `DEFAULT` / `NO_EDITOR` 的既有语义。
+- backend 单测与 property runtime integration test 已共同覆盖 `export/non-export × Variant/non-Variant` 组合，防止回归时只修 Variant path 却漂移普通 property surface。
 
 验收：
 
@@ -374,6 +388,15 @@ generated `call_func` wrapper 必须满足：
   - 生成的 `entry.h` 中，`Variant` 参数没有 `!= GDEXTENSION_VARIANT_TYPE_NIL` 分支
   - 同一个文件中，`int` / `Color` / `Vector3` 参数仍保留原有精确检查
 
+状态（2026-04-11）：
+
+- 已完成。
+- `CCodegenTest.generatesVariantMethodBindingMetadataAndKeepsNonVariantGate()` 已固定 method wrapper contract：
+  - `Variant` 参数 metadata 使用 `NIL + PROPERTY_USAGE_NIL_IS_VARIANT`
+  - wrapper 不再发布 `expected = GDEXTENSION_VARIANT_TYPE_NIL`
+  - 非 `Variant` 参数仍保留精确 gate
+- 断言直接锚定 generated `entry.h` 结构，不依赖 Godot 运行时报错文案。
+
 验收：
 
 - 测试能稳定识别“Variant gate 已放宽，但非 Variant gate 未放宽”
@@ -385,6 +408,13 @@ generated `call_func` wrapper 必须满足：
   - `Variant` return info 含 `PROPERTY_USAGE_NIL_IS_VARIANT`
   - `Variant` property registration 使用 `PROPERTY_USAGE_NIL_IS_VARIANT`
   - `Variant` outward type 为 `GDEXTENSION_VARIANT_TYPE_NIL`
+
+状态（2026-04-11）：
+
+- 已完成。
+- `CGenHelperTest` 已补 helper 级断言，固定 `Variant` property metadata 必须编码为 `NIL + PROPERTY_USAGE_NIL_IS_VARIANT`，同时保持非 `Variant` property enum 不漂移。
+- `CCodegenTest.generatesVariantPropertyBindingMetadataAndKeepsNonVariantPropertyShape()` 已补 property registration 的 codegen 锚点，覆盖 hidden/exported × Variant/non-Variant 组合。
+- `FrontendLoweringToCProjectBuilderIntegrationTest.lowerFrontendVariantPropertyAbiBuildNativeLibraryAndRunInGodot()` 已进一步证明 direct property set/get 的 runtime surface 也遵守同一 contract，而不是只在字符串层面看起来正确。
 
 验收：
 

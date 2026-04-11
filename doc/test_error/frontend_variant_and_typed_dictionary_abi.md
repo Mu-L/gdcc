@@ -17,15 +17,15 @@ If the integration test keeps `Variant` parameters or typed-dictionary parameter
 
 ## Current Status
 
-As of 2026-04-11, the backend `Variant` **method** ABI has been partially repaired:
+As of 2026-04-11, the backend `Variant` ABI has been repaired for ordinary method/property surfaces:
 
-- method argument metadata now publishes `PROPERTY_USAGE_NIL_IS_VARIANT`
+- method argument metadata now publishes `NIL + PROPERTY_USAGE_NIL_IS_VARIANT`
 - generated `call_func` wrappers no longer keep the erroneous `type != NIL` exact gate for `Variant` parameters
 - method return metadata now also publishes `NIL + PROPERTY_USAGE_NIL_IS_VARIANT`
+- property registration now publishes the same outward `Variant` contract, and direct property get/set integration coverage has passed against Godot runtime
 
-The remaining open items from this investigation are still:
+The remaining open item from this investigation is:
 
-- property registration surface for `Variant` metadata
 - typed dictionary boundary fidelity
 
 The historical sections below are kept because they explain the original failure chain and why the writable-route fixture was initially shaped to avoid mixing ABI defects into the continuation tests.
