@@ -13,6 +13,7 @@ import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdPackedNumericArrayType;
+import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
@@ -298,5 +299,30 @@ class CGenHelperTest {
         var property = new LirPropertyDef("score", GdIntType.INT, false, null, null, null, Map.of());
 
         assertEquals("godot_PROPERTY_USAGE_NO_EDITOR", helper.renderPropertyUsageEnum(property));
+    }
+
+    @Test
+    @DisplayName("renderCallWrapperDestroyStmt should destroy wrapper-owned String locals")
+    void renderCallWrapperDestroyStmtShouldDestroyStringLocal() {
+        assertEquals(
+                "godot_String_destroy(&value);",
+                helper.renderCallWrapperDestroyStmt(GdStringType.STRING, "value")
+        );
+    }
+
+    @Test
+    @DisplayName("renderCallWrapperDestroyStmt should destroy wrapper-owned Variant locals")
+    void renderCallWrapperDestroyStmtShouldDestroyVariantLocal() {
+        assertEquals(
+                "godot_Variant_destroy(&value);",
+                helper.renderCallWrapperDestroyStmt(GdVariantType.VARIANT, "value")
+        );
+    }
+
+    @Test
+    @DisplayName("renderCallWrapperDestroyStmt should skip object and primitive locals")
+    void renderCallWrapperDestroyStmtShouldSkipObjectAndPrimitiveLocals() {
+        assertEquals("", helper.renderCallWrapperDestroyStmt(new GdObjectType("Node"), "value"));
+        assertEquals("", helper.renderCallWrapperDestroyStmt(GdIntType.INT, "value"));
     }
 }

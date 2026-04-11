@@ -153,20 +153,41 @@ static void call${helper.renderFuncBindName(bindingData)}(
     </#if>
     </#list>
 
-    // Extract the argument
+    // Extract the argument. Wrapper-owned non-object locals stay mutable so the
+    // cleanup epilogue below can destroy them before returning to Godot.
     <#list bindingData.paramTypes as paramType>
+        <#assign argCleanupStmt = helper.renderCallWrapperDestroyStmt(paramType, "arg${paramType_index}")>
+        <#if argCleanupStmt?has_content>
+        ${helper.renderGdTypeInC(paramType)} arg${paramType_index} = ${helper.renderUnpackFunctionName(paramType)}((GDExtensionVariantPtr)p_args[${paramType_index}]);
+        <#else>
         const ${helper.renderGdTypeInC(paramType)} arg${paramType_index} = ${helper.renderUnpackFunctionName(paramType)}((GDExtensionVariantPtr)p_args[${paramType_index}]);
+        </#if>
     </#list>
 
-    // Call the function
+    // Call the function. Any wrapper-local non-object values materialized above must
+    // be explicitly destroyed here; they are outside the ordinary function-body slot
+    // lifecycle managed by CBodyBuilder.
     ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(void*<#list bindingData.paramTypes as paramType>, ${helper.renderGdTypeRefInC(paramType)}</#list>) = method_userdata;
     <#if bindingData.returnType.typeName != "void">
         ${helper.renderGdTypeInC(bindingData.returnType)} r = function(p_instance<#list bindingData.paramTypes as paramType>, ${helper.renderValueRef(paramType, "arg${paramType_index}")}</#list>);
         godot_Variant ret = ${helper.renderPackFunctionName(bindingData.returnType)}(${helper.renderValueRef(bindingData.returnType, "r")});
         godot_variant_new_copy(r_return, &ret);
+        godot_Variant_destroy(&ret);
+        <#assign returnCleanupStmt = helper.renderCallWrapperDestroyStmt(bindingData.returnType, "r")>
+        <#if returnCleanupStmt?has_content>
+        ${returnCleanupStmt}
+        </#if>
     <#else>
         (function(p_instance<#list bindingData.paramTypes as paramType>, ${helper.renderValueRef(paramType, "arg${paramType_index}")}</#list>));
     </#if>
+    <#assign argCount = bindingData.paramTypes?size>
+    <#list bindingData.paramTypes?reverse as paramType>
+        <#assign argIndex = argCount - paramType_index - 1>
+        <#assign argCleanupStmt = helper.renderCallWrapperDestroyStmt(paramType, "arg${argIndex}")>
+        <#if argCleanupStmt?has_content>
+        ${argCleanupStmt}
+        </#if>
+    </#list>
 }
 
 static void ptrcall${helper.renderFuncBindName(bindingData)}(

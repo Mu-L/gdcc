@@ -16,6 +16,7 @@ import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
+import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
 import dev.superice.gdcc.lir.insn.LiteralFloatInsn;
 import dev.superice.gdcc.lir.insn.LiteralIntInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
@@ -23,6 +24,7 @@ import dev.superice.gdcc.lir.insn.UnaryOpInsn;
 import dev.superice.gdcc.lir.insn.VariantGetInsn;
 import dev.superice.gdcc.lir.insn.VariantSetInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdIntType;
@@ -237,24 +239,25 @@ public class CCodegenTest {
         var files = codegen.generate();
         var hCode = new String(files.getLast().contentWriter());
 
-        assertEquals(
-                2,
-                countOccurrences(
-                        hCode,
-                        "gdcc_make_property_full(arg0_type, arg0_name, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"\"), godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT)"
-                ),
-                hCode
+        var acceptVariantBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Variant_ret_int");
+        var echoVariantBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Variant_ret_Variant");
+        var acceptVariantCallBody = resolveCallWrapperBody(hCode, "_1_arg_Variant_ret_int");
+        var acceptIntCallBody = resolveCallWrapperBody(hCode, "_1_arg_int_ret_int");
+
+        assertContainsAll(
+                acceptVariantBindBody,
+                "gdcc_make_property_full(arg0_type, arg0_name",
+                "godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT"
         );
-        assertEquals(
-                1,
-                countOccurrences(
-                        hCode,
-                        "GDExtensionPropertyInfo return_info = gdcc_make_property_full(GDEXTENSION_VARIANT_TYPE_NIL, GD_STATIC_SN(u8\"\"), godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"\"), godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT);"
-                ),
-                hCode
+        assertContainsAll(
+                echoVariantBindBody,
+                "gdcc_make_property_full(arg0_type, arg0_name",
+                "GDExtensionPropertyInfo return_info = gdcc_make_property_full(",
+                "GDEXTENSION_VARIANT_TYPE_NIL",
+                "godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT"
         );
-        assertFalse(hCode.contains("expected = GDEXTENSION_VARIANT_TYPE_NIL;"), hCode);
-        assertEquals(1, countOccurrences(hCode, "expected = GDEXTENSION_VARIANT_TYPE_INT;"), hCode);
+        assertFalse(acceptVariantCallBody.contains("expected = GDEXTENSION_VARIANT_TYPE_NIL;"), acceptVariantCallBody);
+        assertContainsAll(acceptIntCallBody, "expected = GDEXTENSION_VARIANT_TYPE_INT;");
     }
 
     @Test
@@ -276,25 +279,154 @@ public class CCodegenTest {
         codegen.prepare(ctx, module);
         var files = codegen.generate();
         var cCode = new String(files.getFirst().contentWriter());
+        var hiddenPayloadBind = resolvePropertyBindCall(cCode, "hidden_payload");
+        var visiblePayloadBind = resolvePropertyBindCall(cCode, "visible_payload");
+        var hiddenScoreBind = resolvePropertyBindCall(cCode, "hidden_score");
+        var visibleScoreBind = resolvePropertyBindCall(cCode, "visible_score");
 
         assertEquals(4, countOccurrences(cCode, "gdcc_bind_property_full("), cCode);
         assertFalse(cCode.contains("gdcc_bind_property(class_name,"), cCode);
-        assertTrue(
-                cCode.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"hidden_payload\"), GDEXTENSION_VARIANT_TYPE_NIL, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), class_name, godot_PROPERTY_USAGE_NO_EDITOR | godot_PROPERTY_USAGE_NIL_IS_VARIANT, GD_STATIC_SN(u8\"_field_getter_hidden_payload\"), GD_STATIC_SN(u8\"_field_setter_hidden_payload\"));"),
-                cCode
+        assertContainsAll(
+                hiddenPayloadBind,
+                "GDEXTENSION_VARIANT_TYPE_NIL",
+                "godot_PROPERTY_HINT_NONE",
+                "godot_PROPERTY_USAGE_NO_EDITOR | godot_PROPERTY_USAGE_NIL_IS_VARIANT",
+                "_field_getter_hidden_payload",
+                "_field_setter_hidden_payload"
         );
-        assertTrue(
-                cCode.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"visible_payload\"), GDEXTENSION_VARIANT_TYPE_NIL, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), class_name, godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT, GD_STATIC_SN(u8\"_field_getter_visible_payload\"), GD_STATIC_SN(u8\"_field_setter_visible_payload\"));"),
-                cCode
+        assertContainsAll(
+                visiblePayloadBind,
+                "GDEXTENSION_VARIANT_TYPE_NIL",
+                "godot_PROPERTY_HINT_NONE",
+                "godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT",
+                "_field_getter_visible_payload",
+                "_field_setter_visible_payload"
         );
-        assertTrue(
-                cCode.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"hidden_score\"), GDEXTENSION_VARIANT_TYPE_INT, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), class_name, godot_PROPERTY_USAGE_NO_EDITOR, GD_STATIC_SN(u8\"_field_getter_hidden_score\"), GD_STATIC_SN(u8\"_field_setter_hidden_score\"));"),
-                cCode
+        assertContainsAll(
+                hiddenScoreBind,
+                "GDEXTENSION_VARIANT_TYPE_INT",
+                "godot_PROPERTY_HINT_NONE",
+                "godot_PROPERTY_USAGE_NO_EDITOR",
+                "_field_getter_hidden_score",
+                "_field_setter_hidden_score"
         );
-        assertTrue(
-                cCode.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"visible_score\"), GDEXTENSION_VARIANT_TYPE_INT, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), class_name, godot_PROPERTY_USAGE_DEFAULT, GD_STATIC_SN(u8\"_field_getter_visible_score\"), GD_STATIC_SN(u8\"_field_setter_visible_score\"));"),
-                cCode
+        assertContainsAll(
+                visibleScoreBind,
+                "GDEXTENSION_VARIANT_TYPE_INT",
+                "godot_PROPERTY_HINT_NONE",
+                "godot_PROPERTY_USAGE_DEFAULT",
+                "_field_getter_visible_score",
+                "_field_setter_visible_score"
         );
+    }
+
+    @Test
+    public void generatesCallFuncCleanupForDestroyableWrapperLocals() throws Exception {
+        var workerClass = new LirClassDef("CallWrapperCleanupWorker", "Node");
+
+        var echoString = new LirFunctionDef("echo_string");
+        echoString.setReturnType(GdStringType.STRING);
+        echoString.addParameter(new LirParameterDef("self", new GdObjectType("CallWrapperCleanupWorker"), null, echoString));
+        echoString.addParameter(new LirParameterDef("value", GdStringType.STRING, null, echoString));
+        var echoStringEntry = new LirBasicBlock("entry");
+        echoStringEntry.setTerminator(new ReturnInsn("value"));
+        echoString.addBasicBlock(echoStringEntry);
+        echoString.setEntryBlockId("entry");
+        workerClass.addFunction(echoString);
+
+        var arrayToBool = new LirFunctionDef("array_to_bool");
+        arrayToBool.setReturnType(GdBoolType.BOOL);
+        arrayToBool.addParameter(new LirParameterDef("self", new GdObjectType("CallWrapperCleanupWorker"), null, arrayToBool));
+        arrayToBool.addParameter(new LirParameterDef("value", new GdArrayType(GdVariantType.VARIANT), null, arrayToBool));
+        var boolResult = arrayToBool.createAndAddTmpVariable(GdBoolType.BOOL);
+        var arrayToBoolEntry = new LirBasicBlock("entry");
+        arrayToBoolEntry.appendInstruction(new LiteralBoolInsn(boolResult.id(), true));
+        arrayToBoolEntry.setTerminator(new ReturnInsn(boolResult.id()));
+        arrayToBool.addBasicBlock(arrayToBoolEntry);
+        arrayToBool.setEntryBlockId("entry");
+        workerClass.addFunction(arrayToBool);
+
+        var echoVariant = new LirFunctionDef("echo_variant");
+        echoVariant.setReturnType(GdVariantType.VARIANT);
+        echoVariant.addParameter(new LirParameterDef("self", new GdObjectType("CallWrapperCleanupWorker"), null, echoVariant));
+        echoVariant.addParameter(new LirParameterDef("value", GdVariantType.VARIANT, null, echoVariant));
+        var echoVariantEntry = new LirBasicBlock("entry");
+        echoVariantEntry.setTerminator(new ReturnInsn("value"));
+        echoVariant.addBasicBlock(echoVariantEntry);
+        echoVariant.setEntryBlockId("entry");
+        workerClass.addFunction(echoVariant);
+
+        var consumeString = new LirFunctionDef("consume_string");
+        consumeString.setReturnType(GdVoidType.VOID);
+        consumeString.addParameter(new LirParameterDef("self", new GdObjectType("CallWrapperCleanupWorker"), null, consumeString));
+        consumeString.addParameter(new LirParameterDef("value", GdStringType.STRING, null, consumeString));
+        var consumeStringEntry = new LirBasicBlock("entry");
+        consumeStringEntry.setTerminator(new ReturnInsn(null));
+        consumeString.addBasicBlock(consumeStringEntry);
+        consumeString.setEntryBlockId("entry");
+        workerClass.addFunction(consumeString);
+
+        var module = new LirModule("call_wrapper_cleanup_module", List.of(workerClass));
+        var hCode = generateHeader(module);
+        var echoStringWrapperBody = resolveCallWrapperBody(hCode, "_1_arg_String_ret_String");
+        var consumeStringWrapperBody = resolveCallWrapperBody(hCode, "_1_arg_String_no_ret");
+
+        assertEquals(2, countOccurrences(hCode, "godot_String_destroy(&arg0);"), hCode);
+        assertEquals(1, countOccurrences(hCode, "godot_String_destroy(&r);"), hCode);
+        assertEquals(1, countOccurrences(hCode, "godot_Array_destroy(&arg0);"), hCode);
+        assertEquals(1, countOccurrences(hCode, "godot_Variant_destroy(&arg0);"), hCode);
+        assertEquals(1, countOccurrences(hCode, "godot_Variant_destroy(&r);"), hCode);
+        assertEquals(3, countOccurrences(hCode, "godot_Variant_destroy(&ret);"), hCode);
+        assertFalse(hCode.contains("godot_bool_destroy(&r);"), hCode);
+        assertTrue(consumeStringWrapperBody.contains("godot_String_destroy(&arg0);"), consumeStringWrapperBody);
+        assertFalse(consumeStringWrapperBody.contains("godot_Variant_destroy(&ret);"), consumeStringWrapperBody);
+
+        var copyIndex = echoStringWrapperBody.indexOf("godot_variant_new_copy(r_return, &ret);");
+        var retDestroyIndex = echoStringWrapperBody.indexOf("godot_Variant_destroy(&ret);", copyIndex);
+        var returnDestroyIndex = echoStringWrapperBody.indexOf("godot_String_destroy(&r);", retDestroyIndex);
+        var argDestroyIndex = echoStringWrapperBody.indexOf("godot_String_destroy(&arg0);", returnDestroyIndex);
+        assertTrue(copyIndex >= 0, echoStringWrapperBody);
+        assertTrue(retDestroyIndex > copyIndex, echoStringWrapperBody);
+        assertTrue(returnDestroyIndex > retDestroyIndex, echoStringWrapperBody);
+        assertTrue(argDestroyIndex > returnDestroyIndex, echoStringWrapperBody);
+    }
+
+    @Test
+    public void generatesCallFuncCleanupWithoutDestroyingObjectsOrPrimitives() throws Exception {
+        var workerClass = new LirClassDef("CallWrapperCleanupNegativeWorker", "Node");
+
+        var echoNode = new LirFunctionDef("echo_node");
+        echoNode.setReturnType(new GdObjectType("Node"));
+        echoNode.addParameter(new LirParameterDef("self", new GdObjectType("CallWrapperCleanupNegativeWorker"), null, echoNode));
+        echoNode.addParameter(new LirParameterDef("value", new GdObjectType("Node"), null, echoNode));
+        var echoNodeEntry = new LirBasicBlock("entry");
+        echoNodeEntry.setTerminator(new ReturnInsn("value"));
+        echoNode.addBasicBlock(echoNodeEntry);
+        echoNode.setEntryBlockId("entry");
+        workerClass.addFunction(echoNode);
+
+        var echoInt = new LirFunctionDef("echo_int");
+        echoInt.setReturnType(GdIntType.INT);
+        echoInt.addParameter(new LirParameterDef("self", new GdObjectType("CallWrapperCleanupNegativeWorker"), null, echoInt));
+        echoInt.addParameter(new LirParameterDef("value", GdIntType.INT, null, echoInt));
+        var echoIntEntry = new LirBasicBlock("entry");
+        echoIntEntry.setTerminator(new ReturnInsn("value"));
+        echoInt.addBasicBlock(echoIntEntry);
+        echoInt.setEntryBlockId("entry");
+        workerClass.addFunction(echoInt);
+
+        var module = new LirModule("call_wrapper_cleanup_negative_module", List.of(workerClass));
+        var hCode = generateHeader(module);
+        var echoNodeWrapperBody = resolveCallWrapperBody(hCode, "_1_arg_Node_ret_Node");
+        var echoIntWrapperBody = resolveCallWrapperBody(hCode, "_1_arg_int_ret_int");
+
+        assertEquals(2, countOccurrences(hCode, "godot_Variant_destroy(&ret);"), hCode);
+        assertTrue(echoNodeWrapperBody.contains("godot_Variant_destroy(&ret);"), echoNodeWrapperBody);
+        assertTrue(echoIntWrapperBody.contains("godot_Variant_destroy(&ret);"), echoIntWrapperBody);
+        assertFalse(echoNodeWrapperBody.contains("godot_object_destroy(&arg0);"), echoNodeWrapperBody);
+        assertFalse(echoNodeWrapperBody.contains("godot_object_destroy(&r);"), echoNodeWrapperBody);
+        assertFalse(echoIntWrapperBody.contains("godot_int_destroy(&arg0);"), echoIntWrapperBody);
+        assertFalse(echoIntWrapperBody.contains("godot_int_destroy(&r);"), echoIntWrapperBody);
     }
 
     @Test
@@ -327,13 +459,10 @@ public class CCodegenTest {
         assertTrue(initFunc.hasBasicBlock("entry"));
         assertEquals("__prepare__", initFunc.getEntryBlockId());
         assertTrue(initFunc.hasBasicBlock("__prepare__"));
-        assertTrue(
-                cCode.contains("static inline void GDWorkerNode_class_apply_property_init_ready_value(GDWorkerNode* self)"),
-                cCode
-        );
-        assertTrue(cCode.contains("GDWorkerNode_class_apply_property_init_ready_value(self);"), cCode);
+        var constructorBody = resolveClassConstructorBody(cCode, "GDWorkerNode");
         var applyHelperBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_value");
-        assertTrue(applyHelperBody.contains("self->ready_value = GDWorkerNode__field_init_ready_value(self);"), applyHelperBody);
+        assertContainsAll(constructorBody, "GDWorkerNode_class_apply_property_init_ready_value(self);");
+        assertContainsAll(applyHelperBody, "self->ready_value =", "GDWorkerNode__field_init_ready_value(self)");
         assertFalse(applyHelperBody.contains("_field_setter_"), applyHelperBody);
         assertFalse(cCode.contains("GD_STATIC_SN(u8\"_field_init_ready_value\")"), cCode);
     }
@@ -366,13 +495,15 @@ public class CCodegenTest {
         codegen.prepare(ctx, module);
         var files = codegen.generate();
         var cCode = new String(files.getFirst().contentWriter());
+        var constructorBody = resolveClassConstructorBody(cCode, "GDWorkerNode");
+        var initHelperBody = resolveFunctionBodyByPrefix(cCode, "godot_int GDWorkerNode__field_init_ready_value");
 
         assertTrue(cCode.contains("godot_int GDWorkerNode__field_init_ready_value("), cCode);
         assertTrue(cCode.contains("GDWorkerNode* $self"), cCode);
-        assertTrue(cCode.contains("$0 = 7;"), cCode);
-        assertTrue(cCode.contains("GDWorkerNode_class_apply_property_init_ready_value(self);"), cCode);
+        assertContainsAll(initHelperBody, "$0 = 7;");
         var applyHelperBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_value");
-        assertTrue(applyHelperBody.contains("self->ready_value = GDWorkerNode__field_init_ready_value(self);"), applyHelperBody);
+        assertContainsAll(constructorBody, "GDWorkerNode_class_apply_property_init_ready_value(self);");
+        assertContainsAll(applyHelperBody, "self->ready_value =", "GDWorkerNode__field_init_ready_value(self)");
         assertFalse(applyHelperBody.contains("_field_setter_"), applyHelperBody);
     }
 
@@ -395,13 +526,16 @@ public class CCodegenTest {
         var cCode = new String(files.getFirst().contentWriter());
         var constructorBody = resolveClassConstructorBody(cCode, "GDWorkerNode");
 
-        assertTrue(constructorBody.contains("GDWorkerNode_class_apply_property_init_ready_value(self);"), constructorBody);
-        assertTrue(constructorBody.contains("GDWorkerNode_class_apply_property_init_ready_node(self);"), constructorBody);
+        assertContainsAll(
+                constructorBody,
+                "GDWorkerNode_class_apply_property_init_ready_value(self);",
+                "GDWorkerNode_class_apply_property_init_ready_node(self);"
+        );
 
         var intApplyBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_value");
         var objectApplyBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_node");
-        assertTrue(intApplyBody.contains("self->ready_value = GDWorkerNode__field_init_ready_value(self);"), intApplyBody);
-        assertTrue(objectApplyBody.contains("self->ready_node = GDWorkerNode__field_init_ready_node(self);"), objectApplyBody);
+        assertContainsAll(intApplyBody, "self->ready_value =", "GDWorkerNode__field_init_ready_value(self)");
+        assertContainsAll(objectApplyBody, "self->ready_node =", "GDWorkerNode__field_init_ready_node(self)");
         assertFalse(intApplyBody.contains("_field_setter_"), intApplyBody);
         assertFalse(objectApplyBody.contains("_field_setter_"), objectApplyBody);
         assertFalse(constructorBody.contains("self->ready_value ="), constructorBody);
@@ -426,10 +560,7 @@ public class CCodegenTest {
         var cCode = new String(files.getFirst().contentWriter());
 
         var applyHelperBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_ref");
-        assertTrue(
-                applyHelperBody.contains("self->ready_ref = GDWorkerNode__field_init_ready_ref(self);"),
-                applyHelperBody
-        );
+        assertContainsAll(applyHelperBody, "self->ready_ref =", "GDWorkerNode__field_init_ready_ref(self)");
         assertFalse(applyHelperBody.contains("own_object(self->ready_ref);"), applyHelperBody);
         assertFalse(applyHelperBody.contains("try_own_object(self->ready_ref);"), applyHelperBody);
         assertFalse(applyHelperBody.contains("release_object("), applyHelperBody);
@@ -487,7 +618,7 @@ public class CCodegenTest {
         var applyHelperBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_value");
         var constructorBody = resolveClassConstructorBody(cCode, "GDWorkerNode");
 
-        assertTrue(applyHelperBody.contains("self->ready_value = GDWorkerNode__field_init_ready_value(self);"), applyHelperBody);
+        assertContainsAll(applyHelperBody, "self->ready_value =", "GDWorkerNode__field_init_ready_value(self)");
         assertFalse(applyHelperBody.contains("custom_ready_value_setter"), applyHelperBody);
         assertFalse(constructorBody.contains("custom_ready_value_setter"), constructorBody);
         assertTrue(cCode.contains("GD_STATIC_SN(u8\"custom_ready_value_setter\")"), cCode);
@@ -720,21 +851,32 @@ public class CCodegenTest {
 
         var cCode = new String(files.get(0).contentWriter());
         var hCode = new String(files.get(1).contentWriter());
+        var childObjectPtrHelperBody = resolveFunctionBodyByPrefix(
+                cCode,
+                "static inline GDExtensionObjectPtr GDChildNode_object_ptr"
+        );
+        var childCreateInstanceBody = resolveCreateInstanceBody(cCode, "GDChildNode");
+        var childConstructorBody = resolveClassConstructorBody(cCode, "GDChildNode");
+        var childDestructorBody = resolveClassDestructorBody(cCode, "GDChildNode");
 
-        assertTrue(hCode.contains("struct GDParentNode {"));
-        assertTrue(hCode.contains("GDExtensionObjectPtr _object;"));
-        assertTrue(hCode.contains("struct GDChildNode {"));
-        assertTrue(hCode.contains("GDParentNode _super;"));
-        assertTrue(hCode.contains("static inline GDExtensionObjectPtr GDParentNode_object_ptr(GDParentNode* self);"));
-        assertTrue(hCode.contains("static inline GDExtensionObjectPtr GDChildNode_object_ptr(GDChildNode* self);"));
-        assertTrue(hCode.contains("static inline void GDChildNode_set_object_ptr(GDChildNode* self, GDExtensionObjectPtr obj);"));
-
-        assertTrue(cCode.contains("static inline GDExtensionObjectPtr GDChildNode_object_ptr(GDChildNode* self)"));
-        assertTrue(cCode.contains("return GDParentNode_object_ptr(&self->_super);"));
-        assertTrue(cCode.contains("GDChildNode_set_object_ptr(self, obj);"));
-        assertTrue(cCode.contains("GDParentNode_class_constructor(&self->_super);"));
-        assertTrue(cCode.contains("try_release_object(GDParentNode_object_ptr(self->peer));"));
-        assertTrue(cCode.contains("GDParentNode_class_destructor(&self->_super);"));
+        assertContainsAll(
+                hCode,
+                "struct GDParentNode {",
+                "GDExtensionObjectPtr _object;",
+                "struct GDChildNode {",
+                "GDParentNode _super;",
+                "GDParentNode_object_ptr(",
+                "GDChildNode_object_ptr(",
+                "GDChildNode_set_object_ptr("
+        );
+        assertContainsAll(childObjectPtrHelperBody, "return GDParentNode_object_ptr(&self->_super);");
+        assertContainsAll(
+                childCreateInstanceBody,
+                "GDChildNode_set_object_ptr(self, obj);"
+        );
+        assertContainsAll(childConstructorBody, "GDParentNode_class_constructor(&self->_super);");
+        assertContainsAll(childDestructorBody, "GDParentNode_class_destructor(&self->_super);");
+        assertContainsAll(cCode, "try_release_object(GDParentNode_object_ptr(self->peer));");
 
         assertEquals("Node", resolveConstructTarget(cCode, "GDParentNode"));
         assertEquals("Node", resolveConstructTarget(cCode, "GDChildNode"));
@@ -853,33 +995,87 @@ public class CCodegenTest {
     }
 
     private static String resolveCreateInstanceBody(String cCode, String className) {
-        var functionPrefix = "GDExtensionObjectPtr\\s+" + Pattern.quote(className) + "_class_create_instance";
-        var pattern = Pattern.compile(functionPrefix + "\\([^)]*\\)\\s*\\{(.*?)return obj;\\s*}", Pattern.DOTALL);
-        var matcher = pattern.matcher(cCode);
-        assertTrue(matcher.find(), "Missing create_instance body for class " + className);
-        return matcher.group(1);
+        return resolveFunctionBodyByPrefix(cCode, "GDExtensionObjectPtr " + className + "_class_create_instance");
     }
 
     private static String resolveClassConstructorBody(String cCode, String className) {
-        var functionPrefix = "void\\s+" + Pattern.quote(className) + "_class_constructor";
-        var pattern = Pattern.compile(functionPrefix + "\\([^)]*\\)\\s*\\{(.*?)\\n}", Pattern.DOTALL);
-        var matcher = pattern.matcher(cCode);
-        assertTrue(matcher.find(), "Missing class_constructor body for class " + className);
-        return matcher.group(1);
+        return resolveFunctionBodyByPrefix(cCode, "void " + className + "_class_constructor");
+    }
+
+    private static String resolveClassDestructorBody(String cCode, String className) {
+        return resolveFunctionBodyByPrefix(cCode, "void " + className + "_class_destructor");
     }
 
     private static String resolvePropertyInitApplyHelperBody(String cCode, String className, String propertyName) {
-        var functionPrefix = "static inline void\\s+"
-                + Pattern.quote(className)
-                + "_class_apply_property_init_"
-                + Pattern.quote(propertyName);
-        var pattern = Pattern.compile(functionPrefix + "\\([^)]*\\)\\s*\\{(.*?)\\n}", Pattern.DOTALL);
-        var matcher = pattern.matcher(cCode);
-        assertTrue(
-                matcher.find(),
-                "Missing property-init apply helper for " + className + "." + propertyName
+        return resolveFunctionBodyByPrefix(
+                cCode,
+                "static inline void " + className + "_class_apply_property_init_" + propertyName
         );
-        return matcher.group(1);
+    }
+
+    private static String resolveCallWrapperBody(String hCode, String bindName) {
+        return resolveFunctionBodyByPrefix(hCode, "static void call" + bindName);
+    }
+
+    private static String resolveMethodBindHelperBody(String hCode, String bindName) {
+        return resolveFunctionBodyByPrefix(hCode, "static void gdcc_bind_method" + bindName);
+    }
+
+    private static String resolvePropertyBindCall(String cCode, String propertyName) {
+        var propertyAnchor = "GD_STATIC_SN(u8\"" + propertyName + "\")";
+        var propertyIndex = cCode.indexOf(propertyAnchor);
+        assertTrue(propertyIndex >= 0, "Missing property binding anchor for " + propertyName);
+        var callStart = cCode.lastIndexOf("gdcc_bind_property_full(", propertyIndex);
+        assertTrue(callStart >= 0, "Missing full property binding call for " + propertyName);
+        var callEnd = cCode.indexOf(");", propertyIndex);
+        assertTrue(callEnd >= 0, "Missing end of property binding call for " + propertyName);
+        return cCode.substring(callStart, callEnd + 2);
+    }
+
+    private static String resolveFunctionBodyByPrefix(String code, String signaturePrefix) {
+        var signatureIndex = code.indexOf(signaturePrefix);
+        assertTrue(signatureIndex >= 0, "Missing function prefix: " + signaturePrefix);
+        var openBraceIndex = code.indexOf('{', signatureIndex);
+        assertTrue(openBraceIndex >= 0, "Missing opening brace for " + signaturePrefix);
+        var closeBraceIndex = findMatchingBrace(code, openBraceIndex);
+        return code.substring(openBraceIndex + 1, closeBraceIndex);
+    }
+
+    private static int findMatchingBrace(String text, int openBraceIndex) {
+        var depth = 0;
+        for (var i = openBraceIndex; i < text.length(); i++) {
+            var ch = text.charAt(i);
+            if (ch == '{') {
+                depth++;
+            } else if (ch == '}') {
+                depth--;
+                if (depth == 0) {
+                    return i;
+                }
+            }
+        }
+        throw new AssertionError("Missing closing brace for function body");
+    }
+
+    private static void assertContainsAll(String text, String... needles) {
+        for (var needle : needles) {
+            assertTrue(
+                    text.contains(needle),
+                    () -> "Missing fragment `" + needle + "` in:\n" + text
+            );
+        }
+    }
+
+    private static String generateHeader(LirModule module) throws Exception {
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        return new String(files.getLast().contentWriter());
     }
 
     private static int countOccurrences(String text, String needle) {

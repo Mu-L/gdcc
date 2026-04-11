@@ -196,6 +196,24 @@ Interaction with `__prepare__` / `__finally__`:
 - Continue emitting assignment/call code through Builder APIs.
 - Keep generators focused on semantic validation; do not hand-write object lifecycle code.
 
+### 4.4 Generated call_func Wrappers
+
+- Generated GDExtension `call_func` wrappers own a narrow class of wrapper-local values that never enter the ordinary Builder slot model:
+  - argument locals unpacked from `Variant`
+  - local `ret` used to publish the outward `Variant` return
+  - local non-`void` return carrier `r`
+- Cleanup rule for those locals is value-wrapper specific:
+  - destroyable non-object wrappers must be explicitly destroyed before the wrapper returns
+  - object pointers and primitives must not go through this `destroy(&slot)` path
+- Required success-path order:
+  1. publish `r_return`
+  2. destroy local `ret`
+  3. destroy destroyable non-object `r`
+  4. destroy wrapper-owned argument locals in reverse order
+- This rule complements, but does not replace, the function-body ownership model in Section 3:
+  - Builder-managed slots still follow the unified slot-write/return/discard rules
+  - wrapper locals stay a template-owned responsibility boundary
+
 ## 5. Compatibility and Migration Constraints
 
 - LIR lifecycle instructions (`destruct`, `try_own_object`, `try_release_object`) now support an optional provenance token.

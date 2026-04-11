@@ -499,6 +499,18 @@ public final class CGenHelper {
         }
     }
 
+    /// Render wrapper-local cleanup for generated `call_func` glue code.
+    ///
+    /// This is intentionally narrower than ordinary backend destruct semantics:
+    /// - only destroyable non-object wrappers materialize an addressable local slot that the wrapper must destroy
+    /// - object locals stay as plain pointers here, so they must not be blanket destroy/release'd at wrapper exit
+    public @NotNull String renderCallWrapperDestroyStmt(@NotNull GdType type, @NotNull String varName) {
+        if (type instanceof GdObjectType || !type.isDestroyable()) {
+            return "";
+        }
+        return renderDestroyFunctionName(type) + "(&" + varName + ");";
+    }
+
     /// Renders the outward-facing metadata literals for a bound slot.
     ///
     /// The current Variant ABI patch only customizes the outward type/usage contract:

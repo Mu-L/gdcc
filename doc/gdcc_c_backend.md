@@ -136,6 +136,26 @@
   - it may reuse the touchpoints above
   - but it requires independent metadata rules, tests, and risk analysis
 
+### call_func Wrapper Local Cleanup Contract
+
+- Generated `call_func` wrappers own the temporary non-object wrapper locals they materialize themselves:
+  - parameter locals created by `godot_new_<Type>_with_Variant(...)`
+  - the staged `godot_Variant ret` used to publish non-`void` returns
+  - the non-`void` local `r` when the returned type is a destroyable non-object wrapper
+- Those locals are outside ordinary `CBodyBuilder` slot lifecycle:
+  - they live only inside the generated wrapper glue
+  - the wrapper must destroy them explicitly before returning to Godot
+- Cleanup order is fixed:
+  1. publish `r_return` with `godot_variant_new_copy(...)`
+  2. destroy local `ret`
+  3. destroy local `r` when its source type is a destroyable non-object wrapper
+  4. destroy wrapper-owned argument locals in reverse order
+- Do not apply this cleanup contract to object pointers or primitives:
+  - object args/returns are plain pointer locals here, not value wrappers with `destroy(&slot)` semantics
+  - primitive args/returns never need wrapper cleanup
+- Backend touchpoint:
+  - `CGenHelper.renderCallWrapperDestroyStmt(...)` is the single type-driven helper that decides whether an argument/return local needs this wrapper cleanup
+
 ### Receiver Value Terminology
 
 - **Receiver Value** means the final C argument expression used as the receiver (`self/this`) when emitting a method call or property getter/setter call.

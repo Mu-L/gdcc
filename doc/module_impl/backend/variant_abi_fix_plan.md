@@ -586,6 +586,176 @@ generated `call_func` wrapper 必须满足：
 
 ---
 
+### Phase G：修复 `call_func` wrapper 的局部值生命周期泄漏
+
+**G1. 在 `CGenHelper` 收口 wrapper cleanup helper**
+
+- 修改：
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
+- 新增一个专供 `call_func` wrapper 使用的 helper：
+  - `renderCallWrapperDestroyStmt(GdType type, String varName)`
+- 该 helper 的职责不是复用通用 `destruct` 语义，而是回答：
+  - “wrapper 自己物化出来的这个局部值，在 wrapper 退出前是否需要显式销毁，以及应发射哪条语句”
+- 规则必须固定为：
+  - destroyable 非对象 value wrapper：
+    - 发射 `godot_<Type>_destroy(&varName);`
+  - primitive：
+    - 不发射 cleanup
+  - object：
+    - 不发射 cleanup
+- 必须明确不要直接把 `type.isDestroyable()` 当成唯一 gate：
+  - 对象类型虽然在 backend 其他路径上可能带有生命周期处理，但 `call_func` wrapper 这里拿到的是对象指针，不是 `String` / `Array` / `Variant` 这类需要 `destroy(&slot)` 的本地 value wrapper
+  - object 返回值在 pack 成 `Variant` 时由 `Variant` 接管，不允许在 wrapper 尾部再对对象 `r` 做 blanket destroy/release
+- helper 建议直接返回完整语句字符串，而不是再拆成多个散落方法：
+  - 当前调用方只有 `entry.h.ftl`
+  - 这能避免为一次性模板清理逻辑再引入新的抽象层
+
+状态（2026-04-11）：
+
+- 已完成。
+- `CGenHelper` 已新增 `renderCallWrapperDestroyStmt(GdType, String)`，专门回答 generated `call_func` wrapper 的局部值 cleanup。
+- helper 明确先排除 object，再按 destroyable 非对象 wrapper 生成 `godot_<Type>_destroy(&slot);`，因此不会把对象指针误当作 value wrapper 发射 blanket destroy。
+- 对 primitive / vector / RID 等非 destroyable 值，helper 稳定返回空语句；相关单元测试已固定 `String` / `Variant` 正向与 `Object` / `int` 负向分派。
+
+验收：
+
+- helper 对同一种 `GdType` 的输出稳定且只依赖类型，不依赖具体绑定来源
+- `String` / `Array` / `Dictionary` / `Variant` / `Packed*Array` 等返回 destroy 语句
+- primitive / object 返回空语句
+- 不引入新的公共接口或额外 metadata 对象
+
+**G2. 改造 `entry.h.ftl` 的 `call_func` success path cleanup**
+
+- 修改：
+  - `src/main/c/codegen/template_451/entry.h.ftl`
+- 当前模板在 `call_func` wrapper 中会执行：
+  - 参数 type gate
+  - `..._with_Variant(...)` 解包出本地 `argN`
+  - 调用实际函数得到 `r`
+  - pack 出本地 `godot_Variant ret`
+  - `godot_variant_new_copy(r_return, &ret)`
+  - 然后直接返回
+- 本阶段要把 success path 改成显式 cleanup 版本，至少保证：
+  - 非 `void` 返回：
+    - 先 `godot_variant_new_copy(r_return, &ret);`
+    - 再 `godot_Variant_destroy(&ret);`
+    - 如返回类型是 destroyable 非对象，再销毁本地 `r`
+    - 最后按逆序销毁需要 cleanup 的 `argN`
+  - `void` 返回：
+    - 调用函数后直接按逆序销毁需要 cleanup 的 `argN`
+- 参数局部声明也要同步调整：
+  - 当前模板把所有 `argN` 生成为 `const`
+  - 若该 `argN` 需要在 wrapper 尾部执行 `destroy(&argN)`，则该局部不能继续保持 `const`
+- 推荐结构：
+  - 使用单一 cleanup epilogue
+  - 即使当前 fail-fast 仍主要发生在解包前，也应为未来在解包后新增 fail path 预留统一清理出口
+- cleanup 顺序必须固定：
+  - 先发布 `r_return`
+  - 再销毁 `ret`
+  - 再销毁需要显式清理的本地 `r`
+  - 再逆序销毁参数局部值
+- 不允许对以下路径误发 cleanup：
+  - object 参数局部
+  - object 返回局部 `r`
+  - primitive 参数或 primitive 返回局部
+
+状态（2026-04-11）：
+
+- 已完成。
+- `entry.h.ftl` 的 `call_func` wrapper 现在会把需要 cleanup 的参数局部改为非 `const`，并在 success path 尾部固定执行：
+  - `godot_variant_new_copy(r_return, &ret);`
+  - `godot_Variant_destroy(&ret);`
+  - destroyable 非对象返回局部 `r` cleanup
+  - destroyable 非对象参数局部逆序 cleanup
+- object / primitive 路径仍不会发射错误 destroy；`void` 返回路径也会继续执行参数 cleanup。
+
+验收：
+
+- 所有非 `void` `call_func` wrapper 都会显式销毁本地 `ret`
+- destroyable 非对象参数在 wrapper 尾部逆序 cleanup
+- destroyable 非对象返回值 `r` 在 pack/copy 后 cleanup
+- `void` 路径不会遗漏参数 cleanup
+- object / primitive 路径不出现错误 cleanup
+
+**G3. 补齐 codegen 回归测试与负向约束**
+
+- 修改/新增测试：
+  - `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenTest.java`
+  - 如现有测试类过重，可新增专门的 backend codegen test，但应保持结构锚点断言为主
+- 必须补的正向锚点：
+  - `String -> String`
+    - 断言生成：
+      - `godot_String_destroy(&arg0);`
+      - `godot_String_destroy(&r);`
+      - `godot_Variant_destroy(&ret);`
+  - `Array -> bool`
+    - 断言生成：
+      - `godot_Array_destroy(&arg0);`
+      - `godot_Variant_destroy(&ret);`
+    - 且没有对 `godot_bool r` 发 cleanup
+  - `Variant -> Variant`
+    - 断言生成：
+      - `godot_Variant_destroy(&arg0);`
+      - `godot_Variant_destroy(&r);`
+      - `godot_Variant_destroy(&ret);`
+  - `void` + destroyable 参数
+    - 断言即使没有返回值，也会在 wrapper 尾部销毁 `argN`
+- 必须补的负向锚点：
+  - object 参数 / object 返回：
+    - 不得生成对对象 `argN` / 对象 `r` 的错误 destroy
+    - 但仍要保留对 `ret` 的 `godot_Variant_destroy(&ret);`
+  - primitive 参数 / primitive 返回：
+    - 不得生成无意义 cleanup
+- 断言应直接锚定 generated `entry.h` 结构，而不是依赖运行时泄漏检测：
+  - 这类问题本质是模板资源管理 contract 漏发射，codegen 级回归测试最稳定
+
+状态（2026-04-11）：
+
+- 已完成。
+- `CGenHelperTest` 已新增 helper 级测试，固定 `renderCallWrapperDestroyStmt(...)` 对 `String` / `Variant` / `Object` / `int` 的输出 contract。
+- `CCodegenTest` 已新增 codegen 级回归：
+  - `String -> String`
+  - `Array -> bool`
+  - `Variant -> Variant`
+  - `void + String`
+  - `Node -> Node`
+  - `int -> int`
+- 测试既覆盖正向 cleanup 发射，也覆盖 object / primitive 不得误 destroy 的负向约束，并固定了 `copy -> destroy ret -> destroy r -> destroy args` 的顺序锚点。
+
+验收：
+
+- 正反两类场景都能稳定识别 cleanup 是否正确发射
+- 测试明确区分 “destroyable 非对象 wrapper” 与 “object / primitive” 两条路径
+- 未来有人只补 `ret`、忘记补 `argN` / `r` 时会被测试直接拦住
+
+**G4. 同步 backend 文档中的 wrapper 生命周期约定**
+
+- 修改：
+  - `doc/gdcc_c_backend.md`
+  - 如有必要：
+    - `doc/gdcc_ownership_lifecycle_spec.md`
+- 需要明确记录：
+  - `call_func` wrapper 自己通过 `..._with_Variant(...)` 物化出来的本地非对象 wrapper 值，属于 wrapper 内部责任边界
+  - wrapper 在返回前必须显式销毁这些局部值
+  - object 参数/返回值不属于这套 `destroy(&slot)` 规则
+  - pack 出来的本地 `ret` 在 `godot_variant_new_copy(...)` 后必须销毁
+- 这条文档约定应与 `renderCallWrapperDestroyStmt(...)` 同步：
+  - helper 负责把 contract 固化成生成逻辑
+  - 文档负责防止未来在模板层再次散落复制逻辑
+
+状态（2026-04-11）：
+
+- 已完成。
+- `doc/gdcc_c_backend.md` 已补充 `call_func` wrapper local cleanup contract，明确 wrapper 自己物化的非对象 wrapper 值必须由 wrapper 收尾。
+- `doc/gdcc_ownership_lifecycle_spec.md` 已补充 generated `call_func` wrapper 的局部生命周期边界，明确它与 `CBodyBuilder` 管理的函数体 slot 生命周期是两套互补 contract。
+
+验收：
+
+- 文档明确区分 wrapper 局部 cleanup 与普通函数体 slot lifecycle
+- 后续工程能从文档直接判断“哪些值必须由 wrapper 收尾，哪些不能误释放”
+
+---
+
 ## 6. 最终验收矩阵
 
 实现完成后，至少要满足以下最终验收：
@@ -593,6 +763,8 @@ generated `call_func` wrapper 必须满足：
 1. generated `entry.h` 中：
    - `Variant` 参数无 `!= GDEXTENSION_VARIANT_TYPE_NIL` gate
    - 非 `Variant` 参数仍有精确 type gate
+   - `call_func` wrapper 会显式销毁本地 `ret`
+   - destroyable 非对象 `argN` / `r` 会按 contract cleanup
 2. generated metadata 中：
    - `Variant` 参数带 `PROPERTY_USAGE_NIL_IS_VARIANT`
    - `Variant` return 带 `PROPERTY_USAGE_NIL_IS_VARIANT`
@@ -618,7 +790,7 @@ rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps
 如果需要补 backend codegen 专项测试，再增加对应测试类，例如：
 
 ```powershell
-rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests FrontendLoweringToCProjectBuilderIntegrationTest,CConstructInsnGenEngineTest
+rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests CGenHelperTest,CCodegenTest,FrontendLoweringToCProjectBuilderIntegrationTest
 ```
 
 若后续把 `Variant` ABI codegen 断言拆成独立测试类，应以该独立测试类替换上面的重型集成测试组合。
@@ -629,13 +801,14 @@ rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps
 
 1. 最容易出现的半修复是“只补 `PROPERTY_USAGE_NIL_IS_VARIANT`，但忘了去掉 `call_func` 对 `NIL` 的精确 gate”。这种情况下 direct metadata surface 看起来更像 `Variant`，但 `target.call(...)` 仍然会在进入 native body 前失败。
 2. 另一种半修复是“只改 wrapper，不改 return/property metadata”。这样动态参数调用会恢复，但 direct method call return / direct property surface 仍然会偏离 Godot 语义。
-3. 不要为了修 metadata fidelity 把 hint / usage / class_name 元数据字段一路灌进 frontend / LIR。那会把 backend ABI 问题错误上移，并显著增加后续 typed container patch 的维护成本。
-4. typed dictionary 的修复不能顺手混入本次 patch。否则一旦 runtime 崩溃或行为异常，很难区分问题是出在：
+3. 还有一种容易漏掉的后续回归是“只修 `Variant` gate，但忘了 `call_func` wrapper 自己解包/pack 出来的局部 wrapper 值 cleanup”。这样 outward ABI 表面上已经正确，但动态调用路径会持续泄漏 `ret`、destroyable 参数局部值和 destroyable 返回局部值。
+4. 不要为了修 metadata fidelity 把 hint / usage / class_name 元数据字段一路灌进 frontend / LIR。那会把 backend ABI 问题错误上移，并显著增加后续 typed container patch 的维护成本。
+5. typed dictionary 的修复不能顺手混入本次 patch。否则一旦 runtime 崩溃或行为异常，很难区分问题是出在：
    - Variant wrapper gate
    - typed dictionary metadata
    - typed dictionary reconstruction
    - nested writable-route 继续链
-5. future patch 若要修 typed array / typed dictionary outward metadata，必须沿用本次形成的 helper 触点，而不是在模板里再次散落硬编码分支。
+6. future patch 若要修 typed array / typed dictionary outward metadata，必须沿用本次形成的 helper 触点，而不是在模板里再次散落硬编码分支。
 
 ---
 
@@ -644,6 +817,7 @@ rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps
 当且仅当以下条件全部满足时，本计划可视为完成：
 
 - `Variant` 参数 / 返回值 / 属性三条 outward surface 都已修复
+- `call_func` wrapper 对本地 `Variant`/destroyable wrapper 值的 cleanup contract 已落实并有回归测试
 - 代码生成与 runtime integration 都有稳定回归测试
 - backend 文档与 ABI 调查文档已同步
 - typed dictionary 被明确保留为后续独立修复项，而非遗留在“顺手以后再看”的模糊状态
