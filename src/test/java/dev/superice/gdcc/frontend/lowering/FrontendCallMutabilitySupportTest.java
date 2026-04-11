@@ -111,7 +111,7 @@ class FrontendCallMutabilitySupportTest {
                 () -> assertFalse(FrontendCallMutabilitySupport.mayMutateReceiver(engineConstCall)),
                 () -> assertTrue(FrontendCallMutabilitySupport.mayMutateReceiver(engineMutatingCall)),
                 () -> assertTrue(FrontendCallMutabilitySupport.mayMutateReceiver(gdccCall)),
-                () -> assertFalse(FrontendCallMutabilitySupport.mayMutateReceiver(dynamicCall)),
+                () -> assertTrue(FrontendCallMutabilitySupport.mayMutateReceiver(dynamicCall)),
                 () -> assertFalse(FrontendCallMutabilitySupport.mayMutateReceiver(staticCall))
         );
     }

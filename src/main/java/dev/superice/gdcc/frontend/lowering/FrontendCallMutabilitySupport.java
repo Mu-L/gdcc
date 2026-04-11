@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.lowering;
 
 import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
 import dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus;
+import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
@@ -18,12 +19,21 @@ import java.util.Objects;
 /// - gdextension metadata is trusted when it explicitly marks a method `const`
 /// - every other declaration source is treated as may-mutate so frontend does not silently skip
 ///   receiver writeback for GDCC/user-defined methods or future metadata carriers without constness
+/// - dynamic instance routes also count as may-mutate because Step 7 has no runtime constness fact;
+///   frontend must therefore preserve direct-slot alias/writeback eligibility instead of letting a
+///   potentially mutating dynamic call tunnel through a temp snapshot
 public final class FrontendCallMutabilitySupport {
     private FrontendCallMutabilitySupport() {
     }
 
     public static boolean mayMutateReceiver(@NotNull FrontendResolvedCall resolvedCall) {
         var actualResolvedCall = Objects.requireNonNull(resolvedCall, "resolvedCall must not be null");
+        if (actualResolvedCall.receiverKind() != FrontendReceiverKind.INSTANCE) {
+            return false;
+        }
+        if (actualResolvedCall.status() == FrontendCallResolutionStatus.DYNAMIC) {
+            return actualResolvedCall.callKind() == FrontendCallResolutionKind.DYNAMIC_FALLBACK;
+        }
         if (actualResolvedCall.status() != FrontendCallResolutionStatus.RESOLVED
                 || actualResolvedCall.callKind() != FrontendCallResolutionKind.INSTANCE_METHOD) {
             return false;

@@ -102,7 +102,11 @@ For static typing:
 - frontend writable-route lowering should first use the static shortcut:
   - statically known shared/reference families skip the current writeback layer directly
   - statically known value-semantic families apply the current layer directly
-- dynamic/`Variant` receiver routes are the only remaining runtime-open branch, so they must defer to a runtime helper such as `gdcc_variant_requires_writeback(...)`
+- dynamic/`Variant` receiver routes are the only remaining runtime-open branch, so they must defer to the runtime helper `gdcc_variant_requires_writeback(...)`
+- the helper contract is currently frozen as:
+  - returns `false` for `NIL`, `BOOL`, `INT`, `FLOAT`, `ARRAY`, `DICTIONARY`, `OBJECT`
+  - returns `true` for `String`, `StringName`, `NodePath`, `Vector*`, `Rect*`, `Plane`, `Quaternion`, `AABB`, `Basis`, `Transform*`, `Projection`, `Color`, `RID`, `Callable`, `Signal`, `Packed*Array`
+  - returns `true` by default for unlisted future `Variant` kinds, so a newly introduced value-semantic carrier cannot silently tunnel through runtime-gated writeback as a false negative
 
 If this matrix changes, the following fact sources must be updated together:
 

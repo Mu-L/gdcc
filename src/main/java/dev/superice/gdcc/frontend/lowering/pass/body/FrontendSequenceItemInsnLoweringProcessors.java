@@ -20,6 +20,7 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.TypeTestItem;
 import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.lir.LirBasicBlock;
+import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.insn.AssignInsn;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.CallGlobalInsn;
@@ -30,6 +31,7 @@ import dev.superice.gdcc.lir.insn.ConstructObjectInsn;
 import dev.superice.gdcc.lir.insn.LineNumberInsn;
 import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
 import dev.superice.gdcc.lir.insn.LoadStaticInsn;
+import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
@@ -318,16 +320,13 @@ final class FrontendSequenceItemInsnLoweringProcessors {
     /// or guess between global/static/instance call families once compile-ready facts exist. It
     /// only materializes the already-approved argument-side `Variant` boundaries required by the
     /// selected callable signature for exact routes. Runtime-open `DYNAMIC_FALLBACK` instance calls
-    /// reuse the ordinary `CallMethodInsn` surface; this processor must not bake in a second
-    /// contract that the receiver is always a direct pass-through slot. If CFG later publishes one
-    /// frozen writable receiver route for a mutating call, that whole route must be consumed around
-    /// the same `CallMethodInsn` rather than split into ad-hoc step items here. Exact `RESOLVED`
-    /// instance calls already use that route to drive post-call reverse commit when the declaration
-    /// may mutate the receiver; dynamic dispatch stays on the backend route for now, and later typed
-    /// consumers of the published `Variant` result still use the ordinary frontend boundary helper.
-    /// The processor therefore returns the currently-active continuation block instead of assuming
-    /// every call site stays in the original lexical block: Step 7 runtime-gated receiver writeback
-    /// will need to splice branches and continue later sequence items on the returned block.
+    /// still reuse the ordinary `CallMethodInsn` surface, but Step 7 now lets the receiver side
+    /// attach conservative runtime-gated reverse commit when a writable payload is published. The
+    /// processor must therefore treat receiver writeback as one parallel contract around the same
+    /// call instruction instead of re-splitting the receiver chain into ad-hoc step items here.
+    /// The returned block is the active continuation block after any post-call writeback, because a
+    /// dynamic receiver gate may splice synthetic `apply/skip/continue` blocks and later sequence
+    /// items must keep lowering into that returned continuation.
     private static final class FrontendCallInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<CallItem, Void> {
         @Override
@@ -363,7 +362,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedCall resolvedCall,
                 @NotNull String resultSlotId
         ) {
-            var mutatingReceiverRoute = resolvedMutatingReceiverRouteOrNull(session, node, resolvedCall);
+            var mutatingReceiverRoute = mutatingReceiverRouteOrNull(session, node, resolvedCall);
             var receiverSlotId = session.materializeCallReceiverLeaf(block, node);
             var arguments = session.materializeCallArguments(block, node, resolvedCall);
             block.appendNonTerminatorInstruction(new CallMethodInsn(
@@ -438,6 +437,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                                 + resolvedCall.receiverKind()
                 );
             }
+            var mutatingReceiverRoute = mutatingReceiverRouteOrNull(session, node, resolvedCall);
             var receiverSlotId = session.materializeCallReceiverLeaf(block, node);
             var arguments = session.materializeCallArguments(block, node, resolvedCall);
             block.appendNonTerminatorInstruction(new CallMethodInsn(
@@ -446,13 +446,11 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     receiverSlotId,
                     arguments
             ));
-            return block;
+            return continueAfterDynamicReceiverWriteback(session, block, mutatingReceiverRoute, receiverSlotId);
         }
 
         /// Returns the block that later lowering must keep appending to after post-call receiver
-        /// writeback. Exact routes still stay in-place today, but Step 7 runtime-gated dynamic
-        /// writeback will replace this with `reverseCommitWithRuntimeGate(...)` and continue on the
-        /// returned synthetic block.
+        /// writeback. Exact routes use the shared static gate and therefore stay in-place.
         private @NotNull LirBasicBlock continueAfterReceiverWriteback(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
@@ -472,11 +470,34 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             return block;
         }
 
-        /// Exact instance-call post-commit is enabled only for already-published writable receiver
-        /// routes whose declaration metadata says the receiver may mutate. Family-specific writeback
-        /// decisions stay in `FrontendWritableRouteSupport` via the shared static gate so nested
-        /// routes keep using the same per-layer carrier threading as assignment lowering.
-        private @Nullable FrontendWritableRouteSupport.FrontendWritableAccessChain resolvedMutatingReceiverRouteOrNull(
+        /// Dynamic instance calls cannot answer receiver writeback from static constness alone, so
+        /// Step 7 reuses the shared runtime gate helper and keeps lowering on the returned
+        /// continuation block. The runtime helper only answers the `Variant` branch; concrete carrier
+        /// families still keep using the shared static fast path inside writable-route support.
+        private @NotNull LirBasicBlock continueAfterDynamicReceiverWriteback(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @Nullable FrontendWritableRouteSupport.FrontendWritableAccessChain mutatingReceiverRoute,
+                @NotNull String receiverSlotId
+        ) {
+            if (mutatingReceiverRoute == null) {
+                return block;
+            }
+            return FrontendWritableRouteSupport.reverseCommitWithRuntimeGate(
+                    session,
+                    block,
+                    mutatingReceiverRoute,
+                    receiverSlotId,
+                    this::emitVariantRequiresWritebackCondition
+            );
+        }
+
+        /// Receiver writeback is enabled only for already-published writable receiver routes whose
+        /// call route is conservative may-mutate. Exact routes use declaration constness when
+        /// available; dynamic instance routes count as may-mutate because Step 7 has no runtime
+        /// constness fact and must not let a potentially mutating receiver collapse back to plain
+        /// snapshot semantics.
+        private @Nullable FrontendWritableRouteSupport.FrontendWritableAccessChain mutatingReceiverRouteOrNull(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull CallItem node,
                 @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedCall resolvedCall
@@ -486,6 +507,24 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 return null;
             }
             return session.requireWritableAccessChain(node.writableRoutePayloadOrNull());
+        }
+
+        /// Emits the Step 7 runtime-open writeback predicate for one current carrier slot.
+        /// The helper name and positive `requires_writeback` polarity are part of the frozen
+        /// frontend/backend contract and must stay aligned with `gdcc_helper.h`.
+        private @NotNull String emitVariantRequiresWritebackCondition(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @SuppressWarnings("unused") @NotNull FrontendWritableRouteSupport.FrontendWritableCommitStep step,
+                @NotNull String currentCarrierSlotId
+        ) {
+            var gateSlotId = session.allocateWritableRouteTemp("variant_requires_writeback", GdBoolType.BOOL);
+            block.appendNonTerminatorInstruction(new CallGlobalInsn(
+                    gateSlotId,
+                    "gdcc_variant_requires_writeback",
+                    List.of(new LirInstruction.VariableOperand(currentCarrierSlotId))
+            ));
+            return gateSlotId;
         }
     }
 

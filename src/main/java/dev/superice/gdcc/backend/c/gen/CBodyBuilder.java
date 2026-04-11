@@ -316,6 +316,9 @@ public final class CBodyBuilder {
     /// an existing C expression and must not be used for fresh object producers such as call/construct
     /// results. Fresh object routes must opt into `valueOfOwnedExpr(...)` explicitly so slot writes do
     /// not re-retain caller-owned results.
+    /// If the expression denotes an existing addressable storage slot, use `valueOfAddressableExpr(...)`
+    /// instead so copy-by-address paths can borrow `&expr` directly without first materializing a
+    /// shallow temp.
     public @NotNull ValueRef valueOfExpr(@NotNull String code, @NotNull GdType type) {
         return new ExprValue(code, type, resolvePtrKind(type));
     }
@@ -332,6 +335,14 @@ public final class CBodyBuilder {
     public @NotNull ValueRef valueOfOwnedExpr(@NotNull String code, @NotNull GdType type, @NotNull PtrKind ptrKind) {
         // OWNED sources are consumed by destination slots and must not be owned again.
         return new ExprValue(code, type, ptrKind, OwnershipKind.OWNED);
+    }
+
+    /// Creates a BORROWED value reference for an already-existing addressable storage expression.
+    /// This is narrower than `valueOfExpr(...)`: callers must only use it for lvalues whose address
+    /// can be taken safely (for example `self->field` backing slots). The payoff is that copy paths
+    /// can use `&expr` directly instead of shallow-copying the storage into a temp first.
+    public @NotNull ValueRef valueOfAddressableExpr(@NotNull String code, @NotNull GdType type) {
+        return new AddressableExprValue(code, type, resolvePtrKind(type));
     }
 
     /// Creates a value reference for a static StringName pointer literal.
@@ -930,12 +941,12 @@ public final class CBodyBuilder {
         // For String, StringName, Variant, Array, Dictionary, etc.
         var copyFunc = helper.renderCopyAssignFunctionName(type);
         if (!copyFunc.isEmpty()) {
-            // Need to copy: godot_new_<Type>_with_<Type>(source_ptr)
+            // BORROWED non-object reads must copy directly into the destination slot.
+            // Emitting `tmp = copy(source); slot = tmp; destroy(tmp);` is wrong because the plain
+            // `slot = tmp` step only performs a shallow struct assignment, and destroying the temp
+            // can then release the same engine-side storage that the slot now points to.
             var sourcePtr = renderValueAddress(value);
-            var temp = newTempVariable(renderSafeTempPrefix(type), type, copyFunc + "(" + sourcePtr.code() + ")");
-            var temps = new ArrayList<>(sourcePtr.temps());
-            temps.add(temp);
-            return new RenderResult(temp.name(), temps);
+            return new RenderResult(copyFunc + "(" + sourcePtr.code() + ")", sourcePtr.temps());
         }
 
         return new RenderResult(code, List.of());
@@ -999,16 +1010,27 @@ public final class CBodyBuilder {
         if (value instanceof StringNamePtrLiteralValue || value instanceof StringPtrLiteralValue || value instanceof CStringLiteralValue) {
             return new RenderResult(value.generateCode(), List.of());
         }
-        if (value instanceof VarValue varValue) {
-            var code = value.generateCode();
-            if (varValue.variable().ref()) {
-                return new RenderResult(code, List.of());
+        switch (value) {
+            case VarValue varValue -> {
+                var code = value.generateCode();
+                if (varValue.variable().ref()) {
+                    return new RenderResult(code, List.of());
+                }
+                return new RenderResult("&" + code, List.of());
             }
-            return new RenderResult("&" + code, List.of());
-        }
-        if (value instanceof ExprValue exprValue) {
-            var temp = newTempVariable(renderSafeTempPrefix(exprValue.type()), exprValue.type(), exprValue.generateCode());
-            return new RenderResult("&" + temp.name(), List.of(temp));
+            case AddressableExprValue addressableExprValue -> {
+                // Existing lvalue storage can be borrowed by address directly; avoid materializing a
+                // shallow temp from the slot before copy helpers such as `godot_new_Variant_with_Variant`.
+                return new RenderResult("&(" + addressableExprValue.generateCode() + ")", List.of());
+                // Existing lvalue storage can be borrowed by address directly; avoid materializing a
+                // shallow temp from the slot before copy helpers such as `godot_new_Variant_with_Variant`.
+            }
+            case ExprValue exprValue -> {
+                var temp = newTempVariable(renderSafeTempPrefix(exprValue.type()), exprValue.type(), exprValue.generateCode());
+                return new RenderResult("&" + temp.name(), List.of(temp));
+            }
+            default -> {
+            }
         }
         return new RenderResult("&" + value.generateCode(), List.of());
     }
@@ -1258,7 +1280,7 @@ public final class CBodyBuilder {
         OWNED
     }
 
-    public sealed interface ValueRef permits VarValue, ExprValue, StringNamePtrLiteralValue, StringPtrLiteralValue, CStringLiteralValue, TempVar {
+    public sealed interface ValueRef permits VarValue, ExprValue, AddressableExprValue, StringNamePtrLiteralValue, StringPtrLiteralValue, CStringLiteralValue, TempVar {
         @NotNull GdType type();
 
         @NotNull String generateCode();
@@ -1301,6 +1323,26 @@ public final class CBodyBuilder {
             Objects.requireNonNull(type);
             Objects.requireNonNull(ptrKind);
             Objects.requireNonNull(ownership);
+        }
+
+        @Override
+        public @NotNull GdType type() {
+            return type;
+        }
+
+        @Override
+        public @NotNull String generateCode() {
+            return code;
+        }
+    }
+
+    public record AddressableExprValue(@NotNull String code,
+                                       @NotNull GdType type,
+                                       @NotNull PtrKind ptrKind) implements ValueRef {
+        public AddressableExprValue {
+            Objects.requireNonNull(code);
+            Objects.requireNonNull(type);
+            Objects.requireNonNull(ptrKind);
         }
 
         @Override

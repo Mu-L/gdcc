@@ -24,6 +24,7 @@ import dev.superice.gdcc.type.GdFloatVectorType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdStringType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -66,8 +67,43 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("$self->value"));
+        assertTrue(body.contains("$tmp = godot_new_String_with_String(&($self->value));"), body);
+        assertFalse(body.contains("__gdcc_tmp_string_0 = $self->value;"), body);
+        assertFalse(body.contains("godot_String_destroy(&__gdcc_tmp_string_0);"), body);
         assertFalse(body.contains("MyClass__field_getter_value("));
+    }
+
+    @Test
+    @DisplayName("GDCC Variant getter should copy backing field by address instead of shallow temp materialization")
+    void gdccVariantGetterCopiesBackingFieldByAddress() {
+        var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var propertyDef = new LirPropertyDef("payload", GdVariantType.VARIANT, false, null, "_field_getter_payload", null, Map.of());
+        gdccClass.addProperty(propertyDef);
+
+        var func = new LirFunctionDef("_field_getter_payload");
+        func.setReturnType(GdVariantType.VARIANT);
+        func.addParameter(new LirParameterDef("self", new GdObjectType("MyClass"), null, func));
+        func.createAndAddVariable("tmp", GdVariantType.VARIANT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "payload", "self"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(gdccClass, func);
+        assertTrue(body.contains("$tmp = godot_new_Variant_with_Variant(&($self->payload));"), body);
+        assertFalse(body.contains("__gdcc_tmp_variant_0 = $self->payload;"), body);
+        assertFalse(body.contains("godot_Variant_destroy(&__gdcc_tmp_variant_0);"), body);
+        assertFalse(body.contains("MyClass__field_getter_payload("), body);
     }
 
     @Test

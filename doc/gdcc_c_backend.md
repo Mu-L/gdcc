@@ -42,6 +42,11 @@
     - or pass `&` of a non-`ref` variable.
   - When returning them from functions, we need to return the struct by value.
   - When assigning them to variables or using them to call functions, we have to copy them using `godot_new_<TypeName>_with_<TypeName>(TypeName* value)`.
+  - For writes into an existing managed slot, emit that copy constructor directly into the slot:
+    - `slot = godot_new_<TypeName>_with_<TypeName>(source_ptr)`
+    - do not lower it as `tmp = godot_new_<TypeName>_with_<TypeName>(source_ptr); slot = tmp; destroy(tmp);`
+      because the plain `slot = tmp` step is only a shallow struct assignment, and destroying the temp can
+      prematurely release the same engine-side state that the slot now refers to.
   - When a value of these types are no longer used, call `godot_destroy_<TypeName>(TypeName* value)` to destroy them properly.
 - For `Dictionary`, `Array` and `Variant`:
   - They are wrapper structs with shared/ref-counted internals (not raw C pointers).
@@ -53,6 +58,8 @@
     - or pass `&` of non-`ref` variable.
   - Return value convention remains struct-by-value.
   - The copy function of these actually creates a new struct pointing to the same underlying C++ object, so we still need to use `godot_new_<TypeName>_with_<TypeName>(TypeName* value)` to copy them.
+  - The same slot-write rule applies here: copy directly from the current source address into the destination slot.
+    For backing-field reads, prefer `&($self->field)` over first shallow-copying `self->field` into a temp.
   - Destroying them using `godot_destroy_<TypeName>(TypeName* value)` is also needed which will decrease the reference count, and actually destroy the underlying C++ object only when the reference count reaches zero.
 - Especially for `Variant` & `Object`gdcc_object_from_godot_object_ptr the copy, construct and destroy function name use `variant` and `object` (lowercase).
 - Some objects that extends `RefCounted` are reference counted, and they need to be retained and released properly.
@@ -83,6 +90,22 @@
 - If a new helper is defined to accept `GDExtensionObjectPtr` (for example `gdcc_cmp_object`), add its function name to `checkGlobalFuncRequireGodotRawPtr`.
 - Instruction generators should pass object arguments as regular `valueOfVar(...)` values and let `CBodyBuilder` handle pointer conversion centrally.
 - Do not duplicate per-generator object pointer normalization helpers for this case.
+
+### Backend-owned Runtime Writeback Helper
+
+- `CallGlobalInsn` now accepts a narrow set of backend-owned helpers in addition to class-registry utility functions.
+- The only frozen helper today is `gdcc_variant_requires_writeback(const godot_Variant *value) -> godot_bool`.
+- This helper is not a Godot utility function:
+  - both lookup key and C symbol are fixed to `gdcc_variant_requires_writeback`
+  - it must not go through `godot_` prefix normalization
+  - `CGenHelper.resolveUtilityCall(...)` must recognize it before falling back to class-registry utility lookup
+- Call shape contract:
+  - the argument is an ordinary `Variant` value, so existing argument rendering still applies and the emitted C argument is `&$carrier`
+  - the return value is `godot_bool` and can be written into an ordinary bool slot directly
+- Semantic boundary:
+  - this helper only answers the Step 7 receiver-side runtime writeback gate
+  - it does not participate in callable resolution, receiver provenance, or owner-route reconstruction
+  - its false/true family matrix is owned by `gdcc_type_system.md` and `gdcc_helper.h`; backend must not drift into a second independent classification table
 
 ### Receiver Value Terminology
 

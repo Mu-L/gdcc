@@ -21,6 +21,13 @@ import java.util.*;
 
 public final class CGenHelper {
     private static final String GODOT_UTILITY_PREFIX = "godot_";
+    private static final String VARIANT_WRITEBACK_HELPER_NAME = "gdcc_variant_requires_writeback";
+    private static final FunctionSignature VARIANT_WRITEBACK_HELPER_SIGNATURE = new FunctionSignature(
+            VARIANT_WRITEBACK_HELPER_NAME,
+            List.of(new FunctionSignature.Parameter("value", GdVariantType.VARIANT, null)),
+            false,
+            GdBoolType.BOOL
+    );
 
     private final @NotNull CodegenContext context;
     private final @NotNull CBuiltinBuilder builtinBuilder;
@@ -632,8 +639,15 @@ public final class CGenHelper {
         return GODOT_UTILITY_PREFIX + functionName;
     }
 
-    /// Resolve utility call metadata from either `foo` or `godot_foo`.
+    /// Resolve utility/helper call metadata from either `foo` or `godot_foo`.
     public @Nullable UtilityCallResolution resolveUtilityCall(@NotNull String functionName) {
+        if (functionName.equals(VARIANT_WRITEBACK_HELPER_NAME)) {
+            return new UtilityCallResolution(
+                    VARIANT_WRITEBACK_HELPER_NAME,
+                    VARIANT_WRITEBACK_HELPER_NAME,
+                    VARIANT_WRITEBACK_HELPER_SIGNATURE
+            );
+        }
         var lookupName = normalizeUtilityLookupName(functionName);
         var signature = context.classRegistry().findUtilityFunctionSignature(lookupName);
         if (signature == null) {

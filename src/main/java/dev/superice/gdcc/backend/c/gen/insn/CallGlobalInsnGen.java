@@ -18,7 +18,8 @@ import java.util.List;
 
 /// C code generator for `CALL_GLOBAL`.
 ///
-/// Current scope only supports utility functions in class registry.
+/// Current scope supports class-registry utility functions plus a narrow set of backend-owned
+/// runtime helpers resolved through `CGenHelper`.
 /// Validation is performed in generator and C emission is delegated to CBodyBuilder.
 public final class CallGlobalInsnGen implements CInsnGen<CallGlobalInsn> {
     @Override
@@ -28,7 +29,7 @@ public final class CallGlobalInsnGen implements CInsnGen<CallGlobalInsn> {
 
     /// Generates C code for one `call_global` instruction.
     ///
-    /// Flow: resolve utility -> validate/signature check -> route to CBodyBuilder call APIs.
+    /// Flow: resolve utility/helper -> validate/signature check -> route to CBodyBuilder call APIs.
     @Override
     public void generateCCode(@NotNull CBodyBuilder bodyBuilder) {
         var instruction = bodyBuilder.getCurrentInsn(this);

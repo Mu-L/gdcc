@@ -15,6 +15,7 @@ import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.insn.CallGlobalInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
@@ -226,6 +227,26 @@ class CallGlobalInsnGenTest {
 
         var body = generateBody(clazz, func, utilityApi());
         assertTrue(body.contains("$ret = godot_deg_to_rad($deg);"));
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should resolve backend-owned Variant writeback helper")
+    void callGlobalResolvesVariantWritebackRuntimeHelper() {
+        var clazz = newTestClass();
+        var func = newFunction("call_variant_writeback_helper");
+        func.createAndAddVariable("carrier", GdVariantType.VARIANT);
+        func.createAndAddVariable("should_writeback", GdBoolType.BOOL);
+
+        entry(func).appendInstruction(new CallGlobalInsn(
+                "should_writeback",
+                "gdcc_variant_requires_writeback",
+                List.of(new LirInstruction.VariableOperand("carrier"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+
+        assertTrue(body.contains("$should_writeback = gdcc_variant_requires_writeback(&$carrier);"), body);
     }
 
     @Test

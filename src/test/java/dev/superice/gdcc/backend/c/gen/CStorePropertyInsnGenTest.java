@@ -62,10 +62,35 @@ public class CStorePropertyInsnGenTest {
 
         var body = codegen.generateFuncBody(gdccClass, func);
         assertTrue(body.contains("godot_String_destroy(&$self->value);"));
-        assertTrue(body.contains("__gdcc_tmp_string_0 = godot_new_String_with_String($value);"));
-        assertTrue(body.contains("$self->value = __gdcc_tmp_string_0;"));
-        assertTrue(body.contains("godot_String_destroy(&__gdcc_tmp_string_0);"));
+        assertTrue(body.contains("$self->value = godot_new_String_with_String($value);"), body);
+        assertFalse(body.contains("__gdcc_tmp_string_0"), body);
         assertFalse(body.contains("MyClass__field_setter_value("));
+    }
+
+    @Test
+    @DisplayName("GDCC Variant setter should copy directly into backing field without temp lifetime leakage")
+    void gdccVariantSetterCopiesDirectlyIntoBackingField() {
+        var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        gdccClass.addProperty(new LirPropertyDef("payload", GdVariantType.VARIANT, false, null, null, "_field_setter_payload", Map.of()));
+
+        var func = new LirFunctionDef("_field_setter_payload");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("self", new GdObjectType("MyClass"), null, func));
+        func.addParameter(new LirParameterDef("value", GdVariantType.VARIANT, null, func));
+        addEntryStoreAndReturn(func, new StorePropertyInsn("payload", "self", "value"));
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(emptyApi(), List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(gdccClass, func);
+        assertTrue(body.contains("godot_Variant_destroy(&$self->payload);"), body);
+        assertTrue(body.contains("$self->payload = godot_new_Variant_with_Variant($value);"), body);
+        assertFalse(body.contains("__gdcc_tmp_variant_0"), body);
+        assertFalse(body.contains("MyClass__field_setter_payload("), body);
     }
 
     @Test

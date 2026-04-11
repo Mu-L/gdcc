@@ -371,8 +371,10 @@ public class CBodyBuilderPhaseCTest {
             var result = builder.build();
             assertTrue(result.contains("godot_new_Array_with_Array(&$src);"),
                     "Typed Array copy should use normalized Array constructor symbol");
-            assertTrue(result.contains("__gdcc_tmp_array_0"),
-                    "Typed Array temp variable should use safe normalized prefix");
+            assertTrue(result.contains("$arr = godot_new_Array_with_Array(&$src);"),
+                    "Typed Array assignment should write the copied rhs directly into the target slot");
+            assertFalse(result.contains("__gdcc_tmp_array_"),
+                    "Typed Array assignment should no longer materialize a copy temp");
             assertFalse(result.contains("__gdcc_tmp_array["),
                     "Temp variable name must not contain generic suffix characters");
         }
@@ -391,8 +393,10 @@ public class CBodyBuilderPhaseCTest {
             var result = builder.build();
             assertFalse(result.contains("godot_String_destroy(&$s)"),
                     "__prepare__ first-write semantics should skip old value destroy");
-            assertTrue(result.contains("$s = __gdcc_tmp_string_0;"),
-                    "Should still assign copied rhs value");
+            assertTrue(result.contains("$s = godot_new_String_with_String(&$src);"),
+                    "Should still assign copied rhs value directly into the target slot");
+            assertFalse(result.contains("__gdcc_tmp_string_"),
+                    "Prepare-block assignment should not materialize a copy temp");
         }
 
         @Test

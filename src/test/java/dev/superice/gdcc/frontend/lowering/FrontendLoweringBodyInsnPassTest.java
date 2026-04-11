@@ -1356,11 +1356,11 @@ class FrontendLoweringBodyInsnPassTest {
         assertNotNull(resultVariable, () -> "Missing lowered variable for " + callResultId);
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
-                () -> assertEquals("cfg_tmp_v0", callInsn.objectId()),
-                () -> assertEquals("worker", assignSourcesByTarget(instructions).get("cfg_tmp_v0")),
+                () -> assertEquals("worker", callInsn.objectId()),
                 () -> assertEquals("ping", callInsn.methodName()),
                 () -> assertEquals(GdVariantType.VARIANT, resultVariable.type()),
                 () -> assertEquals(callResultId, returnInsn.returnValueId()),
+                () -> assertFalse(pingContext.targetFunction().getVariables().containsKey("cfg_tmp_v0")),
                 () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
                 () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
         );
@@ -1412,12 +1412,104 @@ class FrontendLoweringBodyInsnPassTest {
         assertNotNull(dynamicResultVariable, () -> "Missing lowered variable for " + dynamicResultId);
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
-                () -> assertEquals("cfg_tmp_v0", dynamicSizeCall.objectId()),
-                () -> assertEquals("worker", assignSourcesByTarget(instructions).get("cfg_tmp_v0")),
+                () -> assertEquals("worker", dynamicSizeCall.objectId()),
                 () -> assertEquals(GdVariantType.VARIANT, dynamicResultVariable.type()),
                 () -> assertEquals(dynamicResultId, unpackInsn.variantId()),
                 () -> assertEquals(unpackInsn.resultId(), onlyVariableOperandId(exactTakeCall.args())),
+                () -> assertFalse(pingContext.targetFunction().getVariables().containsKey("cfg_tmp_v0")),
                 () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runEmitsRuntimeGatedPropertyWritebackForDynamicReceiverAndThreadsContinuationBlock() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_property_mutating_call.gd",
+                """
+                        class_name BodyInsnDynamicPropertyMutatingCall
+                        extends RefCounted
+                        
+                        var payloads: Variant
+                        
+                        func ping(seed: int) -> Variant:
+                            payloads.push_back(seed)
+                            return payloads
+                        """,
+                Map.of(
+                        "BodyInsnDynamicPropertyMutatingCall",
+                        "RuntimeBodyInsnDynamicPropertyMutatingCall"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicPropertyMutatingCall",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var entryBlock = requireBlock(function, "seq_0");
+        var entryLoads = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(LoadPropertyInsn.class::isInstance)
+                .map(LoadPropertyInsn.class::cast)
+                .toList();
+        var entryCalls = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .toList();
+        var gateCalls = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(CallGlobalInsn.class::isInstance)
+                .map(CallGlobalInsn.class::cast)
+                .toList();
+        var gateBranch = assertInstanceOf(GoIfInsn.class, entryBlock.getTerminator());
+        var applyBlock = requireBlock(function, gateBranch.trueBbId());
+        var skipBlock = requireBlock(function, gateBranch.falseBbId());
+        var applyStore = assertInstanceOf(StorePropertyInsn.class, applyBlock.getNonTerminatorInstructions().getFirst());
+        var applyGoto = assertInstanceOf(GotoInsn.class, applyBlock.getTerminator());
+        var skipGoto = assertInstanceOf(GotoInsn.class, skipBlock.getTerminator());
+        var continuationBlock = requireBlock(function, applyGoto.targetBbId());
+        var continuationLoads = continuationBlock.getNonTerminatorInstructions().stream()
+                .filter(LoadPropertyInsn.class::isInstance)
+                .map(LoadPropertyInsn.class::cast)
+                .toList();
+        var sequenceGoto = assertInstanceOf(GotoInsn.class, continuationBlock.getTerminator());
+        var stopBlock = requireBlock(function, sequenceGoto.targetBbId());
+        var returnInsn = assertInstanceOf(ReturnInsn.class, stopBlock.getTerminator());
+        var entryLoad = entryLoads.getFirst();
+        var callInsn = entryCalls.getFirst();
+        var gateCallInsn = gateCalls.getFirst();
+        var continuationLoad = continuationLoads.getFirst();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, entryLoads.size()),
+                () -> assertEquals(1, entryCalls.size()),
+                () -> assertEquals(1, gateCalls.size()),
+                () -> assertEquals("payloads", entryLoad.propertyName()),
+                () -> assertEquals("self", entryLoad.objectId()),
+                () -> assertEquals("push_back", callInsn.methodName()),
+                () -> assertEquals(entryLoad.resultId(), callInsn.objectId()),
+                () -> assertEquals("gdcc_variant_requires_writeback", gateCallInsn.functionName()),
+                () -> assertEquals(callInsn.objectId(), onlyVariableOperandId(gateCallInsn.args())),
+                () -> assertEquals(gateCallInsn.resultId(), gateBranch.conditionVarId()),
+                () -> assertEquals("payloads", applyStore.propertyName()),
+                () -> assertEquals("self", applyStore.objectId()),
+                () -> assertEquals(callInsn.objectId(), applyStore.valueId()),
+                () -> assertEquals(applyGoto.targetBbId(), skipGoto.targetBbId()),
+                () -> assertEquals(1, continuationLoads.size()),
+                () -> assertEquals("payloads", continuationLoad.propertyName()),
+                () -> assertEquals("self", continuationLoad.objectId()),
+                () -> assertEquals(continuationLoad.resultId(), returnInsn.returnValueId()),
+                () -> assertEquals(1, countInstructions(instructions, CallGlobalInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, GoIfInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, StorePropertyInsn.class)),
+                () -> assertTrue(instructionIndex(instructions, callInsn) < instructionIndex(instructions, gateCallInsn)),
+                () -> assertTrue(instructionIndex(instructions, gateCallInsn) < instructionIndex(instructions, applyStore)),
+                () -> assertTrue(instructionIndex(instructions, applyStore) < instructionIndex(instructions, continuationLoad))
         );
     }
 

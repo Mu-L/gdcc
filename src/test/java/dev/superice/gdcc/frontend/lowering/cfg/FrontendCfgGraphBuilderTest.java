@@ -323,6 +323,57 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
+    void buildExecutableBodyPublishesDirectSlotAliasValueForDynamicReceiverCalls() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_dynamic_direct_slot_receiver_call.gd",
+                """
+                        class_name CfgBuilderDynamicDirectSlotReceiverCall
+                        extends RefCounted
+                        
+                        func ping(values, seed: int) -> void:
+                            values.push_back(seed)
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderDynamicDirectSlotReceiverCall",
+                        "RuntimeCfgBuilderDynamicDirectSlotReceiverCall"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
+        var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
+        var callStep = assertInstanceOf(AttributeCallStep.class, expression.steps().getFirst());
+        var seed = assertInstanceOf(IdentifierExpression.class, callStep.arguments().getFirst());
+
+        var items = entryNode.items();
+        var receiverValue = assertInstanceOf(DirectSlotAliasValueItem.class, items.get(0));
+        var seedValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(1));
+        var callValue = assertInstanceOf(CallItem.class, items.get(2));
+        var callPayload = requireNotNull(
+                callValue.writableRoutePayloadOrNull(),
+                "dynamic receiver call should still publish a writable payload"
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(3, items.size()),
+                () -> assertSame(receiver, receiverValue.expression()),
+                () -> assertSame(seed, seedValue.expression()),
+                () -> assertSame(callStep, callValue.anchor()),
+                () -> assertEquals("push_back", callValue.callableName()),
+                () -> assertEquals(receiverValue.resultValueId(), callValue.receiverValueIdOrNull()),
+                () -> assertEquals(List.of(seedValue.resultValueId()), callValue.argumentValueIds()),
+                () -> assertEquals(FrontendWritableRoutePayload.RootKind.DIRECT_SLOT, callPayload.root().kind()),
+                () -> assertEquals(FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT, callPayload.leaf().kind()),
+                () -> assertTrue(callPayload.reverseCommitSteps().isEmpty())
+        );
+    }
+
+    @Test
     void buildExecutableBodyPublishesDirectSlotAliasValueForExplicitSelfMutatingReceiverCalls() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_self_receiver_call.gd",

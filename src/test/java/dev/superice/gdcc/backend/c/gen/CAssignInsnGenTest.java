@@ -70,7 +70,8 @@ public class CAssignInsnGenTest {
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("godot_String_destroy(&$a);"), body);
         assertTrue(body.contains("godot_new_String_with_String(&$b);"), body);
-        assertTrue(body.contains("$a = __gdcc_tmp_string_"), body);
+        assertTrue(body.contains("$a = godot_new_String_with_String(&$b);"), body);
+        assertFalse(body.contains("__gdcc_tmp_string_"), body);
     }
 
     @Test
@@ -219,7 +220,8 @@ public class CAssignInsnGenTest {
 
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("godot_new_Array_with_Array(&$src);"), body);
-        assertTrue(body.contains("$dst = __gdcc_tmp_array_"), body);
+        assertTrue(body.contains("$dst = godot_new_Array_with_Array(&$src);"), body);
+        assertFalse(body.contains("__gdcc_tmp_array_"), body);
     }
 
     @Test
@@ -250,7 +252,8 @@ public class CAssignInsnGenTest {
 
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("godot_new_Array_with_Array(&$src);"), body);
-        assertTrue(body.contains("$dst = __gdcc_tmp_array_"), body);
+        assertTrue(body.contains("$dst = godot_new_Array_with_Array(&$src);"), body);
+        assertFalse(body.contains("__gdcc_tmp_array_"), body);
     }
 
     @Test
@@ -287,7 +290,8 @@ public class CAssignInsnGenTest {
 
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("godot_new_Dictionary_with_Dictionary(&$src);"), body);
-        assertTrue(body.contains("$dst = __gdcc_tmp_dictionary_"), body);
+        assertTrue(body.contains("$dst = godot_new_Dictionary_with_Dictionary(&$src);"), body);
+        assertFalse(body.contains("__gdcc_tmp_dictionary_"), body);
     }
 
     @Test
@@ -318,7 +322,8 @@ public class CAssignInsnGenTest {
 
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("godot_new_Dictionary_with_Dictionary(&$src);"), body);
-        assertTrue(body.contains("$dst = __gdcc_tmp_dictionary_"), body);
+        assertTrue(body.contains("$dst = godot_new_Dictionary_with_Dictionary(&$src);"), body);
+        assertFalse(body.contains("__gdcc_tmp_dictionary_"), body);
     }
 
     @Test

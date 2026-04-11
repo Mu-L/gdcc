@@ -8,7 +8,7 @@
 >
 > 目标：仅保留当前代码库已落地且可验证的实现语义、长期风险和工程反思。
 >
-> 校对基线：2026-04-09（代码与单测已交叉检查）
+> 校对基线：2026-04-10（代码与单测已交叉检查）
 
 ## 1. 范围与对齐关系
 
@@ -34,6 +34,10 @@
 - 非对象类型写入统一走 `emitNonObjectSlotWrite(...)`：
   1. 满足条件时 destroy old（`destroyOldValue && !__prepare__ && type.isDestroyable()`）
   2. 赋值
+- 对 destroyable/value-semantic 非对象 RHS，`prepareRhsValue(...)` 生成
+  `godot_new_<Type>_with_<Type>(source_ptr)` 作为 slot write 的 RHS，而不是
+  “copy 到 temp -> 裸 `=` 写槽 -> destroy temp”。
+  这条约束是必要的，因为后者只有浅层 struct 赋值，销毁 temp 会提前释放 slot 刚接管的底层状态。
 - `markTargetInitialized(...)` 与 temp 生命周期仍由调用方控制（未内聚到槽位写入 helper）。
 - constructor-time property initializer apply 当前通过 `CCodegen#generatePropertyInitApplyBody(...)` 调用 direct backing-field helper：
   - `${Class}_class_apply_property_init_<property>(self)`
@@ -46,6 +50,9 @@
 - `OwnershipKind`：`BORROWED` / `OWNED`
 - `ValueRef#ownership()` 默认 `BORROWED`
 - `valueOfVar(...)`、`valueOfCastedVar(...)`、默认 `valueOfExpr(...)` 都表示“读取现有值或包装现有表达式”，因此保持 `BORROWED`
+- `valueOfAddressableExpr(...)` 表示“这是一个现有的、可安全取地址的 lvalue storage expression”，
+  例如 `self->field` backing slot。
+  它仍然是 `BORROWED`，但 copy-by-address 路径会直接使用 `&expr`，避免先浅拷贝到 temp。
 - `valueOfOwnedExpr(...)` 用于显式 `OWNED` 值来源（例如 call result 语义）
 - `callAssign(...)` 将对象返回值按 `OWNED` 路径写入目标槽，避免重复 own
 - constructor/materialization helper 与 property-init helper 这类 fresh object producer 也必须显式走 `OWNED`
@@ -172,6 +179,9 @@
 
 - 现状：setter-self 分支已收敛到 `assignVar(targetOfExpr(...), valueOfVar(...))`，
   通过 Builder 统一槽位写入语义处理生命周期和指针转换。
+- 对 value-semantic backing field，这条路径现在固定生成
+  `self->field = godot_new_<Type>_with_<Type>(source_ptr)`，
+  不再残留“copy temp 写槽后再 destroy temp”的生命周期泄漏形状。
 - 收敛收益：
   - 不再需要在生成器里手工拼接 own/release。
   - 对象写槽顺序与 `assignVar` / `callAssign` / `_return_val` 保持一致。

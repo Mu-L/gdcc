@@ -937,6 +937,116 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     }
 
     @Test
+    void lowerFrontendDynamicVariantReceiverWritebackBuildNativeLibraryAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping frontend dynamic Variant writeback integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_dynamic_variant_writeback_runtime");
+        Files.createDirectories(tempDir);
+
+        var source = """
+                class_name DynamicVariantWritebackSmoke
+                extends Node
+                
+                var packed_payload: Variant
+                var array_payload: Variant
+                
+                func reset_payloads() -> void:
+                    packed_payload = PackedInt32Array()
+                    array_payload = Array()
+                
+                func append_packed(seed: int) -> int:
+                    packed_payload.push_back(seed)
+                    return packed_payload.size()
+                
+                func append_array(seed: int) -> int:
+                    array_payload.push_back(seed)
+                    return array_payload.size()
+                """;
+        var module = parseModule(
+                tempDir.resolve("dynamic_variant_writeback_smoke.gd"),
+                source,
+                Map.of("DynamicVariantWritebackSmoke", "RuntimeDynamicVariantWritebackSmoke")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals(1, lowered.getClassDefs().size());
+        assertEquals("RuntimeDynamicVariantWritebackSmoke", lowered.getClassDefs().getFirst().getName());
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_dynamic_variant_writeback_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entrySource = Files.readString(projectDir.resolve("entry.c"));
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+        assertTrue(entrySource.contains("GD_STATIC_SN(u8\"RuntimeDynamicVariantWritebackSmoke\")"), entrySource);
+        assertTrue(
+                Pattern.compile("gdcc_variant_requires_writeback\\(&\\$[A-Za-z0-9_]+\\)").matcher(entrySource).find(),
+                () -> "Generated C should call the runtime writeback helper.\nSource:\n" + entrySource
+        );
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "DynamicVariantWritebackSmokeNode",
+                        "RuntimeDynamicVariantWritebackSmoke",
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(dynamicVariantWritebackTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend dynamic Variant writeback packed check passed."),
+                () -> "Packed Variant writeback runtime check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend dynamic Variant writeback array check passed."),
+                () -> "Array Variant writeback runtime check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend dynamic Variant writeback runtime class check passed."),
+                () -> "Dynamic Variant writeback runtime class check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend dynamic Variant writeback packed check failed."),
+                () -> "Packed Variant writeback runtime check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend dynamic Variant writeback array check failed."),
+                () -> "Array Variant writeback runtime check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend dynamic Variant writeback runtime class check failed."),
+                () -> "Dynamic Variant writeback runtime class check should not fail.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    @Test
     void lowerFrontendMappedCrossFileComplexControlFlowBuildNativeLibraryAndRunInGodot() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping mapped cross-file frontend integration test");
@@ -1369,6 +1479,42 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend dynamic call runtime class check passed.")
                     else:
                         push_error("frontend dynamic call runtime class check failed.")
+                """;
+    }
+
+    private static @NotNull String dynamicVariantWritebackTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "DynamicVariantWritebackSmokeNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    target.call("reset_payloads")
+                    var packed_first = int(target.call("append_packed", 4))
+                    var packed_second = int(target.call("append_packed", 5))
+                    if packed_first == 1 and packed_second == 2:
+                        print("frontend dynamic Variant writeback packed check passed.")
+                    else:
+                        push_error("frontend dynamic Variant writeback packed check failed.")
+                
+                    target.call("reset_payloads")
+                    var array_first = int(target.call("append_array", 4))
+                    var array_second = int(target.call("append_array", 5))
+                    if array_first == 1 and array_second == 2:
+                        print("frontend dynamic Variant writeback array check passed.")
+                    else:
+                        push_error("frontend dynamic Variant writeback array check failed.")
+                
+                    var runtime_class = String(target.get_class())
+                    if runtime_class == "RuntimeDynamicVariantWritebackSmoke" and target.is_class("RuntimeDynamicVariantWritebackSmoke") and not target.is_class("DynamicVariantWritebackSmoke"):
+                        print("frontend dynamic Variant writeback runtime class check passed.")
+                    else:
+                        push_error("frontend dynamic Variant writeback runtime class check failed.")
                 """;
     }
 
