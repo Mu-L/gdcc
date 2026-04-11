@@ -7,12 +7,15 @@ import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
+import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdPackedNumericArrayType;
 import dev.superice.gdcc.type.GdStringNameType;
+import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -20,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -190,5 +194,98 @@ class CGenHelperTest {
         );
 
         assertTrue(ex.getMessage().contains("unsupported type metadata"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should encode Variant outward slot as NIL")
+    void renderBoundMetadataShouldEncodeVariantAsNil() {
+        var metadata = helper.renderBoundMetadata(GdVariantType.VARIANT, "godot_PROPERTY_USAGE_DEFAULT");
+
+        assertEquals("GDEXTENSION_VARIANT_TYPE_NIL", metadata.typeEnumLiteral());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should keep non-Variant outward enum unchanged")
+    void renderBoundMetadataShouldKeepNonVariantEnum() {
+        var metadata = helper.renderBoundMetadata(GdIntType.INT, "godot_PROPERTY_USAGE_NO_EDITOR");
+
+        assertEquals("GDEXTENSION_VARIANT_TYPE_INT", metadata.typeEnumLiteral());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should reject void metadata slots")
+    void renderBoundMetadataShouldRejectVoidSlot() {
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderBoundMetadata(GdVoidType.VOID, "godot_PROPERTY_USAGE_DEFAULT")
+        );
+
+        assertTrue(ex.getMessage().contains("does not have outward GDExtension metadata"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should add Variant usage flag without rewriting base usage")
+    void renderBoundMetadataShouldAddVariantFlag() {
+        var metadata = helper.renderBoundMetadata(GdVariantType.VARIANT, "godot_PROPERTY_USAGE_DEFAULT");
+
+        assertEquals("godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT", metadata.usageExpr());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should keep non-Variant usage unchanged")
+    void renderBoundMetadataShouldKeepNonVariantUsage() {
+        var metadata = helper.renderBoundMetadata(GdIntType.INT, "godot_PROPERTY_USAGE_NO_EDITOR");
+
+        assertEquals("godot_PROPERTY_USAGE_NO_EDITOR", metadata.usageExpr());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should keep placeholder metadata at defaults in Phase A")
+    void renderBoundMetadataShouldKeepPlaceholderMetadataAtDefaults() {
+        var variantMetadata = helper.renderBoundMetadata(GdVariantType.VARIANT, "godot_PROPERTY_USAGE_DEFAULT");
+        var intMetadata = helper.renderBoundMetadata(GdIntType.INT, "godot_PROPERTY_USAGE_DEFAULT");
+
+        assertEquals("godot_PROPERTY_HINT_NONE", variantMetadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"\")", variantMetadata.hintStringExpr());
+        assertEquals("GD_STATIC_SN(u8\"\")", variantMetadata.classNameExpr());
+        assertEquals("godot_PROPERTY_HINT_NONE", intMetadata.hintEnumLiteral());
+    }
+
+    @Test
+    @DisplayName("renderPropertyUsageEnum should keep export property visible while marking Variant")
+    void renderPropertyUsageEnumShouldKeepExportVariantVisible() {
+        var property = new LirPropertyDef("payload", GdVariantType.VARIANT, false, null, null, null, Map.of("export", ""));
+
+        assertEquals(
+                "godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT",
+                helper.renderPropertyUsageEnum(property)
+        );
+    }
+
+    @Test
+    @DisplayName("renderPropertyUsageEnum should keep non-export Variant property hidden in editor")
+    void renderPropertyUsageEnumShouldKeepNonExportVariantHidden() {
+        var property = new LirPropertyDef("payload", GdVariantType.VARIANT, false, null, null, null, Map.of());
+
+        assertEquals(
+                "godot_PROPERTY_USAGE_NO_EDITOR | godot_PROPERTY_USAGE_NIL_IS_VARIANT",
+                helper.renderPropertyUsageEnum(property)
+        );
+    }
+
+    @Test
+    @DisplayName("renderPropertyUsageEnum should preserve export property usage for non-Variant types")
+    void renderPropertyUsageEnumShouldPreserveExportNonVariantUsage() {
+        var property = new LirPropertyDef("score", GdIntType.INT, false, null, null, null, Map.of("export", ""));
+
+        assertEquals("godot_PROPERTY_USAGE_DEFAULT", helper.renderPropertyUsageEnum(property));
+    }
+
+    @Test
+    @DisplayName("renderPropertyUsageEnum should preserve non-export property usage for non-Variant types")
+    void renderPropertyUsageEnumShouldPreserveNonExportNonVariantUsage() {
+        var property = new LirPropertyDef("score", GdIntType.INT, false, null, null, null, Map.of());
+
+        assertEquals("godot_PROPERTY_USAGE_NO_EDITOR", helper.renderPropertyUsageEnum(property));
     }
 }

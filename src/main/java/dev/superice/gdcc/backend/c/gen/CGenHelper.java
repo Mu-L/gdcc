@@ -79,6 +79,15 @@ public final class CGenHelper {
         }
     }
 
+    public record BoundMetadata(
+            @NotNull String typeEnumLiteral,
+            @NotNull String hintEnumLiteral,
+            @NotNull String hintStringExpr,
+            @NotNull String classNameExpr,
+            @NotNull String usageExpr
+    ) {
+    }
+
     public @NotNull List<BindingData> getBindingDataList() {
         return List.copyOf(bindingDataSet);
     }
@@ -490,18 +499,47 @@ public final class CGenHelper {
         }
     }
 
+    /// Renders the outward-facing metadata literals for a bound slot.
+    ///
+    /// The current Variant ABI patch only customizes the outward type/usage contract:
+    /// - `Variant` stays encoded as `NIL`
+    /// - `PROPERTY_USAGE_NIL_IS_VARIANT` is appended without rewriting the caller's base usage
+    ///
+    /// hint/class_name still stay on the default surface until typed-container metadata lands.
+    public @NotNull BoundMetadata renderBoundMetadata(@NotNull GdType type,
+                                                      @NotNull String baseUsageExpr) {
+        var extensionType = requireBoundMetadataType(type);
+        var usageExpr = type instanceof GdVariantType
+                ? baseUsageExpr + " | godot_PROPERTY_USAGE_NIL_IS_VARIANT"
+                : baseUsageExpr;
+        return new BoundMetadata(
+                "GDEXTENSION_VARIANT_TYPE_" + extensionType.name(),
+                "godot_PROPERTY_HINT_NONE",
+                "GD_STATIC_S(u8\"\")",
+                "GD_STATIC_SN(u8\"\")",
+                usageExpr
+        );
+    }
+
     public @NotNull String renderPropertyUsageEnum(@NotNull PropertyDef propertyDef) {
-        boolean export = false;
+        return renderBoundMetadata(propertyDef.getType(), renderPropertyBaseUsageEnum(propertyDef)).usageExpr();
+    }
+
+    private @NotNull String renderPropertyBaseUsageEnum(@NotNull PropertyDef propertyDef) {
         for (var entry : propertyDef.getAnnotations().entrySet()) {
             if (entry.getKey().equals("export")) {
-                export = true;
-                break;
+                return "godot_PROPERTY_USAGE_DEFAULT";
             }
         }
-        if (export) {
-            return "godot_PROPERTY_USAGE_DEFAULT";
-        }
         return "godot_PROPERTY_USAGE_NO_EDITOR";
+    }
+
+    private @NotNull GdExtensionTypeEnum requireBoundMetadataType(@NotNull GdType type) {
+        var extensionType = type.getGdExtensionType();
+        if (extensionType == null) {
+            throw new IllegalArgumentException("Type " + type.getTypeName() + " does not have outward GDExtension metadata");
+        }
+        return extensionType;
     }
 
     /// Renders a variable assignment statement in C, handling Godot object return types properly.
