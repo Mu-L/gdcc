@@ -1723,6 +1723,131 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runThreadsDynamicKeyMutatingCallContinuationIntoOuterSubscriptRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_key_mutating_call.gd",
+                """
+                        class_name BodyInsnDynamicKeyMutatingCall
+                        extends RefCounted
+                        
+                        var payloads: Dictionary[Variant, PackedInt32Array]
+                        var keys: Variant
+                        
+                        func ping(seed: int) -> void:
+                            payloads[keys.push_back(seed)].push_back(seed)
+                        """,
+                Map.of(
+                        "BodyInsnDynamicKeyMutatingCall",
+                        "RuntimeBodyInsnDynamicKeyMutatingCall"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicKeyMutatingCall",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var entryBlock = requireBlock(function, "seq_0");
+        var entryLoads = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(LoadPropertyInsn.class::isInstance)
+                .map(LoadPropertyInsn.class::cast)
+                .toList();
+        var entryCalls = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .toList();
+        var gateCalls = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(CallGlobalInsn.class::isInstance)
+                .map(CallGlobalInsn.class::cast)
+                .toList();
+        var gateBranch = assertInstanceOf(GoIfInsn.class, entryBlock.getTerminator());
+        var applyBlock = requireBlock(function, gateBranch.trueBbId());
+        var skipBlock = requireBlock(function, gateBranch.falseBbId());
+        var applyStore = assertInstanceOf(StorePropertyInsn.class, applyBlock.getNonTerminatorInstructions().getFirst());
+        var applyGoto = assertInstanceOf(GotoInsn.class, applyBlock.getTerminator());
+        var skipGoto = assertInstanceOf(GotoInsn.class, skipBlock.getTerminator());
+        var continuationBlock = requireBlock(function, applyGoto.targetBbId());
+        var continuationGets = continuationBlock.getNonTerminatorInstructions().stream()
+                .filter(VariantGetInsn.class::isInstance)
+                .map(VariantGetInsn.class::cast)
+                .toList();
+        var continuationCalls = continuationBlock.getNonTerminatorInstructions().stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .toList();
+        var continuationStores = continuationBlock.getNonTerminatorInstructions().stream()
+                .filter(VariantSetInsn.class::isInstance)
+                .map(VariantSetInsn.class::cast)
+                .toList();
+        var continuationGoto = assertInstanceOf(GotoInsn.class, continuationBlock.getTerminator());
+        var stopBlock = requireBlock(function, continuationGoto.targetBbId());
+        var returnInsn = assertInstanceOf(ReturnInsn.class, stopBlock.getTerminator());
+        var payloadsLoad = entryLoads.stream()
+                .filter(instruction -> instruction.propertyName().equals("payloads"))
+                .findFirst()
+                .orElseThrow();
+        var keysLoad = entryLoads.stream()
+                .filter(instruction -> instruction.propertyName().equals("keys"))
+                .findFirst()
+                .orElseThrow();
+        var innerCallInsn = entryCalls.getFirst();
+        var gateCallInsn = gateCalls.getFirst();
+        var outerGetInsn = continuationGets.getFirst();
+        var outerCallInsn = continuationCalls.getFirst();
+        var outerStoreInsn = continuationStores.getFirst();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(2, entryLoads.size()),
+                () -> assertEquals(1, entryCalls.size()),
+                () -> assertEquals(1, gateCalls.size()),
+                () -> assertEquals("payloads", payloadsLoad.propertyName()),
+                () -> assertEquals("self", payloadsLoad.objectId()),
+                () -> assertEquals("keys", keysLoad.propertyName()),
+                () -> assertEquals("self", keysLoad.objectId()),
+                () -> assertEquals("push_back", innerCallInsn.methodName()),
+                () -> assertEquals(keysLoad.resultId(), innerCallInsn.objectId()),
+                () -> assertEquals("gdcc_variant_requires_writeback", gateCallInsn.functionName()),
+                () -> assertEquals(innerCallInsn.objectId(), onlyVariableOperandId(gateCallInsn.args())),
+                () -> assertEquals(gateCallInsn.resultId(), gateBranch.conditionVarId()),
+                () -> assertEquals("keys", applyStore.propertyName()),
+                () -> assertEquals("self", applyStore.objectId()),
+                () -> assertEquals(innerCallInsn.objectId(), applyStore.valueId()),
+                () -> assertEquals(applyGoto.targetBbId(), skipGoto.targetBbId()),
+                () -> assertEquals(1, continuationGets.size()),
+                () -> assertEquals(payloadsLoad.resultId(), outerGetInsn.variantId()),
+                () -> assertEquals(innerCallInsn.resultId(), outerGetInsn.keyId()),
+                () -> assertEquals(1, continuationCalls.size()),
+                () -> assertEquals("push_back", outerCallInsn.methodName()),
+                () -> assertEquals(outerGetInsn.resultId(), outerCallInsn.objectId()),
+                () -> assertEquals(1, continuationStores.size()),
+                () -> assertEquals(payloadsLoad.resultId(), outerStoreInsn.variantId()),
+                () -> assertEquals(innerCallInsn.resultId(), outerStoreInsn.keyId()),
+                () -> assertEquals(outerCallInsn.objectId(), outerStoreInsn.valueId()),
+                () -> assertNull(returnInsn.returnValueId()),
+                () -> assertEquals(1, countInstructions(instructions, CallGlobalInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, GoIfInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, StorePropertyInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, VariantGetInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, VariantSetInsn.class)),
+                () -> assertEquals(0, storeValueIdsForProperty(instructions, "payloads").size()),
+                () -> assertTrue(instructionIndex(instructions, payloadsLoad) < instructionIndex(instructions, keysLoad)),
+                () -> assertTrue(instructionIndex(instructions, keysLoad) < instructionIndex(instructions, innerCallInsn)),
+                () -> assertTrue(instructionIndex(instructions, innerCallInsn) < instructionIndex(instructions, gateCallInsn)),
+                () -> assertTrue(instructionIndex(instructions, gateCallInsn) < instructionIndex(instructions, applyStore)),
+                () -> assertTrue(instructionIndex(instructions, applyStore) < instructionIndex(instructions, outerGetInsn)),
+                () -> assertTrue(instructionIndex(instructions, outerGetInsn) < instructionIndex(instructions, outerCallInsn)),
+                () -> assertTrue(instructionIndex(instructions, outerCallInsn) < instructionIndex(instructions, outerStoreInsn))
+        );
+    }
+
+    @Test
     void runLowersExplicitSelfMutatingReceiverWithoutReceiverDeadTemp() throws Exception {
         var prepared = prepareContext(
                 "body_insn_self_receiver_alias.gd",

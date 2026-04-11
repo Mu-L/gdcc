@@ -1047,6 +1047,138 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     }
 
     @Test
+    void lowerFrontendWritableRouteRuntimeEdgesBuildNativeLibraryAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping writable-route edge integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_writable_route_runtime_edges");
+        Files.createDirectories(tempDir);
+
+        var source = """
+                class_name WritableRouteRuntimeEdgeSmoke
+                extends Node
+                
+                var typed_payload: PackedInt32Array
+                var keys: Variant
+                
+                func set_typed_payload(value: PackedInt32Array) -> void:
+                    typed_payload = value
+                
+                func reset_side_effect_keys() -> void:
+                    keys = PackedInt32Array()
+                
+                func append_typed(seed: int) -> int:
+                    typed_payload.push_back(seed)
+                    return typed_payload.size()
+                
+                func next_slot(seed: int) -> int:
+                    keys.push_back(seed)
+                    return 0
+                
+                func measure_side_effect_key_route(
+                    payloads: Dictionary,
+                    seed: int
+                ) -> int:
+                    var slot_key: Variant = next_slot(seed)
+                    payloads[slot_key].push_back(seed)
+                    var zero_key: Variant = 0
+                    return payloads[zero_key].size() * 10 + keys.size()
+
+                func typed_payload_size() -> int:
+                    return typed_payload.size()
+                """;
+        var module = parseModule(
+                tempDir.resolve("writable_route_runtime_edge_smoke.gd"),
+                source,
+                Map.of("WritableRouteRuntimeEdgeSmoke", "RuntimeWritableRouteRuntimeEdgeSmoke")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals(1, lowered.getClassDefs().size());
+        assertEquals("RuntimeWritableRouteRuntimeEdgeSmoke", lowered.getClassDefs().getFirst().getName());
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_writable_route_runtime_edges",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entrySource = Files.readString(projectDir.resolve("entry.c"));
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+        assertTrue(entrySource.contains("GD_STATIC_SN(u8\"RuntimeWritableRouteRuntimeEdgeSmoke\")"), entrySource);
+        assertTrue(
+                entrySource.contains("godot_variant_get(") && entrySource.contains("godot_variant_set("),
+                () -> "Generated C should lower the side-effect key route through generic variant get/set.\nSource:\n" + entrySource
+        );
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "WritableRouteRuntimeEdgeNode",
+                        "RuntimeWritableRouteRuntimeEdgeSmoke",
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(writableRouteRuntimeEdgeTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend typed property receiver writeback check passed."),
+                () -> "Typed property-backed mutating receiver check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend side-effect key route first check passed."),
+                () -> "Side-effect key route first-pass check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend side-effect key route repeat check passed."),
+                () -> "Side-effect key route repeat check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend writable route runtime class check passed."),
+                () -> "Writable-route runtime class check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend typed property receiver writeback check failed."),
+                () -> "Typed property-backed mutating receiver check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend side-effect key route first check failed."),
+                () -> "Side-effect key route first-pass check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend side-effect key route repeat check failed."),
+                () -> "Side-effect key route repeat check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend writable route runtime class check failed."),
+                () -> "Writable-route runtime class check should not fail.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    @Test
     void lowerFrontendMappedCrossFileComplexControlFlowBuildNativeLibraryAndRunInGodot() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping mapped cross-file frontend integration test");
@@ -1515,6 +1647,52 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend dynamic Variant writeback runtime class check passed.")
                     else:
                         push_error("frontend dynamic Variant writeback runtime class check failed.")
+                """;
+    }
+
+    private static @NotNull String writableRouteRuntimeEdgeTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "WritableRouteRuntimeEdgeNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    target.call("set_typed_payload", PackedInt32Array())
+                    var typed_first = int(target.call("append_typed", 4))
+                    var typed_second = int(target.call("append_typed", 5))
+                    var typed_size = int(target.call("typed_payload_size"))
+                    if typed_first == 1 and typed_second == 2 and typed_size == 2:
+                        print("frontend typed property receiver writeback check passed.")
+                    else:
+                        push_error("frontend typed property receiver writeback check failed.")
+                
+                    # Variant parameters are currently exported to the engine as Nil-typed
+                    # ABI slots, so this coverage keeps the dynamic key carrier inside the
+                    # native object and passes the outer dictionary through the call.
+                    target.call("reset_side_effect_keys")
+                    var payloads = {0: PackedInt32Array()}
+                    var first_route = int(target.call("measure_side_effect_key_route", payloads, 4))
+                    if first_route == 11:
+                        print("frontend side-effect key route first check passed.")
+                    else:
+                        push_error("frontend side-effect key route first check failed.")
+                
+                    var second_route = int(target.call("measure_side_effect_key_route", payloads, 5))
+                    if second_route == 22:
+                        print("frontend side-effect key route repeat check passed.")
+                    else:
+                        push_error("frontend side-effect key route repeat check failed.")
+                
+                    var runtime_class = String(target.get_class())
+                    if runtime_class == "RuntimeWritableRouteRuntimeEdgeSmoke" and target.is_class("RuntimeWritableRouteRuntimeEdgeSmoke") and not target.is_class("WritableRouteRuntimeEdgeSmoke"):
+                        print("frontend writable route runtime class check passed.")
+                    else:
+                        push_error("frontend writable route runtime class check failed.")
                 """;
     }
 
