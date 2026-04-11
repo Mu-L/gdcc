@@ -12,7 +12,7 @@ import java.util.Objects;
 
 /// Published value id that aliases one trusted direct slot instead of materializing `cfg_tmp_*`.
 ///
-/// Step 6 intentionally keeps this surface narrow:
+/// This surface is intentionally narrow:
 /// - the anchor must be a direct-slot syntax root (`IdentifierExpression` or explicit `SelfExpression`)
 /// - body lowering will resolve the final slot from already-published binding facts
 /// - explicit `SelfExpression` is stable because user code cannot rebind the `self` slot

@@ -111,7 +111,7 @@ For static typing:
 If this matrix changes, the following fact sources must be updated together:
 
 - this document
-- `frontend_complex_writable_target_plan.md`
+- `frontend_complex_writable_target_implementation.md`
 - `FrontendWritableTypeWritebackSupport` 与 receiver-side writable-route helpers in frontend lowering
 - runtime `Variant` writeback helper contracts in `gdcc_helper.h`
 

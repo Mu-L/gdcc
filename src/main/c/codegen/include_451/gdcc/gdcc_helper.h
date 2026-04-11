@@ -255,7 +255,7 @@ static godot_bool gdcc_check_variant_type_object(const godot_Variant *value,
 }
 
 /// Returns whether the current Variant carrier still needs outer-owner writeback.
-/// Positive polarity is intentional and must stay aligned with frontend Step 7 docs:
+/// Positive polarity is intentional and must stay aligned with the frontend writable-target facts:
 /// - false for statically shared/reference families (`Array`, `Dictionary`, `Object`) and
 ///   primitive-like scalars that do not carry value-style owner writeback
 /// - true for value-semantic builtin families such as `String`, `Vector*`, `Color`,

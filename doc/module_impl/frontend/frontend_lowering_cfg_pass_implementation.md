@@ -213,20 +213,20 @@ plain assignment、compound assignment 与 constructor materialization 当前各
 
 当前 body lowering 侧已经把 writable-route 的 leaf read / leaf write / reverse commit 共用逻辑收敛到 package-private
 `FrontendWritableRouteSupport`。current-carrier family 的静态 writeback matrix 则收口到 public
-`FrontendWritableTypeWritebackSupport`，避免 Step 4 assignment lowering、Step 6 runtime gate 与后续测试各自复制一份 family
+`FrontendWritableTypeWritebackSupport`，避免 assignment lowering、runtime gate 与后续测试各自复制一份 family
 表。当前 CFG 已经能通过 `FrontendWritableRoutePayload` 在 `CallItem` / `AssignmentItem` 上冻结整条 writable route，graph
 publication 也会校验这类 payload 的本地 value-id 引用顺序，并额外拒绝 non-terminal static property commit step。
 assignment final-store lowering 已经切到 payload-only route；legacy `targetOperandValueIds` 只继续保留给 source-order
 sequencing 与 compound current-target read。exact instance-call receiver 则优先复用 CFG 已发布的 receiver value slot，
 payload 只继续承载 post-call reverse commit；payload-backed call 若缺失 dedicated receiver value slot 现在会在
 graph publication / body-lowering invariant 处直接失败，不再静默回退成 leaf 重读；direct-slot mutating receiver 的
-“真实源 slot”现在也不再由 body lowering 特判回推，而是通过 Step 6 新增的 alias-backed receiver value 直接表达。
+“真实源 slot”现在也不再由 body lowering 特判回推，而是通过 alias-backed receiver value 直接表达。
 dynamic instance-call receiver 现也冻结为同一套 payload consumer：
 - `FrontendCallMutabilitySupport` 会把 `DYNAMIC_FALLBACK + INSTANCE` 视为 conservative may-mutate route
 - 因而已发布 writable receiver payload 的 dynamic call 也会在 call 之后进入 shared reverse-commit path
 - 若 current carrier 静态可判定，则继续复用 `FrontendWritableTypeWritebackSupport` 的 fast-path/fast-skip
 - 只有 runtime-open `Variant` carrier 才会发 `CallGlobalInsn("gdcc_variant_requires_writeback", ...) + GoIfInsn`
-- `SequenceNode` 线程化的 continuation block 现在就是 Step 7 dynamic receiver writeback 的正式承载面；后续 item 不得再假设“继续挂回原 entry block”
+- `SequenceNode` 线程化的 continuation block 现在就是 dynamic receiver runtime-gated writeback 的正式承载面；后续 item 不得再假设“继续挂回原 entry block”
 - 对 `box.payloads.push_back(seed)` 这类“direct-slot owner + property leaf + dynamic mutating call”：
   - ordinary read 侧仍是 `OpaqueExprValueItem(box)` -> `MemberLoadItem(payloads, baseValueId = box_value_id)` -> `CallItem`
   - 但同一个 `CallItem.writableRoutePayloadOrNull` 会把 root 冻结为 direct-slot `box`，并把 property leaf 提升到
@@ -234,13 +234,13 @@ dynamic instance-call receiver 现也冻结为同一套 payload consumer：
   - 因此后续 body lowering 允许出现“entry property read 经过 `cfg_tmp_*`，runtime-gated property store 写回 `box`”
     的双轨形状；这是 publication 合同，不是 body lowering 临时修补
 
-Step 6 当前事实已经冻结为：
+当前 direct-slot alias publication 合同已经冻结为：
 
 - direct-slot mutating receiver 已改为发布 alias-backed receiver value，而不是继续依赖 body lowering 额外解释“synthetic temp -> source slot”
 - 这条 direct-slot publication surface 只包含 explicit `SelfExpression`、`IdentifierExpression + LOCAL_VAR`、`IdentifierExpression + PARAMETER`
-- `IdentifierExpression + CAPTURE` 当前不在 alias publication surface 内。虽然 binding/scope 模型保留了 `CAPTURE` 这一类别，但 lambda/capture lowering 与 storage semantics 仍未冻结，不能提前把它视为 Step 6 alias root
+- `IdentifierExpression + CAPTURE` 当前不在 alias publication surface 内。虽然 binding/scope 模型保留了 `CAPTURE` 这一类别，但 lambda/capture lowering 与 storage semantics 仍未冻结，不能提前把它视为 alias root
 - `IdentifierExpression + FrontendBindingKind.SELF` 在当前代码库中不是独立 source category：`FrontendTopBindingAnalyzer` 只会对 `SelfExpression` 发布 `SELF`，因此一旦这种 surface 泄漏到 builder 或 body lowering，二者都必须把它当作 contract violation 直接 fail-fast，而不是恢复成 `"self"`
-- `receiverValueIdOrNull == null` 时 fallback 到 `self` 的 implicit self receiver 不属于 payload-backed receiver publication，也不属于 Step 6 alias root
+- `receiverValueIdOrNull == null` 时 fallback 到 `self` 的 implicit self receiver 不属于 payload-backed receiver publication，也不属于 direct-slot alias root
 - explicit `SelfExpression` 的 alias 安全性来自 `self` slot 不可被用户代码重绑定，因此不需要额外 argument no-rebinding 分类
 - `IdentifierExpression + LOCAL_VAR/PARAMETER` 只有在后续 arguments 全部落在 proven no-rebinding 子集时才允许 alias publication
 - `IdentifierExpression + CAPTURE` 在当前实现中必须 fail-fast，等 lambda/capture lowering 落地后再重新评估是否进入 alias eligibility

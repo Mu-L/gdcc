@@ -19,8 +19,8 @@ import java.util.List;
 /// Not every published value id materializes into one `cfg_tmp_*` variable:
 /// - ordinary producers still lower into temp-backed slots
 /// - merge producers write one shared `cfg_merge_*` slot
-/// - the Step 6 direct-slot alias item intentionally keeps a value id bound to one trusted source
-///   slot so call lowering can consume it without inventing a dead temp first
+/// - the direct-slot alias item intentionally keeps a value id bound to one trusted source slot so
+///   call lowering can consume it without inventing a dead temp first
 public sealed interface ValueOpItem extends SequenceItem permits OpaqueExprValueItem, DirectSlotAliasValueItem,
         LocalDeclarationItem, AssignmentItem, CompoundAssignmentBinaryOpItem, MemberLoadItem, SubscriptLoadItem,
         CallItem, CastItem, TypeTestItem, MergeValueItem, BoolConstantItem {

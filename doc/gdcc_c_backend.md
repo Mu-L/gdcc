@@ -109,7 +109,7 @@
   - the argument is an ordinary `Variant` value, so existing argument rendering still applies and the emitted C argument is `&$carrier`
   - the return value is `godot_bool` and can be written into an ordinary bool slot directly
 - Semantic boundary:
-  - this helper only answers the Step 7 receiver-side runtime writeback gate
+  - this helper only answers the receiver-side runtime writeback gate for runtime-open `Variant` carriers
   - it does not participate in callable resolution, receiver provenance, or owner-route reconstruction
   - its false/true family matrix is owned by `gdcc_type_system.md` and `gdcc_helper.h`; backend must not drift into a second independent classification table
 

@@ -11,8 +11,8 @@ import java.util.Objects;
 
 /// Shared truth source for which statically known carrier families still need reverse writeback.
 ///
-/// The contract comes from `doc/gdcc_type_system.md` and is consumed by Step-4 assignment lowering,
-/// mutating-receiver writeback, and later runtime-gated routes:
+/// The contract comes from `doc/gdcc_type_system.md` and is consumed by assignment lowering,
+/// mutating-receiver writeback, and runtime-gated routes:
 /// - shared/reference carriers (`Array`, `Dictionary`, `Object`, primitive slots) do not write back
 /// - value-semantic builtin carriers do write back
 /// - `Variant` currently returns `true` here because the static shortcut only skips families already

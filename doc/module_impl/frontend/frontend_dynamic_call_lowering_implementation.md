@@ -94,7 +94,7 @@ call result type 的正式真源是 call anchor 对应的 `analysisData.expressi
   - `CallMethodInsn.objectId` 优先复用 CFG 已发布的 receiver value slot
   - payload-backed call 若缺失 dedicated `receiverValueIdOrNull`，属于 publication invariant violation；body lowering 不会再回退成按 payload 临时重读 receiver leaf
   - 同一个 payload 仅负责 exact route 的 post-call reverse commit
-  - Step 6 现已落地：direct-slot mutating receiver 会直接发布 alias-backed receiver value，因此 exact route 继续只消费 dedicated `receiverValueIdOrNull`，而不是再由 call lowering 额外解释“synthetic CFG temp -> 真实源 slot”
+  - direct-slot mutating receiver 会直接发布 alias-backed receiver value，因此 exact route 继续只消费 dedicated `receiverValueIdOrNull`，而不是再由 call lowering 额外解释“synthetic CFG temp -> 真实源 slot”
   - 与之对应，non-mutating / runtime-open 的 direct-slot receiver 继续停留在 ordinary temp-backed value surface；frontend 不会把 alias publication 泛化到所有 identifier/self ordinary read
   - 这里的 direct-slot publication surface 只包含 explicit `SelfExpression` 与 `IdentifierExpression + LOCAL_VAR/PARAMETER`；`CAPTURE` 目前仍留在 deferred lambda/capture 语义范围内，`receiverValueIdOrNull == null` 时由 `resolveInstanceCallReceiver(...)` fallback 到 `self` 的 implicit self receiver 仍属于 call execution fallback，不属于 alias publication
   - `IdentifierExpression + SELF` 不是合法的 published receiver surface：当前 analyzer 只会对 explicit `SelfExpression` 发布 `SELF`，所以 builder 与 body lowering 遇到它都必须 fail-fast，而不是再把 identifier 静默恢复成 `"self"`
@@ -105,7 +105,7 @@ call result type 的正式真源是 call anchor 对应的 `analysisData.expressi
   - `FrontendCallMutabilitySupport` 对 `DYNAMIC_FALLBACK + INSTANCE` 保守返回 may-mutate
   - 这条保守策略不读取“方法名是否看起来 const-like”这类弱事实；例如 `size()`、`length()` 之类
     的 lexeme 不是 runtime constness fact，dynamic fallback 仍不得据此跳过 alias / writeback 路径
-  - 因此 direct-slot dynamic receiver 现在与 exact mutating route 一样，可以在满足 Step 6 alias eligibility 时直接发布 alias-backed receiver value，而不是退回 dead temp snapshot
+  - 因此 direct-slot dynamic receiver 现在与 exact mutating route 一样，可以在满足当前 alias eligibility 合同时直接发布 alias-backed receiver value，而不是退回 dead temp snapshot
   - 对 direct-slot receiver，这意味着即使 dynamic fallback 最终调用的是 const-like method，当前可观测行为仍可能是
     `CallMethodInsn.objectId = source_slot`、而不是 ordinary `cfg_tmp_*` snapshot
   - property/subscript receiver 继续通过同一个 payload 提供 leaf provenance 与 reverse-commit step
@@ -150,7 +150,7 @@ call result type 的正式真源是 call anchor 对应的 `analysisData.expressi
   - 后续 sequence item 必须继续附着到 `reverseCommitWithRuntimeGate(...)` 返回的 continuation block，而不是原 lexical block
 - 为承接这条 continuation-block 合同，body lowering 的 processor / registry / sequence-item 调度面也必须显式 thread 当前 block；call lowering 不得再假设“所有后续 instruction 永远继续附着在原始 sequence block 上”
 
-call-route / dispatch 的长合同仍以本文档为准；receiver-side writable chain / writeback 的长合同由 `frontend_complex_writable_target_plan.md` 约束。
+call-route / dispatch 的长合同仍以本文档为准；receiver-side writable chain / writeback 的长合同由 `frontend_complex_writable_target_implementation.md` 约束。
 
 ---
 

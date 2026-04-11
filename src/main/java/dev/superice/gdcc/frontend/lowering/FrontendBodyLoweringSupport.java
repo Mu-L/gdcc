@@ -70,7 +70,7 @@ public final class FrontendBodyLoweringSupport {
 
     /// Published runtime facts for one frontend CFG value id.
     ///
-    /// Most produced value ids still lower into one temp-backed slot, but merge results and Step 6
+    /// Most produced value ids still lower into one temp-backed slot, but merge results and
     /// direct-slot aliases intentionally do not share that default shape.
     public record CfgValueMaterialization(
             @NotNull GdType type,
@@ -236,11 +236,12 @@ public final class FrontendBodyLoweringSupport {
                     CfgValueMaterializationKind.TEMP_SLOT,
                     null
             );
-            case dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem assignmentItem -> new CfgValueMaterialization(
-                    requireAssignmentResultType(analysisData, assignmentItem),
-                    CfgValueMaterializationKind.TEMP_SLOT,
-                    null
-            );
+            case dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem assignmentItem ->
+                    new CfgValueMaterialization(
+                            requireAssignmentResultType(analysisData, assignmentItem),
+                            CfgValueMaterializationKind.TEMP_SLOT,
+                            null
+                    );
             case dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem _ ->
                     throw new IllegalStateException("LocalDeclarationItem must not publish a result value id");
         };

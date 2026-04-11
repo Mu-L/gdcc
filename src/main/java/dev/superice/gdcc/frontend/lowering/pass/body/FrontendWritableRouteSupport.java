@@ -43,9 +43,9 @@ import java.util.Objects;
 /// future mutating-call lowering instead of growing separate ad-hoc patches.
 ///
 /// Two reverse-commit entrypoints intentionally coexist:
-/// - `reverseCommit(..., ReverseCommitGateHook)` is the Step-4 static gate path. It stays in one
-///   block and can only answer "apply this layer or skip it" at compile time.
-/// - `reverseCommitWithRuntimeGate(...)` is the Step-6-ready path. It still reuses the same carrier
+/// - `reverseCommit(..., ReverseCommitGateHook)` is the compile-time gate path. It stays in one
+///   block and can only answer "apply this layer or skip it" statically.
+/// - `reverseCommitWithRuntimeGate(...)` is the runtime-gated path. It still reuses the same carrier
 ///   threading and static family shortcut, but when the current carrier is `Variant` it lets the
 ///   caller emit a runtime bool condition and splices one per-layer branch shape into the LIR CFG.
 final class FrontendWritableRouteSupport {
@@ -55,10 +55,10 @@ final class FrontendWritableRouteSupport {
     /// Trivial gate used by routes that must always apply every reverse-commit layer.
     static final @NotNull ReverseCommitGateHook ALWAYS_APPLY = (_, _) -> true;
 
-    /// Creates the Step-4 static writeback gate from the current carrier slot type.
+    /// Creates the static writeback gate from the current carrier slot type.
     ///
-    /// The family matrix itself lives in the public `frontend.lowering` helper so Step 4 assignment
-    /// lowering and Step 7+ callers cannot silently drift into separate copies.
+    /// The family matrix itself lives in the public `frontend.lowering` helper so assignment
+    /// lowering, call writeback, and tests cannot silently drift into separate copies.
     static @NotNull ReverseCommitGateHook createStaticCarrierWritebackGate(
             @NotNull FrontendBodyLoweringSession session
     ) {
@@ -199,7 +199,7 @@ final class FrontendWritableRouteSupport {
     /// Walks reverse-commit steps from inner to outer owner, inserting runtime gate branches when
     /// the current carrier is statically `Variant`.
     ///
-    /// This is the Step-6-ready companion of the boolean-only `reverseCommit(...)` API:
+    /// This is the runtime-gated companion of the boolean-only `reverseCommit(...)` API:
     /// - statically known shared/reference carriers still use
     ///   `FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(...)` as the fast
     ///   path and skip the current layer without emitting any runtime branch

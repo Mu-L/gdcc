@@ -18,8 +18,8 @@ import java.util.Objects;
 /// commit state and publish no new value.
 ///
 /// For every assignment target currently allowed into lowering, `writableRoutePayload` is mandatory.
-/// Step 4 hard-cut final-store lowering to consume only this frozen route shape; the legacy operand
-/// list remains solely for source-order sequencing and compound current-value reads.
+/// Final-store lowering consumes only this frozen route shape; the legacy operand list remains
+/// solely for source-order sequencing and compound current-value reads.
 public record AssignmentItem(
         @NotNull AssignmentExpression assignment,
         @NotNull List<String> targetOperandValueIds,

@@ -12,7 +12,7 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
 
     /// Lowers one published assignment target exclusively from its frozen writable-route payload.
     ///
-    /// Step 4 hard-cuts assignment/compound-assignment store lowering away from AST tail-step replay:
+    /// Assignment/compound-assignment store lowering no longer replays AST tail steps:
     /// - CFG publication already froze the owner/leaf/reverse-commit route on `AssignmentItem`
     /// - that payload is now mandatory for every lowering-ready assignment target
     /// - body lowering may still use `targetOperandValueIds` for earlier sequencing/current-value reads

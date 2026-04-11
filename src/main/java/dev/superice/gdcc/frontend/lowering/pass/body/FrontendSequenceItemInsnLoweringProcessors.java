@@ -320,8 +320,8 @@ final class FrontendSequenceItemInsnLoweringProcessors {
     /// or guess between global/static/instance call families once compile-ready facts exist. It
     /// only materializes the already-approved argument-side `Variant` boundaries required by the
     /// selected callable signature for exact routes. Runtime-open `DYNAMIC_FALLBACK` instance calls
-    /// still reuse the ordinary `CallMethodInsn` surface, but Step 7 now lets the receiver side
-    /// attach conservative runtime-gated reverse commit when a writable payload is published. The
+    /// still reuse the ordinary `CallMethodInsn` surface, but the receiver side may now attach
+    /// conservative runtime-gated reverse commit when a writable payload is published. The
     /// processor must therefore treat receiver writeback as one parallel contract around the same
     /// call instruction instead of re-splitting the receiver chain into ad-hoc step items here.
     /// The returned block is the active continuation block after any post-call writeback, because a
@@ -471,7 +471,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
 
         /// Dynamic instance calls cannot answer receiver writeback from static constness alone, so
-        /// Step 7 reuses the shared runtime gate helper and keeps lowering on the returned
+        /// lowering reuses the shared runtime gate helper and keeps lowering on the returned
         /// continuation block. The runtime helper only answers the `Variant` branch; concrete carrier
         /// families still keep using the shared static fast path inside writable-route support.
         private @NotNull LirBasicBlock continueAfterDynamicReceiverWriteback(
@@ -494,9 +494,9 @@ final class FrontendSequenceItemInsnLoweringProcessors {
 
         /// Receiver writeback is enabled only for already-published writable receiver routes whose
         /// call route is conservative may-mutate. Exact routes use declaration constness when
-        /// available; dynamic instance routes count as may-mutate because Step 7 has no runtime
-        /// constness fact and must not let a potentially mutating receiver collapse back to plain
-        /// snapshot semantics.
+        /// available; dynamic instance routes count as may-mutate because runtime-open dispatch has
+        /// no reliable constness fact and must not let a potentially mutating receiver collapse back
+        /// to plain snapshot semantics.
         private @Nullable FrontendWritableRouteSupport.FrontendWritableAccessChain mutatingReceiverRouteOrNull(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull CallItem node,
@@ -509,7 +509,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             return session.requireWritableAccessChain(node.writableRoutePayloadOrNull());
         }
 
-        /// Emits the Step 7 runtime-open writeback predicate for one current carrier slot.
+        /// Emits the runtime-open writeback predicate for one current carrier slot.
         /// The helper name and positive `requires_writeback` polarity are part of the frozen
         /// frontend/backend contract and must stay aligned with `gdcc_helper.h`.
         private @NotNull String emitVariantRequiresWritebackCondition(

@@ -888,7 +888,7 @@ public final class FrontendCfgGraphBuilder {
     /// later lowering does not need to recurse back into the target subtree to discover them.
     ///
     /// Every currently supported assignment target must also publish one writable-route payload here.
-    /// Step-4 body lowering no longer has an AST-replay fallback for final stores.
+    /// Body lowering no longer has an AST-replay fallback for final stores.
     private @NotNull AssignmentTargetBuild buildAssignmentTargetOperands(
             @NotNull BuildCursor cursor,
             @NotNull Expression targetExpression
@@ -1289,9 +1289,9 @@ public final class FrontendCfgGraphBuilder {
         );
     }
 
-    /// Step 6 keeps alias publication narrower than generic identifier/self lowering: this item is
-    /// reserved for direct-slot mutating receivers whose dedicated value id must stay bound to one
-    /// trusted source slot instead of becoming a dead `cfg_tmp_*`.
+    /// Alias publication stays narrower than generic identifier/self lowering: this item is reserved
+    /// for direct-slot mutating receivers whose dedicated value id must stay bound to one trusted
+    /// source slot instead of becoming a dead `cfg_tmp_*`.
     private @NotNull ValueBuild emitDirectSlotAliasValue(
             @NotNull BuildCursor cursor,
             @NotNull Expression expression,
@@ -1396,9 +1396,9 @@ public final class FrontendCfgGraphBuilder {
     /// - the receiver belongs to one explicit root category (`SelfExpression`, `LOCAL_VAR`,
     ///   `PARAMETER`) instead of an implicit/self-context fallback
     /// - `CAPTURE` is intentionally excluded until lambda/capture lowering semantics are frozen;
-    ///   otherwise Step 6 would prematurely promise alias behavior for a deferred surface
+    ///   otherwise alias publication would prematurely promise live-slot behavior for a deferred surface
     /// - for identifier-backed roots, later argument evaluation must stay inside a proven
-    ///   no-rebinding subset; otherwise Step 6 deliberately keeps the ordinary temp snapshot
+    ///   no-rebinding subset; otherwise builder deliberately keeps the ordinary temp snapshot
     private @NotNull ValueBuild maybePublishDirectSlotReceiverAlias(
             @NotNull ValueBuild receiverBuild,
             @NotNull FrontendResolvedCall publishedCall,
@@ -1493,8 +1493,8 @@ public final class FrontendCfgGraphBuilder {
         return safety;
     }
 
-    /// This classifier is intentionally conservative. Step 6 only aliases identifier-backed receiver
-    /// roots across argument evaluation when the entire later subtree is already known to be
+    /// This classifier is intentionally conservative. Identifier-backed receiver roots stay aliased
+    /// across argument evaluation only when the entire later subtree is already known to be
     /// no-rebinding for caller direct-slot storage. Current value-level calls are still treated as
     /// effect-open because future lambda/capture/callable surfaces could otherwise start rebinding the
     /// same root through an ordinary-looking `CallExpression` without touching alias publication code.

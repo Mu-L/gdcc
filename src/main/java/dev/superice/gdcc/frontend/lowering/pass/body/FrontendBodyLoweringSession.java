@@ -205,9 +205,9 @@ public final class FrontendBodyLoweringSession {
     ///
     /// When the CFG has already published one concrete receiver value id, that slot is the direct
     /// receiver leaf and must be reused as-is. The writable-route payload then exists only to carry
-    /// post-call reverse-commit provenance. Step 6 intentionally moved the old direct-slot repair
-    /// logic into publication/materialization: if some payload-backed call needs a real source slot
-    /// here, its dedicated `receiverValueIdOrNull` must already be an alias-backed value id.
+    /// post-call reverse-commit provenance. The old direct-slot repair logic now lives entirely in
+    /// publication/materialization: if some payload-backed call needs a real source slot here, its
+    /// dedicated `receiverValueIdOrNull` must already be an alias-backed value id.
     /// Body lowering therefore never re-reads a payload-backed leaf on demand.
     @NotNull String materializeCallReceiverLeaf(@NotNull LirBasicBlock block, @NotNull CallItem item) {
         Objects.requireNonNull(block, "block must not be null");
