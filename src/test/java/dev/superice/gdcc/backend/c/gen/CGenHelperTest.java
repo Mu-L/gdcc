@@ -307,6 +307,129 @@ class CGenHelperTest {
     }
 
     @Test
+    @DisplayName("renderBoundMetadata should emit typed array hint for builtin leaf")
+    void renderBoundMetadataShouldEmitTypedArrayHintForBuiltinLeaf() {
+        var metadata = helper.renderBoundMetadata(
+                new GdArrayType(GdStringNameType.STRING_NAME),
+                "godot_PROPERTY_USAGE_DEFAULT",
+                "method arg"
+        );
+
+        assertEquals("GDEXTENSION_VARIANT_TYPE_ARRAY", metadata.typeEnumLiteral());
+        assertEquals("godot_PROPERTY_HINT_ARRAY_TYPE", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"StringName\")", metadata.hintStringExpr());
+        assertEquals("godot_PROPERTY_USAGE_DEFAULT", metadata.usageExpr());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should emit typed array hint for engine and GDCC object leaf")
+    void renderBoundMetadataShouldEmitTypedArrayHintForEngineAndGdccObjectLeaf() {
+        var engineMetadata = helper.renderBoundMetadata(
+                new GdArrayType(new GdObjectType("Node")),
+                "godot_PROPERTY_USAGE_DEFAULT",
+                "method return"
+        );
+        var gdccMetadata = helper.renderBoundMetadata(
+                new GdArrayType(new GdObjectType("MyChild")),
+                "godot_PROPERTY_USAGE_NO_EDITOR",
+                "property"
+        );
+
+        assertEquals("godot_PROPERTY_HINT_ARRAY_TYPE", engineMetadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"Node\")", engineMetadata.hintStringExpr());
+        assertEquals("godot_PROPERTY_HINT_ARRAY_TYPE", gdccMetadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"MyChild\")", gdccMetadata.hintStringExpr());
+        assertEquals("godot_PROPERTY_USAGE_NO_EDITOR", gdccMetadata.usageExpr());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should emit plain container atoms inside typed array hint")
+    void renderBoundMetadataShouldEmitPlainContainerAtomsInsideTypedArrayHint() {
+        var arrayMetadata = helper.renderBoundMetadata(
+                new GdArrayType(new GdArrayType(GdVariantType.VARIANT)),
+                "godot_PROPERTY_USAGE_DEFAULT",
+                "method arg"
+        );
+        var dictionaryMetadata = helper.renderBoundMetadata(
+                new GdArrayType(new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT)),
+                "godot_PROPERTY_USAGE_DEFAULT",
+                "method return"
+        );
+
+        assertEquals("godot_PROPERTY_HINT_ARRAY_TYPE", arrayMetadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"Array\")", arrayMetadata.hintStringExpr());
+        assertEquals("godot_PROPERTY_HINT_ARRAY_TYPE", dictionaryMetadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"Dictionary\")", dictionaryMetadata.hintStringExpr());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should keep generic array metadata untyped")
+    void renderBoundMetadataShouldKeepGenericArrayMetadataUntyped() {
+        var metadata = helper.renderBoundMetadata(
+                new GdArrayType(GdVariantType.VARIANT),
+                "godot_PROPERTY_USAGE_DEFAULT",
+                "method arg"
+        );
+
+        assertEquals("GDEXTENSION_VARIANT_TYPE_ARRAY", metadata.typeEnumLiteral());
+        assertEquals("godot_PROPERTY_HINT_NONE", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"\")", metadata.hintStringExpr());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should reject typed nested array leaf in typed array hint")
+    void renderBoundMetadataShouldRejectTypedNestedArrayLeafInTypedArrayHint() {
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderBoundMetadata(
+                        new GdArrayType(new GdArrayType(GdIntType.INT)),
+                        "godot_PROPERTY_USAGE_DEFAULT",
+                        "property"
+                )
+        );
+
+        assertEquals(
+                "Unsupported typed-array outward hint leaf 'Array[int]' at property: nested typed Array leaf is not supported",
+                ex.getMessage()
+        );
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should reject typed nested dictionary leaf in typed array hint")
+    void renderBoundMetadataShouldRejectTypedNestedDictionaryLeafInTypedArrayHint() {
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderBoundMetadata(
+                        new GdArrayType(new GdDictionaryType(GdIntType.INT, GdStringType.STRING)),
+                        "godot_PROPERTY_USAGE_DEFAULT",
+                        "method return"
+                )
+        );
+
+        assertEquals(
+                "Unsupported typed-array outward hint leaf 'Dictionary[int, String]' at method return: nested typed Dictionary leaf is not supported",
+                ex.getMessage()
+        );
+    }
+
+    @DisplayName("renderBoundMetadata should reject missing metadata leaf in typed array hint")
+    void renderBoundMetadataShouldRejectMissingMetadataLeafInTypedArrayHint() {
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderBoundMetadata(
+                        new GdArrayType(GdVoidType.VOID),
+                        "godot_PROPERTY_USAGE_DEFAULT",
+                        "method return"
+                )
+        );
+
+        assertEquals(
+                "Unsupported typed-array outward hint leaf 'void' at method return: missing outward GDExtension metadata",
+                ex.getMessage()
+        );
+    }
+
+    @Test
     @DisplayName("renderBoundMetadata should reject typed nested array leaf in typed dictionary hint")
     void renderBoundMetadataShouldRejectTypedNestedArrayLeafInTypedDictionaryHint() {
         var ex = assertThrows(

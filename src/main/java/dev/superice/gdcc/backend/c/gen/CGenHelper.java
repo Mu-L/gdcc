@@ -549,19 +549,29 @@ public final class CGenHelper {
     ///
     /// Current backend-owned outward ABI rules:
     /// - `Variant` still uses `NIL + PROPERTY_USAGE_NIL_IS_VARIANT`
+    /// - typed `Array[T]` publishes `PROPERTY_HINT_ARRAY_TYPE` plus one leaf atom whenever `T != Variant`
     /// - typed `Dictionary[K, V]` publishes `PROPERTY_HINT_DICTIONARY_TYPE` plus a flat `key;value`
     ///   hint string whenever either side is stricter than `Variant`
     /// - `class_name` stays on the existing empty default here; typed dictionary leaf identity lives in
     ///   `hint_string`, not in the top-level property info class slot
     public @NotNull BoundMetadata renderBoundMetadata(@NotNull GdType type,
                                                       @NotNull String baseUsageExpr) {
+        return renderBoundMetadata(type, baseUsageExpr, "bound slot");
+    }
+
+    public @NotNull BoundMetadata renderBoundMetadata(@NotNull GdType type,
+                                                      @NotNull String baseUsageExpr,
+                                                      @NotNull String useSite) {
         var extensionType = requireBoundMetadataType(type);
         var usageExpr = type instanceof GdVariantType
                 ? baseUsageExpr + " | godot_PROPERTY_USAGE_NIL_IS_VARIANT"
                 : baseUsageExpr;
         var hintEnumLiteral = "godot_PROPERTY_HINT_NONE";
         var hintStringExpr = "GD_STATIC_S(u8\"\")";
-        if (type instanceof GdDictionaryType dictionaryType && !dictionaryType.isGenericDictionary()) {
+        if (type instanceof GdArrayType arrayType && !arrayType.isGenericArray()) {
+            hintEnumLiteral = "godot_PROPERTY_HINT_ARRAY_TYPE";
+            hintStringExpr = "GD_STATIC_S(u8\"" + escapeStringLiteral(renderTypedArrayHintString(arrayType, useSite)) + "\")";
+        } else if (type instanceof GdDictionaryType dictionaryType && !dictionaryType.isGenericDictionary()) {
             hintEnumLiteral = "godot_PROPERTY_HINT_DICTIONARY_TYPE";
             hintStringExpr = "GD_STATIC_S(u8\"" + escapeStringLiteral(renderTypedDictionaryHintString(dictionaryType)) + "\")";
         }
@@ -577,7 +587,7 @@ public final class CGenHelper {
     /// Property registration keeps the current export/non-export base-usage split
     /// while reusing the same outward Variant encoding as method args/returns.
     public @NotNull BoundMetadata renderPropertyMetadata(@NotNull PropertyDef propertyDef) {
-        return renderBoundMetadata(propertyDef.getType(), renderPropertyBaseUsageEnum(propertyDef));
+        return renderBoundMetadata(propertyDef.getType(), renderPropertyBaseUsageEnum(propertyDef), "property");
     }
 
     public @NotNull String renderPropertyUsageEnum(@NotNull PropertyDef propertyDef) {
@@ -601,22 +611,41 @@ public final class CGenHelper {
         return extensionType;
     }
 
-    /// Godot encodes typed dictionary outward metadata as a flat `key;value` string.
-    /// We only publish one atom per side here, so nested typed containers must fail fast until we have a
-    /// real recursive outward grammar for them.
-    private @NotNull String renderTypedDictionaryHintString(@NotNull GdDictionaryType type) {
-        return renderOutwardHintAtom(type.getKeyType(), "key leaf") + ";" +
-                renderOutwardHintAtom(type.getValueType(), "value leaf");
+    /// Godot encodes typed array outward metadata as one leaf atom.
+    /// Backend only sees object leaves that frontend/lowering has already resolved to stable engine/GDCC
+    /// object identities. `script leaf` unsupported remains a documented ABI boundary rather than a helper-local
+    /// revalidation branch here.
+    private @NotNull String renderTypedArrayHintString(@NotNull GdArrayType type, @NotNull String useSite) {
+        return renderContainerHintAtom(type.getValueType(), useSite, "typed-array", false);
     }
 
-    private @NotNull String renderOutwardHintAtom(@NotNull GdType type, @NotNull String useSite) {
+    /// Shared leaf renderer for typed-container outward hints.
+    /// - typed array forbids `Variant` leaf because `Array[Variant]` must stay generic outwardly
+    /// - typed dictionary still publishes `Variant` as a valid side atom
+    /// - object leaves are emitted directly by name; backend assumes frontend/lowering already resolved them
+    private @NotNull String renderContainerHintAtom(@NotNull GdType type,
+                                                    @NotNull String useSite,
+                                                    @NotNull String containerKind,
+                                                    boolean allowVariantLeaf) {
         return switch (type) {
+            case GdVariantType _ -> {
+                if (allowVariantLeaf) {
+                    yield type.getTypeName();
+                }
+                throw unsupportedOutwardHintLeaf(
+                        containerKind,
+                        type,
+                        useSite,
+                        "Variant element must stay generic Array outwardly"
+                );
+            }
             case GdPackedArrayType _ -> type.getTypeName();
             case GdArrayType arrayType -> {
                 if (arrayType.isGenericArray()) {
                     yield "Array";
                 }
-                throw unsupportedTypedDictionaryHintLeaf(
+                throw unsupportedOutwardHintLeaf(
+                        containerKind,
                         type,
                         useSite,
                         "nested typed Array leaf is not supported"
@@ -626,15 +655,18 @@ public final class CGenHelper {
                 if (dictionaryType.isGenericDictionary()) {
                     yield "Dictionary";
                 }
-                throw unsupportedTypedDictionaryHintLeaf(
+                throw unsupportedOutwardHintLeaf(
+                        containerKind,
                         type,
                         useSite,
                         "nested typed Dictionary leaf is not supported"
                 );
             }
+            case GdObjectType _ -> type.getTypeName();
             default -> {
                 if (type.getGdExtensionType() == null) {
-                    throw unsupportedTypedDictionaryHintLeaf(
+                    throw unsupportedOutwardHintLeaf(
+                            containerKind,
                             type,
                             useSite,
                             "missing outward GDExtension metadata"
@@ -645,11 +677,20 @@ public final class CGenHelper {
         };
     }
 
-    private @NotNull IllegalArgumentException unsupportedTypedDictionaryHintLeaf(@NotNull GdType type,
-                                                                                 @NotNull String useSite,
-                                                                                 @NotNull String reason) {
+    /// Godot encodes typed dictionary outward metadata as a flat `key;value` string.
+    /// We only publish one atom per side here, so nested typed containers must fail fast until we have a
+    /// real recursive outward grammar for them.
+    private @NotNull String renderTypedDictionaryHintString(@NotNull GdDictionaryType type) {
+        return renderContainerHintAtom(type.getKeyType(), "key leaf", "typed-dictionary", true) + ";" +
+                renderContainerHintAtom(type.getValueType(), "value leaf", "typed-dictionary", true);
+    }
+
+    private @NotNull IllegalArgumentException unsupportedOutwardHintLeaf(@NotNull String containerKind,
+                                                                         @NotNull GdType type,
+                                                                         @NotNull String useSite,
+                                                                         @NotNull String reason) {
         return new IllegalArgumentException(
-                "Unsupported typed-dictionary outward hint leaf '" + type.getTypeName() +
+                "Unsupported " + containerKind + " outward hint leaf '" + type.getTypeName() +
                         "' at " + useSite + ": " + reason
         );
     }

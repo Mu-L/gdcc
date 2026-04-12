@@ -492,6 +492,172 @@ public class CCodegenTest {
     }
 
     @Test
+    public void generatesTypedArrayMethodBindingMetadataAndKeepsGenericArrayPlain() throws Exception {
+        var workerClass = new LirClassDef("TypedArrayAbiWorker", "Node");
+        var typedStringArray = new GdArrayType(GdStringNameType.STRING_NAME);
+        var typedPlainArray = new GdArrayType(new GdArrayType(GdVariantType.VARIANT));
+        var genericArray = new GdArrayType(GdVariantType.VARIANT);
+
+        var acceptTypedPayload = new LirFunctionDef("accept_typed_payload");
+        acceptTypedPayload.setReturnType(GdIntType.INT);
+        acceptTypedPayload.addParameter(new LirParameterDef("self", new GdObjectType("TypedArrayAbiWorker"), null, acceptTypedPayload));
+        acceptTypedPayload.addParameter(new LirParameterDef("payload", typedStringArray, null, acceptTypedPayload));
+        var acceptTypedResult = acceptTypedPayload.createAndAddTmpVariable(GdIntType.INT);
+        var acceptTypedEntry = new LirBasicBlock("entry");
+        acceptTypedEntry.appendInstruction(new LiteralIntInsn(acceptTypedResult.id(), 1));
+        acceptTypedEntry.setTerminator(new ReturnInsn(acceptTypedResult.id()));
+        acceptTypedPayload.addBasicBlock(acceptTypedEntry);
+        acceptTypedPayload.setEntryBlockId("entry");
+        workerClass.addFunction(acceptTypedPayload);
+
+        var echoPlainPayload = new LirFunctionDef("echo_plain_payload");
+        echoPlainPayload.setReturnType(typedPlainArray);
+        echoPlainPayload.addParameter(new LirParameterDef("self", new GdObjectType("TypedArrayAbiWorker"), null, echoPlainPayload));
+        echoPlainPayload.addParameter(new LirParameterDef("payload", typedPlainArray, null, echoPlainPayload));
+        var echoPlainEntry = new LirBasicBlock("entry");
+        echoPlainEntry.setTerminator(new ReturnInsn("payload"));
+        echoPlainPayload.addBasicBlock(echoPlainEntry);
+        echoPlainPayload.setEntryBlockId("entry");
+        workerClass.addFunction(echoPlainPayload);
+
+        var acceptGenericPayload = new LirFunctionDef("accept_generic_payload");
+        acceptGenericPayload.setReturnType(GdBoolType.BOOL);
+        acceptGenericPayload.addParameter(new LirParameterDef("self", new GdObjectType("TypedArrayAbiWorker"), null, acceptGenericPayload));
+        acceptGenericPayload.addParameter(new LirParameterDef("payload", genericArray, null, acceptGenericPayload));
+        var acceptGenericResult = acceptGenericPayload.createAndAddTmpVariable(GdBoolType.BOOL);
+        var acceptGenericEntry = new LirBasicBlock("entry");
+        acceptGenericEntry.appendInstruction(new LiteralBoolInsn(acceptGenericResult.id(), true));
+        acceptGenericEntry.setTerminator(new ReturnInsn(acceptGenericResult.id()));
+        acceptGenericPayload.addBasicBlock(acceptGenericEntry);
+        acceptGenericPayload.setEntryBlockId("entry");
+        workerClass.addFunction(acceptGenericPayload);
+
+        var module = new LirModule("typed_array_method_bind_metadata_module", List.of(workerClass));
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var cCode = new String(files.getFirst().contentWriter());
+        var hCode = new String(files.getLast().contentWriter());
+
+        var typedBindCall = resolveMethodBindCall(cCode, "accept_typed_payload");
+        var typedBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Array_ret_int");
+        var plainBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Array_ret_Array");
+        var genericBindCall = resolveMethodBindCall(cCode, "accept_generic_payload");
+        var genericBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Array_ret_bool");
+
+        assertContainsAll(
+                typedBindCall,
+                "GD_STATIC_SN(u8\"accept_typed_payload\")",
+                "GDEXTENSION_VARIANT_TYPE_ARRAY"
+        );
+        assertContainsAll(
+                typedBindBody,
+                "gdcc_make_property_full(arg0_type, arg0_name",
+                "godot_PROPERTY_HINT_ARRAY_TYPE",
+                "GD_STATIC_S(u8\"StringName\")",
+                "godot_PROPERTY_USAGE_DEFAULT"
+        );
+        assertContainsAll(
+                plainBindBody,
+                "gdcc_make_property_full(arg0_type, arg0_name",
+                "GDExtensionPropertyInfo return_info = gdcc_make_property_full(",
+                "GDEXTENSION_VARIANT_TYPE_ARRAY",
+                "godot_PROPERTY_HINT_ARRAY_TYPE",
+                "GD_STATIC_S(u8\"Array\")"
+        );
+        assertContainsAll(
+                genericBindCall,
+                "GD_STATIC_SN(u8\"accept_generic_payload\")",
+                "GDEXTENSION_VARIANT_TYPE_ARRAY"
+        );
+        assertContainsAll(genericBindBody, "gdcc_make_property_full(arg0_type, arg0_name", "godot_PROPERTY_HINT_NONE");
+        assertFalse(genericBindBody.contains("godot_PROPERTY_HINT_ARRAY_TYPE"), genericBindBody);
+        assertFalse(genericBindBody.contains("GD_STATIC_S(u8\"StringName\")"), genericBindBody);
+    }
+
+    @Test
+    public void generatesTypedArrayPropertyBindingMetadataAndKeepsGenericArrayPlain() throws Exception {
+        var workerClass = new LirClassDef("TypedArrayPropertyOwner", "Node");
+        workerClass.addProperty(new LirPropertyDef(
+                "typed_payload",
+                new GdArrayType(GdStringNameType.STRING_NAME),
+                false,
+                null,
+                null,
+                null,
+                Map.of("export", "")
+        ));
+        workerClass.addProperty(new LirPropertyDef(
+                "plain_nested_payload",
+                new GdArrayType(new GdArrayType(GdVariantType.VARIANT)),
+                false,
+                null,
+                null,
+                null,
+                Map.of("export", "")
+        ));
+        workerClass.addProperty(new LirPropertyDef(
+                "generic_payload",
+                new GdArrayType(GdVariantType.VARIANT),
+                false,
+                null,
+                null,
+                null,
+                Map.of("export", "")
+        ));
+
+        var module = new LirModule("typed_array_property_bind_metadata_module", List.of(workerClass));
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var cCode = new String(files.getFirst().contentWriter());
+        var typedBind = resolvePropertyBindCall(cCode, "typed_payload");
+        var plainBind = resolvePropertyBindCall(cCode, "plain_nested_payload");
+        var genericBind = resolvePropertyBindCall(cCode, "generic_payload");
+
+        assertContainsAll(
+                typedBind,
+                "GDEXTENSION_VARIANT_TYPE_ARRAY",
+                "godot_PROPERTY_HINT_ARRAY_TYPE",
+                "GD_STATIC_S(u8\"StringName\")",
+                "godot_PROPERTY_USAGE_DEFAULT",
+                "_field_getter_typed_payload",
+                "_field_setter_typed_payload"
+        );
+        assertContainsAll(
+                plainBind,
+                "GDEXTENSION_VARIANT_TYPE_ARRAY",
+                "godot_PROPERTY_HINT_ARRAY_TYPE",
+                "GD_STATIC_S(u8\"Array\")",
+                "godot_PROPERTY_USAGE_DEFAULT",
+                "_field_getter_plain_nested_payload",
+                "_field_setter_plain_nested_payload"
+        );
+        assertContainsAll(
+                genericBind,
+                "GDEXTENSION_VARIANT_TYPE_ARRAY",
+                "godot_PROPERTY_HINT_NONE",
+                "GD_STATIC_S(u8\"\")",
+                "godot_PROPERTY_USAGE_DEFAULT",
+                "_field_getter_generic_payload",
+                "_field_setter_generic_payload"
+        );
+        assertFalse(genericBind.contains("godot_PROPERTY_HINT_ARRAY_TYPE"), genericBind);
+    }
+
+    @Test
     public void generatesTypedDictionaryCallWrapperPreflightAndKeepsGenericDictionaryOnBaseGate() throws Exception {
         var workerClass = new LirClassDef("TypedDictionaryCallGuardWorker", "Node");
 

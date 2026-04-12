@@ -147,18 +147,11 @@
 - 但当前 backend 刚完成 typed-dictionary ABI 修复，script leaf 仍被明确排除在合同外。
 - 为了保持两类 typed container 的边界一致，typed-array 首轮修复也应：
   - 明确写出 script leaf 不支持；
-  - 在 helper 处 fail-fast；
-  - 不能静默降级为 plain object leaf 或 plain `Array`。
-- script leaf fail-fast 的错误契约必须具体，而不是只写一句“不支持”：
-  - 至少包含 element type 名称；
-  - 至少包含 use-site 标签：
-    - `method arg`
-    - `method return`
-    - `property`
-  - 至少包含拒绝原因：
-    - 当前 typed-array ABI 不支持 script leaf，因为这要求发布非 nil 的 `typed_script` 身份。
-- 这条错误契约同样适用于其他当前明确拒绝的 typed-array leaf。
-  - 只是 script leaf 的原因文本必须特别指出 `typed_script` 非 nil 这一点。
+  - 由 frontend / lowering 保证它不会以 backend object leaf 的形式继续下沉；
+  - backend helper 不再重复做 object leaf 的 registry 重验。
+- 当前 backend 约束改为：
+  - 能走到 typed-array outward metadata helper 的 `GdObjectType`，一律视为已解析好的 engine object / GDCC object；
+  - script leaf unsupported 是文档化的前置条件，不再作为 helper-local fail-fast 分支重复校验。
 
 ### 5. typed-array preflight 不使用 `is_same_typed`
 
@@ -241,6 +234,38 @@
 - 为 non-generic `Array[T]` 发布与 Godot 一致的 outward metadata。
 - 保持 generic `Array[Variant]` outward surface 仍为 plain `Array`。
 
+### 执行状态
+
+- [x] B1. `CGenHelper.renderBoundMetadata(...)` 已增加 typed-array metadata 分支，并通过 use-site 标签将 `method arg` / `method return` / `property` 的 fail-fast 文案锚定到具体使用点。
+- [x] B2. 已补齐 helper / codegen / investigation 测试面，覆盖 typed-array metadata 的正反向行为、generic `Array[Variant]` 保持 plain outward surface，以及 nested typed leaf / missing metadata leaf 的 fail-fast。
+- [x] B3. 已运行 targeted build / tests，并确认 Phase B 的 outward metadata 合同成立。
+
+### 当前已完成结果
+
+- non-generic `Array[T]` 现在会发布：
+  - `type = GDEXTENSION_VARIANT_TYPE_ARRAY`
+  - `hint = godot_PROPERTY_HINT_ARRAY_TYPE`
+  - `hint_string = "<elem>"`
+- 当前已锚定的 outward leaf 行为：
+  - builtin / primitive leaf 直接发布其 Godot hint atom
+  - object leaf 直接发布 class-name atom
+    - backend 这里依赖 frontend / lowering 的前置保证：凡是能进入本阶段的 `GdObjectType`，都已经是可稳定发布的 engine object / GDCC object
+  - plain `Array` / plain `Dictionary` 作为叶子时分别发布 `Array` / `Dictionary`
+  - generic `Array[Variant]` 继续保持 plain `Array` outward metadata，不发布 typed hint
+- 当前明确 fail-fast 的 typed-array outward leaf：
+  - nested typed `Array[T]`
+  - nested typed `Dictionary[K, V]`
+  - `void` 与其他缺失 outward metadata 的 leaf
+- 模板侧只负责传递 use-site 和展开 property info 结构，typed-array hint 判定仍集中在 helper 中，没有把 `CGenHelper` 退化成大段 C 字符串拼接器。
+- 当前 targeted validation 结果：
+  - `CGenHelperTest` 通过
+  - `CCodegenTest` 通过
+  - `FrontendLoweringToCTypedArrayAbiInvestigationTest` 通过
+- Phase B 之后新的已确认事实：
+  - method arg / method return / property 的 `Array[StringName]` outward metadata 均已发布 `PROPERTY_HINT_ARRAY_TYPE`
+  - exact typed-array method / property probe 仍可正常运行，没有回归到 Phase A 之前的 constructor crash
+  - wrapper 侧仍未发布 `godot_Array_get_typed_*` preflight；plain / wrong-typed array 的 ABI 拒绝语义仍需 Phase C 实现
+
 ### 实施步骤
 
 1. 在 `CGenHelper.renderBoundMetadata(...)` 中增加 typed-array 分支：
@@ -252,20 +277,21 @@
      - 继续保持 `PROPERTY_HINT_NONE`
      - 不发布 typed hint
 2. 新增 typed-array outward hint atom 渲染 helper。
-   - 只负责单个 leaf atom
-   - 不在 helper 中拼整段 C 模板字符串
-   - helper 需要接收明确的 use-site 标签，至少覆盖：
-     - `method arg`
-     - `method return`
-     - `property`
-   - helper fail-fast 时，错误信息至少包含：
-     - element type 名称
-     - use-site
-     - unsupported 原因
+  - 只负责单个 leaf atom
+  - 不在 helper 中拼整段 C 模板字符串
+  - helper 需要接收明确的 use-site 标签，至少覆盖：
+    - `method arg`
+    - `method return`
+    - `property`
+  - helper fail-fast 时，错误信息至少包含：
+      - element type 名称
+      - use-site
+      - unsupported 原因
 3. 明确 typed-array 首轮支持的 outward leaf：
    - primitive / builtin（不含 `Variant`）
    - packed array
-   - engine object / GDCC object
+   - object leaf
+     - backend 依赖 frontend / lowering 保证它在到达这里前已经是 engine object / GDCC object
    - plain `Array`
    - plain `Dictionary`
    - `Array[Variant]` 不属于这里的 typed leaf 支持列表。
@@ -273,11 +299,11 @@
      - 不进入 typed-array hint atom 渲染；
      - 不发布 typed-array hint
 4. 明确首轮 fail-fast 的 leaf：
-   - script leaf
    - nested typed `Array[T]`
    - nested typed `Dictionary[K, V]`
    - `void`
    - 缺失 outward metadata 的未知 leaf
+   - `script leaf unsupported` 仍保留在文档合同中，但由 frontend / lowering 保证不进入 backend helper
 5. 复用 `renderPropertyMetadata(...)`，让 method arg / return / property registration 共享同一套 typed-array metadata 合同。
 
 ### 验收细则
@@ -285,15 +311,12 @@
 - helper/codegen 层：
   - non-generic `Array[StringName]`、`Array[Node]`、`Array[Array]` 会生成 `PROPERTY_HINT_ARRAY_TYPE`
   - generic `Array[Variant]` 不会误生成 typed hint
-  - nested typed leaf / script leaf 会 fail-fast，而不是静默压平
-  - script leaf fail-fast 错误会显式带出：
-    - element type 名称
-    - use-site
-    - `requires non-nil typed_script` 这一拒绝原因
+  - nested typed leaf 会 fail-fast，而不是静默压平
+  - object leaf 会直接发布 class-name atom，helper 不重复做 registry 重验
 - integration 层：
   - return / property outward metadata 能被 Godot 识别为 typed array surface
 - 文档层：
-  - 明确写出“script leaf 不支持”
+  - 明确写出“script leaf 不支持是 frontend / lowering 前置条件，而不是 backend helper 的二次校验”
 
 ### Phase C：建立 typed-array wrapper runtime preflight
 
@@ -357,11 +380,8 @@
    - `CGenHelperTest`
    - 覆盖 typed-array metadata 正例
    - 覆盖 generic array 不误走 typed hint / typed guard
-   - 覆盖 nested typed leaf / script leaf fail-fast
-   - 覆盖 unsupported 错误文本至少包含：
-     - element type 名称
-     - use-site
-     - `requires non-nil typed_script`
+   - 覆盖 nested typed leaf fail-fast
+   - 对 object leaf 只锚定正常 metadata 发布，不测试 backend registry 重验
 2. codegen-level 测试：
    - `CCodegenTest`
    - 断言 method arg / return / property metadata
@@ -443,7 +463,7 @@ rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweri
 - non-generic `Array[T]` 的 method arg / return / property metadata 已发布 `PROPERTY_HINT_ARRAY_TYPE`；
 - `call_func` wrapper 对 non-generic `Array[T]` 已执行 typed-array preflight；
 - generic `Array[Variant]` 仍保持 plain `Array` outward surface；
-- script leaf / nested typed leaf 的边界已被明确写入文档并通过测试锚定；
+- script leaf unsupported 的前置条件与 nested typed leaf fail-fast 的边界都已被明确写入文档；
 - 正反向 targeted tests 均稳定通过；
 - 临时调查测试已被正式 regression surface 接管。
 

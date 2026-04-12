@@ -24,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class FrontendLoweringToCTypedArrayAbiInvestigationTest {
     @Test
-    void lowerFrontendTypedArrayOutwardMetadataStillCollapsesToPlainArray() throws Exception {
+    void lowerFrontendTypedArrayOutwardMetadataPublishesArrayTypeHintAfterPhaseB() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping typed array ABI metadata investigation");
             return;
@@ -62,15 +62,17 @@ public class FrontendLoweringToCTypedArrayAbiInvestigationTest {
         var entrySource = Files.readString(projectDir.resolve("entry.c"));
 
         assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
-        assertFalse(entryHeader.contains("godot_PROPERTY_HINT_ARRAY_TYPE"), entryHeader);
-        assertFalse(entrySource.contains("godot_PROPERTY_HINT_ARRAY_TYPE"), entrySource);
+        assertTrue(entryHeader.contains("godot_PROPERTY_HINT_ARRAY_TYPE"), entryHeader);
+        assertTrue(entryHeader.contains("GD_STATIC_S(u8\"StringName\")"), entryHeader);
+        assertTrue(entrySource.contains("godot_PROPERTY_HINT_ARRAY_TYPE"), entrySource);
+        assertTrue(entrySource.contains("GD_STATIC_S(u8\"StringName\")"), entrySource);
         assertFalse(entryHeader.contains("godot_Array_get_typed_builtin"), entryHeader);
         assertFalse(entryHeader.contains("godot_Array_get_typed_class_name"), entryHeader);
         assertFalse(entryHeader.contains("godot_Array_get_typed_script"), entryHeader);
     }
 
     @Test
-    void lowerFrontendTypedArrayMethodAbiExactTypedArrayNoLongerCrashesBeforeMetadataFix() throws Exception {
+    void lowerFrontendTypedArrayMethodAbiExactTypedArrayKeepsRunningAfterPhaseAAndPublishesMetadata() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping typed array method ABI investigation");
             return;
@@ -107,7 +109,8 @@ public class FrontendLoweringToCTypedArrayAbiInvestigationTest {
         var entryHeader = Files.readString(projectDir.resolve("entry.h"));
 
         assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
-        assertFalse(entryHeader.contains("godot_PROPERTY_HINT_ARRAY_TYPE"), entryHeader);
+        assertTrue(entryHeader.contains("godot_PROPERTY_HINT_ARRAY_TYPE"), entryHeader);
+        assertTrue(entryHeader.contains("GD_STATIC_S(u8\"StringName\")"), entryHeader);
         assertFalse(entryHeader.contains("godot_Array_get_typed_builtin"), entryHeader);
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
@@ -141,7 +144,7 @@ public class FrontendLoweringToCTypedArrayAbiInvestigationTest {
     }
 
     @Test
-    void lowerFrontendTypedArrayPropertyAbiExactTypedArrayNoLongerCrashesDuringNodeConstruction() throws Exception {
+    void lowerFrontendTypedArrayPropertyAbiExactTypedArrayKeepsRunningAndPublishesMetadata() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping typed array property ABI investigation");
             return;
@@ -179,8 +182,8 @@ public class FrontendLoweringToCTypedArrayAbiInvestigationTest {
         var entrySource = Files.readString(projectDir.resolve("entry.c"));
 
         assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
-        assertFalse(entryHeader.contains("godot_PROPERTY_HINT_ARRAY_TYPE"), entryHeader);
-        assertFalse(entrySource.contains("godot_PROPERTY_HINT_ARRAY_TYPE"), entrySource);
+        assertTrue(entrySource.contains("godot_PROPERTY_HINT_ARRAY_TYPE"), entrySource);
+        assertTrue(entrySource.contains("GD_STATIC_S(u8\"StringName\")"), entrySource);
         assertFalse(entryHeader.contains("godot_Array_get_typed_builtin"), entryHeader);
         assertContainsAll(
                 entrySource,
