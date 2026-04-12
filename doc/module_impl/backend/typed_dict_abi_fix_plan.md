@@ -5,7 +5,7 @@
 > metadata 与 runtime gate，修复“typed dictionary 经过 GDExtension 边界后退化成 plain
 > `Dictionary`”的问题。
 >
-> 状态：Planned
+> 状态：Phase A Completed / Phase B-G Planned
 >
 > 校对基线：2026-04-11（以当前代码库和仓库内 Godot 研究副本为准）
 
@@ -393,6 +393,7 @@ TypedDictionary ABI 当前只修：
 
 **A1. 扩展 `renderBoundMetadata(...)` 的 typed-dictionary 分支**
 
+- 状态：已完成（2026-04-12）
 - 修改：
   - `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
 - 目标：
@@ -401,6 +402,10 @@ TypedDictionary ABI 当前只修：
     - `hintEnumLiteral = godot_PROPERTY_HINT_DICTIONARY_TYPE`
     - `hintStringExpr = GD_STATIC_S(u8"<key>;<value>")`
     - `usageExpr` 继续沿用 caller 传入的 base usage
+- 当前结果：
+  - `renderBoundMetadata(...)` 已对非 generic typed dictionary 发布 `PROPERTY_HINT_DICTIONARY_TYPE`
+  - `hint_string` 现由 helper 生成 `GD_STATIC_S(u8"key;value")`
+  - generic `Dictionary[Variant, Variant]` 继续保持 `PROPERTY_HINT_NONE + ""`
 - 验收：
   - `Dictionary[StringName, Node]` -> `StringName;Node`
   - `Dictionary[StringName, Variant]` -> `StringName;Variant`
@@ -408,6 +413,7 @@ TypedDictionary ABI 当前只修：
 
 **A2. 新增窄辅助方法，禁止继续拿 `renderGdTypeName(...)` 拼 `hint_string`**
 
+- 状态：已完成（2026-04-12）
 - 修改：
   - `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
 - 新增私有 helper 建议：
@@ -418,12 +424,17 @@ TypedDictionary ABI 当前只修：
   - engine / GDCC object -> class name
   - generic `Array` / generic `Dictionary` -> `"Array"` / `"Dictionary"`
   - typed nested structured container -> fail-fast
+- 当前结果：
+  - `renderTypedDictionaryHintString(...)` 与 `renderOutwardHintAtom(...)` 已落地
+  - `renderGdTypeName(...)` 继续只服务内部符号命名，不再参与 typed-dictionary outward `hint_string`
+  - typed nested `Array[...]` / `Dictionary[..., ...]` 与缺 metadata leaf 现在统一 fail-fast，并带稳定的 leaf/use-site 错误信息
 - 验收：
   - 不允许复用 `renderGdTypeName(...)` 作为 typed-dictionary `hint_string` 的实现基础
   - 错误消息能明确指出不支持的 leaf 与 use-site
 
 **A3. 为 metadata helper 补齐正反向单测**
 
+- 状态：已完成（2026-04-12）
 - 修改：
   - `src/test/java/dev/superice/gdcc/backend/c/gen/CGenHelperTest.java`
 - 建议新增用例：
@@ -435,6 +446,9 @@ TypedDictionary ABI 当前只修：
     - `Dictionary[String, Array[int]]` outward hint fail-fast
     - `Dictionary[String, Dictionary[int, String]]` outward hint fail-fast
     - `Dictionary[void, int]` / 缺 metadata leaf fail-fast
+- 当前结果：
+  - `CGenHelperTest` 已覆盖 typed dictionary positive / generic / negative 分支
+  - fail-fast message 通过稳定字符串断言锚定 leaf 类型、use-site 与失败原因
 - 验收：
   - generic 与 typed 分支都被覆盖
   - fail-fast message 稳定且可识别

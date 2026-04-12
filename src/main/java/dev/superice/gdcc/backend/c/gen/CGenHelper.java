@@ -19,6 +19,8 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 
+import static dev.superice.gdcc.util.StringUtil.escapeStringLiteral;
+
 public final class CGenHelper {
     private static final String GODOT_UTILITY_PREFIX = "godot_";
     private static final String VARIANT_WRITEBACK_HELPER_NAME = "gdcc_variant_requires_writeback";
@@ -513,21 +515,28 @@ public final class CGenHelper {
 
     /// Renders the outward-facing metadata literals for a bound slot.
     ///
-    /// The current outward ABI contract only customizes the type/usage surface:
-    /// - `Variant` stays encoded as `NIL`
-    /// - `PROPERTY_USAGE_NIL_IS_VARIANT` is appended without rewriting the caller's base usage
-    ///
-    /// hint/class_name keep the existing backend defaults; typed-container metadata is a separate contract.
+    /// Current backend-owned outward ABI rules:
+    /// - `Variant` still uses `NIL + PROPERTY_USAGE_NIL_IS_VARIANT`
+    /// - typed `Dictionary[K, V]` publishes `PROPERTY_HINT_DICTIONARY_TYPE` plus a flat `key;value`
+    ///   hint string whenever either side is stricter than `Variant`
+    /// - `class_name` stays on the existing empty default here; typed dictionary leaf identity lives in
+    ///   `hint_string`, not in the top-level property info class slot
     public @NotNull BoundMetadata renderBoundMetadata(@NotNull GdType type,
                                                       @NotNull String baseUsageExpr) {
         var extensionType = requireBoundMetadataType(type);
         var usageExpr = type instanceof GdVariantType
                 ? baseUsageExpr + " | godot_PROPERTY_USAGE_NIL_IS_VARIANT"
                 : baseUsageExpr;
+        var hintEnumLiteral = "godot_PROPERTY_HINT_NONE";
+        var hintStringExpr = "GD_STATIC_S(u8\"\")";
+        if (type instanceof GdDictionaryType dictionaryType && !dictionaryType.isGenericDictionary()) {
+            hintEnumLiteral = "godot_PROPERTY_HINT_DICTIONARY_TYPE";
+            hintStringExpr = "GD_STATIC_S(u8\"" + escapeStringLiteral(renderTypedDictionaryHintString(dictionaryType)) + "\")";
+        }
         return new BoundMetadata(
                 "GDEXTENSION_VARIANT_TYPE_" + extensionType.name(),
-                "godot_PROPERTY_HINT_NONE",
-                "GD_STATIC_S(u8\"\")",
+                hintEnumLiteral,
+                hintStringExpr,
                 "GD_STATIC_SN(u8\"\")",
                 usageExpr
         );
@@ -558,6 +567,59 @@ public final class CGenHelper {
             throw new IllegalArgumentException("Type " + type.getTypeName() + " does not have outward GDExtension metadata");
         }
         return extensionType;
+    }
+
+    /// Godot encodes typed dictionary outward metadata as a flat `key;value` string.
+    /// We only publish one atom per side here, so nested typed containers must fail fast until we have a
+    /// real recursive outward grammar for them.
+    private @NotNull String renderTypedDictionaryHintString(@NotNull GdDictionaryType type) {
+        return renderOutwardHintAtom(type.getKeyType(), "key leaf") + ";" +
+                renderOutwardHintAtom(type.getValueType(), "value leaf");
+    }
+
+    private @NotNull String renderOutwardHintAtom(@NotNull GdType type, @NotNull String useSite) {
+        return switch (type) {
+            case GdPackedArrayType _ -> type.getTypeName();
+            case GdArrayType arrayType -> {
+                if (arrayType.isGenericArray()) {
+                    yield "Array";
+                }
+                throw unsupportedTypedDictionaryHintLeaf(
+                        type,
+                        useSite,
+                        "nested typed Array leaf is not supported"
+                );
+            }
+            case GdDictionaryType dictionaryType -> {
+                if (dictionaryType.isGenericDictionary()) {
+                    yield "Dictionary";
+                }
+                throw unsupportedTypedDictionaryHintLeaf(
+                        type,
+                        useSite,
+                        "nested typed Dictionary leaf is not supported"
+                );
+            }
+            default -> {
+                if (type.getGdExtensionType() == null) {
+                    throw unsupportedTypedDictionaryHintLeaf(
+                            type,
+                            useSite,
+                            "missing outward GDExtension metadata"
+                    );
+                }
+                yield type.getTypeName();
+            }
+        };
+    }
+
+    private @NotNull IllegalArgumentException unsupportedTypedDictionaryHintLeaf(@NotNull GdType type,
+                                                                                 @NotNull String useSite,
+                                                                                 @NotNull String reason) {
+        return new IllegalArgumentException(
+                "Unsupported typed-dictionary outward hint leaf '" + type.getTypeName() +
+                        "' at " + useSite + ": " + reason
+        );
     }
 
     /// Renders a variable assignment statement in C, handling Godot object return types properly.

@@ -10,6 +10,7 @@ import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdPackedNumericArrayType;
@@ -241,8 +242,8 @@ class CGenHelperTest {
     }
 
     @Test
-    @DisplayName("renderBoundMetadata should keep placeholder metadata at defaults until typed-container metadata lands")
-    void renderBoundMetadataShouldKeepPlaceholderMetadataAtDefaults() {
+    @DisplayName("renderBoundMetadata should keep default hint metadata for non-typed-dictionary slots")
+    void renderBoundMetadataShouldKeepDefaultHintMetadataForNonTypedDictionarySlots() {
         var variantMetadata = helper.renderBoundMetadata(GdVariantType.VARIANT, "godot_PROPERTY_USAGE_DEFAULT");
         var intMetadata = helper.renderBoundMetadata(GdIntType.INT, "godot_PROPERTY_USAGE_DEFAULT");
 
@@ -250,6 +251,112 @@ class CGenHelperTest {
         assertEquals("GD_STATIC_S(u8\"\")", variantMetadata.hintStringExpr());
         assertEquals("GD_STATIC_SN(u8\"\")", variantMetadata.classNameExpr());
         assertEquals("godot_PROPERTY_HINT_NONE", intMetadata.hintEnumLiteral());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should emit typed dictionary hint for object leaf")
+    void renderBoundMetadataShouldEmitTypedDictionaryHintForObjectLeaf() {
+        var metadata = helper.renderBoundMetadata(
+                new GdDictionaryType(GdStringNameType.STRING_NAME, new GdObjectType("Node")),
+                "godot_PROPERTY_USAGE_DEFAULT"
+        );
+
+        assertEquals("GDEXTENSION_VARIANT_TYPE_DICTIONARY", metadata.typeEnumLiteral());
+        assertEquals("godot_PROPERTY_HINT_DICTIONARY_TYPE", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"StringName;Node\")", metadata.hintStringExpr());
+        assertEquals("godot_PROPERTY_USAGE_DEFAULT", metadata.usageExpr());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should keep Variant atom inside typed dictionary hint")
+    void renderBoundMetadataShouldKeepVariantAtomInsideTypedDictionaryHint() {
+        var metadata = helper.renderBoundMetadata(
+                new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT),
+                "godot_PROPERTY_USAGE_NO_EDITOR"
+        );
+
+        assertEquals("godot_PROPERTY_HINT_DICTIONARY_TYPE", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"StringName;Variant\")", metadata.hintStringExpr());
+        assertEquals("godot_PROPERTY_USAGE_NO_EDITOR", metadata.usageExpr());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should emit packed array atom inside typed dictionary hint")
+    void renderBoundMetadataShouldEmitPackedArrayAtomInsideTypedDictionaryHint() {
+        var metadata = helper.renderBoundMetadata(
+                new GdDictionaryType(GdVariantType.VARIANT, GdPackedNumericArrayType.PACKED_INT32_ARRAY),
+                "godot_PROPERTY_USAGE_DEFAULT"
+        );
+
+        assertEquals("godot_PROPERTY_HINT_DICTIONARY_TYPE", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"Variant;PackedInt32Array\")", metadata.hintStringExpr());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should keep generic dictionary metadata untyped")
+    void renderBoundMetadataShouldKeepGenericDictionaryMetadataUntyped() {
+        var metadata = helper.renderBoundMetadata(
+                new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT),
+                "godot_PROPERTY_USAGE_DEFAULT"
+        );
+
+        assertEquals("GDEXTENSION_VARIANT_TYPE_DICTIONARY", metadata.typeEnumLiteral());
+        assertEquals("godot_PROPERTY_HINT_NONE", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"\")", metadata.hintStringExpr());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should reject typed nested array leaf in typed dictionary hint")
+    void renderBoundMetadataShouldRejectTypedNestedArrayLeafInTypedDictionaryHint() {
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderBoundMetadata(
+                        new GdDictionaryType(GdStringType.STRING, new GdArrayType(GdIntType.INT)),
+                        "godot_PROPERTY_USAGE_DEFAULT"
+                )
+        );
+
+        assertEquals(
+                "Unsupported typed-dictionary outward hint leaf 'Array[int]' at value leaf: nested typed Array leaf is not supported",
+                ex.getMessage()
+        );
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should reject typed nested dictionary leaf in typed dictionary hint")
+    void renderBoundMetadataShouldRejectTypedNestedDictionaryLeafInTypedDictionaryHint() {
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderBoundMetadata(
+                        new GdDictionaryType(
+                                GdStringType.STRING,
+                                new GdDictionaryType(GdIntType.INT, GdStringType.STRING)
+                        ),
+                        "godot_PROPERTY_USAGE_DEFAULT"
+                )
+        );
+
+        assertEquals(
+                "Unsupported typed-dictionary outward hint leaf 'Dictionary[int, String]' at value leaf: nested typed Dictionary leaf is not supported",
+                ex.getMessage()
+        );
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should reject missing metadata leaf in typed dictionary hint")
+    void renderBoundMetadataShouldRejectMissingMetadataLeafInTypedDictionaryHint() {
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderBoundMetadata(
+                        new GdDictionaryType(GdVoidType.VOID, GdIntType.INT),
+                        "godot_PROPERTY_USAGE_DEFAULT"
+                )
+        );
+
+        assertEquals(
+                "Unsupported typed-dictionary outward hint leaf 'void' at key leaf: missing outward GDExtension metadata",
+                ex.getMessage()
+        );
     }
 
     @Test
