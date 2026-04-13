@@ -207,6 +207,7 @@ plain assignment、compound assignment 与 constructor materialization 当前各
   - constructor route 不新增专用 CFG item
   - CFG 继续负责冻结 operand 顺序、anchor，以及“发布 standalone result value / 明确不发布 result slot”的 call 合同
   - value-required call path 仍必须发布 result value id；当前唯一允许 `resultValueIdOrNull() == null` 的 call item 是 statement-position、且已稳定解析为 `RESOLVED(void)` 的 discarded call
+  - 若 `RESOLVED(void)` call 仍出现在 value-required path，CFG builder 必须立刻 fail-fast，而不是继续发布一个假想 result value id；这是 compile gate / type-check regression 的 guard rail，不是兼容路径
   - 若某个 call site 后续需要 mutating receiver writeback，则同一个 `CallItem` 还必须承载单个 writable receiver access-chain payload
   - 这条 chain payload 必须以“整条 route”的形式冻结；CFG 不得为同一个 call receiver 再发布一串额外 step item 让 body lowering 事后拼装
   - 对 property/subscript receiver call，payload 的 `reverseCommitSteps` 还必须包含“当前 leaf 提升后的第一层 commit step”；否则 body lowering 只有 receiver provenance，却没有真正可执行的 post-call writeback plan

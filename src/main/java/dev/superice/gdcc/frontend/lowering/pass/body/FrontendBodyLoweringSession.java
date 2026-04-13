@@ -31,6 +31,7 @@ import dev.superice.gdcc.type.GdContainerType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
@@ -649,6 +650,20 @@ public final class FrontendBodyLoweringSession {
         var source = Objects.requireNonNull(sourceType, "sourceType must not be null");
         var target = Objects.requireNonNull(targetType, "targetType must not be null");
         var use = StringUtil.requireNonBlank(boundaryUse, "boundaryUse");
+        if (source instanceof GdVoidType) {
+            throw new IllegalStateException(
+                    "Frontend boundary '"
+                            + use
+                            + "' must not materialize source type void; statement-position RESOLVED(void) calls must omit result slots, and value-required void calls should have failed before body lowering"
+            );
+        }
+        if (target instanceof GdVoidType) {
+            throw new IllegalStateException(
+                    "Frontend boundary '"
+                            + use
+                            + "' must not materialize into target type void; value-required lowering sites must not request a concrete slot for void"
+            );
+        }
         if (target instanceof GdVariantType) {
             if (source instanceof GdVariantType) {
                 return sourceSlot;

@@ -15,16 +15,15 @@
 
 ## Current Status
 
-截至 2026-04-13，Phase A-C 已完成，这条 build/codegen/CFG 缺陷已经闭环：
+截至 2026-04-13，Phase A-D 已完成，这条 build/codegen/CFG 缺陷已经闭环：
 
 - `push_back + size()` 当前已恢复成功
 - `push_back + dynamic helper` 当前已恢复成功
 - exact instance / utility-global 的 void-return call 现在都会 emitted 为 `resultId = null`
 - statement-position `RESOLVED(void)` call 不再发布 `CallItem.resultValueId`，也不再声明对应 `cfg_tmp_*`
 - backend 现有 `void + resultId` guard rail 继续保留，用于拦截未来坏 LIR
-- 当前仅剩的后续清理项是 Phase D：
-  - 把调查探针与错误记录进一步收敛成长期回归和事实源
-  - 详见 `doc/module_impl/frontend/frontend_void_call_result_slot_fix_plan.md`
+- former investigation probe 已收敛为正式回归 `FrontendArrayVoidReturnCallRegressionTest`
+- 计划文档与长期事实源已同步到最终合同
 
 ## 历史复现形状（Phase B 前）
 
@@ -63,7 +62,7 @@ func compute() -> int:
 
 ## Historical Evidence
 
-- 临时探针 `FrontendArrayConstructorVoidInvestigationTest` 已确认：
+- 正式回归 `FrontendArrayVoidReturnCallRegressionTest` 当前继续覆盖并确认：
   - `ConstructBuiltinInsn` 对应的结果变量仍是 `GdArrayType`
   - 不是 `GdVoidType`
 - 纯 indexed flow 当前 lower + codegen(fake compiler build) 已能通过
@@ -131,12 +130,21 @@ func compute() -> int:
    - `collectCfgValueMaterializations(...)` / `declareCfgValueSlots()` 不再为这类 call 发布 temp slot
 4. backend invalid-IR 防线保持不变：
    - `CallMethodInsnGen` / `CallGlobalInsnGen` 继续拒绝“void call 仍携带 resultId”的坏形态
-5. 当前剩余工作属于 Phase D 收口：
-   - 把调查探针与错误记录进一步转成长期回归和事实源
+5. Phase D 已完成：
+   - 调查探针已转成长期回归
+   - 错误记录与长期事实源已同步
 
 ## Regression Anchors After Fix
 
 修复后至少要继续覆盖：
+
+- 正式回归类：`src/test/java/dev/superice/gdcc/backend/c/build/FrontendArrayVoidReturnCallRegressionTest.java`
+- broader end-to-end 合同类：`src/test/java/dev/superice/gdcc/backend/c/build/FrontendVoidReturnCallIntegrationTest.java`
+  - discarded global `print(...)`
+  - non-bare attribute void call
+  - property-backed writable-route writeback
+  - `Node.new()` constructor boundary
+  - static type-meta head 当前 backend gap 的 negative build baseline
 
 - local `Array()` + indexed store/load
   - 作为“旧文档现象已过时”的正向非回归

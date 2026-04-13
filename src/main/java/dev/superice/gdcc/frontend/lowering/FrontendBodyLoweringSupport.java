@@ -23,6 +23,7 @@ import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
@@ -185,7 +186,7 @@ public final class FrontendBodyLoweringSupport {
             @NotNull ClassRegistry classRegistry,
             @NotNull SequencedMap<String, CfgValueMaterialization> resolvedMaterializations
     ) {
-        return switch (item) {
+        var materialization = switch (item) {
             case BoolConstantItem _ -> new CfgValueMaterialization(
                     GdBoolType.BOOL,
                     CfgValueMaterializationKind.TEMP_SLOT,
@@ -245,6 +246,20 @@ public final class FrontendBodyLoweringSupport {
             case dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem _ ->
                     throw new IllegalStateException("LocalDeclarationItem must not publish a result value id");
         };
+        if ((materialization.kind() == CfgValueMaterializationKind.TEMP_SLOT
+                || materialization.kind() == CfgValueMaterializationKind.MERGE_SLOT)
+                && materialization.type() instanceof GdVoidType) {
+            throw new IllegalStateException(
+                    "Frontend CFG value '"
+                            + Objects.requireNonNull(item.resultValueIdOrNull(), "void materialization requires a result value id")
+                            + "' must not materialize as standalone "
+                            + materialization.kind()
+                            + " with void type for "
+                            + describeProducedValue(item)
+                            + "; statement-position RESOLVED(void) calls must omit resultValueIdOrNull(), and value-required void calls should have been rejected before body lowering"
+            );
+        }
+        return materialization;
     }
 
     private static @NotNull GdType requireExpressionType(
@@ -256,6 +271,13 @@ public final class FrontendBodyLoweringSupport {
                 Objects.requireNonNull(expression, "expression must not be null"),
                 expression.getClass().getSimpleName()
         );
+    }
+
+    private static @NotNull String describeProducedValue(@NotNull ValueOpItem item) {
+        return switch (item) {
+            case CallItem callItem -> "call '" + callItem.callableName() + "'";
+            default -> item.getClass().getSimpleName() + " anchored at " + item.anchor().getClass().getSimpleName();
+        };
     }
 
     private static @NotNull GdType requireCallReturnType(

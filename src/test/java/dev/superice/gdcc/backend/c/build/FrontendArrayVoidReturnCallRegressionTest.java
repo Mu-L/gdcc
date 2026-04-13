@@ -34,7 +34,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class FrontendArrayConstructorVoidInvestigationTest {
+/// Narrow fake-build anchors for the former "array constructor lowered to void" investigation.
+///
+/// Broader end-to-end coverage now lives in `FrontendVoidReturnCallIntegrationTest`; this class stays
+/// focused on the former Array-only probe so the original codegen/build regression remains easy to diagnose.
+public class FrontendArrayVoidReturnCallRegressionTest {
     @Test
     void localArrayConstructorKeepsArrayTypeAcrossIndexedMutationFlow(@TempDir Path tempDir) throws Exception {
         var lowered = lowerModule(
@@ -53,9 +57,10 @@ class FrontendArrayConstructorVoidInvestigationTest {
         );
 
         assertArrayConstructBuiltinResults(lowered.function());
+        assertNoEmittedVoidResultSlots(lowered.function());
 
         var projectInfo = new CProjectInfo(
-                "frontend_array_ctor_indexed_probe",
+                "frontend_array_void_return_indexed_regression",
                 GodotVersion.V451,
                 tempDir.resolve("project_indexed"),
                 COptimizationLevel.DEBUG,
@@ -87,7 +92,7 @@ class FrontendArrayConstructorVoidInvestigationTest {
         assertArrayConstructBuiltinResults(lowered.function());
 
         var projectInfo = new CProjectInfo(
-                "frontend_array_ctor_dynamic_probe",
+                "frontend_array_void_return_dynamic_helper_regression",
                 GodotVersion.V451,
                 tempDir.resolve("project_dynamic"),
                 COptimizationLevel.DEBUG,
@@ -118,7 +123,7 @@ class FrontendArrayConstructorVoidInvestigationTest {
         assertArrayConstructBuiltinResults(lowered.function());
 
         var projectInfo = new CProjectInfo(
-                "frontend_array_ctor_push_back_probe",
+                "frontend_array_void_return_push_back_regression",
                 GodotVersion.V451,
                 tempDir.resolve("project_push_back"),
                 COptimizationLevel.DEBUG,
@@ -177,7 +182,7 @@ class FrontendArrayConstructorVoidInvestigationTest {
 
     private static void assertBuildSucceedsWithArrayConstructor(
             @NotNull CProjectInfo projectInfo,
-            @NotNull BuildProbe lowered
+            @NotNull RegressionFixture lowered
     ) throws IOException {
         var buildResult = buildWithFakeCompiler(projectInfo, lowered);
         var entrySource = Files.readString(projectInfo.projectPath().resolve("entry.c"));
@@ -186,7 +191,7 @@ class FrontendArrayConstructorVoidInvestigationTest {
         assertFalse(entrySource.contains("Builtin constructor validation failed: 'void'"), entrySource);
     }
 
-    private static @NotNull BuildProbe lowerModule(
+    private static @NotNull RegressionFixture lowerModule(
             @NotNull Path sourcePath,
             @NotNull String source,
             @NotNull Map<String, String> topLevelCanonicalNameMap
@@ -198,7 +203,11 @@ class FrontendArrayConstructorVoidInvestigationTest {
 
         var diagnostics = new DiagnosticManager();
         var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
-        var module = new FrontendModule("frontend_array_constructor_void_probe", List.of(unit), topLevelCanonicalNameMap);
+        var module = new FrontendModule(
+                "frontend_array_void_return_call_regression",
+                List.of(unit),
+                topLevelCanonicalNameMap
+        );
         var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
 
         assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
@@ -206,13 +215,13 @@ class FrontendArrayConstructorVoidInvestigationTest {
         assertEquals(1, lowered.getClassDefs().size());
 
         var lirClass = lowered.getClassDefs().getFirst();
-        var function = requireFunction(lirClass, "compute");
-        return new BuildProbe(lowered, classRegistry, lirClass, function);
+        var function = requireComputeFunction(lirClass);
+        return new RegressionFixture(lowered, classRegistry, lirClass, function);
     }
 
     private static @NotNull CBuildResult buildWithFakeCompiler(
             @NotNull CProjectInfo projectInfo,
-            @NotNull BuildProbe lowered
+            @NotNull RegressionFixture lowered
     ) throws IOException {
         var fakeCompiler = new CCompiler() {
             @Override
@@ -237,11 +246,11 @@ class FrontendArrayConstructorVoidInvestigationTest {
         return new CProjectBuilder(fakeCompiler).buildProject(projectInfo, codegen);
     }
 
-    private static @NotNull LirFunctionDef requireFunction(@NotNull LirClassDef lirClass, @NotNull String functionName) {
+    private static @NotNull LirFunctionDef requireComputeFunction(@NotNull LirClassDef lirClass) {
         return lirClass.getFunctions().stream()
-                .filter(function -> function.getName().equals(functionName))
+                .filter(function -> function.getName().equals("compute"))
                 .findFirst()
-                .orElseThrow(() -> new AssertionError("Missing function " + functionName + " in " + lirClass.getName()));
+                .orElseThrow(() -> new AssertionError("Missing function compute in " + lirClass.getName()));
     }
 
     private static @NotNull List<LirInstruction> allInstructions(@NotNull LirFunctionDef function) {
@@ -252,7 +261,7 @@ class FrontendArrayConstructorVoidInvestigationTest {
         return List.copyOf(instructions);
     }
 
-    private record BuildProbe(
+    private record RegressionFixture(
             @NotNull dev.superice.gdcc.lir.LirModule module,
             @NotNull ClassRegistry classRegistry,
             @NotNull LirClassDef lirClass,

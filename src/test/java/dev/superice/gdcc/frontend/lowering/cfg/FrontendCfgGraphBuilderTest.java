@@ -473,6 +473,67 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
+    void buildExecutableBodyFailsFastWhenGlobalVoidCallLeaksIntoValueRequiredInitializer() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_value_required_global_void_call.gd",
+                """
+                        class_name CfgBuilderValueRequiredGlobalVoidCall
+                        extends RefCounted
+                        
+                        func ping(seed: int) -> int:
+                            var leaked = print(seed)
+                            return seed
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderValueRequiredGlobalVoidCall",
+                        "RuntimeCfgBuilderValueRequiredGlobalVoidCall"
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("Value-required"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("print"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("void"), exception.getMessage())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyFailsFastWhenExactVoidCallLeaksIntoReturnValue() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_value_required_exact_void_call.gd",
+                """
+                        class_name CfgBuilderValueRequiredExactVoidCall
+                        extends RefCounted
+                        
+                        func ping(values: Array[int], seed: int) -> int:
+                            return values.push_back(seed)
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderValueRequiredExactVoidCall",
+                        "RuntimeCfgBuilderValueRequiredExactVoidCall"
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("Value-required"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("push_back"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("void"), exception.getMessage())
+        );
+    }
+
+    @Test
     void buildExecutableBodyKeepsObjectPropertyDynamicReceiverReadOnSnapshotButPublishesDirectOwnerWriteback() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_object_variant_property_call.gd",

@@ -713,6 +713,7 @@ public final class FrontendCfgGraphBuilder {
             @Nullable String preferredResultValueId
     ) {
         var publishedCall = requireLoweringReadyCall(attributeCallStep);
+        checkValueProducingCall(publishedCall, attributeCallStep, "type-meta head call step");
         var argumentsBuild = buildArgumentValues(cursor, attributeCallStep.arguments());
         var resultValueId = chooseResultValueId(preferredResultValueId);
         argumentsBuild.cursor().currentSequence().items().add(new CallItem(
@@ -745,6 +746,7 @@ public final class FrontendCfgGraphBuilder {
             );
         }
         var publishedCall = requireLoweringReadyCall(callExpression);
+        checkValueProducingCall(publishedCall, callExpression, "bare call");
         var argumentsBuild = buildArgumentValues(cursor, callExpression.arguments());
         var resultValueId = chooseResultValueId(preferredResultValueId);
         argumentsBuild.cursor().currentSequence().items().add(new CallItem(
@@ -1326,6 +1328,7 @@ public final class FrontendCfgGraphBuilder {
             }
             case AttributeCallStep attributeCallStep -> {
                 var publishedCall = requireLoweringReadyCall(attributeCallStep);
+                checkValueProducingCall(publishedCall, attributeCallStep, "attribute call step");
                 receiverBuild = maybePublishDirectSlotReceiverAlias(
                         receiverBuild,
                         publishedCall,
@@ -2306,6 +2309,28 @@ public final class FrontendCfgGraphBuilder {
             );
         }
         return publishedCall;
+    }
+
+    /// Value-required call paths must never quietly reuse the statement-position resolved-void escape
+    /// hatch. If semantic/type-check regressions leak a `void` call here, lowering fails fast instead
+    /// of publishing a fake CFG value that later consumers would treat like a real slot-backed result.
+    private void checkValueProducingCall(
+            @NotNull FrontendResolvedCall publishedCall,
+            @NotNull Node callAnchor,
+            @NotNull String callSurface
+    ) {
+        if (publishedCall.status() == FrontendCallResolutionStatus.RESOLVED
+                && publishedCall.returnType() instanceof GdVoidType) {
+            throw new IllegalStateException(
+                    "Value-required "
+                            + callSurface
+                            + " must not lower RESOLVED void call '"
+                            + publishedCall.callableName()
+                            + "' at "
+                            + callAnchor.range()
+                            + "; statement-position discarded void calls must use the dedicated no-result path, so this indicates a type-check / compile-gate regression"
+            );
+        }
     }
 
     private @NotNull FrontendResolvedMember requireLoweringReadyMember(

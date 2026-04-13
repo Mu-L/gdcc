@@ -40,7 +40,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendBodyLoweringSupportTest {
     @Test
@@ -229,6 +228,73 @@ class FrontendBodyLoweringSupportTest {
                 () -> assertFalse(callItem.hasStandaloneMaterializationSlot()),
                 () -> assertNull(materializations.get(callItem.resultValueIdOrNull())),
                 () -> assertTrue(materializations.values().stream().noneMatch(materialization -> materialization.type().equals(GdVoidType.VOID)))
+        );
+    }
+
+    @Test
+    void collectCfgValueSlotTypesFailsFastWhenVoidCallPublishesStandaloneResultValue() throws Exception {
+        var analyzed = analyzeFunction(
+                "body_lowering_support_leaked_void_call_value.gd",
+                """
+                        class_name BodyLoweringSupportLeakedVoidCallValue
+                        extends RefCounted
+                        
+                        func ping(values: Array[int], seed: int) -> void:
+                            values.push_back(seed)
+                        """,
+                "ping",
+                Map.of(
+                        "BodyLoweringSupportLeakedVoidCallValue",
+                        "RuntimeBodyLoweringSupportLeakedVoidCallValue"
+                )
+        );
+
+        var originalGraph = new FrontendCfgGraphBuilder()
+                .buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+                .graph();
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, originalGraph.requireNode(originalGraph.entryNodeId()));
+        var originalCallItem = entryNode.items().stream()
+                .filter(CallItem.class::isInstance)
+                .map(CallItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing CallItem"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, originalGraph.requireNode(entryNode.nextId()));
+        var mutatedItems = entryNode.items().stream()
+                .map(item -> item == originalCallItem
+                        ? new CallItem(
+                        originalCallItem.anchor(),
+                        originalCallItem.callableName(),
+                        originalCallItem.receiverValueIdOrNull(),
+                        originalCallItem.argumentValueIds(),
+                        "v_void_leak",
+                        originalCallItem.writableRoutePayloadOrNull()
+                )
+                        : item)
+                .toList();
+        var mutatedGraph = new FrontendCfgGraph(
+                originalGraph.entryNodeId(),
+                Map.of(
+                        entryNode.id(),
+                        new FrontendCfgGraph.SequenceNode(entryNode.id(), mutatedItems, entryNode.nextId()),
+                        stopNode.id(),
+                        stopNode
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> FrontendBodyLoweringSupport.collectCfgValueSlotTypes(
+                        mutatedGraph,
+                        analyzed.analysisData(),
+                        new ClassRegistry(ExtensionApiLoader.loadDefault())
+                )
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("v_void_leak"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("push_back"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("void"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("resultValueIdOrNull"), exception.getMessage())
         );
     }
 

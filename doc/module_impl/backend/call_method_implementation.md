@@ -7,7 +7,7 @@
 
 - 状态：Implemented / Maintained
 - 范围：`backend.c` 的 `CALL_METHOD` 代码生成与调用契约
-- 更新时间：2026-02-27
+- 更新时间：2026-04-13
 - 关联基线：
   - `doc/module_impl/call_global_implementation.md`
   - `doc/module_impl/cbodybuilder_implementation.md`
@@ -41,6 +41,7 @@
   - `void` 方法禁止提供 `resultId`
   - 非 `void` 方法允许 `discard`
   - `resultId` 非空时必须存在、非 ref、类型兼容
+- frontend 当前的稳定合同是：discarded resolved-void exact/global call 已 lower 为 `resultId = null`；这里保留的 `void + resultId` 检查只服务于坏 IR fail-fast
 - 静态方法通过实例 `call_method` 时允许生成，但会输出 warning
 
 ### 已实现默认参数补全
@@ -127,6 +128,14 @@
   - 动态分派（OBJECT/VARIANT）及 pack/unpack
   - 重载决议与边界失败路径
   - GDCC receiver -> ENGINE owner 指针转换回归
+- `src/test/java/dev/superice/gdcc/backend/c/build/FrontendArrayVoidReturnCallRegressionTest.java`
+  - former array-constructor/void-call drift 的 fake build 回归
+  - `push_back + size()` / `push_back + dynamic helper` 成功路径
+  - frontend 已不再发布 void result slot，backend 旧 guard rail 仅用于坏 IR fail-fast
+- `src/test/java/dev/superice/gdcc/backend/c/build/FrontendVoidReturnCallIntegrationTest.java`
+  - broader end-to-end void-return call contract
+  - discarded global `print(...)`、non-bare attribute void call、property-backed writable-route writeback、`Node.new()` constructor boundary
+  - static type-meta head `Node.print_orphan_nodes()` 继续以 negative build 方式锚定当前 `CALL_STATIC_METHOD` backend gap
 - `src/test/java/dev/superice/gdcc/backend/c/gen/CallMethodInsnGenEngineTest.java`
   - 真实运行覆盖与生成文本断言（含 vararg、跨 GDCC 调用、父类类型变量触发动态回退）
 - `src/test/java/dev/superice/gdcc/backend/c/gen/CBodyBuilderPhaseCTest.java`

@@ -198,9 +198,9 @@ public class CCodegen implements Codegen {
                     if (variable.ref()) {
                         continue;
                     }
-                    // Frontend still publishes transient void temps for exact void-return calls.
-                    // Phase A only removes the misleading __prepare__ constructor so later call
-                    // validation can surface the real result-slot contract mismatch.
+                    // Discarded void-return calls no longer publish result slots, but backend still
+                    // skips any stray void variables so invalid IR fails at the real opcode/value
+                    // contract boundary instead of drifting into a fake constructor path.
                     if (variable.type() instanceof GdVoidType) {
                         continue;
                     }

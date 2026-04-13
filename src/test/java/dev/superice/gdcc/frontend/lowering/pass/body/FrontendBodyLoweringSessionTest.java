@@ -19,6 +19,7 @@ import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -34,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendBodyLoweringSessionTest {
@@ -148,6 +150,46 @@ class FrontendBodyLoweringSessionTest {
                 () -> assertEquals("source_variant", directVariantSlotId),
                 () -> assertTrue(concreteBlock.getNonTerminatorInstructions().isEmpty()),
                 () -> assertTrue(variantBlock.getNonTerminatorInstructions().isEmpty())
+        );
+    }
+
+    @Test
+    void materializeFrontendBoundaryValueFailsFastForVoidSourceOrTarget() throws Exception {
+        var session = prepareSession();
+        var sourceVoidBlock = new LirBasicBlock("source_void");
+        var targetVoidBlock = new LirBasicBlock("target_void");
+        session.ensureVariable("source_void", GdVoidType.VOID);
+        session.ensureVariable("source_value", GdIntType.INT);
+
+        var sourceException = assertThrows(
+                IllegalStateException.class,
+                () -> session.materializeFrontendBoundaryValue(
+                        sourceVoidBlock,
+                        "source_void",
+                        GdVoidType.VOID,
+                        GdIntType.INT,
+                        "return_value"
+                )
+        );
+        var targetException = assertThrows(
+                IllegalStateException.class,
+                () -> session.materializeFrontendBoundaryValue(
+                        targetVoidBlock,
+                        "source_value",
+                        GdIntType.INT,
+                        GdVoidType.VOID,
+                        "call_arg"
+                )
+        );
+
+        assertAll(
+                () -> assertTrue(sourceException.getMessage().contains("return_value"), sourceException.getMessage()),
+                () -> assertTrue(sourceException.getMessage().contains("source type void"), sourceException.getMessage()),
+                () -> assertTrue(sourceException.getMessage().contains("result slots"), sourceException.getMessage()),
+                () -> assertTrue(targetException.getMessage().contains("call_arg"), targetException.getMessage()),
+                () -> assertTrue(targetException.getMessage().contains("target type void"), targetException.getMessage()),
+                () -> assertTrue(sourceVoidBlock.getNonTerminatorInstructions().isEmpty()),
+                () -> assertTrue(targetVoidBlock.getNonTerminatorInstructions().isEmpty())
         );
     }
 

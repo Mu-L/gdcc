@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：Phase A-C Completed / Phase D Planned
+- 状态：Phase A-D Completed
 - 范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
   - `src/main/java/dev/superice/gdcc/backend/c/gen/**`
@@ -36,11 +36,18 @@
   - Phase A 已完成：backend 已停止在 `__prepare__` 为 `GdVoidType` 变量自动注入默认初始化
   - Phase B 已完成：frontend 已把 exact instance / utility-global 的 void-return call lowering 成 `resultId = null`
   - Phase C 已完成：statement-position `RESOLVED(void)` call 不再发布 `CallItem.resultValueIdOrNull()`，也不再声明对应 CFG slot
-- 当前只剩文档/回归收口性质的 Phase D：
-  - 把调查探针与错误记录进一步收敛成长期回归与事实源
+  - Phase D 已完成：调查探针已收敛为正式回归，错误记录与长期事实源已同步
 - `E:/Projects/gdparser` 对这条问题帮助有限。
   - 快速检索仅看到 source-level typed-array 示例
   - 未发现与 backend/LIR/`__prepare__`/call insn 合同直接相关的实现
+- 后续回归扩面已明确分层：
+  - `FrontendArrayVoidReturnCallRegressionTest` 继续保留 former Array-only fake-build 锚点
+  - `FrontendVoidReturnCallIntegrationTest` 负责 broader end-to-end void-return call 合同：
+    - discarded global `print(...)`
+    - non-bare attribute void call
+    - property-backed `Array.push_back(...)` writable-route writeback
+    - `Node.new()` constructor boundary
+    - static type-meta head 仍以 negative build 基线锚定当前 `CALL_STATIC_METHOD` backend gap
 
 ## 已确认的问题链路
 
@@ -72,6 +79,7 @@
   - Phase C 现已继续从 CFG/materialization 侧收口：
     - statement-position `RESOLVED(void)` call 不再发布 temp value / slot
     - value-required site 若仍把 `void` call 漏进 value path，则继续保留 fail-fast
+    - fail-fast 现在同时锚定 CFG builder 与 body-lowering value materialization / boundary helper，避免坏 CFG 继续漂移成 `cfg_tmp_* : void` 或未初始化读
 
 ### 问题链 C：Phase A 前 backend 先在 `__prepare__` 炸，再在 call generator 处炸
 
@@ -93,7 +101,7 @@
 ### 临时调查测试
 
 - 探针文件：
-  - `src/test/java/dev/superice/gdcc/backend/c/build/FrontendArrayConstructorVoidInvestigationTest.java`
+  - `src/test/java/dev/superice/gdcc/backend/c/build/FrontendArrayVoidReturnCallRegressionTest.java`
 - 已确认现象：
   - pure indexed flow 已恢复
   - `push_back + size()` 仍复现
@@ -215,13 +223,13 @@
 - [x] A1. `CCodegen.generateFunctionPrepareBlock()` 已跳过 `GdVoidType` 变量，不再为它们注入默认初始化。
 - [x] A2. 已补齐 / 更新 targeted tests：
   - `CPhaseAControlFlowAndFinallyTest` 新增 `__prepare__` skip-void 断言。
-  - `FrontendArrayConstructorVoidInvestigationTest` 已把中间态失败预期更新为 backend call generator guard rail。
+  - `FrontendArrayVoidReturnCallRegressionTest` 已吸收当时的中间态失败预期更新，并在当前代码库中作为正式回归保留。
 - [x] A3. 已运行 targeted tests，并确认 Phase A 止血目标与相邻 guard rail 继续成立：
   - `CPhaseAControlFlowAndFinallyTest`
   - `CConstructInsnGenTest`
   - `CallMethodInsnGenTest`
   - `CallGlobalInsnGenTest`
-  - `FrontendArrayConstructorVoidInvestigationTest`
+  - `FrontendArrayVoidReturnCallRegressionTest`
 
 ### 当前已完成结果
 
@@ -236,7 +244,7 @@
   - `CPhaseAControlFlowAndFinallyTest` 通过。
   - `CConstructInsnGenTest` 通过。
   - `CallMethodInsnGenTest` 与 `CallGlobalInsnGenTest` 通过。
-  - `FrontendArrayConstructorVoidInvestigationTest` 通过，并确认失败点已后移到 call generator guard rail。
+  - `FrontendArrayVoidReturnCallRegressionTest` 通过，并确认失败点曾后移到 call generator guard rail。
 
 ### 实施步骤
 
@@ -283,14 +291,14 @@
     - `PackedInt32Array.push_back(...)` 继续断言保留 non-null result slot，避免误伤非 void route
   - `FrontendBodyLoweringSupportTest`
     - 新增说明性测试，明确 Phase B 后 CFG/materialization 仍保留 exact void call 的 `TEMP_SLOT`
-  - `FrontendArrayConstructorVoidInvestigationTest`
+  - `FrontendArrayVoidReturnCallRegressionTest`
     - 已从 Phase A 中间态失败探针切换为当前成功回归
 - [x] B3. 已运行 targeted tests，并确认 frontend 修复与 backend guard rail 同时成立：
   - `FrontendBodyLoweringSupportTest`
   - `FrontendLoweringBodyInsnPassTest`
   - `CallMethodInsnGenTest`
   - `CallGlobalInsnGenTest`
-  - `FrontendArrayConstructorVoidInvestigationTest`
+  - `FrontendArrayVoidReturnCallRegressionTest`
 
 ### 当前已完成结果
 
@@ -376,7 +384,7 @@
   - `FrontendWritableRouteSupportTest` 通过。
   - `FrontendLoweringBodyInsnPassTest` 通过。
   - `CallMethodInsnGenTest` 与 `CallGlobalInsnGenTest` 通过。
-  - `FrontendArrayConstructorVoidInvestigationTest` 通过。
+  - `FrontendArrayVoidReturnCallRegressionTest` 通过。
 
 ### 实施步骤
 
@@ -432,6 +440,9 @@
 - body lowering 发出的 call instruction 继续保持 `resultId = null`
 - payload-backed mutating receiver writeback 不受影响
 - value-required site 若仍把 `void` call 漏进 CFG value path，应继续 fail-fast，而不是 silent fallback
+- 这条 fail-fast 现在是双层护栏：
+  - CFG builder 直接拒绝 value-required `RESOLVED(void)` call 发布 result value id
+  - body-lowering materialization / boundary helper 继续拒绝 standalone `void` slot 与 `void` ordinary boundary
 
 ### Phase D：把调查探针转成正式回归并同步文档
 
@@ -440,12 +451,58 @@
 - 把“当前问题存在性探针”转成“修复后长期回归锚点”
 - 清理旧问题描述，避免后续继续按“constructor lowered to void”误判
 
+### 执行状态
+
+- [x] D1. 原 `FrontendArrayConstructorVoidInvestigationTest` 已收敛并更名为 `FrontendArrayVoidReturnCallRegressionTest`，不再保留 investigation/probe 语义。
+- [x] D2. 已把三条最小回归形状稳定锚定到正式回归：
+  - pure indexed flow：继续成功
+  - `push_back + size()`：成功
+  - `push_back + dynamic helper`：成功
+- [x] D3. 已同步长期事实源与错误记录文档：
+  - `doc/test_error/frontend_array_constructor_void_lowering.md`
+  - `doc/module_impl/frontend/frontend_rules.md`
+  - `doc/module_impl/backend/call_method_implementation.md`
+- [x] D4. 已运行 targeted tests，确认正式回归、frontend negative path 与 backend guard rail 继续同时成立。
+
+### 当前已完成结果
+
+- former investigation test 现已正式收口为 `FrontendArrayVoidReturnCallRegressionTest`，并继续以 fake build 方式覆盖：
+  - pure indexed non-regression
+  - `push_back + size()` 回归
+  - `push_back + dynamic helper` 回归
+- `FrontendVoidReturnCallIntegrationTest` 已补上更宽的端到端合同锚点：
+  - discarded global `print(...)` runtime path
+  - non-bare attribute void call runtime path
+  - property-backed `Array.push_back(...)` writable-route writeback 仍发生
+  - `Node.new()` constructor boundary 未受 discarded-void 规则污染
+  - `Node.print_orphan_nodes()` 当前继续作为 `CALL_STATIC_METHOD` backend 非目标的 negative build 基线
+- 该正式回归类已明确锚定两类负向事实：
+  - emitted LIR 中不再残留 `GdVoidType` result slot
+  - fake build 产物中不再出现旧的 `construct_builtin(void)` 误导性失败文案
+- `frontend_rules.md` 已收回 frontend 长期合同：
+  - statement-position `RESOLVED(void)` call 是当前唯一允许不发布 result value / `cfg_tmp_*` 的 ordinary call surface
+- `call_method_implementation.md` 已补充 backend 长期合同：
+  - frontend 已稳定把 discarded resolved-void exact/global call lowering 为 `resultId = null`
+  - backend 的 `void + resultId` 校验继续只服务于坏 IR fail-fast
+- 当前 targeted validation 结果：
+  - `FrontendCfgGraphTest` 通过。
+  - `FrontendCfgGraphBuilderTest` 通过。
+  - `FrontendLoweringBuildCfgPassTest` 通过。
+  - `FrontendBodyLoweringSupportTest` 通过。
+  - `FrontendWritableRouteSupportTest` 通过。
+  - `CPhaseAControlFlowAndFinallyTest` 通过。
+  - `CConstructInsnGenTest` 通过。
+  - `CallMethodInsnGenTest` 与 `CallGlobalInsnGenTest` 通过。
+  - `FrontendLoweringBodyInsnPassTest` 通过。
+  - `FrontendArrayVoidReturnCallRegressionTest` 通过。
+  - `FrontendVoidReturnCallIntegrationTest` 通过。
+
 ### 实施步骤
 
 1. 处理 `FrontendArrayConstructorVoidInvestigationTest`：
    - Phase B 已先把断言切到成功路径，以免继续锁定中间态失败
    - 若保留该文件：
-     - 进一步改名或收敛成正式 regression test
+      - 进一步改名或收敛成正式 regression test
    - 若拆分：
      - 用更明确命名的正式 regression test 替代
 2. 正式锚定三条最小回归形状：
@@ -478,12 +535,13 @@
 8. `CallMethodInsnGenTest`
 9. `CallGlobalInsnGenTest`
 10. `FrontendLoweringBodyInsnPassTest`
-11. `FrontendArrayConstructorVoidInvestigationTest`
+11. `FrontendArrayVoidReturnCallRegressionTest`
+12. `FrontendVoidReturnCallIntegrationTest`
 
 推荐命令：
 
 ```powershell
-rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests FrontendCfgGraphTest,FrontendCfgGraphBuilderTest,FrontendLoweringBuildCfgPassTest,FrontendBodyLoweringSupportTest,FrontendWritableRouteSupportTest,CPhaseAControlFlowAndFinallyTest,CConstructInsnGenTest,CallMethodInsnGenTest,CallGlobalInsnGenTest,FrontendLoweringBodyInsnPassTest,FrontendArrayConstructorVoidInvestigationTest
+rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests FrontendCfgGraphTest,FrontendCfgGraphBuilderTest,FrontendLoweringBuildCfgPassTest,FrontendBodyLoweringSupportTest,FrontendWritableRouteSupportTest,CPhaseAControlFlowAndFinallyTest,CConstructInsnGenTest,CallMethodInsnGenTest,CallGlobalInsnGenTest,FrontendLoweringBodyInsnPassTest,FrontendArrayVoidReturnCallRegressionTest,FrontendVoidReturnCallIntegrationTest
 ```
 
 若某个 phase 只改动一侧代码，则优先只跑该侧相邻测试，不必一次性跑完整串联。
@@ -491,6 +549,7 @@ rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps
 ## 非目标与延期项
 
 - 不在本次修复中扩大到新的 static-call backend surface
+- 当前仅把 static type-meta head 的 discarded-void 形态锚定为 negative build 基线，不把它误写成已支持 surface
 - 不把 nullable `resultValueId` 扩散成“所有 `ValueBuild` / 所有 expression path 都可空”的全面重构
 - 不放宽 value-required site 对 void call 的 typed diagnostic / fail-fast 约束
 - 不在本次修复中跑全量测试或端到端全量 Godot suite
