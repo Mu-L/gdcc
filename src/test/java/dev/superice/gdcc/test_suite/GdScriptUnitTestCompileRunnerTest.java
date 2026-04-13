@@ -13,6 +13,16 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 
 public class GdScriptUnitTestCompileRunnerTest {
     private static final List<String> EXPECTED_SCRIPT_PATHS = List.of(
+            "abi/array/plain_surface_roundtrip.gd",
+            "abi/typed_array/array_leaf_return_roundtrip.gd",
+            "abi/typed_array/builtin_method_wrong_typed_guard.gd",
+            "abi/typed_array/method_exact_roundtrip.gd",
+            "abi/typed_array/method_plain_guard.gd",
+            "abi/typed_array/method_wrong_typed_guard.gd",
+            "abi/typed_array/property_plain_guard.gd",
+            "abi/typed_array/property_roundtrip.gd",
+            "abi/typed_array/property_wrong_typed_guard.gd",
+            "abi/typed_array/return_roundtrip.gd",
             "abi/typed_dictionary/method_exact_roundtrip.gd",
             "abi/typed_dictionary/method_plain_guard.gd",
             "abi/typed_dictionary/method_wrong_typed_guard.gd",
