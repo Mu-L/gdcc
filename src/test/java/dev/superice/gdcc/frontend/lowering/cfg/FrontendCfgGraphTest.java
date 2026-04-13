@@ -219,6 +219,7 @@ class FrontendCfgGraphTest {
         var staticMemberItem = new MemberLoadItem(propertyStep, "ZERO", null, "v7");
         var subscriptItem = new SubscriptLoadItem(expression, "items", "recv1", List.of("arg0"), "v2");
         var callItem = new CallItem(expression, "build", "recv2", List.of("arg1", "arg2"), "v3", callPayload);
+        var discardedVoidCallItem = new CallItem(expression, "print", null, List.of("arg3"), null);
         var boolItem = new BoolConstantItem(expression, true, "v4");
         var mergeItem = new MergeValueItem(expression, "v4", "v5");
         var aliasItem = new DirectSlotAliasValueItem(expression, "v8");
@@ -268,6 +269,9 @@ class FrontendCfgGraphTest {
                 () -> assertEquals("v3", callItem.resultValueIdOrNull()),
                 () -> assertEquals(List.of("recv2", "arg1", "arg2"), callItem.operandValueIds()),
                 () -> assertSame(callPayload, callItem.writableRoutePayloadOrNull()),
+                () -> assertEquals("print", discardedVoidCallItem.callableName()),
+                () -> assertNull(discardedVoidCallItem.resultValueIdOrNull()),
+                () -> assertEquals(List.of("arg3"), discardedVoidCallItem.operandValueIds()),
                 () -> assertSame(expression, boolItem.anchor()),
                 () -> assertEquals(List.of(), boolItem.operandValueIds()),
                 () -> assertEquals("v4", boolItem.resultValueIdOrNull()),
@@ -288,6 +292,7 @@ class FrontendCfgGraphTest {
                 () -> assertEquals("v9", assignmentValueItem.resultValueIdOrNull()),
                 () -> assertTrue(opaqueValue.hasStandaloneMaterializationSlot()),
                 () -> assertTrue(callItem.hasStandaloneMaterializationSlot()),
+                () -> assertFalse(discardedVoidCallItem.hasStandaloneMaterializationSlot()),
                 () -> assertTrue(boolItem.hasStandaloneMaterializationSlot()),
                 () -> assertTrue(mergeItem.hasStandaloneMaterializationSlot()),
                 () -> assertTrue(compoundItem.hasStandaloneMaterializationSlot()),

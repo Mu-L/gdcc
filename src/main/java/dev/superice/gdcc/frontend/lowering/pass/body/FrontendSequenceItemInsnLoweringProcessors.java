@@ -351,14 +351,14 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                         block,
                         node,
                         resolvedCall,
-                        FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId())
+                        requireMaterializedResultSlotId(node, "constructor call")
                 );
                 case DYNAMIC_FALLBACK -> lowerDynamicInstanceCall(
                         session,
                         block,
                         node,
                         resolvedCall,
-                        FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId())
+                        requireMaterializedResultSlotId(node, "dynamic call")
                 );
                 case UNKNOWN -> throw session.unsupportedSequenceItem(
                         node,
@@ -377,7 +377,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var receiverSlotId = session.materializeCallReceiverLeaf(block, node);
             var arguments = session.materializeCallArguments(block, node, resolvedCall);
             block.appendNonTerminatorInstruction(new CallMethodInsn(
-                    emittedExactVoidAwareResultSlotIdOrNull(node, resolvedCall),
+                    emittedExactResultSlotIdOrNull(node, resolvedCall),
                     resolvedCall.callableName(),
                     receiverSlotId,
                     arguments
@@ -394,14 +394,14 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var arguments = session.materializeCallArguments(block, node, resolvedCall);
             if (resolvedCall.receiverType() == null) {
                 block.appendNonTerminatorInstruction(new CallGlobalInsn(
-                        emittedExactVoidAwareResultSlotIdOrNull(node, resolvedCall),
+                        emittedExactResultSlotIdOrNull(node, resolvedCall),
                         resolvedCall.callableName(),
                         arguments
                 ));
                 return block;
             }
             block.appendNonTerminatorInstruction(new CallStaticMethodInsn(
-                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
+                    emittedExactResultSlotIdOrNull(node, resolvedCall),
                     session.requireStaticReceiverName(resolvedCall.receiverType()),
                     resolvedCall.callableName(),
                     arguments
@@ -459,16 +459,28 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             return continueAfterDynamicReceiverWriteback(session, block, mutatingReceiverRoute, receiverSlotId);
         }
 
-        /// Phase B keeps CFG-side call temp publication untouched, but emitted exact/global void calls
-        /// must stop forwarding that temp into backend call instructions.
-        private @Nullable String emittedExactVoidAwareResultSlotIdOrNull(
+        /// Exact call routes may legally omit a result slot only for resolved-void statement calls.
+        /// Any non-void exact route that reaches body lowering without a published result id is still
+        /// an invariant violation instead of a signal to silently drop the value.
+        private @Nullable String emittedExactResultSlotIdOrNull(
                 @NotNull CallItem node,
                 @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedCall resolvedCall
         ) {
             if (resolvedCall.returnType() instanceof GdVoidType) {
                 return null;
             }
-            return FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
+            return requireMaterializedResultSlotId(node, "non-void exact call '" + resolvedCall.callableName() + "'");
+        }
+
+        private @NotNull String requireMaterializedResultSlotId(
+                @NotNull CallItem node,
+                @NotNull String contractDetail
+        ) {
+            var resultValueId = node.resultValueIdOrNull();
+            if (resultValueId == null) {
+                throw new IllegalStateException(contractDetail + " must publish resultValueIdOrNull before body lowering");
+            }
+            return FrontendBodyLoweringSupport.cfgTempSlotId(resultValueId);
         }
 
         /// Returns the block that later lowering must keep appending to after post-call receiver

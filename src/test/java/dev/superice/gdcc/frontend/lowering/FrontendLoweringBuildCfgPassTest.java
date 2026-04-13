@@ -354,6 +354,55 @@ class FrontendLoweringBuildCfgPassTest {
         );
     }
 
+    @Test
+    void runBuildsDiscardedGlobalVoidCallWithoutLeakingStopReturnValue() throws Exception {
+        var prepared = prepareContext(
+                "build_cfg_discarded_global_void_call.gd",
+                """
+                        class_name BuildCfgDiscardedGlobalVoidCall
+                        extends RefCounted
+                        
+                        func ping(seed: int) -> int:
+                            print(seed)
+                            return seed
+                        """,
+                Map.of(
+                        "BuildCfgDiscardedGlobalVoidCall",
+                        "RuntimeBuildCfgDiscardedGlobalVoidCall"
+                )
+        );
+
+        new FrontendLoweringBuildCfgPass().run(prepared.context());
+
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBuildCfgDiscardedGlobalVoidCall",
+                "ping"
+        );
+        var graph = pingContext.requireFrontendCfgGraph();
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode(graph.entryNodeId()));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode(entryNode.nextId()));
+        var entryItems = entryNode.items();
+        var voidCall = entryItems.stream()
+                .filter(CallItem.class::isInstance)
+                .map(CallItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing discarded void CallItem"));
+        var returnValue = entryItems.stream()
+                .filter(OpaqueExprValueItem.class::isInstance)
+                .map(OpaqueExprValueItem.class::cast)
+                .reduce((_, second) -> second)
+                .orElseThrow(() -> new AssertionError("Missing return value item"));
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertNull(voidCall.resultValueIdOrNull()),
+                () -> assertFalse(voidCall.hasStandaloneMaterializationSlot()),
+                () -> assertEquals(returnValue.resultValueId(), stopNode.returnValueIdOrNull())
+        );
+    }
+
     private static @NotNull FrontendCfgGraph.BranchNode requireReachableBranch(
             @NotNull FrontendCfgGraph graph,
             @NotNull String entryId,

@@ -308,6 +308,8 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertEquals("push_back", callValue.callableName()),
                 () -> assertEquals(receiverValue.resultValueId(), callValue.receiverValueIdOrNull()),
                 () -> assertEquals(List.of(seedValue.resultValueId()), callValue.argumentValueIds()),
+                () -> assertNotNull(callValue.resultValueIdOrNull()),
+                () -> assertTrue(callValue.hasStandaloneMaterializationSlot()),
                 () -> assertSame(callStep, callPayload.routeAnchor()),
                 () -> assertEquals(FrontendWritableRoutePayload.RootKind.DIRECT_SLOT, callPayload.root().kind()),
                 () -> assertSame(receiver, callPayload.root().anchor()),
@@ -318,6 +320,59 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertEquals(List.of(), callPayload.leaf().operandValueIds()),
                 () -> assertNull(callPayload.leaf().memberNameOrNull()),
                 () -> assertNull(callPayload.leaf().subscriptAccessKindOrNull()),
+                () -> assertTrue(callPayload.reverseCommitSteps().isEmpty())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesDiscardedExactVoidReceiverCallWithoutResultSlot() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_exact_void_receiver_call.gd",
+                """
+                        class_name CfgBuilderExactVoidReceiverCall
+                        extends RefCounted
+                        
+                        func ping(values: Array[int], seed: int) -> void:
+                            values.push_back(seed)
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderExactVoidReceiverCall",
+                        "RuntimeCfgBuilderExactVoidReceiverCall"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
+        var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
+        var callStep = assertInstanceOf(AttributeCallStep.class, expression.steps().getFirst());
+        var seed = assertInstanceOf(IdentifierExpression.class, callStep.arguments().getFirst());
+
+        var items = entryNode.items();
+        var receiverValue = assertInstanceOf(DirectSlotAliasValueItem.class, items.get(0));
+        var seedValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(1));
+        var callValue = assertInstanceOf(CallItem.class, items.get(2));
+        var callPayload = requireNotNull(
+                callValue.writableRoutePayloadOrNull(),
+                "exact void receiver call should still publish a writable payload"
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(3, items.size()),
+                () -> assertSame(receiver, receiverValue.expression()),
+                () -> assertSame(seed, seedValue.expression()),
+                () -> assertSame(callStep, callValue.anchor()),
+                () -> assertEquals("push_back", callValue.callableName()),
+                () -> assertEquals(receiverValue.resultValueId(), callValue.receiverValueIdOrNull()),
+                () -> assertEquals(List.of(seedValue.resultValueId()), callValue.argumentValueIds()),
+                () -> assertNull(callValue.resultValueIdOrNull()),
+                () -> assertFalse(callValue.hasStandaloneMaterializationSlot()),
+                () -> assertEquals(FrontendWritableRoutePayload.RootKind.DIRECT_SLOT, callPayload.root().kind()),
+                () -> assertEquals(FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT, callPayload.leaf().kind()),
                 () -> assertTrue(callPayload.reverseCommitSteps().isEmpty())
         );
     }
@@ -367,9 +422,53 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertEquals("push_back", callValue.callableName()),
                 () -> assertEquals(receiverValue.resultValueId(), callValue.receiverValueIdOrNull()),
                 () -> assertEquals(List.of(seedValue.resultValueId()), callValue.argumentValueIds()),
+                () -> assertNotNull(callValue.resultValueIdOrNull()),
+                () -> assertTrue(callValue.hasStandaloneMaterializationSlot()),
                 () -> assertEquals(FrontendWritableRoutePayload.RootKind.DIRECT_SLOT, callPayload.root().kind()),
                 () -> assertEquals(FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT, callPayload.leaf().kind()),
                 () -> assertTrue(callPayload.reverseCommitSteps().isEmpty())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesDiscardedGlobalVoidCallWithoutResultSlot() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_discarded_global_void_call.gd",
+                """
+                        class_name CfgBuilderDiscardedGlobalVoidCall
+                        extends RefCounted
+                        
+                        func ping(seed: int) -> void:
+                            print(seed)
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderDiscardedGlobalVoidCall",
+                        "RuntimeCfgBuilderDiscardedGlobalVoidCall"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var callExpression = assertInstanceOf(CallExpression.class, statement.expression());
+        var seed = assertInstanceOf(IdentifierExpression.class, callExpression.arguments().getFirst());
+
+        var items = entryNode.items();
+        var seedValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(0));
+        var callValue = assertInstanceOf(CallItem.class, items.get(1));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(2, items.size()),
+                () -> assertSame(seed, seedValue.expression()),
+                () -> assertSame(callExpression, callValue.anchor()),
+                () -> assertEquals("print", callValue.callableName()),
+                () -> assertNull(callValue.receiverValueIdOrNull()),
+                () -> assertEquals(List.of(seedValue.resultValueId()), callValue.argumentValueIds()),
+                () -> assertNull(callValue.resultValueIdOrNull()),
+                () -> assertFalse(callValue.hasStandaloneMaterializationSlot())
         );
     }
 

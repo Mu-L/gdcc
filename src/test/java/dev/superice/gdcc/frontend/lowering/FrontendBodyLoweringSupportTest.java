@@ -34,10 +34,12 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendBodyLoweringSupportTest {
@@ -191,7 +193,7 @@ class FrontendBodyLoweringSupportTest {
     }
 
     @Test
-    void collectCfgValueMaterializationsKeepsExactVoidCallTempBackedUntilPhaseC() throws Exception {
+    void collectCfgValueMaterializationsSkipsDiscardedExactVoidCallResultSlot() throws Exception {
         var analyzed = analyzeFunction(
                 "body_lowering_support_exact_void_call_materialization.gd",
                 """
@@ -216,22 +218,17 @@ class FrontendBodyLoweringSupportTest {
                 .map(CallItem.class::cast)
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Missing CallItem"));
-        var materialization = java.util.Objects.requireNonNull(
-                FrontendBodyLoweringSupport.collectCfgValueMaterializations(
-                        graph,
-                        analyzed.analysisData(),
-                        new ClassRegistry(ExtensionApiLoader.loadDefault())
-                ).get(callItem.resultValueId()),
-                "Missing materialization for exact void call result"
+        var materializations = FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                graph,
+                analyzed.analysisData(),
+                new ClassRegistry(ExtensionApiLoader.loadDefault())
         );
 
         assertAll(
-                () -> assertEquals(GdVoidType.VOID, materialization.type()),
-                () -> assertEquals(
-                        FrontendBodyLoweringSupport.CfgValueMaterializationKind.TEMP_SLOT,
-                        materialization.kind()
-                ),
-                () -> assertNull(materialization.aliasSourceAnchorOrNull())
+                () -> assertNull(callItem.resultValueIdOrNull()),
+                () -> assertFalse(callItem.hasStandaloneMaterializationSlot()),
+                () -> assertNull(materializations.get(callItem.resultValueIdOrNull())),
+                () -> assertTrue(materializations.values().stream().noneMatch(materialization -> materialization.type().equals(GdVoidType.VOID)))
         );
     }
 

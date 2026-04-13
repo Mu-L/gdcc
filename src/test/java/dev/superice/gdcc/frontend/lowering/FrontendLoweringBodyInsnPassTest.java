@@ -314,6 +314,87 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runFailsFastWhenNonVoidExactCallLosesPublishedResultSlot() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_missing_exact_call_result.gd",
+                """
+                        class_name BodyInsnMissingExactCallResult
+                        extends RefCounted
+                        
+                        func helper(seed: int) -> int:
+                            return seed + 1
+                        
+                        func ping(seed: int) -> void:
+                            helper(seed)
+                        """,
+                Map.of(
+                        "BodyInsnMissingExactCallResult",
+                        "RuntimeBodyInsnMissingExactCallResult"
+                ),
+                true
+        );
+        var originalContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMissingExactCallResult",
+                "ping"
+        );
+        var originalGraph = originalContext.requireFrontendCfgGraph();
+        var originalCallItem = requireSingleValueProducerItem(originalGraph, CallItem.class);
+        var argumentProducer = requireValueProducerByResultId(
+                originalGraph,
+                originalCallItem.argumentValueIds().getFirst()
+        );
+        var mutatedGraph = new FrontendCfgGraph(
+                "seq_0",
+                Map.of(
+                        "seq_0",
+                        new FrontendCfgGraph.SequenceNode(
+                                "seq_0",
+                                List.of(
+                                        argumentProducer,
+                                        new CallItem(
+                                                originalCallItem.anchor(),
+                                                originalCallItem.callableName(),
+                                                originalCallItem.receiverValueIdOrNull(),
+                                                originalCallItem.argumentValueIds(),
+                                                null,
+                                                originalCallItem.writableRoutePayloadOrNull()
+                                        )
+                                ),
+                                "stop_1"
+                        ),
+                        "stop_1",
+                        new FrontendCfgGraph.StopNode("stop_1", FrontendCfgGraph.StopKind.RETURN, null)
+                )
+        );
+        var mutatedContext = new FunctionLoweringContext(
+                originalContext.kind(),
+                originalContext.sourcePath(),
+                originalContext.sourceClassRelation(),
+                originalContext.owningClass(),
+                originalContext.targetFunction(),
+                originalContext.sourceOwner(),
+                originalContext.loweringRoot(),
+                originalContext.analysisData()
+        );
+        mutatedContext.publishFrontendCfgGraph(mutatedGraph);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendBodyLoweringSession(
+                        mutatedContext,
+                        new ClassRegistry(ExtensionApiLoader.loadDefault())
+                ).run()
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("non-void exact call 'helper'"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("must publish resultValueIdOrNull"), exception.getMessage())
+        );
+    }
+
+    @Test
     void runFailsFastWhenIdentifierValueBindingPretendsToBeSelf() throws Exception {
         var prepared = prepareContext(
                 "body_insn_identifier_self_binding_value.gd",
@@ -962,10 +1043,12 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(1, countInstructions(varargInstructions, PackVariantInsn.class)),
                 () -> assertEquals(0, countInstructions(varargInstructions, UnpackVariantInsn.class)),
                 () -> assertTrue(packResultIds(varargInstructions).contains(onlyVariableOperandId(callVarargInsn.args()))),
+                () -> assertFalse(callVarargContext.targetFunction().getVariables().containsKey("cfg_tmp_v1")),
                 () -> assertNull(callVarargVariantInsn.resultId()),
                 () -> assertEquals(0, countInstructions(varargVariantInstructions, PackVariantInsn.class)),
                 () -> assertEquals(0, countInstructions(varargVariantInstructions, UnpackVariantInsn.class)),
-                () -> assertNotNull(onlyVariableOperandId(callVarargVariantInsn.args()))
+                () -> assertNotNull(onlyVariableOperandId(callVarargVariantInsn.args())),
+                () -> assertFalse(callVarargVariantContext.targetFunction().getVariables().containsKey("cfg_tmp_v1"))
         );
     }
 
@@ -1008,6 +1091,7 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals("cfg_tmp_v1", packInsn.valueId()),
                 () -> assertEquals(packInsn.resultId(), onlyVariableOperandId(callInsn.args())),
                 () -> assertFalse(pingContext.targetFunction().getVariables().containsKey("cfg_tmp_v0")),
+                () -> assertFalse(pingContext.targetFunction().getVariables().containsKey("cfg_tmp_v2")),
                 () -> assertTrue(assignSourcesByTarget(instructions).values().stream().noneMatch("values"::equals)),
                 () -> assertEquals(1, countInstructions(instructions, PackVariantInsn.class)),
                 () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))

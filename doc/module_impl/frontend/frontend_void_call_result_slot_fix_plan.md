@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：Phase A-B Completed / Phase C-D Planned
+- 状态：Phase A-C Completed / Phase D Planned
 - 范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
   - `src/main/java/dev/superice/gdcc/backend/c/gen/**`
@@ -35,10 +35,9 @@
 - 这条缺陷的 staged 修复状态如下：
   - Phase A 已完成：backend 已停止在 `__prepare__` 为 `GdVoidType` 变量自动注入默认初始化
   - Phase B 已完成：frontend 已把 exact instance / utility-global 的 void-return call lowering 成 `resultId = null`
-- 若要从根源上消除这条缺陷，仍需新增一条后续 phase：
-  - 让 `CallItem.resultValueId` 可空化
-  - 让 statement-position void call 不再发布 CFG value / slot
-  - 这条 phase 会触及 CFG builder、`ValueBuild`、body lowering 与多组测试，因此必须作为单独阶段实施，而不是混进 Phase A-B 的最小合同修复里
+  - Phase C 已完成：statement-position `RESOLVED(void)` call 不再发布 `CallItem.resultValueIdOrNull()`，也不再声明对应 CFG slot
+- 当前只剩文档/回归收口性质的 Phase D：
+  - 把调查探针与错误记录进一步收敛成长期回归与事实源
 - `E:/Projects/gdparser` 对这条问题帮助有限。
   - 快速检索仅看到 source-level typed-array 示例
   - 未发现与 backend/LIR/`__prepare__`/call insn 合同直接相关的实现
@@ -70,7 +69,9 @@
 - 这条 emitted-call 合同漂移已在 Phase B 修复：
   - exact instance void call 现在发出 `CallMethodInsn(null, ...)`
   - utility/global void call 现在发出 `CallGlobalInsn(null, ...)`
-  - 但 CFG/materialization 侧仍保留 void temp publication，等待 Phase C 收口
+  - Phase C 现已继续从 CFG/materialization 侧收口：
+    - statement-position `RESOLVED(void)` call 不再发布 temp value / slot
+    - value-required site 若仍把 `void` call 漏进 value path，则继续保留 fail-fast
 
 ### 问题链 C：Phase A 前 backend 先在 `__prepare__` 炸，再在 call generator 处炸
 
@@ -178,13 +179,12 @@
 ### 3. `CallItem` / `ValueBuild` 根因修复单独 staged rollout
 
 - graph core 已经部分支持 nullable `resultValueIdOrNull()`
-- 但 call/value 构图、`ValueBuild` 与大量测试仍默认“call 一定产值”
-- 因此新增的 root-fix phase 必须显式覆盖：
-  - `CallItem` record nullable 化
-  - `ValueBuild` nullable 化或 statement-expression 专用 discarded-call build surface
-  - CFG builder 对 statement-position void call 的特殊构图入口
-  - body lowering / materialization 对“无 resultId 的 call item”继续自然消费
-- 在该 phase 真正完成前，Phase A / Phase B 仍允许保留“void call CFG temp 仍存在，但 emitted call insn 已不再携带 resultId”的中间态
+- 已完成的 root-fix phase 采用了更窄的 statement-expression 专用入口，而不是把 `ValueBuild` 全面可空化：
+  - `CallItem` record 已允许 nullable `resultValueId`
+  - `ValueBuild` 继续保留 value-only 合同
+  - CFG builder 已对 statement-position void call 走专用 discarded-call build surface
+  - body lowering / materialization 已自然消费“无 resultId 的 call item”
+- 因此 Phase A / Phase B 的中间态已结束，当前不再保留“void call CFG temp 仍存在”的已知例外
 
 ### 4. 以 targeted tests 为主，不跑全量
 
@@ -349,6 +349,34 @@
 - 从 CFG/materialization 源头切断 void call temp slot
 - 让 statement-position void call 不再产生死 `cfg_tmp_*`
 - 把当前“Phase B 仅修 emitted call insn”的中间态收敛成更干净的一致合同
+
+### 执行状态
+
+- [x] C1. `CallItem.resultValueId` 已可空化，`resultValueIdOrNull()` / `hasStandaloneMaterializationSlot()` 已对 discarded void call 发布真实合同。
+- [x] C2. `FrontendCfgGraphBuilder` 已新增 statement-expression 专用 discarded resolved-void call 构图入口，未把 nullable value root 扩散到 `ValueBuild`。
+- [x] C3. `processExpressionStatement(...)` 现已对 `RESOLVED(void)` bare / attribute call 走专用 publication path，并保持 source-order operand build。
+- [x] C4. `FrontendBodyLoweringSupport.collectCfgValueMaterializations(...)` / `FrontendBodyLoweringSession.declareCfgValueSlots()` 已自然跳过无 `resultValueId` 的 void call。
+- [x] C5. `FrontendSequenceItemInsnLoweringProcessors.FrontendCallInsnLoweringProcessor` 已按 `node.resultValueIdOrNull()` 推导结果槽，并对 non-void exact call 缺槽继续 fail-fast。
+- [x] C6. 已补齐并运行 targeted tests，覆盖 exact/global void statement call、dynamic/non-void non-regression、以及 non-void exact call 缺槽的 negative path。
+
+### 当前已完成结果
+
+- statement-position `RESOLVED(void)` call 现在直接发布 `CallItem(..., resultValueId = null, ...)`：
+  - exact instance `Array.push_back(...)`
+  - utility/global `print(...)`
+- `ValueBuild` 没有被全面可空化；nullable surface 被收口在 expression statement 专用 discarded-call builder 内。
+- `collectCfgValueMaterializations(...)` 不再为这类 call 生成 `TEMP_SLOT`，`declareCfgValueSlots()` 也不再声明对应 `cfg_tmp_*`。
+- body lowering 继续把这类 call emitted 成 `resultId = null`，同时保留 payload-backed mutating receiver writeback。
+- 若 non-void exact call 被人为篡改成缺失结果槽，body lowering 现在会按 invariant violation 明确 fail-fast。
+- 当前 targeted validation 结果：
+  - `FrontendCfgGraphTest` 通过。
+  - `FrontendCfgGraphBuilderTest` 通过。
+  - `FrontendLoweringBuildCfgPassTest` 通过。
+  - `FrontendBodyLoweringSupportTest` 通过。
+  - `FrontendWritableRouteSupportTest` 通过。
+  - `FrontendLoweringBodyInsnPassTest` 通过。
+  - `CallMethodInsnGenTest` 与 `CallGlobalInsnGenTest` 通过。
+  - `FrontendArrayConstructorVoidInvestigationTest` 通过。
 
 ### 实施步骤
 

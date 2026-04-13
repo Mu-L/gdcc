@@ -1,6 +1,5 @@
 package dev.superice.gdcc.frontend.lowering.cfg.item;
 
-import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.Node;
 import org.jetbrains.annotations.NotNull;
@@ -21,13 +20,15 @@ import java.util.Objects;
 /// publishes that owner/leaf/writeback shape separately from the ordinary call operands. That
 /// payload never replaces the dedicated receiver operand slot for ordinary instance-call execution:
 /// payload-backed calls must still publish `receiverValueIdOrNull` so body lowering can reuse the
-/// already-frozen receiver value instead of re-reading the leaf.
+/// already-frozen receiver value instead of re-reading the leaf. Statement-position resolved-void
+/// calls are the one supported exception to the usual "call publishes a value" rule: they keep the
+/// frozen call route and writable payload but intentionally omit a standalone result slot.
 public record CallItem(
         @NotNull Node callAnchor,
         @NotNull String callableName,
         @Nullable String receiverValueIdOrNull,
         @NotNull List<String> argumentValueIds,
-        @NotNull String resultValueId,
+        @Nullable String resultValueId,
         @Nullable FrontendWritableRoutePayload writableRoutePayloadOrNull
 ) implements ValueOpItem {
     public CallItem(
@@ -35,7 +36,7 @@ public record CallItem(
             @NotNull String callableName,
             @Nullable String receiverValueIdOrNull,
             @NotNull List<String> argumentValueIds,
-            @NotNull String resultValueId
+            @Nullable String resultValueId
     ) {
         this(callAnchor, callableName, receiverValueIdOrNull, argumentValueIds, resultValueId, null);
     }
@@ -48,7 +49,7 @@ public record CallItem(
                 "receiverValueIdOrNull"
         );
         argumentValueIds = FrontendCfgItemSupport.copyValueIds(argumentValueIds, "argumentValueIds");
-        resultValueId = FrontendCfgGraph.validateValueId(resultValueId, "resultValueId");
+        resultValueId = FrontendCfgItemSupport.validateOptionalValueId(resultValueId, "resultValueId");
         if (writableRoutePayloadOrNull != null && writableRoutePayloadOrNull.routeAnchor() != callAnchor) {
             throw new IllegalArgumentException("CallItem writable route anchor must match callAnchor");
         }
@@ -60,7 +61,7 @@ public record CallItem(
     }
 
     @Override
-    public @NotNull String resultValueIdOrNull() {
+    public @Nullable String resultValueIdOrNull() {
         return resultValueId;
     }
 
@@ -73,5 +74,10 @@ public record CallItem(
         operands.add(receiverValueIdOrNull);
         operands.addAll(argumentValueIds);
         return List.copyOf(operands);
+    }
+
+    @Override
+    public boolean hasStandaloneMaterializationSlot() {
+        return resultValueId != null;
     }
 }

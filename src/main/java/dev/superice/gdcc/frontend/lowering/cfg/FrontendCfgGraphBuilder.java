@@ -63,6 +63,7 @@ import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -215,12 +216,141 @@ public final class FrontendCfgGraphBuilder {
                     new BuildCursor(requireCurrentSequence(state)),
                     assignmentExpression
             ).currentSequence());
-            default -> state.setCurrentSequence(buildValue(
-                    new BuildCursor(requireCurrentSequence(state)),
-                    expression,
-                    null
-            ).cursor().currentSequence());
+            default -> {
+                var cursor = new BuildCursor(requireCurrentSequence(state));
+                state.setCurrentSequence(
+                        isDiscardedResolvedVoidCallExpression(expression)
+                                ? buildDiscardedResolvedVoidCall(cursor, expression).currentSequence()
+                                : buildValue(cursor, expression, null).cursor().currentSequence()
+                );
+            }
         }
+    }
+
+    /// Statement-position resolved-void calls are the one supported route that intentionally skips
+    /// `ValueBuild`: the call still needs receiver/argument sequencing and writable payload
+    /// publication, but there is no downstream consumer that should force a dead temp slot into CFG.
+    private @NotNull BuildCursor buildDiscardedResolvedVoidCall(
+            @NotNull BuildCursor cursor,
+            @NotNull Expression expression
+    ) {
+        return switch (expression) {
+            case CallExpression callExpression -> buildDiscardedResolvedVoidBareCall(cursor, callExpression);
+            case AttributeExpression attributeExpression -> buildDiscardedResolvedVoidAttributeExpression(
+                    cursor,
+                    attributeExpression
+            );
+            default -> throw new IllegalStateException(
+                    "Discarded resolved-void call path requires a call-shaped expression, but got "
+                            + expression.getClass().getSimpleName()
+            );
+        };
+    }
+
+    private @NotNull BuildCursor buildDiscardedResolvedVoidBareCall(
+            @NotNull BuildCursor cursor,
+            @NotNull CallExpression callExpression
+    ) {
+        if (!(callExpression.callee() instanceof IdentifierExpression)) {
+            throw new IllegalStateException(
+                    "Bare call lowering currently requires an IdentifierExpression callee, but got "
+                            + callExpression.callee().getClass().getSimpleName()
+            );
+        }
+        var publishedCall = requireDiscardedResolvedVoidCall(callExpression);
+        var argumentsBuild = buildArgumentValues(cursor, callExpression.arguments());
+        argumentsBuild.cursor().currentSequence().items().add(new CallItem(
+                callExpression,
+                publishedCall.callableName(),
+                null,
+                argumentsBuild.valueIds(),
+                null
+        ));
+        return argumentsBuild.cursor();
+    }
+
+    private @NotNull BuildCursor buildDiscardedResolvedVoidAttributeExpression(
+            @NotNull BuildCursor cursor,
+            @NotNull AttributeExpression attributeExpression
+    ) {
+        if (attributeExpression.steps().isEmpty()) {
+            throw new IllegalStateException("AttributeExpression must contain at least one step");
+        }
+        if (!(attributeExpression.steps().getLast() instanceof AttributeCallStep finalCallStep)) {
+            throw new IllegalStateException(
+                    "Discarded resolved-void attribute expression must end in AttributeCallStep"
+            );
+        }
+        var publishedCall = requireDiscardedResolvedVoidCall(finalCallStep);
+
+        if (isTypeMetaHeadAttributeExpression(attributeExpression)) {
+            if (attributeExpression.steps().size() == 1) {
+                return buildDiscardedResolvedVoidTypeMetaHeadCall(cursor, finalCallStep, publishedCall);
+            }
+            var currentBuild = switch (attributeExpression.steps().getFirst()) {
+                case AttributePropertyStep firstPropertyStep ->
+                        buildTypeMetaHeadMemberStep(cursor, firstPropertyStep, null);
+                case AttributeCallStep firstCallStep -> buildTypeMetaHeadCallStep(cursor, firstCallStep, null);
+                default -> throw new IllegalStateException(
+                        "Type-meta attribute head '" + attributeExpression.base()
+                                + "' currently requires a property step or call step to enter lowering"
+                );
+            };
+            for (var stepIndex = 1; stepIndex + 1 < attributeExpression.steps().size(); stepIndex++) {
+                currentBuild = applyAttributeStep(currentBuild, attributeExpression.steps().get(stepIndex), null);
+            }
+            return emitDiscardedResolvedVoidAttributeCall(currentBuild, finalCallStep, publishedCall);
+        }
+
+        var currentBuild = buildValue(cursor, attributeExpression.base(), null);
+        for (var stepIndex = 0; stepIndex + 1 < attributeExpression.steps().size(); stepIndex++) {
+            currentBuild = applyAttributeStep(currentBuild, attributeExpression.steps().get(stepIndex), null);
+        }
+        return emitDiscardedResolvedVoidAttributeCall(currentBuild, finalCallStep, publishedCall);
+    }
+
+    private @NotNull BuildCursor buildDiscardedResolvedVoidTypeMetaHeadCall(
+            @NotNull BuildCursor cursor,
+            @NotNull AttributeCallStep attributeCallStep,
+            @NotNull FrontendResolvedCall publishedCall
+    ) {
+        var argumentsBuild = buildArgumentValues(cursor, attributeCallStep.arguments());
+        argumentsBuild.cursor().currentSequence().items().add(new CallItem(
+                attributeCallStep,
+                publishedCall.callableName(),
+                null,
+                argumentsBuild.valueIds(),
+                null
+        ));
+        return argumentsBuild.cursor();
+    }
+
+    private @NotNull BuildCursor emitDiscardedResolvedVoidAttributeCall(
+            @NotNull ValueBuild receiverBuild,
+            @NotNull AttributeCallStep attributeCallStep,
+            @NotNull FrontendResolvedCall publishedCall
+    ) {
+        receiverBuild = maybePublishDirectSlotReceiverAlias(
+                receiverBuild,
+                publishedCall,
+                attributeCallStep.arguments()
+        );
+        var argumentsBuild = buildArgumentValues(receiverBuild.cursor(), attributeCallStep.arguments());
+        var receiverRoute = routePayloadOrValueRoot(receiverBuild);
+        argumentsBuild.cursor().currentSequence().items().add(new CallItem(
+                attributeCallStep,
+                publishedCall.callableName(),
+                receiverBuild.resultValueId(),
+                argumentsBuild.valueIds(),
+                null,
+                new FrontendWritableRoutePayload(
+                        attributeCallStep,
+                        receiverRoute.root(),
+                        receiverRoute.leaf(),
+                        appendPromotedLeaf(receiverRoute)
+                )
+        ));
+        return argumentsBuild.cursor();
     }
 
     private void processReturnStatement(@NotNull BlockState state, @NotNull ReturnStatement returnStatement) {
@@ -506,9 +636,7 @@ public final class FrontendCfgGraphBuilder {
         if (attributeExpression.steps().isEmpty()) {
             throw new IllegalStateException("AttributeExpression must contain at least one step");
         }
-        if (attributeExpression.base() instanceof IdentifierExpression identifierExpression
-                && Objects.requireNonNull(analysisData).symbolBindings().get(identifierExpression) instanceof FrontendBinding binding
-                && binding.kind() == FrontendBindingKind.TYPE_META) {
+        if (isTypeMetaHeadAttributeExpression(attributeExpression)) {
             return buildTypeMetaHeadAttributeExpressionValue(cursor, attributeExpression, preferredResultValueId);
         }
         var currentBuild = buildValue(cursor, attributeExpression.base(), null);
@@ -1894,6 +2022,35 @@ public final class FrontendCfgGraphBuilder {
         return preferredResultValueId == null ? nextValueId() : preferredResultValueId;
     }
 
+    private boolean isDiscardedResolvedVoidCallExpression(@NotNull Expression expression) {
+        return discardedResolvedVoidCallAnchorOrNull(expression) != null;
+    }
+
+    private @Nullable Node discardedResolvedVoidCallAnchorOrNull(@NotNull Expression expression) {
+        return switch (expression) {
+            case CallExpression callExpression -> isResolvedVoidCallAnchor(callExpression) ? callExpression : null;
+            case AttributeExpression attributeExpression -> attributeExpression.steps().isEmpty()
+                    || !(attributeExpression.steps().getLast() instanceof AttributeCallStep attributeCallStep)
+                    || !isResolvedVoidCallAnchor(attributeCallStep)
+                    ? null
+                    : attributeCallStep;
+            default -> null;
+        };
+    }
+
+    private boolean isResolvedVoidCallAnchor(@NotNull Node callAnchor) {
+        var publishedCall = requireAnalysisData().resolvedCalls().get(callAnchor);
+        return publishedCall != null
+                && publishedCall.status() == FrontendCallResolutionStatus.RESOLVED
+                && publishedCall.returnType() instanceof GdVoidType;
+    }
+
+    private boolean isTypeMetaHeadAttributeExpression(@NotNull AttributeExpression attributeExpression) {
+        return attributeExpression.base() instanceof IdentifierExpression identifierExpression
+                && requireAnalysisData().symbolBindings().get(identifierExpression) instanceof FrontendBinding binding
+                && binding.kind() == FrontendBindingKind.TYPE_META;
+    }
+
     private static boolean isLogicalNotExpression(@NotNull UnaryExpression unaryExpression) {
         return tryResolveUnaryOperator(unaryExpression.operator()) == GodotOperator.NOT;
     }
@@ -2130,6 +2287,22 @@ public final class FrontendCfgGraphBuilder {
                             + callAnchor.getClass().getSimpleName()
                             + " is not lowering-ready: "
                             + publishedCall.status()
+            );
+        }
+        return publishedCall;
+    }
+
+    private @NotNull FrontendResolvedCall requireDiscardedResolvedVoidCall(@NotNull Node callAnchor) {
+        var publishedCall = requireLoweringReadyCall(callAnchor);
+        if (publishedCall.status() != FrontendCallResolutionStatus.RESOLVED
+                || !(publishedCall.returnType() instanceof GdVoidType)) {
+            throw new IllegalStateException(
+                    "Discarded call path requires a RESOLVED void call anchor, but got "
+                            + publishedCall.status()
+                            + " / "
+                            + (publishedCall.returnType() == null
+                            ? "null"
+                            : publishedCall.returnType().getTypeName())
             );
         }
         return publishedCall;
