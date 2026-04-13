@@ -14,6 +14,7 @@
 - 关联文档：
   - `doc/module_impl/common_rules.md`
   - `frontend_rules.md`
+  - `frontend_void_call_result_behavior.md`
   - `frontend_lowering_plan.md`
   - `frontend_lowering_func_pre_pass_implementation.md`
   - `frontend_compile_check_analyzer_implementation.md`

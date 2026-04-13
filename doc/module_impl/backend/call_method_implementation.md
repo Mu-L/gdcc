@@ -12,6 +12,7 @@
   - `doc/module_impl/call_global_implementation.md`
   - `doc/module_impl/cbodybuilder_implementation.md`
   - `doc/module_impl/load_static_implementation.md`
+  - `doc/module_impl/frontend/frontend_void_call_result_behavior.md`
 
 ## 当前最终状态（与代码对齐）
 

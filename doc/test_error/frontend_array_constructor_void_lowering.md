@@ -24,6 +24,7 @@
 - backend 现有 `void + resultId` guard rail 继续保留，用于拦截未来坏 LIR
 - former investigation probe 已收敛为正式回归 `FrontendArrayVoidReturnCallRegressionTest`
 - 计划文档与长期事实源已同步到最终合同
+  - 当前长期事实源：`doc/module_impl/frontend/frontend_void_call_result_behavior.md`
 
 ## 历史复现形状（Phase B 前）
 
