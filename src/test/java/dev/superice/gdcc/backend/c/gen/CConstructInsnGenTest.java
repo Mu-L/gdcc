@@ -25,6 +25,7 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdFloatType;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdPackedNumericArrayType;
 import dev.superice.gdcc.type.GdPackedStringArrayType;
@@ -95,6 +96,25 @@ class CConstructInsnGenTest {
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
         assertTrue(ex.getMessage().contains("must be a variable operand"));
+    }
+
+    @Test
+    @DisplayName("construct_builtin should keep API constructor matching exact and reject Variant operands")
+    void constructBuiltinShouldRejectVariantOperandWithoutExactMetadata() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_builtin_variant_operand");
+        func.createAndAddVariable("result", GdIntType.INT);
+        func.createAndAddVariable("variant", GdVariantType.VARIANT);
+
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
+                "result",
+                List.of(new LirInstruction.VariableOperand("variant"))
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
+        assertTrue(ex.getMessage().contains("Builtin constructor validation failed"));
+        assertTrue(ex.getMessage().contains("'int' with args [Variant]"));
     }
 
     @Test

@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（executable-body CFG build / body lowering、property-initializer CFG/body lowering、constructor materialization、compound assignment、dynamic receiver runtime-gated writeback、`StopNode.kind` 空-return 图修复均已落地；parameter default 仍未接通）
-- 更新时间：2026-04-13
+- 更新时间：2026-04-14
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
   - `src/main/java/dev/superice/gdcc/frontend/lowering/cfg/**`
@@ -531,8 +531,9 @@ CFG / body-lowering 合同：
   - `vector.x = 1.0`、`color.a = 0.5` 在 CFG 中继续只是 ordinary `AssignmentItem`
   - body lowering 对其统一发出 `StorePropertyInsn`
   - builtin member writable / missing-property policy 仍以上游 published member fact 与 shared writable helper 为真源
-- body lowering 依据已发布的 constructor result type 选择 LIR：
-  - builtin/container constructor -> `ConstructBuiltinInsn`
+- body lowering 依据已发布的 constructor route shape 与 result type 选择 LIR：
+  - builtin 单参数 stable `Variant` constructor -> `UnpackVariantInsn`
+  - 其它 builtin/container constructor -> `ConstructBuiltinInsn`
   - object constructor -> `ConstructObjectInsn`
 - constructor 不伪装成 static/instance method
 - body lowering 不重跑 overload 选择，不回退成语义分析
@@ -664,7 +665,7 @@ body-lowering 合同：
   - value-context `and` / `or` 的 LIR 形态
   - subscript-step published type consumption
   - fully-terminated `if` chain 的 synthetic terminal-merge stop 不得产出 `ReturnInsn(null)`
-  - constructor route lower 为 `ConstructBuiltinInsn` / `ConstructObjectInsn`
+  - constructor route lower 为 `UnpackVariantInsn` / `ConstructBuiltinInsn` / `ConstructObjectInsn`
   - compound assignment 只在最终 store boundary 做 `(un)pack Variant`
   - compile gate 绕过时的 lowering exception 质量
 - `FrontendLoweringPassManagerTest`

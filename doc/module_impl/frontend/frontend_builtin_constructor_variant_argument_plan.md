@@ -5,7 +5,7 @@
 
 ## 文档状态
 
- - 状态：Phase A-B 已完成，Phase C-E 待实施
+ - 状态：Phase A-D 已完成，Phase E 待实施
  - 更新时间：2026-04-14
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -333,6 +333,24 @@ GDCC 当前若要实现这层 parity，需要补一条“resolved but unsafe” 
 
 ### Phase C. 在 lowering 中把该 special route 落成 `UnpackVariantInsn`
 
+当前状态（2026-04-14）：
+
+- 已在 `FrontendSequenceItemInsnLoweringProcessors.lowerConstructorCall(...)` 中落地 builtin unary-`Variant` constructor special route。
+- 该 route 现在会在进入 ordinary callable-signature materialization 之前直接分流：
+  - 复用已求值的 `Variant` 实参 slot
+  - 直接发出 `UnpackVariantInsn(resultSlotId, variantArgSlotId)`
+- 之所以必须先分流，是因为 Phase B 的 sema shortcut 会把 declaration site 故意锚定到 builtin owner；这条 route 不能再要求 synthetic constructor `FunctionDef`。
+- 其它 constructor 路径保持原状：
+  - `Vector3i(1, 2, 3)` 等 exact builtin constructor 继续 lower 为 `ConstructBuiltinInsn`
+  - `Array(source: Array)` 这类非-`Variant` builtin constructor 继续走现有参数 materialization + `ConstructBuiltinInsn`
+  - `Node.new()` / `Worker.new()` 等 object constructor 继续 lower 为 `ConstructObjectInsn`
+- 已补齐 `FrontendLoweringBodyInsnPassTest` 锚点，直接覆盖：
+  - `int(seed: Variant)`
+  - `String(seed: Variant)`
+  - `Array(seed: Variant)`
+  - `Dictionary(seed: Variant)`
+  - 并保留既有 exact builtin / object constructor negative coverage
+
 目标：
 
 - 消除 “frontend 成功，但 backend `ConstructBuiltinInsn([Variant])` 仍拒绝” 的漂移
@@ -367,6 +385,28 @@ GDCC 当前若要实现这层 parity，需要补一条“resolved but unsafe” 
 
 ### Phase D. 补齐 backend/集成回归，并同步事实源文档
 
+当前状态（2026-04-14）：
+
+- 已补齐 backend/cgen 锚点：
+  - `CPackUnpackVariantInsnGenTest` 现直接覆盖 `godot_new_int_with_Variant`
+  - 同文件继续覆盖 `godot_new_String_with_Variant`
+  - 新增 typed `Array` 的 `godot_new_Array_with_Variant`
+  - 既有 typed `Dictionary` 的 `godot_new_Dictionary_with_Variant` 继续保留
+- 已补齐 backend negative coverage：
+  - `CConstructInsnGenTest` 新增 `ConstructBuiltinInsn(result=int, args=[Variant])` 仍必须 fail-closed
+  - 这条测试直接锚定 backend `construct_builtin` 继续保持 exact constructor metadata contract，不接受伪造的 `[Variant]` constructor
+- 已同步更新事实源文档：
+  - `frontend_chain_binding_expr_type_implementation.md`
+  - `frontend_lowering_(un)pack_implementation.md`
+  - `frontend_implicit_conversion_matrix.md`
+  - `frontend_rules.md`
+  - `frontend_lowering_cfg_pass_implementation.md`
+- 当前文档合同已经统一到同一结论：
+  - builtin 单参数 stable `Variant` constructor 是 constructor special case
+  - 它不属于 ordinary typed-boundary matrix 扩面
+  - route 选定后由 body lowering 显式落成 `UnpackVariantInsn`
+  - backend `ConstructBuiltinInsn` 仍保持 exact metadata 校验，不为这次修复放宽
+
 目标：
 
 - 让最终 compile-ready surface、代码生成和文档合同一致
@@ -400,34 +440,6 @@ GDCC 当前若要实现这层 parity，需要补一条“resolved but unsafe” 
 - negative path：
   - backend `construct_builtin` 的 API metadata 精确匹配逻辑保持收口，不被这次修复偷偷放宽
   - 文档中不出现“这是 ordinary implicit conversion 扩面”之类的误导表述
-
----
-
-### Phase E. 可选：补 Godot 风格的 unsafe warning parity
-
-目标：
-
-- 若后续需要与 Godot 更接近，则为该 constructor shortcut 增加 non-blocking warning
-
-当前约束：
-
-- `FrontendResolvedCall` 的 `RESOLVED` 状态当前不允许携带 `detailReason`
-- frontend 目前没有稳定的 “resolved-but-unsafe call fact” 发布面
-
-因此这一步不应阻塞 Phase A-D 的功能修复。若要实施，建议单独立项，内容至少包括：
-
-- 新的 warning owner 与 category
-- resolved-but-unsafe 的稳定发布合同
-- 对 inspection / compile-only gate 的影响评估
-
-验收细则：
-
-- happy path：
-  - 功能性修复保持不变
-  - 单参数 stable `Variant` builtin constructor route 会收到明确 warning
-- negative path：
-  - warning 不得升级成 blocker
-  - 不得污染普通 exact constructor route
 
 ---
 

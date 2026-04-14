@@ -19,6 +19,7 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.TypeTestItem;
 import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
+import dev.superice.gdcc.scope.ScopeOwnerKind;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.insn.AssignInsn;
@@ -34,6 +35,7 @@ import dev.superice.gdcc.lir.insn.LoadStaticInsn;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
+import dev.superice.gdcc.lir.insn.UnpackVariantInsn;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -416,11 +418,37 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedCall resolvedCall,
                 @NotNull String resultSlotId
         ) {
-            var arguments = session.materializeCallArguments(block, node, resolvedCall);
             var constructorResultType = Objects.requireNonNull(
                     resolvedCall.returnType(),
                     "resolved constructor call must carry a result type"
             );
+            // Unary builtin-from-Variant construction is published as a dedicated constructor route, but
+            // sema intentionally anchors its declaration site to the builtin owner instead of one concrete
+            // overload. Lowering therefore must reuse the already-evaluated Variant slot directly rather
+            // than asking the ordinary callable-signature materializer for a synthetic constructor shape.
+            if (resolvedCall.ownerKind() == ScopeOwnerKind.BUILTIN
+                    && resolvedCall.argumentTypes().size() == 1
+                    && resolvedCall.argumentTypes().getFirst() instanceof GdVariantType) {
+                if (node.argumentValueIds().size() != 1) {
+                    throw new IllegalStateException(
+                            "Builtin Variant constructor unpack route must publish exactly one argument value id"
+                    );
+                }
+                var argumentValueId = node.argumentValueIds().getFirst();
+                var argumentType = session.requireValueType(argumentValueId);
+                if (!(argumentType instanceof GdVariantType)) {
+                    throw new IllegalStateException(
+                            "Builtin Variant constructor unpack route requires Variant argument slot, but got "
+                                    + argumentType.getTypeName()
+                    );
+                }
+                block.appendNonTerminatorInstruction(new UnpackVariantInsn(
+                        resultSlotId,
+                        session.slotIdForValue(argumentValueId)
+                ));
+                return block;
+            }
+            var arguments = session.materializeCallArguments(block, node, resolvedCall);
             switch (constructorResultType) {
                 // Builtin/container constructors materialize directly from the published call route.
                 case dev.superice.gdcc.type.GdObjectType _ ->

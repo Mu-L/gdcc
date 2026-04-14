@@ -2245,6 +2245,91 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersUnaryVariantBuiltinConstructorsIntoUnpackVariantInsn() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_variant_constructor_unpack.gd",
+                """
+                        class_name BodyInsnVariantConstructorUnpack
+                        extends RefCounted
+                        
+                        func build_int(seed: Variant) -> int:
+                            return int(seed)
+                        
+                        func build_string(seed: Variant) -> String:
+                            return String(seed)
+                        
+                        func build_array(seed: Variant) -> Array:
+                            return Array(seed)
+                        
+                        func build_dictionary(seed: Variant) -> Dictionary:
+                            return Dictionary(seed)
+                        """,
+                Map.of(
+                        "BodyInsnVariantConstructorUnpack",
+                        "RuntimeBodyInsnVariantConstructorUnpack"
+                ),
+                true
+        );
+        var buildIntContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnVariantConstructorUnpack",
+                "build_int"
+        );
+        var buildStringContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnVariantConstructorUnpack",
+                "build_string"
+        );
+        var buildArrayContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnVariantConstructorUnpack",
+                "build_array"
+        );
+        var buildDictionaryContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnVariantConstructorUnpack",
+                "build_dictionary"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var intInstructions = allInstructions(buildIntContext.targetFunction());
+        var stringInstructions = allInstructions(buildStringContext.targetFunction());
+        var arrayInstructions = allInstructions(buildArrayContext.targetFunction());
+        var dictionaryInstructions = allInstructions(buildDictionaryContext.targetFunction());
+
+        var intUnpackInsn = requireOnlyInstruction(buildIntContext.targetFunction(), UnpackVariantInsn.class);
+        var stringUnpackInsn = requireOnlyInstruction(buildStringContext.targetFunction(), UnpackVariantInsn.class);
+        var arrayUnpackInsn = requireOnlyInstruction(buildArrayContext.targetFunction(), UnpackVariantInsn.class);
+        var dictionaryUnpackInsn = requireOnlyInstruction(buildDictionaryContext.targetFunction(), UnpackVariantInsn.class);
+
+        var intReturnInsn = requireOnlyReturnInsn(buildIntContext.targetFunction());
+        var stringReturnInsn = requireOnlyReturnInsn(buildStringContext.targetFunction());
+        var arrayReturnInsn = requireOnlyReturnInsn(buildArrayContext.targetFunction());
+        var dictionaryReturnInsn = requireOnlyReturnInsn(buildDictionaryContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, countInstructions(intInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(intInstructions, ConstructBuiltinInsn.class)),
+                () -> assertEquals(intUnpackInsn.resultId(), intReturnInsn.returnValueId()),
+                () -> assertEquals(1, countInstructions(stringInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(stringInstructions, ConstructBuiltinInsn.class)),
+                () -> assertEquals(stringUnpackInsn.resultId(), stringReturnInsn.returnValueId()),
+                () -> assertEquals(1, countInstructions(arrayInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(arrayInstructions, ConstructBuiltinInsn.class)),
+                () -> assertEquals(arrayUnpackInsn.resultId(), arrayReturnInsn.returnValueId()),
+                () -> assertEquals(1, countInstructions(dictionaryInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(dictionaryInstructions, ConstructBuiltinInsn.class)),
+                () -> assertEquals(dictionaryUnpackInsn.resultId(), dictionaryReturnInsn.returnValueId())
+        );
+    }
+
+    @Test
     void runFailsFastWhenParameterizedBuiltinConstructorLosesCallableSignatureMetadata() throws Exception {
         var prepared = prepareContext(
                 "body_insn_constructor_missing_signature.gd",

@@ -1,6 +1,6 @@
 # Frontend Lowering `(un)pack` Implementation
 
-> Updated: 2026-04-06
+> Updated: 2026-04-14
 >
 > 本文档是 frontend ordinary typed-boundary `(un)pack` materialization 的事实源。
 > 它不再记录实施步骤、完成进度或验收流水账；若合同变化，应直接改写当前状态。
@@ -17,6 +17,7 @@
   - condition truthiness normalization
   - `DYNAMIC` target 的 runtime-open assignment 语义
   - backend 对 `unpack_variant` 的运行时类型校验细节
+  - builtin 单参数 stable `Variant` constructor special route 的 selection 语义
 - 若以下任一事实发生变化，至少要同步更新：
   - 本文档
   - `frontend_implicit_conversion_matrix.md`
@@ -75,6 +76,10 @@ ordinary boundary materialization 当前已经接通：
 
 - dynamic call 的 runtime-open dispatch 仍由 backend 承担
 - 但 dynamic call 已发布的 `Variant` 结果若继续跨越 ordinary typed boundary，仍由 frontend ordinary boundary helper 做后续 `(un)pack`
+- builtin 单参数 stable `Variant` constructor 是与 ordinary boundary 并列的 constructor 合同：
+  - sema 侧由 builtin-only shortcut 负责 route selection
+  - 它不属于 `frontend_implicit_conversion_matrix.md` 的 ordinary widened conversion
+  - route 一旦选定，body lowering 仍复用 `UnpackVariantInsn` 作为最终 runtime conversion surface
 - condition normalization 仍是另一条并列合同：
   - `bool` 直接 branch
   - `Variant` 走 `unpack_variant -> bool`

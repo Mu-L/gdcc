@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、shared expression semantic support、unary/binary expression semantics、class property initializer support island、subscript / assignment typed contract、`:=` 最小回填与 expr-owned diagnostics 已落地）
-- 更新时间：2026-03-20
+- 更新时间：2026-04-14
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
@@ -284,7 +284,10 @@
 当前 constructor route 的事实源合同已经闭合到 downstream：
 
 - `.new(...)` 与 bare builtin direct constructor 统一发布为 `FrontendResolvedCall(callKind = CONSTRUCTOR)`
-- frontend body lowering 直接消费该 route 并发出 `ConstructBuiltinInsn` / `ConstructObjectInsn`
+- frontend body lowering 直接消费该 route，并按已发布 shape 分流：
+  - builtin 单参数 stable `Variant` constructor special route -> `UnpackVariantInsn`
+  - 其它 builtin/container constructor -> `ConstructBuiltinInsn`
+  - object constructor -> `ConstructObjectInsn`
 - engine object 与 gdcc zero-arg custom object 都已能闭合到 backend object construction；gdcc 带参 constructor 则保持 fail-closed
 
 需要补充的稳定 MVP 合同是：

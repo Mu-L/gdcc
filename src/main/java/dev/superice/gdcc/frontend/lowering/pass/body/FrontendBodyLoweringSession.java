@@ -914,9 +914,10 @@ public final class FrontendBodyLoweringSession {
                 + boundaryMaterializationCounter++;
     }
 
-    /// Constructor routes such as `Node.new()` may intentionally publish class metadata instead of a
-    /// synthetic zero-arg callable. We therefore demand a callable signature only when some actual
-    /// argument values still need fixed-parameter boundary materialization.
+    /// Constructor routes such as `Node.new()` or unary builtin-from-`Variant` special cases may
+    /// intentionally publish owner metadata instead of a synthetic callable. We therefore demand a
+    /// callable signature only when some actual argument values still need fixed-parameter ordinary
+    /// boundary materialization after route-specific lowering chooses the final execution surface.
     private @NotNull FunctionDef requireBoundaryCallableSignature(@NotNull FrontendResolvedCall resolvedCall) {
         var declarationSite = Objects.requireNonNull(
                 Objects.requireNonNull(resolvedCall, "resolvedCall must not be null").declarationSite(),

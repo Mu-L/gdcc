@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（Godot 规则已梳理，GDCC 当前支持面已对齐到现有实现）
-- 更新时间：2026-04-06
+- 更新时间：2026-04-14
 - 适用范围：
   - `doc/module_impl/frontend/**`
   - `src/main/java/dev/superice/gdcc/frontend/**`
@@ -66,6 +66,8 @@
 - `if` / `while` / `assert` 的 truthiness contract
 - runtime-dynamic `DYNAMIC` target 的开放语义
 - backend 对 `Variant` pack/unpack 的运行时校验
+- builtin 单参数 stable `Variant` constructor special route
+  - 该路径属于 constructor resolution / lowering 合同，而不是 ordinary typed-boundary widened conversion
 
 ### 1.3 当前 GDCC 的统一基线
 
@@ -77,6 +79,11 @@
 - stable `Variant` boundary：支持
 - `Nil -> object`：支持
 - 其余 typed boundary：原则上回退 `ClassRegistry.checkAssignable(...)`
+
+这意味着：
+
+- `int(seed: Variant)` / `Array(seed: Variant)` 这类 builtin constructor special route 的接受与 lower 方式，不由本文矩阵定义
+- 若未来要调整这条 constructor special route，应同步更新 `frontend_builtin_constructor_variant_argument_plan.md` 及相关事实源文档，而不是把它误记成 matrix 扩面
 
 这意味着 Godot 支持、但不属于以上五类的 builtin implicit conversion，在 GDCC 中默认都还是 `N`。
 
