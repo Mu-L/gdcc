@@ -156,7 +156,9 @@ final class FrontendConstructorResolutionSupport {
         //
         // Downstream lowering materializes this route via the shared Variant-unpack surface, so
         // the declaration site intentionally stays anchored to the builtin owner instead of
-        // pretending one concrete constructor metadata entry won the overload race.
+        // pretending one concrete constructor metadata entry won the overload race. Expr typing
+        // later uses that owner-anchored publication shape to add the Godot-parity
+        // `sema.unsafe_call_argument` warning without polluting exact constructor winners.
         if (argumentTypes.size() == 1 && argumentTypes.getFirst() instanceof GdVariantType) {
             return resolved(defaultDeclarationSite(receiverTypeMeta, builtinClass), ScopeOwnerKind.BUILTIN);
         }

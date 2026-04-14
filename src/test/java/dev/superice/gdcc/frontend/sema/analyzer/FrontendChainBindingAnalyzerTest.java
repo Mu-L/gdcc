@@ -874,6 +874,7 @@ class FrontendChainBindingAnalyzerTest {
         var resolvedArray = analyzed.analysisData().resolvedCalls().get(arrayCall);
         var resolvedDictionary = analyzed.analysisData().resolvedCalls().get(dictionaryCall);
         var failedNode = analyzed.analysisData().resolvedCalls().get(nodeCall);
+        var unsafeDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.unsafe_call_argument");
 
         assertAll(
                 () -> {
@@ -928,7 +929,20 @@ class FrontendChainBindingAnalyzerTest {
                     assertNotNull(detailReason);
                     assertTrue(detailReason.contains("Node.new(...)"));
                     assertNull(failedNode);
-                }
+                },
+                () -> assertEquals(4, unsafeDiagnostics.size()),
+                () -> assertEquals(
+                        4,
+                        unsafeDiagnostics.stream()
+                                .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.WARNING)
+                                .count()
+                ),
+                () -> assertTrue(unsafeDiagnostics.stream().allMatch(diagnostic -> diagnostic.message().contains("Variant"))),
+                () -> assertTrue(unsafeDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("int(...)"))),
+                () -> assertTrue(unsafeDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("String(...)"))),
+                () -> assertTrue(unsafeDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Array(...)"))),
+                () -> assertTrue(unsafeDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Dictionary(...)"))),
+                () -> assertTrue(unsafeDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Node(...)")))
         );
     }
 
@@ -1016,7 +1030,8 @@ class FrontendChainBindingAnalyzerTest {
                                 ExtensionBuiltinClass.ConstructorInfo.class,
                                 resolvedCall.declarationSite()
                         ).arguments().getFirst().type()
-                )
+                ),
+                () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsafe_call_argument").isEmpty())
         );
     }
 

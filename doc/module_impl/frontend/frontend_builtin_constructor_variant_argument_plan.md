@@ -5,7 +5,7 @@
 
 ## 文档状态
 
- - 状态：Phase A-D 已完成，Phase E 待实施
+ - 状态：Phase A-E 已完成
  - 更新时间：2026-04-14
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -147,10 +147,10 @@ GDCC 当前在前两步与 Godot 一致：
 - 修改 `gdparser` 语法层；当前问题不在 parser lowering
 - 用 backend 放宽 constructor 元数据匹配来“掩盖” frontend 语义分歧
 
-### 3.3 可选后续目标
+### 3.3 诊断补充目标
 
 Godot 还会对这条路径发 `UNSAFE_CALL_ARGUMENT` warning。  
-GDCC 当前若要实现这层 parity，需要补一条“resolved but unsafe” 的稳定发布/诊断合同；这可以作为后续增强，但不应阻塞本轮的功能性修复。
+GDCC 现已补齐对应 parity：保持 `resolvedCalls()` 中的 constructor route 为 `RESOLVED`，同时由 expr analyzer 额外发出 `sema.unsafe_call_argument` warning。
 
 ---
 
@@ -499,8 +499,27 @@ GDCC 当前若要实现这层 parity，需要补一条“resolved but unsafe” 
 
 ## 8. 最终建议
 
-推荐按 **A -> B -> C -> D** 顺序实施，先锁行为，再改 sema，再改 lowering，最后补 backend/文档回归。  
-Phase E 的 warning parity 可以后置，不应阻塞本轮功能修复。
+推荐按 **A -> B -> C -> D -> E** 顺序实施，先锁行为，再改 sema，再改 lowering，随后补 backend/文档回归，最后收口 warning parity。  
+
+当前状态（2026-04-14）：
+
+- 已补齐 Godot `UNSAFE_CALL_ARGUMENT` 等价 warning：
+  - bare builtin unary-`Variant` constructor route 在 sema 仍发布 `RESOLVED(CONSTRUCTOR)`
+  - 同时由 `FrontendExprTypeAnalyzer` 发 `sema.unsafe_call_argument` warning
+  - warning 只命中 special route，不影响 exact builtin constructor winner
+- 已补齐语义测试：
+  - `FrontendChainBindingAnalyzerTest` 现同时锚定 resolved route 与 warning parity
+  - exact constructor negative coverage 继续确保 warning 不会外溢到 `String("seed")` 这类精确命中
+
+验收细则：
+
+- positive path：
+  - `int(plain[0])`、`String(plain[0])`、`Array(seed)`、`Dictionary(seed)` 都继续解析成功
+  - 每个调用各自产生 1 条 `sema.unsafe_call_argument` warning
+  - warning 不改变 `resolvedCalls()` / `expressionTypes()` 中的 stable resolved 事实
+- negative path：
+  - `String("seed")`、`Vector3i(1, 2, 3)` 等 exact builtin constructor 不发这条 warning
+  - object `.new(...)` route 不发这条 warning
 
 最重要的工程取舍是：
 

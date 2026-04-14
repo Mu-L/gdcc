@@ -239,6 +239,9 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - expr analyzer 对当前明确不支持的 direct-callable-invocation 等 expression route 的 error
 - `sema.discarded_expression`
   - expr analyzer 对 bare expression statement 中被丢弃的非 `void` 结果发出的 warning
+- `sema.unsafe_call_argument`
+  - expr analyzer 对 bare builtin direct constructor 命中 unary stable-`Variant` special route 时发出的 warning
+  - 与 `resolvedCalls()` 中的 `RESOLVED(CONSTRUCTOR)` 并存；它提示该 route 会依赖 runtime-open `Variant -> concrete builtin` 转换，而不是 exact constructor metadata winner
 - `sema.type_check`
   - type-check analyzer 对 ordinary local / class property / return typed contract 不兼容发出的 error
 - `sema.type_hint`

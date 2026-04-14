@@ -65,6 +65,9 @@
 - `DYNAMIC` target 的 runtime-open 处理仍属于 assignment semantic helper 的内聚语义；其他 frontend 路径若只需要 concrete slot 兼容判断，必须调用 `checkAssignmentCompatible(...)`，不要各自硬编码 `Variant` 分支。
 - 除 `DYNAMIC` target 的 runtime-open 语义外，frontend 若需要调整 typed boundary compatibility，必须先更新 `frontend_implicit_conversion_matrix.md`，再改 shared helper、测试与下游 materialization；不得直接在某个 consumer 中偷偷放宽 `int -> float`、`StringName` / `String` 等 widened conversion。
 - builtin 单参数 stable `Variant` constructor 是一条并列的 constructor 合同：shared sema 通过 builtin-only shortcut 接受，body lowering 直接 lower 为 `UnpackVariantInsn`；它不属于 `frontend_implicit_conversion_matrix.md` 的 ordinary typed-boundary widened conversion，也不得再要求 callable signature metadata。
+- 上述 builtin unary-`Variant` constructor special route 在 sema 上必须保持“resolved route + warning 并存”：
+  - `resolvedCalls()` 继续发布 `RESOLVED(CONSTRUCTOR)`，供 lowering/compile-check 消费
+  - bare direct constructor call 同时发 `sema.unsafe_call_argument` warning，明确这是 runtime-open 的 `Variant -> concrete builtin` 转换
 - source-level `if` / `elif` / `while` / `assert` condition 当前采用 Godot-compatible 合同：frontend 只要求 condition root 已稳定发布 typed fact，不再把非 `bool` 一概当作 `sema.type_check`。
 - `frontend.lowering.cfg` 中 `FrontendIfRegion` / `FrontendElifRegion` / `FrontendWhileRegion` 的 `conditionEntryId` 表达的是整个 condition subgraph 的稳定入口；consumer 与测试都不得假设固定 `SequenceNode -> BranchNode` 两节点模板。
 - `FrontendCfgGraph.BranchNode.conditionRoot` 表达的是“当前 branch 直接测试的 condition fragment root”，必须与 `conditionValueId` 的直接 producer subtree 对齐；它不保证等于外围 source-level condition 的最外层根，也不承诺可以仅凭 `conditionValueId` 从整个 condition region 中反推出唯一一个 producer item。

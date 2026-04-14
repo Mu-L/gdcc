@@ -5,9 +5,11 @@ import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
+import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
 import dev.superice.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
@@ -19,6 +21,8 @@ import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
+import dev.superice.gdcc.scope.ScopeOwnerKind;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
@@ -76,6 +80,7 @@ public class FrontendExprTypeAnalyzer {
     private static final @NotNull String UNSUPPORTED_EXPRESSION_ROUTE_CATEGORY =
             "sema.unsupported_expression_route";
     private static final @NotNull String DISCARDED_EXPRESSION_CATEGORY = "sema.discarded_expression";
+    private static final @NotNull String UNSAFE_CALL_ARGUMENT_CATEGORY = "sema.unsafe_call_argument";
 
     public void analyze(
             @NotNull ClassRegistry classRegistry,
@@ -728,6 +733,41 @@ public class FrontendExprTypeAnalyzer {
                 );
             }
             resolvedCalls.put(callExpression, publishedCall);
+            reportUnsafeCallArgumentWarning(callExpression, publishedCall);
+        }
+
+        /// The builtin unary-`Variant` constructor shortcut intentionally keeps the call route
+        /// `RESOLVED`, but it is still runtime-open at the argument boundary. Emit the warning at
+        /// bare-call publication time so diagnostics stay aligned with the published semantic fact.
+        private void reportUnsafeCallArgumentWarning(
+                @NotNull CallExpression callExpression,
+                @NotNull FrontendResolvedCall publishedCall
+        ) {
+            if (!isUnsafeBuiltinVariantConstructorRoute(publishedCall)) {
+                return;
+            }
+            var sourceType = publishedCall.argumentTypes().getFirst();
+            var targetType = Objects.requireNonNull(publishedCall.returnType(), "returnType must not be null");
+            diagnosticManager.warning(
+                    UNSAFE_CALL_ARGUMENT_CATEGORY,
+                    "Unsafe call argument for builtin constructor '" + publishedCall.callableName()
+                            + "(...)': static argument type '" + sourceType.getTypeName()
+                            + "' requires runtime conversion to '" + targetType.getTypeName() + "'",
+                    sourcePath,
+                    FrontendRange.fromAstRange(callExpression.range())
+            );
+        }
+
+        private static boolean isUnsafeBuiltinVariantConstructorRoute(@NotNull FrontendResolvedCall publishedCall) {
+            return publishedCall.status() == dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus.RESOLVED
+                    && publishedCall.callKind() == FrontendCallResolutionKind.CONSTRUCTOR
+                    && publishedCall.receiverKind() == FrontendReceiverKind.TYPE_META
+                    && publishedCall.ownerKind() == ScopeOwnerKind.BUILTIN
+                    && publishedCall.argumentTypes().size() == 1
+                    && publishedCall.argumentTypes().getFirst() instanceof GdVariantType
+                    // The dedicated route is owner-anchored instead of pretending one exact builtin
+                    // constructor metadata entry won overload selection.
+                    && publishedCall.declarationSite() instanceof dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
         }
 
         private @NotNull FrontendExpressionType finishSemanticResolution(

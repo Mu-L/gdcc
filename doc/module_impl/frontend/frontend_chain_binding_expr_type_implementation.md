@@ -284,6 +284,7 @@
 当前 constructor route 的事实源合同已经闭合到 downstream：
 
 - `.new(...)` 与 bare builtin direct constructor 统一发布为 `FrontendResolvedCall(callKind = CONSTRUCTOR)`
+- bare builtin direct constructor 若命中 unary stable-`Variant` special route，expr analyzer 还会额外发一条 `sema.unsafe_call_argument` warning；该 warning 不改变 published call 的 `RESOLVED` 状态
 - frontend body lowering 直接消费该 route，并按已发布 shape 分流：
   - builtin 单参数 stable `Variant` constructor special route -> `UnpackVariantInsn`
   - 其它 builtin/container constructor -> `ConstructBuiltinInsn`
