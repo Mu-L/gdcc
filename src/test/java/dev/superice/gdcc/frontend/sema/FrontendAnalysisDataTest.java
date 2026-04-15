@@ -32,6 +32,7 @@ class FrontendAnalysisDataTest {
         var analysisData = FrontendAnalysisData.bootstrap();
 
         assertTrue(analysisData.annotationsByAst().isEmpty());
+        assertTrue(analysisData.skippedSubtreeRoots().isEmpty());
         assertTrue(analysisData.scopesByAst().isEmpty());
         assertTrue(analysisData.symbolBindings().isEmpty());
         assertTrue(analysisData.expressionTypes().isEmpty());

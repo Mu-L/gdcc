@@ -675,7 +675,17 @@ public class FrontendExprTypeAnalyzer {
             }
             for (var trace : reduced.stepTraces()) {
                 var publishedType = resolvePublishedAttributeStepType(trace);
-                expressionTypes.put(trace.step(), publishedType);
+                var existingType = expressionTypes.putIfAbsent(trace.step(), publishedType);
+                if (existingType != null) {
+                    throw new IllegalStateException(
+                            "Duplicate expression type published for attribute step "
+                                    + trace.step().getClass().getSimpleName()
+                                    + ": existing="
+                                    + existingType
+                                    + ", attempted="
+                                    + publishedType
+                    );
+                }
             }
         }
 

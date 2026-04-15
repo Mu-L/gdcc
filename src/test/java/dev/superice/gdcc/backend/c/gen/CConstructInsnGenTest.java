@@ -408,6 +408,21 @@ class CConstructInsnGenTest {
     }
 
     @Test
+    @DisplayName("construct_object should trim class_name before registry lookup and diagnostics")
+    void constructObjectShouldTrimClassNameBeforeLookup() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_trimmed_object");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("node", "  Node  "));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("godot_new_Node()"), body);
+        assertFalse(body.contains("godot_new_  Node  ()"), body);
+    }
+
+    @Test
     @DisplayName("construct_object should reject non-instantiable engine classes")
     void constructObjectShouldRejectNonInstantiableEngineClass() {
         var clazz = newTestClass();

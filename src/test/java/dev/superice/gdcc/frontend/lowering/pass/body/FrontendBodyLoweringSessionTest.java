@@ -225,6 +225,38 @@ class FrontendBodyLoweringSessionTest {
         assertSame(continuationBlock, actualBlock);
     }
 
+    @Test
+    void loweringProcessorRegistryRequiresExactNodeTypeMatch() throws Exception {
+        var session = prepareSession();
+        var entryBlock = new LirBasicBlock("entry");
+        var registry = FrontendInsnLoweringProcessorRegistry.of(
+                "test node",
+                new FrontendInsnLoweringProcessor<TestNode, Void>() {
+                    @Override
+                    public @NotNull Class<TestNode> nodeType() {
+                        return TestNode.class;
+                    }
+
+                    @Override
+                    public @NotNull LirBasicBlock lower(
+                            @NotNull FrontendBodyLoweringSession innerSession,
+                            @NotNull LirBasicBlock block,
+                            @NotNull TestNode node,
+                            @Nullable Void context
+                    ) {
+                        throw new AssertionError("Exact-type registry must not route subclasses to a parent processor");
+                    }
+                }
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> registry.lower(session, entryBlock, new DerivedTestNode(), null)
+        );
+
+        assertTrue(exception.getMessage().contains(DerivedTestNode.class.getName()), exception.getMessage());
+    }
+
     private static @NotNull FrontendBodyLoweringSession prepareSession() throws Exception {
         var diagnostics = new DiagnosticManager();
         var module = parseModule(
@@ -284,6 +316,9 @@ class FrontendBodyLoweringSessionTest {
     ) {
     }
 
-    private record TestNode() {
+    private static class TestNode {
+    }
+
+    private static final class DerivedTestNode extends TestNode {
     }
 }

@@ -19,6 +19,7 @@ import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdPackedArrayType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
@@ -203,24 +204,22 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
     private @NotNull ObjectConstructTarget validateConstructObjectTarget(@NotNull CBodyBuilder bodyBuilder,
                                                                          @NotNull LirVariable resultVar,
                                                                          @NotNull String className) {
-        if (className.isBlank()) {
-            throw bodyBuilder.invalidInsn("construct_object class_name must not be blank");
-        }
+        var actualClassName = StringUtil.requireTrimmedNonBlank(className, "construct_object class_name");
         if (!(resultVar.type() instanceof GdObjectType resultType)) {
             throw bodyBuilder.invalidInsn(
                     "Result variable ID '" + resultVar.id() + "' must be Object type for construct_object"
             );
         }
 
-        var constructedType = new GdObjectType(className);
+        var constructedType = new GdObjectType(actualClassName);
         var classDef = bodyBuilder.classRegistry().getClassDef(constructedType);
         if (classDef == null) {
-            throw bodyBuilder.invalidInsn("construct_object class '" + className + "' is not registered");
+            throw bodyBuilder.invalidInsn("construct_object class '" + actualClassName + "' is not registered");
         }
-        validateConstructibleClass(bodyBuilder, classDef, className);
+        validateConstructibleClass(bodyBuilder, classDef, actualClassName);
         if (!bodyBuilder.classRegistry().checkAssignable(constructedType, resultType)) {
             throw bodyBuilder.invalidInsn(
-                    "construct_object class '" + className + "' is not assignable to result variable type '" +
+                    "construct_object class '" + actualClassName + "' is not assignable to result variable type '" +
                             resultType.getTypeName() + "'"
             );
         }

@@ -78,11 +78,6 @@ final class FrontendInsnLoweringProcessorRegistry<TNode, TContext> {
         if (directProcessor != null) {
             return (FrontendInsnLoweringProcessor<TActual, TContext>) directProcessor;
         }
-        for (var entry : processors.entrySet()) {
-            if (entry.getKey().isAssignableFrom(nodeClass)) {
-                return (FrontendInsnLoweringProcessor<TActual, TContext>) entry.getValue();
-            }
-        }
         throw new IllegalStateException(
                 "No " + registryName + " processor registered for " + nodeClass.getName()
         );
