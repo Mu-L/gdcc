@@ -34,6 +34,10 @@ public class GdScriptUnitTestCompileRunnerTest {
             "abi/variant/method_roundtrip.gd",
             "abi/variant/non_variant_guard.gd",
             "abi/variant/property_roundtrip.gd",
+            "algorithm/fibonacci_sequence.gd",
+            "algorithm/graph_traversal.gd",
+            "collection/array_sum_and_mutation.gd",
+            "collection/dictionary_mutation_and_lookup.gd",
             "constructor/builtin_variant_container_roundtrip.gd",
             "constructor/builtin_variant_scalar_roundtrip.gd",
             "control_flow/if_elif_truthiness.gd",
@@ -51,6 +55,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/array_void_return_helper_size.gd",
             "runtime/array_void_return_push_back_size.gd",
             "runtime/dynamic_call.gd",
+            "runtime/engine_node_refcounted_workflow.gd",
             "smoke/basic_arithmetic.gd",
             "subscript/array_roundtrip.gd",
             "subscript/packed_array_mutation_roundtrip.gd"

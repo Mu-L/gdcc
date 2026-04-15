@@ -164,6 +164,13 @@
 - compatibility fallback 必须显式出现
 - fallback 只能恢复 unresolved leaf type，不能吞掉 malformed structured text
 - frontend strict 位置不得默认走这些兼容入口
+- `ScopeTypeParsers.parseExtensionTypeMetadata(...)` 当前只覆盖：
+  - blank metadata
+  - ordinary type names
+  - `enum::...`
+  - `bitfield::...`
+  - `typedarray::...`
+- `typeddictionary::K;V` 这种 composite exported spelling 目前不在 shared parser 合同内；它仍由 backend typed-dictionary ABI 独立处理
 
 ---
 

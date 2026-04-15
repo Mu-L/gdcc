@@ -54,12 +54,13 @@ public class ExtensionApiLoaderTest {
                     if (arg.defaultValue() != null && !arg.defaultValue().isEmpty()) {
                         defaultValues.add(arg.defaultValue());
                         if (arg.defaultValue().equals("null")) {
-                            IO.println("Found null default value in " + cls.name() + "." + method.name());
+                            IO.println("Found (" + arg.getType() + ")null default value in " + cls.name() + "." + method.name());
                         }
                     }
                 }
             }
         }
+        IO.println(defaultValues);
     }
 
     @Test

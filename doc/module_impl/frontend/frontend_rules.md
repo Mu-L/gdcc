@@ -61,7 +61,6 @@
 - 上述 container-family subscript 当前故意复用 `ClassRegistry.checkAssignable(...)` 做 key/index 校验；MVP 不追求复刻 Godot 更宽的 keyed/index 兼容规则，例如 `String` / `StringName` 互通、`int -> float`、以及 `Array` / packed array 的 float index 兼容。
 - builtin instance property access 与 builtin keyed access 必须继续严格区分：`vector.x`、`Color(...).r`、`Basis.IDENTITY.x` 当前属于 compile-ready ordinary property route；`vector["x"]` 仍保持 unsupported。
 - builtin keyed access 即使在 extension metadata 中声明了 `isKeyed`，当前也不属于 MVP 支持面；frontend 必须发出显式 `UNSUPPORTED`，而不是猜测 `String` / `Vector*` / `Color` / `Basis` / `Transform*` / `Object` 等 builtin keyed route 的结果类型。
-- H2 assignment compatibility 的具体 source/target 规则以 `frontend_implicit_conversion_matrix.md` 为唯一真源；`FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)` 只是 concrete slot gate 的统一入口，不得在其他 frontend 路径里各自复制一份 conversion 清单。ordinary boundary consumer/materialization 的长合同以 `frontend_lowering_(un)pack_implementation.md` 为准。
 - `DYNAMIC` target 的 runtime-open 处理仍属于 assignment semantic helper 的内聚语义；其他 frontend 路径若只需要 concrete slot 兼容判断，必须调用 `checkAssignmentCompatible(...)`，不要各自硬编码 `Variant` 分支。
 - 除 `DYNAMIC` target 的 runtime-open 语义外，frontend 若需要调整 typed boundary compatibility，必须先更新 `frontend_implicit_conversion_matrix.md`，再改 shared helper、测试与下游 materialization；不得直接在某个 consumer 中偷偷放宽 `int -> float`、`StringName` / `String` 等 widened conversion。
 - builtin 单参数 stable `Variant` constructor 是一条并列的 constructor 合同：shared sema 通过 builtin-only shortcut 接受，body lowering 直接 lower 为 `UnpackVariantInsn`；它不属于 `frontend_implicit_conversion_matrix.md` 的 ordinary typed-boundary widened conversion，也不得再要求 callable signature metadata。
@@ -73,13 +72,13 @@
 - `FrontendCfgGraph.BranchNode.conditionRoot` 表达的是“当前 branch 直接测试的 condition fragment root”，必须与 `conditionValueId` 的直接 producer subtree 对齐；它不保证等于外围 source-level condition 的最外层根，也不承诺可以仅凭 `conditionValueId` 从整个 condition region 中反推出唯一一个 producer item。
 - short-circuit lowering 现已要求每个 `BranchNode.conditionValueId` 都保持为当前 fragment 自己计算出的 branch-local 独立 value id；不得复用 value-context `and` / `or` 的 outward-facing merge result value id 作为 branch condition id。
 - frontend CFG value id 默认仍是 single-definition 合同，但有一个刻意保留的例外：同一个 outward-facing merged result value id 可以由多个 `MergeValueItem` 在互斥路径上写入。
-- 这个例外必须保持收口：若同一个 value id 出现多个 producer，则所有 producer 都必须是 `MergeValueItem`；`MergeValueItem.resultValueId` 不允许与 `OpaqueExprValueItem`、`CallItem`、`CastItem`、`BoolConstantItem` 等普通 producer 共享同一个 value id。
-- 任何按 value id 收集 producer 的代码、测试或 future lowering 都必须按“可能有多个 reaching producers”建模；不得把 merged result 当作可唯一反查的 SSA expression definition。
+  - 若同一个 value id 出现多个 producer，则所有 producer 都必须是 `MergeValueItem`；`MergeValueItem.resultValueId` 不允许与 `OpaqueExprValueItem`、`CallItem`、`CastItem`、`BoolConstantItem` 等普通 producer 共享同一个 value id。
+  - 任何按 value id 收集 producer 的代码、测试或 future lowering 都必须按“可能有多个 reaching producers”建模；不得把 merged result 当作可唯一反查的 SSA expression definition。
 - `assert` 的 compile-only block 不改变这条 source-level 合同；真正的 backend / lowering 缺口必须继续留在 compile gate，而不是反向污染 shared type-check 规则。
 - backend/LIR 的 control-flow 仍保持 bool-only 边界；当未来接上 frontend -> LIR lowering 时，必须在 lowering 侧补上显式 truthiness / condition normalization，不得再反向把 frontend 收紧成 undocumented strict-bool dialect。
 - lowering 侧的 condition normalization 合同已经冻结：`bool` 直接 branch，`Variant` 只做 `unpack_variant -> bool temp -> GoIfInsn`，其余 stable type 必须先 `pack_variant` 再 `unpack_variant`，不得绕过这条路径。
 - body lowering 的 slot/materialization 命名必须固定：temp-backed CFG value 继续用 `cfg_tmp_<valueId>`，merge-backed value 继续用 `cfg_merge_<valueId>`，source-level local 直接沿用源码名；direct-slot alias value 与 statement-position resolved-void `CallItem` 则故意不声明独立 `cfg_tmp_*` 变量。
-- `OpaqueExprValueItem` 当前只允许承载 ordinary leaf / eager unary / 非短路 eager binary；`and` / `or`、assignment-as-opaque、以及绕过 dedicated item 的 attribute / call / subscript 必须视为协议违例。direct-slot mutating receiver 的 alias publication 现已通过独立 `DirectSlotAliasValueItem` 收口，不再借 `OpaqueExprValueItem(identifier/self)` 让 body lowering 事后修正。
+- `OpaqueExprValueItem` 当前只允许承载 ordinary leaf / eager unary / 非短路 eager binary；`and` / `or`、assignment-as-opaque、以及绕过 dedicated item 的 attribute / call / subscript 必须视为协议违例。direct-slot mutating receiver 的 alias publication 现已通过独立 `DirectSlotAliasValueItem`。
 - direct-slot receiver alias 的安全性必须写成显式语义合同，而不是“扫描参数 AST 里有没有某个节点名”：
   - explicit `SelfExpression` 可直接 alias，因为 `self` slot 不可被用户代码重绑定
   - `LOCAL_VAR` / `PARAMETER` root 只有在后续 argument subtree 全部落在 proven no-rebinding 子集时才允许 alias
@@ -103,3 +102,5 @@
 - `@onready` 的 MVP 合同当前是“annotation retention + usage validation”，不是完整 ready-time 执行模型。
 - `@onready` 的最小合法性规则固定为：只能用于 Node 派生类中的 non-static class property；相关非法用法由独立的 `sema.annotation_usage` owner 负责，不应混入 `sema.unsupported_annotation` 或 `sema.type_check`。
 - `not in`运算符语法糖在MVP版本中不支持。
+- 数组和字典字面量在MVP版本中不支持。
+- 字符串格式化`%`语法在MVP版本中不支持。
