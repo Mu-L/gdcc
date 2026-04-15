@@ -15,6 +15,7 @@ import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.insn.CallGlobalInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
@@ -40,7 +41,7 @@ class CallGlobalInsnGenTest {
         func.createAndAddVariable("deg", GdFloatType.FLOAT);
         func.createAndAddVariable("ret", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "ret",
                 "deg_to_rad",
                 List.of(new LirInstruction.VariableOperand("deg"))
@@ -58,7 +59,7 @@ class CallGlobalInsnGenTest {
         var func = newFunction("call_utility_with_default");
         func.createAndAddVariable("required", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "utility_with_default",
                 List.of(new LirInstruction.VariableOperand("required"))
@@ -77,7 +78,7 @@ class CallGlobalInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("call_utility_with_default_string");
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "utility_with_default_string",
                 List.of()
@@ -96,7 +97,7 @@ class CallGlobalInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("call_utility_with_default_typed_array");
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "utility_with_default_typed_array",
                 List.of()
@@ -116,7 +117,7 @@ class CallGlobalInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("call_utility_with_default_typed_dictionary");
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "utility_with_default_typed_dictionary",
                 List.of()
@@ -136,7 +137,7 @@ class CallGlobalInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("call_utility_with_default_missing_required");
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "utility_with_default",
                 List.of()
@@ -155,7 +156,7 @@ class CallGlobalInsnGenTest {
         var func = newFunction("call_print_one");
         func.createAndAddVariable("v1", GdVariantType.VARIANT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "print",
                 List.of(new LirInstruction.VariableOperand("v1"))
@@ -175,7 +176,7 @@ class CallGlobalInsnGenTest {
         func.createAndAddVariable("v2", GdVariantType.VARIANT);
         func.createAndAddVariable("v3", GdVariantType.VARIANT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "print",
                 List.of(
@@ -198,7 +199,7 @@ class CallGlobalInsnGenTest {
         var func = newFunction("call_prefixed_print");
         func.createAndAddVariable("v1", GdVariantType.VARIANT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "godot_print",
                 List.of(new LirInstruction.VariableOperand("v1"))
@@ -217,7 +218,7 @@ class CallGlobalInsnGenTest {
         func.createAndAddVariable("deg", GdFloatType.FLOAT);
         func.createAndAddVariable("ret", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "ret",
                 "godot_deg_to_rad",
                 List.of(new LirInstruction.VariableOperand("deg"))
@@ -229,12 +230,32 @@ class CallGlobalInsnGenTest {
     }
 
     @Test
+    @DisplayName("CALL_GLOBAL should resolve backend-owned Variant writeback helper")
+    void callGlobalResolvesVariantWritebackRuntimeHelper() {
+        var clazz = newTestClass();
+        var func = newFunction("call_variant_writeback_helper");
+        func.createAndAddVariable("carrier", GdVariantType.VARIANT);
+        func.createAndAddVariable("should_writeback", GdBoolType.BOOL);
+
+        entry(func).appendInstruction(new CallGlobalInsn(
+                "should_writeback",
+                "gdcc_variant_requires_writeback",
+                List.of(new LirInstruction.VariableOperand("carrier"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+
+        assertTrue(body.contains("$should_writeback = gdcc_variant_requires_writeback(&$carrier);"), body);
+    }
+
+    @Test
     @DisplayName("CALL_GLOBAL should reject unknown utility")
     void callGlobalUnknownUtility() {
         var clazz = newTestClass();
         var func = newFunction("call_missing");
 
-        entry(func).instructions().add(new CallGlobalInsn(null, "missing_utility", List.of()));
+        entry(func).appendInstruction(new CallGlobalInsn(null, "missing_utility", List.of()));
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func, utilityApi()));
@@ -250,7 +271,7 @@ class CallGlobalInsnGenTest {
         func.createAndAddVariable("v1", GdVariantType.VARIANT);
         func.createAndAddVariable("ret", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "ret",
                 "print",
                 List.of(new LirInstruction.VariableOperand("v1"))
@@ -269,7 +290,7 @@ class CallGlobalInsnGenTest {
         var func = newFunction("call_deg_to_rad_without_result");
         func.createAndAddVariable("deg", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "deg_to_rad",
                 List.of(new LirInstruction.VariableOperand("deg"))
@@ -287,7 +308,7 @@ class CallGlobalInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("call_make_string_without_result");
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "make_string",
                 List.of()
@@ -307,7 +328,7 @@ class CallGlobalInsnGenTest {
         func.createAndAddVariable("deg", GdFloatType.FLOAT);
         func.createAndAddRefVariable("ret", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "ret",
                 "deg_to_rad",
                 List.of(new LirInstruction.VariableOperand("deg"))
@@ -327,7 +348,7 @@ class CallGlobalInsnGenTest {
         func.createAndAddVariable("deg", GdFloatType.FLOAT);
         func.createAndAddVariable("ret", GdStringType.STRING);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "ret",
                 "deg_to_rad",
                 List.of(new LirInstruction.VariableOperand("deg"))
@@ -345,7 +366,7 @@ class CallGlobalInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("call_print_missing_arg_var");
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "print",
                 List.of(new LirInstruction.VariableOperand("missing"))
@@ -363,7 +384,7 @@ class CallGlobalInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("call_print_non_var_operand");
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "print",
                 List.of(new LirInstruction.StringOperand("not_a_var"))
@@ -384,7 +405,7 @@ class CallGlobalInsnGenTest {
         func.createAndAddVariable("extra", GdFloatType.FLOAT);
         func.createAndAddVariable("ret", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "ret",
                 "deg_to_rad",
                 List.of(
@@ -405,7 +426,7 @@ class CallGlobalInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("call_print_too_few");
 
-        entry(func).instructions().add(new CallGlobalInsn(null, "print", List.of()));
+        entry(func).appendInstruction(new CallGlobalInsn(null, "print", List.of()));
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func, utilityApi()));
@@ -421,7 +442,7 @@ class CallGlobalInsnGenTest {
         func.createAndAddVariable("deg", GdStringType.STRING);
         func.createAndAddVariable("ret", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "ret",
                 "deg_to_rad",
                 List.of(new LirInstruction.VariableOperand("deg"))
@@ -441,7 +462,7 @@ class CallGlobalInsnGenTest {
         func.createAndAddVariable("v1", GdVariantType.VARIANT);
         func.createAndAddVariable("s1", GdStringType.STRING);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "print",
                 List.of(
@@ -463,7 +484,7 @@ class CallGlobalInsnGenTest {
         var func = newFunction("call_deg_to_rad_missing_result_var");
         func.createAndAddVariable("deg", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "ret",
                 "deg_to_rad",
                 List.of(new LirInstruction.VariableOperand("deg"))
@@ -630,7 +651,7 @@ class CallGlobalInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("call_utility_with_metadata_typedarray_default");
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "utility_with_default_typedarray_metadata",
                 List.of()

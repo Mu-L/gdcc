@@ -38,11 +38,10 @@ public final class ClassRegistry implements Scope {
     private final Map<String, ExtensionSingleton> singletonByName = new HashMap<>();
     /// User-defined classes keyed strictly by canonical registration name.
     private final Map<String, ClassDef> gdccClassByName = new HashMap<>();
-    /// Source-facing alias side table for canonical inner-class registrations.
+    /// Source-facing alias side table for canonical gdcc registrations whose source name differs.
     ///
-    /// Top-level gdcc classes intentionally do not write redundant entries here because their
-    /// source-facing name is identical to the canonical registration key. Only inner classes with
-    /// `canonicalName != sourceName` need an explicit side-table entry.
+    /// This is not a second global lookup namespace. It only preserves source-facing names for
+    /// registry callers that already resolved a gdcc class by canonical identity.
     private final Map<String, String> gdccClassSourceNameByCanonicalName = new HashMap<>();
     /// Virtual method for each class
     private final Map<String, Map<String, FunctionDef>> virtualMethodsByClassName = new HashMap<>();
@@ -109,11 +108,9 @@ public final class ClassRegistry implements Scope {
         addGdccClass(classDef, null);
     }
 
-    /// Add or replace a user-defined class and optionally remember a distinct source-local name.
+    /// Add or replace a user-defined class and optionally remember a distinct source-facing name.
     ///
-    /// `sourceNameOverride` is reserved for inner classes such as `Outer$Inner` that should still
-    /// report `sourceName == "Inner"` through `ScopeTypeMeta`. Passing `null` or the same text as
-    /// the canonical class name keeps the side table empty for that class.
+    /// @param sourceNameOverride Passing `null` or the same text as the canonical class name keeps the side table empty for that class.
     public void addGdccClass(@NotNull ClassDef classDef, @Nullable String sourceNameOverride) {
         Objects.requireNonNull(classDef, "classDef");
         var canonicalName = classDef.getName();
@@ -135,7 +132,7 @@ public final class ClassRegistry implements Scope {
         return gdccClassByName.get(name);
     }
 
-    /// Returns the explicit source-name override recorded for an inner gdcc class.
+    /// Returns the explicit source-name override recorded for a gdcc class.
     ///
     /// Missing entries intentionally mean `sourceName == canonicalName`; callers should not treat
     /// this map as a second global lookup namespace.

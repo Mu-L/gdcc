@@ -35,7 +35,7 @@ public class LifecycleInstructionRestrictionValidatorTest {
         var func = newFunction("strict_unknown");
         func.createAndAddVariable("value", GdStringType.STRING);
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new DestructInsn("value"));
+        entry.appendInstruction(new DestructInsn("value"));
         func.addBasicBlock(entry);
 
         var ex = assertThrows(InvalidInsnException.class,
@@ -51,7 +51,7 @@ public class LifecycleInstructionRestrictionValidatorTest {
         var func = newFunction("compat_unknown");
         func.createAndAddVariable("value", GdStringType.STRING);
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new DestructInsn("value"));
+        entry.appendInstruction(new DestructInsn("value"));
         func.addBasicBlock(entry);
 
         assertDoesNotThrow(() -> validator.validateFunction(newContext(false), func));
@@ -63,7 +63,7 @@ public class LifecycleInstructionRestrictionValidatorTest {
         var invalidFunc = newFunction("invalid_auto_generated");
         invalidFunc.createAndAddVariable("value", GdStringType.STRING);
         var invalidEntry = new LirBasicBlock("entry");
-        invalidEntry.instructions().add(new DestructInsn("value", LifecycleProvenance.AUTO_GENERATED));
+        invalidEntry.appendInstruction(new DestructInsn("value", LifecycleProvenance.AUTO_GENERATED));
         invalidFunc.addBasicBlock(invalidEntry);
 
         var invalidEx = assertThrows(InvalidInsnException.class,
@@ -74,7 +74,7 @@ public class LifecycleInstructionRestrictionValidatorTest {
         var validFunc = newFunction("valid_auto_generated");
         validFunc.createAndAddVariable("value", GdStringType.STRING);
         var finallyBlock = new LirBasicBlock("__finally__");
-        finallyBlock.instructions().add(new DestructInsn("value", LifecycleProvenance.AUTO_GENERATED));
+        finallyBlock.appendInstruction(new DestructInsn("value", LifecycleProvenance.AUTO_GENERATED));
         validFunc.addBasicBlock(finallyBlock);
         validFunc.setEntryBlockId("__finally__");
 
@@ -87,7 +87,7 @@ public class LifecycleInstructionRestrictionValidatorTest {
         var validFunc = newFunction("valid_internal");
         validFunc.createAndAddTmpVariable(GdStringType.STRING);
         var validEntry = new LirBasicBlock("entry");
-        validEntry.instructions().add(new DestructInsn("0", LifecycleProvenance.INTERNAL));
+        validEntry.appendInstruction(new DestructInsn("0", LifecycleProvenance.INTERNAL));
         validFunc.addBasicBlock(validEntry);
 
         assertDoesNotThrow(() -> validator.validateFunction(newContext(true), validFunc));
@@ -95,7 +95,7 @@ public class LifecycleInstructionRestrictionValidatorTest {
         var invalidFunc = newFunction("invalid_internal");
         invalidFunc.createAndAddVariable("namedVar", GdStringType.STRING);
         var invalidEntry = new LirBasicBlock("entry");
-        invalidEntry.instructions().add(new DestructInsn("namedVar", LifecycleProvenance.INTERNAL));
+        invalidEntry.appendInstruction(new DestructInsn("namedVar", LifecycleProvenance.INTERNAL));
         invalidFunc.addBasicBlock(invalidEntry);
 
         var ex = assertThrows(InvalidInsnException.class,
@@ -110,7 +110,7 @@ public class LifecycleInstructionRestrictionValidatorTest {
         var validFunc = newFunction("valid_user_explicit");
         validFunc.createAndAddVariable("obj", new GdObjectType("Object"));
         var validEntry = new LirBasicBlock("entry");
-        validEntry.instructions().add(new TryReleaseObjectInsn("obj", LifecycleProvenance.USER_EXPLICIT));
+        validEntry.appendInstruction(new TryReleaseObjectInsn("obj", LifecycleProvenance.USER_EXPLICIT));
         validFunc.addBasicBlock(validEntry);
 
         assertDoesNotThrow(() -> validator.validateFunction(newContext(true), validFunc));
@@ -118,7 +118,7 @@ public class LifecycleInstructionRestrictionValidatorTest {
         var invalidFunc = newFunction("invalid_user_explicit_in_finally");
         invalidFunc.createAndAddVariable("obj", new GdObjectType("Object"));
         var invalidFinally = new LirBasicBlock("__finally__");
-        invalidFinally.instructions().add(new TryOwnObjectInsn("obj", LifecycleProvenance.USER_EXPLICIT));
+        invalidFinally.appendInstruction(new TryOwnObjectInsn("obj", LifecycleProvenance.USER_EXPLICIT));
         invalidFunc.addBasicBlock(invalidFinally);
         invalidFunc.setEntryBlockId("__finally__");
 

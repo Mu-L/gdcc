@@ -1,8 +1,10 @@
 package dev.superice.gdcc.scope.resolver;
 
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ScopeOwnerKind;
+import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
@@ -24,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -34,13 +37,13 @@ class ScopeMethodResolverTest {
         var baseClass = newClass("Base", "RefCounted");
         var basePing = newFunction("ping");
         basePing.addParameter(new LirParameterDef("self", new GdObjectType("Base"), null, basePing));
-        entry(basePing).instructions().add(new ReturnInsn(null));
+        entry(basePing).appendInstruction(new ReturnInsn(null));
         baseClass.addFunction(basePing);
 
         var subClass = newClass("Sub", "Base");
         var subPing = newFunction("ping");
         subPing.addParameter(new LirParameterDef("self", new GdObjectType("Sub"), null, subPing));
-        entry(subPing).instructions().add(new ReturnInsn(null));
+        entry(subPing).appendInstruction(new ReturnInsn(null));
         subClass.addFunction(subPing);
 
         var registry = newRegistry(emptyApi(), List.of(baseClass, subClass));
@@ -63,7 +66,7 @@ class ScopeMethodResolverTest {
         var consume = newFunction("consume");
         consume.addParameter(new LirParameterDef("value", GdVariantType.VARIANT, null, consume));
         consume.setReturnType(GdIntType.INT);
-        entry(consume).instructions().add(new ReturnInsn(null));
+        entry(consume).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(consume);
 
         var registry = newRegistry(emptyApi(), List.of(workerClass));
@@ -88,7 +91,7 @@ class ScopeMethodResolverTest {
         var consume = newFunction("consume");
         consume.addParameter(new LirParameterDef("self", new GdObjectType("Node"), null, consume));
         consume.addParameter(new LirParameterDef("value", GdVariantType.VARIANT, null, consume));
-        entry(consume).instructions().add(new ReturnInsn(null));
+        entry(consume).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(consume);
 
         var registry = newRegistry(emptyApi(), List.of(workerClass));
@@ -110,7 +113,7 @@ class ScopeMethodResolverTest {
         var parentClass = newClass("Outer$Shared", "RefCounted");
         var parentPing = newFunction("ping");
         parentPing.addParameter(new LirParameterDef("self", new GdObjectType("Outer$Shared"), null, parentPing));
-        entry(parentPing).instructions().add(new ReturnInsn(null));
+        entry(parentPing).appendInstruction(new ReturnInsn(null));
         parentClass.addFunction(parentPing);
 
         var childClass = newClass("Outer$Leaf", "Outer$Shared");
@@ -128,12 +131,42 @@ class ScopeMethodResolverTest {
     }
 
     @Test
+    @DisplayName("shared method resolver should follow mapped canonical inner-class superclass names")
+    void resolveInstanceMethodShouldFollowMappedCanonicalInnerSuperclassNames() {
+        var parentClass = newClass("RuntimeOuter$Shared", "RefCounted");
+        var parentPing = newFunction("ping");
+        parentPing.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter$Shared"), null, parentPing));
+        entry(parentPing).appendInstruction(new ReturnInsn(null));
+        parentClass.addFunction(parentPing);
+
+        var childClass = newClass("RuntimeOuter$Leaf", "RuntimeOuter$Shared");
+        var registry = newRegistry(
+                emptyApi(),
+                List.of(parentClass, childClass),
+                Map.of(
+                        "RuntimeOuter$Shared", "Shared",
+                        "RuntimeOuter$Leaf", "Leaf"
+                )
+        );
+        var result = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("RuntimeOuter$Leaf"),
+                "ping",
+                List.of()
+        );
+
+        var resolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, result);
+        assertEquals("RuntimeOuter$Shared", resolved.method().ownerClass().getName());
+        assertEquals(1, resolved.method().ownerDistance());
+    }
+
+    @Test
     @DisplayName("shared method resolver should surface stale source-styled inner superclass names as method-missing fallback")
     void resolveInstanceMethodShouldExposeSourceStyledInnerSuperclassRegression() {
         var parentClass = newClass("Outer$Shared", "RefCounted");
         var parentPing = newFunction("ping");
         parentPing.addParameter(new LirParameterDef("self", new GdObjectType("Outer$Shared"), null, parentPing));
-        entry(parentPing).instructions().add(new ReturnInsn(null));
+        entry(parentPing).appendInstruction(new ReturnInsn(null));
         parentClass.addFunction(parentPing);
 
         var childClass = newClass("Outer$Leaf", "Shared");
@@ -141,6 +174,36 @@ class ScopeMethodResolverTest {
         var result = ScopeMethodResolver.resolveInstanceMethod(
                 registry,
                 new GdObjectType("Outer$Leaf"),
+                "ping",
+                List.of()
+        );
+
+        var fallback = assertInstanceOf(ScopeMethodResolver.DynamicFallback.class, result);
+        assertEquals(ScopeMethodResolver.DynamicKind.OBJECT_DYNAMIC, fallback.dynamicKind());
+        assertEquals(ScopeMethodResolver.DynamicFallbackReason.METHOD_MISSING, fallback.reason());
+    }
+
+    @Test
+    @DisplayName("shared method resolver should surface stale source-styled mapped inner superclass names as method-missing fallback")
+    void resolveInstanceMethodShouldExposeSourceStyledMappedInnerSuperclassRegression() {
+        var parentClass = newClass("RuntimeOuter$Shared", "RefCounted");
+        var parentPing = newFunction("ping");
+        parentPing.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter$Shared"), null, parentPing));
+        entry(parentPing).appendInstruction(new ReturnInsn(null));
+        parentClass.addFunction(parentPing);
+
+        var childClass = newClass("RuntimeOuter$Leaf", "Shared");
+        var registry = newRegistry(
+                emptyApi(),
+                List.of(parentClass, childClass),
+                Map.of(
+                        "RuntimeOuter$Shared", "Shared",
+                        "RuntimeOuter$Leaf", "Leaf"
+                )
+        );
+        var result = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("RuntimeOuter$Leaf"),
                 "ping",
                 List.of()
         );
@@ -177,14 +240,14 @@ class ScopeMethodResolverTest {
         fixed.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, fixed));
         fixed.addParameter(new LirParameterDef("text", GdStringType.STRING, null, fixed));
         fixed.addParameter(new LirParameterDef("count", GdIntType.INT, null, fixed));
-        entry(fixed).instructions().add(new ReturnInsn(null));
+        entry(fixed).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(fixed);
 
         var vararg = newFunction("echo");
         vararg.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, vararg));
         vararg.addParameter(new LirParameterDef("text", GdStringType.STRING, null, vararg));
         vararg.setVararg(true);
-        entry(vararg).instructions().add(new ReturnInsn(null));
+        entry(vararg).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(vararg);
 
         var registry = newRegistry(emptyApi(), List.of(workerClass));
@@ -301,6 +364,68 @@ class ScopeMethodResolverTest {
     }
 
     @Test
+    @DisplayName("shared method resolver should keep strict default path but allow frontend Variant boundary instance calls")
+    void resolveInstanceMethodShouldKeepStrictDefaultWhileFrontendPathAcceptsVariantSource() {
+        var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithAcceptCount())), List.of());
+
+        var strictResult = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("Node"),
+                "accept_count",
+                List.of(GdVariantType.VARIANT)
+        );
+        var strictFailure = assertInstanceOf(ScopeMethodResolver.Failed.class, strictResult);
+        assertEquals(ScopeMethodResolver.FailureKind.NO_APPLICABLE_OVERLOAD, strictFailure.kind());
+
+        var frontendResult = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("Node"),
+                "accept_count",
+                List.of(GdVariantType.VARIANT),
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                        registry,
+                        sourceType,
+                        targetType
+                )
+        );
+        var frontendResolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, frontendResult);
+        assertEquals("Node", frontendResolved.method().ownerClass().getName());
+        assertEquals("int", frontendResolved.method().parameters().getFirst().type().getTypeName());
+    }
+
+    @Test
+    @DisplayName("shared method resolver should keep strict default path but allow frontend Variant boundary static calls")
+    void resolveStaticMethodShouldKeepStrictDefaultWhileFrontendPathAcceptsVariantSource() {
+        var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithStaticAcceptCount())), List.of());
+        var nodeTypeMeta = registry.resolveTypeMeta("Node");
+
+        var strictResult = ScopeMethodResolver.resolveStaticMethod(
+                registry,
+                nodeTypeMeta,
+                "accept_count",
+                List.of(GdVariantType.VARIANT)
+        );
+        var strictFailure = assertInstanceOf(ScopeMethodResolver.Failed.class, strictResult);
+        assertEquals(ScopeMethodResolver.FailureKind.NO_APPLICABLE_OVERLOAD, strictFailure.kind());
+
+        var frontendResult = ScopeMethodResolver.resolveStaticMethod(
+                registry,
+                nodeTypeMeta,
+                "accept_count",
+                List.of(GdVariantType.VARIANT),
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                        registry,
+                        sourceType,
+                        targetType
+                )
+        );
+        var frontendResolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, frontendResult);
+        assertEquals("Node", frontendResolved.method().ownerClass().getName());
+        assertTrue(frontendResolved.method().isStatic());
+        assertEquals("int", frontendResolved.method().parameters().getFirst().type().getTypeName());
+    }
+
+    @Test
     @DisplayName("shared method resolver should keep constructor route out of static method lookup")
     void resolveStaticMethodShouldRejectConstructorRoute() {
         var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithStaticFactory())), List.of());
@@ -314,12 +439,28 @@ class ScopeMethodResolverTest {
     }
 
     @Test
+    @DisplayName("shared method resolver should use canonical-derived display names for mapped GDCC type-meta diagnostics")
+    void resolveStaticMethodShouldUseDisplayNameForMappedGdccTypeMetaDiagnostics() {
+        var registry = newRegistry(emptyApi(), List.of());
+        var runtimeWorker = newClass("RuntimeWorker", "RefCounted");
+        registry.addGdccClass(runtimeWorker, "Worker");
+        var workerTypeMeta = assertInstanceOf(ScopeTypeMeta.class, registry.resolveTypeMeta("RuntimeWorker"));
+
+        var result = ScopeMethodResolver.resolveStaticMethod(registry, workerTypeMeta, "missing", List.of());
+        var failed = assertInstanceOf(ScopeMethodResolver.Failed.class, result);
+
+        assertEquals(ScopeMethodResolver.FailureKind.METHOD_NOT_FOUND, failed.kind());
+        assertTrue(failed.message().contains("RuntimeWorker"), failed.message());
+        assertFalse(failed.message().contains("type 'Worker'"), failed.message());
+    }
+
+    @Test
     @DisplayName("shared method resolver should keep _init out of ordinary instance method lookup")
     void resolveInstanceMethodShouldRejectInitConstructorMember() {
         var workerClass = newClass("Worker", "RefCounted");
         var init = newFunction("_init");
         init.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, init));
-        entry(init).instructions().add(new ReturnInsn(null));
+        entry(init).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(init);
 
         var registry = newRegistry(emptyApi(), List.of(workerClass));
@@ -435,9 +576,17 @@ class ScopeMethodResolverTest {
     }
 
     private static ClassRegistry newRegistry(ExtensionAPI api, List<LirClassDef> gdccClasses) {
+        return newRegistry(api, gdccClasses, Map.of());
+    }
+
+    private static ClassRegistry newRegistry(
+            ExtensionAPI api,
+            List<LirClassDef> gdccClasses,
+            Map<String, String> sourceNameOverrides
+    ) {
         var registry = new ClassRegistry(api);
         for (var gdccClass : gdccClasses) {
-            registry.addGdccClass(gdccClass);
+            registry.addGdccClass(gdccClass, sourceNameOverrides.get(gdccClass.getName()));
         }
         return registry;
     }
@@ -656,6 +805,32 @@ class ScopeMethodResolverTest {
                 "core",
                 List.of(),
                 List.of(make),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static ExtensionGdClass nodeClassWithStaticAcceptCount() {
+        var method = new ExtensionGdClass.ClassMethod(
+                "accept_count",
+                false,
+                false,
+                true,
+                false,
+                0L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("count", "int", null, null))
+        );
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(method),
                 List.of(),
                 List.of(),
                 List.of()

@@ -137,8 +137,8 @@ class CLoadStaticInsnGenTest {
         func.createAndAddRefVariable("out", GdIntType.INT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadStaticInsn("out", "Side", "SIDE_LEFT"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new LoadStaticInsn("out", "Side", "SIDE_LEFT"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -158,8 +158,8 @@ class CLoadStaticInsnGenTest {
         func.createAndAddVariable("out", resultType);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(instruction);
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(instruction);
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         return func;

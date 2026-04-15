@@ -152,11 +152,11 @@ class IndexStoreInsnGenEngineTest {
         func.createAndAddVariable("result", GdIntType.INT);
 
         var entry = entry(func);
-        entry.instructions().add(new LiteralIntInsn("idx", 1));
-        entry.instructions().add(new LiteralIntInsn("value", 77));
-        entry.instructions().add(new VariantSetIndexedInsn("arr", "idx", "value"));
-        entry.instructions().add(new VariantGetIndexedInsn("result", "arr", "idx"));
-        entry.instructions().add(new ReturnInsn("result"));
+        entry.appendInstruction(new LiteralIntInsn("idx", 1));
+        entry.appendInstruction(new LiteralIntInsn("value", 77));
+        entry.appendInstruction(new VariantSetIndexedInsn("arr", "idx", "value"));
+        entry.appendInstruction(new VariantGetIndexedInsn("result", "arr", "idx"));
+        entry.appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -168,11 +168,11 @@ class IndexStoreInsnGenEngineTest {
         func.createAndAddVariable("result", GdIntType.INT);
 
         var entry = entry(func);
-        entry.instructions().add(new LiteralIntInsn("key", 123));
-        entry.instructions().add(new LiteralIntInsn("value", 456));
-        entry.instructions().add(new VariantSetKeyedInsn("dict", "key", "value"));
-        entry.instructions().add(new VariantGetKeyedInsn("result", "dict", "key"));
-        entry.instructions().add(new ReturnInsn("result"));
+        entry.appendInstruction(new LiteralIntInsn("key", 123));
+        entry.appendInstruction(new LiteralIntInsn("value", 456));
+        entry.appendInstruction(new VariantSetKeyedInsn("dict", "key", "value"));
+        entry.appendInstruction(new VariantGetKeyedInsn("result", "dict", "key"));
+        entry.appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -184,9 +184,9 @@ class IndexStoreInsnGenEngineTest {
         func.createAndAddVariable("result", GdIntType.INT);
 
         var entry = entry(func);
-        entry.instructions().add(new VariantSetIndexedInsn("arr", "idx", "value"));
-        entry.instructions().add(new VariantGetIndexedInsn("result", "arr", "idx"));
-        entry.instructions().add(new ReturnInsn("result"));
+        entry.appendInstruction(new VariantSetIndexedInsn("arr", "idx", "value"));
+        entry.appendInstruction(new VariantGetIndexedInsn("result", "arr", "idx"));
+        entry.appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -198,9 +198,9 @@ class IndexStoreInsnGenEngineTest {
         func.createAndAddVariable("result", GdIntType.INT);
 
         var entry = entry(func);
-        entry.instructions().add(new VariantSetInsn("dict", "key", "value"));
-        entry.instructions().add(new VariantGetInsn("result", "dict", "key"));
-        entry.instructions().add(new ReturnInsn("result"));
+        entry.appendInstruction(new VariantSetInsn("dict", "key", "value"));
+        entry.appendInstruction(new VariantGetInsn("result", "dict", "key"));
+        entry.appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -212,9 +212,9 @@ class IndexStoreInsnGenEngineTest {
         func.createAndAddVariable("result", GdIntType.INT);
 
         var entry = entry(func);
-        entry.instructions().add(new VariantSetNamedInsn("dict", "name", "value"));
-        entry.instructions().add(new VariantGetNamedInsn("result", "dict", "name"));
-        entry.instructions().add(new ReturnInsn("result"));
+        entry.appendInstruction(new VariantSetNamedInsn("dict", "name", "value"));
+        entry.appendInstruction(new VariantGetNamedInsn("result", "dict", "name"));
+        entry.appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -226,9 +226,9 @@ class IndexStoreInsnGenEngineTest {
         func.createAndAddVariable("result", GdStringType.STRING);
 
         var entry = entry(func);
-        entry.instructions().add(new VariantSetKeyedInsn("dict", "key", "value"));
-        entry.instructions().add(new VariantGetKeyedInsn("result", "dict", "key"));
-        entry.instructions().add(new ReturnInsn("result"));
+        entry.appendInstruction(new VariantSetKeyedInsn("dict", "key", "value"));
+        entry.appendInstruction(new VariantGetKeyedInsn("result", "dict", "key"));
+        entry.appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -242,13 +242,13 @@ class IndexStoreInsnGenEngineTest {
         func.createAndAddVariable("result", GdIntType.INT);
 
         var entry = entry(func);
-        entry.instructions().add(new LiteralIntInsn("idx", 0));
-        entry.instructions().add(new LiteralIntInsn("value", 66));
-        entry.instructions().add(new PackVariantInsn("packed_variant", "packed"));
-        entry.instructions().add(new UnpackVariantInsn("packed_local", "packed_variant"));
-        entry.instructions().add(new VariantSetIndexedInsn("packed_local", "idx", "value"));
-        entry.instructions().add(new VariantGetIndexedInsn("result", "packed_local", "idx"));
-        entry.instructions().add(new ReturnInsn("result"));
+        entry.appendInstruction(new LiteralIntInsn("idx", 0));
+        entry.appendInstruction(new LiteralIntInsn("value", 66));
+        entry.appendInstruction(new PackVariantInsn("packed_variant", "packed"));
+        entry.appendInstruction(new UnpackVariantInsn("packed_local", "packed_variant"));
+        entry.appendInstruction(new VariantSetIndexedInsn("packed_local", "idx", "value"));
+        entry.appendInstruction(new VariantGetIndexedInsn("result", "packed_local", "idx"));
+        entry.appendInstruction(new ReturnInsn("result"));
         return func;
     }
 

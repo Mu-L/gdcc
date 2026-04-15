@@ -70,7 +70,48 @@ public class CAssignInsnGenTest {
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("godot_String_destroy(&$a);"), body);
         assertTrue(body.contains("godot_new_String_with_String(&$b);"), body);
-        assertTrue(body.contains("$a = __gdcc_tmp_string_"), body);
+        assertTrue(body.contains("$a = godot_new_String_with_String(&$b);"), body);
+        assertFalse(body.contains("__gdcc_tmp_string_"), body);
+    }
+
+    @Test
+    @DisplayName("assign self String should stage a stable carrier before destroy and consume it into the slot")
+    void assignSelfStringShouldUseStableCarrier() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assign_self_string");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("a", GdStringType.STRING);
+        addEntryAssignAndReturn(func, new AssignInsn("a", "a"));
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("godot_String __gdcc_tmp_string_0 = godot_new_String_with_String(&$a);"), body);
+        assertTrue(body.contains("godot_String_destroy(&$a);"), body);
+        assertTrue(body.contains("$a = __gdcc_tmp_string_0;"), body);
+        assertFalse(body.contains("godot_String_destroy(&__gdcc_tmp_string_0);"), body);
+    }
+
+    @Test
+    @DisplayName("assign self Variant should stage a stable carrier before destroy and consume it into the slot")
+    void assignSelfVariantShouldUseStableCarrier() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assign_self_variant");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("payload", GdVariantType.VARIANT);
+        addEntryAssignAndReturn(func, new AssignInsn("payload", "payload"));
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_variant_0 = godot_new_Variant_with_Variant(&$payload);"), body);
+        assertTrue(body.contains("godot_Variant_destroy(&$payload);"), body);
+        assertTrue(body.contains("$payload = __gdcc_tmp_variant_0;"), body);
+        assertFalse(body.contains("godot_Variant_destroy(&__gdcc_tmp_variant_0);"), body);
     }
 
     @Test
@@ -219,7 +260,8 @@ public class CAssignInsnGenTest {
 
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("godot_new_Array_with_Array(&$src);"), body);
-        assertTrue(body.contains("$dst = __gdcc_tmp_array_"), body);
+        assertTrue(body.contains("$dst = godot_new_Array_with_Array(&$src);"), body);
+        assertFalse(body.contains("__gdcc_tmp_array_"), body);
     }
 
     @Test
@@ -250,7 +292,8 @@ public class CAssignInsnGenTest {
 
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("godot_new_Array_with_Array(&$src);"), body);
-        assertTrue(body.contains("$dst = __gdcc_tmp_array_"), body);
+        assertTrue(body.contains("$dst = godot_new_Array_with_Array(&$src);"), body);
+        assertFalse(body.contains("__gdcc_tmp_array_"), body);
     }
 
     @Test
@@ -287,7 +330,8 @@ public class CAssignInsnGenTest {
 
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("godot_new_Dictionary_with_Dictionary(&$src);"), body);
-        assertTrue(body.contains("$dst = __gdcc_tmp_dictionary_"), body);
+        assertTrue(body.contains("$dst = godot_new_Dictionary_with_Dictionary(&$src);"), body);
+        assertFalse(body.contains("__gdcc_tmp_dictionary_"), body);
     }
 
     @Test
@@ -318,7 +362,8 @@ public class CAssignInsnGenTest {
 
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("godot_new_Dictionary_with_Dictionary(&$src);"), body);
-        assertTrue(body.contains("$dst = __gdcc_tmp_dictionary_"), body);
+        assertTrue(body.contains("$dst = godot_new_Dictionary_with_Dictionary(&$src);"), body);
+        assertFalse(body.contains("__gdcc_tmp_dictionary_"), body);
     }
 
     @Test
@@ -341,8 +386,8 @@ public class CAssignInsnGenTest {
 
     private void addEntryAssignAndReturn(LirFunctionDef func, AssignInsn assignInsn) {
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(assignInsn);
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(assignInsn);
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
     }

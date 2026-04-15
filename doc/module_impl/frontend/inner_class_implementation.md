@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（inner class 双名模型、module header discovery、两阶段 shell publish、strict declared type 接入、scope/type-meta 发布规则已落地）
-- 更新时间：2026-03-15
+- 状态：事实源维护中（inner class 双名模型、mapped top-level canonical header/shell、module header discovery、两阶段 shell publish、strict declared type 接入、scope/type-meta 发布规则已落地）
+- 更新时间：2026-03-25
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/scope/**`
@@ -17,6 +17,7 @@
 - 关联文档：
   - `frontend_rules.md`
   - `diagnostic_manager.md`
+  - `runtime_name_mapping_implementation.md`
   - `scope_architecture_refactor_plan.md`
   - `scope_analyzer_implementation.md`
   - `scope_type_resolver_implementation.md`
@@ -60,7 +61,9 @@
 ### 2.1 双名模型
 
 - top-level gdcc class：
-  - `canonicalName == sourceName`
+  - 无 runtime-name mapping 时：`canonicalName == sourceName`
+  - 有 runtime-name mapping 时：`canonicalName = 映射后的顶层运行时名`
+  - `sourceName = 源码中的顶层类名`
 - inner class：
   - `canonicalName = Outer$Inner$Deep...`
   - `sourceName = 源代码中的局部类名`
@@ -88,7 +91,7 @@
 
 - `FrontendSourceClassRelation`
   - 表示一个 `FrontendSourceUnit` 对其 top-level class 与同源 inner class 的拥有关系
-  - top-level class 只保留一个 `name` 字段，因为顶层类满足 `sourceName == canonicalName`
+  - 显式保存 top-level class 的 `sourceName` 与 `canonicalName`
 - `FrontendInnerClassRelation`
   - 显式保存：
     - `lexicalOwner`
@@ -114,9 +117,9 @@ relation 层的长期约束：
 - 只按 `canonicalName` 注册 gdcc class
 - global namespace 不为 inner class 建立 `sourceName` alias
 - `gdccClassSourceNameByCanonicalName` 只记录：
-  - key: accepted inner class 的 canonical name
-  - value: 对应的 source-local `sourceName`
-- top-level gdcc class 不写入冗余 side-table 条目
+  - key: 任意 `sourceName != canonicalName` 的 accepted gdcc class canonical name
+  - value: 对应的 source-facing `sourceName`
+- source/canonical 完全相同的 top-level gdcc class 不写入冗余 side-table 条目
 - 删除 gdcc class 时必须同步清理 side-table
 
 该 side-table 只服务于：
@@ -135,6 +138,8 @@ relation 层的长期约束：
   - registry / backend / shared resolver 使用的稳定身份
 - `sourceName`
   - 当前 lexical type namespace 中可见的名字
+- `displayName()`
+  - 从 `canonicalName` 派生的用户可见展示名
 - `instanceType`
   - 离开 type namespace 后进入值语义时对应的运行时类型
 - `kind`
@@ -144,10 +149,13 @@ relation 层的长期约束：
 - `pseudoType`
   - 是否为 synthetic / non-class-like type symbol
 
+若后续 frontend 需要统一 inner class 的用户可见展示名，应由 `canonicalName` 派生；不要为此再引入持久化 `runtimeName` 层。
+
 inner class 在 scope 中的长期规则：
 
 - local type-meta lookup 使用 `sourceName`
 - 命中后携带的 `ScopeTypeMeta` 同时保留 `canonicalName` 与 `sourceName`
+- 命中后 `displayName()` 统一返回 `canonicalName`
 - top-level `ClassScope` 只发布 direct inner classes 的 type-meta
 - inner `ClassScope` 只发布其 direct inner classes 的 type-meta
 - 当前 class 自身可在其类型解析上下文中按 `sourceName` 参与 declared type 解析
@@ -227,7 +235,7 @@ skeleton 成员填充当前不再把 `ClassRegistry#findType(...)` 当作 declar
 
 ### 4.1 `FrontendScopeAnalyzer`
 
-`FrontendScopeAnalyzer` 当前不再通过 source order 或 `moduleSkeleton.classDefs()` 索引对齐恢复 inner class 边界，而是直接消费 `FrontendSourceClassRelation` / `FrontendInnerClassRelation`：
+`FrontendScopeAnalyzer` 当前不再通过 source order 或扁平化 top-level class 兼容视图索引对齐恢复 inner class 边界，而是直接消费 `FrontendSourceClassRelation` / `FrontendInnerClassRelation`：
 
 - `SourceFile` 建立 top-level `ClassScope`
 - nested `ClassDeclaration` 通过 relation 重开对应的 inner `ClassScope`
@@ -244,6 +252,8 @@ registry 侧 type-meta 合同已经冻结为：
   - `canonicalName != sourceName`
 - side-table miss 默认视作：
   - `sourceName == canonicalName`
+- mapped top-level gdcc class 现在也可通过 registry side-table 恢复 `sourceName`
+  - 但 global namespace 仍不额外暴露 `sourceName` alias；source-facing lookup 继续依赖 accepted relation 与 current-module lexical type namespace
 
 ### 4.3 shared `ScopeTypeResolver`
 
@@ -283,7 +293,8 @@ inner class 相关恢复规则当前已经冻结为：
 - gdcc class 的全局注册键始终是 canonical name
 - inner class 的 source-facing 名字只能通过 relation、type-meta 或 registry side-table 恢复
 - `ClassDef#getName()` 与 `LirClassDef#getName()` 始终表示 canonical class name
-- top-level class 满足 `canonicalName == sourceName`
+- top-level gdcc class 的 canonical identity 允许被 module runtime-name mapping 重写
+- top-level class 始终保留独立的 `sourceName`
 - inner class 满足 `canonicalName = Outer$Inner...`、`sourceName = 局部类名`
 - lexical type namespace 只发布 immediate inner classes
 - inner class 不进入 value/function namespace
@@ -301,6 +312,7 @@ inner class 相关恢复规则当前已经冻结为：
 - backend 在新工具链或平台约束下对 canonical `$` 的兼容策略
 - source-facing 诊断在缺失 relation 时的降级协议
 - 若后续 frontend 语义工作需要持久化更多 inner class provenance，应扩展 relation 或 side-table，而不是反向污染 `ClassDef`
+- 若后续需要统一展示 inner class 名字，应从 `canonicalName` 派生 display 视图，而不是新增持久化 `runtimeName`
 
 任何扩展都必须同步更新本文档、相关实现注释和正反两类测试锚点。
 
@@ -313,10 +325,12 @@ inner class 相关恢复规则当前已经冻结为：
 - relation 能同时恢复 top-level / inner class 的 source 与 canonical 名字
 - inner class relation 能恢复正确的 immediate lexical owner
 - member filling 开始前，accepted top-level / inner class 已可从 `ClassRegistry` 查询
-- registry 对 top-level gdcc class 返回 `canonicalName == sourceName`
+- mapped top-level source/canonical split 至少要在 relation 与 skeleton shell 上有直接断言
 - registry 对 inner class 返回 `canonicalName != sourceName`
+- `displayName()` 对 inner class 与 mapped top-level gdcc class 都继续派生自 canonical name
 - lexical type namespace 只暴露 direct inner classes，不平铺全部后代
 - inner class 可解析 self / outer / lexical 可见 sibling-inner 的 declared type
+- DOM/LIR parser/serializer 与 backend adapter 对 inner/mapped class 继续只消费 canonical name
 - duplicate inner class、bad subtree、unknown declared type 都有 negative-path 断言
 - negative path 必须继续验证：
   - diagnostic category

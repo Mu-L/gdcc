@@ -1,0 +1,113 @@
+package dev.superice.gdcc.frontend.lowering.pass;
+
+import dev.superice.gdcc.frontend.lowering.FrontendLoweringContext;
+import dev.superice.gdcc.frontend.lowering.FrontendLoweringPass;
+import dev.superice.gdcc.frontend.lowering.FunctionLoweringContext;
+import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraphBuilder;
+import dev.superice.gdcc.lir.LirModule;
+import dev.superice.gdparser.frontend.ast.Block;
+import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
+import dev.superice.gdparser.frontend.ast.Expression;
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import org.jetbrains.annotations.NotNull;
+
+/// Frontend CFG graph publication pass.
+///
+/// The current implementation materializes compile-ready executable bodies into the new frontend CFG
+/// graph, including structured `if` / `elif` / `while` regions and loop-control edges for
+/// `break` / `continue` plus explicit short-circuit `and` / `or` condition/value subgraphs.
+public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass {
+    @Override
+    public void run(@NotNull FrontendLoweringContext context) {
+        var analysisData = context.requireAnalysisData();
+        var lirModule = context.requireLirModule();
+        var functionLoweringContexts = context.requireFunctionLoweringContexts();
+
+        for (var functionContext : functionLoweringContexts) {
+            if (functionContext.analysisData() != analysisData) {
+                throw new IllegalStateException("Function lowering context must reuse the published analysis snapshot");
+            }
+            validateTargetFunctionMembership(functionContext, lirModule);
+            switch (functionContext.kind()) {
+                case EXECUTABLE_BODY -> publishStraightLineExecutableGraph(functionContext);
+                case PROPERTY_INIT -> publishPropertyInitializerGraph(functionContext);
+                case PARAMETER_DEFAULT_INIT -> throw new IllegalStateException(
+                        "Frontend CFG build pass does not support parameter default initializer contexts yet"
+                );
+            }
+        }
+    }
+
+    private void publishStraightLineExecutableGraph(@NotNull FunctionLoweringContext functionContext) {
+        if (!(functionContext.sourceOwner() instanceof FunctionDeclaration)
+                && !(functionContext.sourceOwner() instanceof ConstructorDeclaration)) {
+            throw new IllegalStateException(describeContext(functionContext) + " must keep a callable declaration as sourceOwner");
+        }
+        if (!(functionContext.loweringRoot() instanceof Block rootBlock)) {
+            throw new IllegalStateException(describeContext(functionContext) + " must expose a Block loweringRoot");
+        }
+        validateShellOnlyTarget(functionContext);
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, functionContext.analysisData());
+        functionContext.publishFrontendCfgGraph(build.graph());
+        build.regions().forEach(functionContext::publishFrontendCfgRegion);
+    }
+
+    private void publishPropertyInitializerGraph(@NotNull FunctionLoweringContext functionContext) {
+        if (!(functionContext.sourceOwner() instanceof VariableDeclaration propertyDeclaration)) {
+            throw new IllegalStateException(
+                    describeContext(functionContext) + " must keep a property declaration as sourceOwner"
+            );
+        }
+        if (!(functionContext.loweringRoot() instanceof Expression initializerExpression)) {
+            throw new IllegalStateException(
+                    describeContext(functionContext) + " must expose an Expression loweringRoot"
+            );
+        }
+        if (propertyDeclaration.value() != initializerExpression) {
+            throw new IllegalStateException(
+                    describeContext(functionContext) + " must lower the published property initializer expression directly"
+            );
+        }
+        validateShellOnlyTarget(functionContext);
+        functionContext.publishFrontendCfgGraph(
+                new FrontendCfgGraphBuilder()
+                        .buildPropertyInitializer(initializerExpression, functionContext.analysisData())
+                        .graph()
+        );
+    }
+
+    private void validateTargetFunctionMembership(
+            @NotNull FunctionLoweringContext functionContext,
+            @NotNull LirModule lirModule
+    ) {
+        if (lirModule.getClassDefs().stream().noneMatch(classDef -> classDef == functionContext.owningClass())) {
+            throw new IllegalStateException(
+                    describeContext(functionContext) + " references an owningClass outside the published LIR module"
+            );
+        }
+        if (functionContext.owningClass().getFunctions().stream().noneMatch(function -> function == functionContext.targetFunction())) {
+            throw new IllegalStateException(
+                    describeContext(functionContext) + " references a targetFunction outside the owning LIR class"
+            );
+        }
+    }
+
+    private void validateShellOnlyTarget(@NotNull FunctionLoweringContext functionContext) {
+        if (functionContext.targetFunction().getBasicBlockCount() != 0
+                || !functionContext.targetFunction().getEntryBlockId().isEmpty()) {
+            throw new IllegalStateException(
+                    describeContext(functionContext) + " must remain shell-only before frontend CFG materialization"
+            );
+        }
+    }
+
+    private static @NotNull String describeContext(@NotNull FunctionLoweringContext functionContext) {
+        return "Function lowering context "
+                + functionContext.kind()
+                + " "
+                + functionContext.owningClass().getName()
+                + "."
+                + functionContext.targetFunction().getName();
+    }
+}

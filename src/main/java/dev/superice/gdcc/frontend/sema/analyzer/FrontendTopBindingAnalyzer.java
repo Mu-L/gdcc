@@ -6,6 +6,7 @@ import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendBinding;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
+import dev.superice.gdcc.frontend.sema.FrontendModuleSkeleton;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDeferredBoundary;
 import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDeferredReason;
@@ -98,6 +99,7 @@ public class FrontendTopBindingAnalyzer {
         for (var sourceClassRelation : moduleSkeleton.sourceClassRelations()) {
             new AstWalkerTopBindingBinder(
                     sourceClassRelation.unit().path(),
+                    moduleSkeleton,
                     scopesByAst,
                     symbolBindings,
                     diagnosticManager,
@@ -117,6 +119,7 @@ public class FrontendTopBindingAnalyzer {
     /// namespace routing local to top-binding analysis.
     private static final class AstWalkerTopBindingBinder implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
+        private final @NotNull FrontendModuleSkeleton moduleSkeleton;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
         private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
         private final @NotNull DiagnosticManager diagnosticManager;
@@ -131,12 +134,14 @@ public class FrontendTopBindingAnalyzer {
 
         private AstWalkerTopBindingBinder(
                 @NotNull Path sourcePath,
+                @NotNull FrontendModuleSkeleton moduleSkeleton,
                 @NotNull FrontendAstSideTable<Scope> scopesByAst,
                 @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
                 @NotNull DiagnosticManager diagnosticManager,
                 @NotNull FrontendVisibleValueResolver visibleValueResolver
         ) {
             this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath must not be null");
+            this.moduleSkeleton = Objects.requireNonNull(moduleSkeleton, "moduleSkeleton must not be null");
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
             this.symbolBindings = Objects.requireNonNull(symbolBindings, "symbolBindings must not be null");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
@@ -625,7 +630,11 @@ public class FrontendTopBindingAnalyzer {
                 }
             }
 
-            var typeMetaResult = currentScope.resolveTypeMeta(identifierExpression.name(), currentRestriction);
+            var typeMetaResult = moduleSkeleton.resolveSourceFacingTypeMeta(
+                    currentScope,
+                    identifierExpression.name(),
+                    currentRestriction
+            );
             if (typeMetaResult.isAllowed()) {
                 var typeMeta = typeMetaResult.requireValue();
                 if (supportsTopLevelTypeMeta(typeMeta)) {
@@ -744,7 +753,11 @@ public class FrontendTopBindingAnalyzer {
                 return;
             }
 
-            var typeMetaResult = currentScope.resolveTypeMeta(identifierExpression.name(), currentRestriction);
+            var typeMetaResult = moduleSkeleton.resolveSourceFacingTypeMeta(
+                    currentScope,
+                    identifierExpression.name(),
+                    currentRestriction
+            );
             if (shouldPreferGlobalEnumTypeMeta(valueResolution, typeMetaResult)) {
                 var typeMeta = typeMetaResult.requireValue();
                 publishBinding(
@@ -847,6 +860,20 @@ public class FrontendTopBindingAnalyzer {
                         publishFunctionBinding(identifierExpression, functionResult.requireValue(), false);
                 case FOUND_BLOCKED -> publishFunctionBinding(identifierExpression, functionResult.requireValue(), true);
                 case NOT_FOUND -> {
+                    var typeMetaResult = moduleSkeleton.resolveSourceFacingTypeMeta(
+                            currentScope,
+                            identifierExpression.name(),
+                            currentRestriction
+                    );
+                    if (typeMetaResult.isAllowed() && supportsTopLevelTypeMeta(typeMetaResult.requireValue())) {
+                        publishBinding(
+                                identifierExpression,
+                                identifierExpression.name(),
+                                FrontendBindingKind.TYPE_META,
+                                typeMetaResult.requireValue().declaration()
+                        );
+                        return;
+                    }
                     publishBinding(identifierExpression, identifierExpression.name(), FrontendBindingKind.UNKNOWN, null);
                     reportBindingError(
                             identifierExpression,

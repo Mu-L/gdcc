@@ -38,7 +38,7 @@ public class LifecycleProvenancePropagationTest {
         func.createAndAddVariable("s", GdStringType.STRING);
         var block = new LirBasicBlock("entry");
         var insn = new DestructInsn("s", LifecycleProvenance.AUTO_GENERATED);
-        block.instructions().add(insn);
+        block.appendInstruction(insn);
         func.addBasicBlock(block);
         func.setEntryBlockId("entry");
 
@@ -58,7 +58,7 @@ public class LifecycleProvenancePropagationTest {
         func.createAndAddVariable("s", GdStringType.STRING);
         var block = new LirBasicBlock("__finally__");
         var insn = new DestructInsn("s", LifecycleProvenance.AUTO_GENERATED);
-        block.instructions().add(insn);
+        block.appendInstruction(insn);
         func.addBasicBlock(block);
         func.setEntryBlockId("__finally__");
 
@@ -77,7 +77,7 @@ public class LifecycleProvenancePropagationTest {
         func.createAndAddVariable("obj", new GdObjectType("Object"));
         var block = new LirBasicBlock("entry");
         var insn = new TryOwnObjectInsn("obj", LifecycleProvenance.AUTO_GENERATED);
-        block.instructions().add(insn);
+        block.appendInstruction(insn);
         func.addBasicBlock(block);
         func.setEntryBlockId("entry");
 

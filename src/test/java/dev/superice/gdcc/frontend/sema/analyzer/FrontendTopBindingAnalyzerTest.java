@@ -3,6 +3,7 @@ package dev.superice.gdcc.frontend.sema.analyzer;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.scope.ClassScope;
@@ -35,12 +36,14 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -439,6 +442,36 @@ class FrontendTopBindingAnalyzerTest {
                 FrontendBindingKind.TYPE_META
         );
         assertTrue(preparedInput.diagnosticManager().snapshot().isEmpty());
+    }
+
+    @Test
+    void analyzeBindsMappedTopLevelTypeMetaChainHeadViaCallerSideRemap() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "mapped_type_meta_chain_head.gd",
+                """
+                        class_name MappedWorker
+                        extends RefCounted
+                        
+                        static func build():
+                            return null
+                        
+                        func ping():
+                            MappedWorker.build()
+                        """,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                Map.of("MappedWorker", "RuntimeWorker")
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "MappedWorker"),
+                FrontendBindingKind.TYPE_META
+        );
+        assertTrue(bindingDiagnostics(preparedInput.diagnosticManager()).isEmpty());
     }
 
     @Test
@@ -1356,13 +1389,22 @@ class FrontendTopBindingAnalyzerTest {
             @NotNull String fileName,
             @NotNull String source
     ) throws Exception {
-        return prepareBindingInput(fileName, source, new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        return prepareBindingInput(fileName, source, new ClassRegistry(ExtensionApiLoader.loadDefault()), Map.of());
     }
 
     private static @NotNull PreparedBindingInput prepareBindingInput(
             @NotNull String fileName,
             @NotNull String source,
             @NotNull ClassRegistry classRegistry
+    ) throws Exception {
+        return prepareBindingInput(fileName, source, classRegistry, Map.of());
+    }
+
+    private static @NotNull PreparedBindingInput prepareBindingInput(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
     ) throws Exception {
         var parserService = new GdScriptParserService();
         var diagnosticManager = new DiagnosticManager();
@@ -1371,8 +1413,7 @@ class FrontendTopBindingAnalyzerTest {
 
         var analysisData = FrontendAnalysisData.bootstrap();
         var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
-                "test_module",
-                List.of(unit),
+                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
                 Objects.requireNonNull(classRegistry, "classRegistry must not be null"),
                 diagnosticManager,
                 analysisData

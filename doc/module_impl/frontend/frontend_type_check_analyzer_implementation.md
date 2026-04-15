@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（diagnostics-only type check、utility void normalization、Godot-compatible condition contract、unary/binary stable-fact consumption、property initializer boundary consumption、`@onready` usage validation 已落地）
-- 更新时间：2026-03-20
+- 状态：事实源维护中（diagnostics-only type check、utility void normalization、Godot-compatible condition contract、unary/binary stable-fact consumption、property initializer boundary consumption、bare-return contract 收紧、`@onready` usage validation 已落地）
+- 更新时间：2026-04-05
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
@@ -17,6 +17,7 @@
 - 关联文档：
   - `doc/module_impl/common_rules.md`
   - `frontend_rules.md`
+  - `frontend_lowering_(un)pack_implementation.md`
   - `diagnostic_manager.md`
   - `frontend_top_binding_analyzer_implementation.md`
   - `frontend_chain_binding_expr_type_implementation.md`
@@ -33,7 +34,7 @@
   - 不在这里重做表达式求值、binding、member/call 解析或 scope 构建
   - 不在这里补 suite merge、missing-return、all-path return exhaustiveness 分析
   - 不在这里转正 `lambda`、`for`、`match`、parameter default、block-local `const`、class `const` 的正式 body 语义
-  - 不在这里实现 property-side inference/backfill，或放宽 `int -> float`、`StringName` / `String`、`null -> Object` 等当前未支持的更宽隐式兼容
+  - 不在这里实现 property-side inference/backfill，或放宽 `int -> float`、`StringName` / `String` 等当前未支持的更宽隐式兼容
   - 不在这里实现 frontend -> LIR 的 truthiness lowering 或 `@onready` 的 runtime / ready-time 语义
 
 ---
@@ -171,13 +172,9 @@ type-check 当前只消费稳定 expression fact：
 当前所有 concrete-slot compatibility 都必须统一复用：
 
 - `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(slotType, valueType)`
+- 具体兼容矩阵以 `frontend_implicit_conversion_matrix.md` 为唯一真源
 
-当前冻结行为是：
-
-- exact `Variant` slot 接受任意已解析值
-- 其余 slot 继续回退 `ClassRegistry.checkAssignable(...)`
-
-因此，local/property/return typed gate 不得直接手写 `Variant` 分支，也不得直接拿 `ClassRegistry.checkAssignable(...)` 替代 shared helper。
+因此，local/property/return typed gate 不得直接手写 `Variant` 分支、`Nil -> object` 特判、或其他 widened conversion，也不得直接拿 `ClassRegistry.checkAssignable(...)` 替代 shared helper。若矩阵未来扩张，这里的 consumer 应随 shared helper 自动收敛，而不是再维护一份并行规则摘要。
 
 ### 3.3 ordinary local 显式 initializer
 
@@ -218,14 +215,17 @@ return contract 当前冻结为：
 - callable return slot 直接消费 skeleton 已发布的 metadata
 - constructor 与 `_init` 当前统一建模为 `void`
 - `return expr` on `void` callable -> `sema.type_check`
-- bare `return` on non-`void` callable -> 把返回值按 synthetic `Nil` 参与 compatibility check
+- bare `return` 只允许用于 `void` callable 或 return slot = `Variant` 的 callable
+- bare `return` on `Variant` callable -> 语义上等价于返回 `nil`
+- bare `return` on 非 `void` 且非 `Variant` callable -> `sema.type_check`
+- bare `return` 的合法性判断不得借道 ordinary assignment compatibility
 - `return expr` 只有在 RHS root 已稳定时才进入 compatibility check
 
 因此：
 
-- `Variant` return slot 可以接受 bare `return`
+- weak 未声明返回类型的 callable 与显式 `-> Variant` callable 都可以接受 bare `return`
 - strict numeric / object / bool slot 不会因为 bare `return` 被误判为可接受
-- 当前 frontend 仍未放宽 `null -> Object`
+- `return null` 仍继续走 ordinary value compatibility，因此 object return slot 允许 `return null`，但不允许 bare `return`
 
 ### 3.6 condition contract
 
@@ -252,6 +252,8 @@ condition 当前采用 Godot-compatible source contract：
 - `RESOLVED(int)` condition 不会仅因非 `bool` 被 frontend 拒绝
 - `RESOLVED(Variant)` / `DYNAMIC(Variant)` condition 也不会仅因非 `bool` 被 frontend 拒绝
 - `DEFERRED` / `FAILED` / `BLOCKED` / `UNSUPPORTED` condition 保持 upstream owner
+- compile mode 若仍需在进入 lowering 前拦截这类非 lowering-ready condition / step fact，
+  owner 继续是 `FrontendCompileCheckAnalyzer`，而不是把它们改写成新的 `sema.type_check`
 
 但 downstream 约束仍然存在：
 
@@ -352,6 +354,7 @@ owner 分工固定为：
 
 - `FrontendTypeCheckAnalyzerTest`
   - local / property / return typed contract
+  - bare `return` 仅允许 `void` / `Variant`，并继续区分 `return null` 与 bare `return`
   - property `:=` / missing-type `sema.type_hint`
   - `void` utility 进入 value-required slot 的显式错误
   - Godot-compatible condition contract
@@ -386,7 +389,7 @@ owner 分工固定为：
 后续工程若继续扩展本区域，必须遵守以下约束：
 
 1. type-check 继续保持 diagnostics-only，不新增 side table。
-2. slot compatibility 继续只走 `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)`。
+2. slot compatibility 继续只走 `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)`，具体 conversion 支持面继续以 `frontend_implicit_conversion_matrix.md` 为唯一真源。
 3. property initializer boundary 继续保持 upstream owner 单一责任，不把 boundary 错误重新翻译成 type-check 错误。
 4. condition source contract 与 downstream bool-only lowering contract 必须同时写清楚，不允许再次出现“代码 strict bool、文档默认兼容 GDScript、backend 另有要求”的分叉。
 5. `@onready` 的 frontend usage validation 与 runtime semantics 必须继续分层记录，不得混写成“已完成 annotation 就等于已完成 ready-time 语义”。

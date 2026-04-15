@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（shared resolver、skeleton 接入、真实 scope graph 接入、compatibility mapper 已落地）
-- 更新时间：2026-03-14
+- 状态：事实源维护中（shared resolver、skeleton 接入、真实 scope graph 接入、compatibility mapper 与 caller-side remap 接入已落地）
+- 更新时间：2026-03-25
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/scope/**`
@@ -14,6 +14,7 @@
   - `src/test/java/dev/superice/gdcc/frontend/**`
   - `src/test/java/dev/superice/gdcc/scope/**`
 - 关联文档：
+  - `runtime_name_mapping_implementation.md`
   - `scope_architecture_refactor_plan.md`
   - `scope_analyzer_implementation.md`
   - `inner_class_implementation.md`
@@ -21,7 +22,7 @@
   - `diagnostic_manager.md`
 - 明确非目标：
   - 不在此处实现完整 frontend binder/body
-  - 不改变 `FrontendSemanticAnalyzer` 当前 `skeleton -> scope analyzer` 的阶段顺序
+  - 不改变 `FrontendSemanticAnalyzer` 已发布的 phase 顺序，尤其不要打乱 skeleton 先于 scope analyzer 的边界
   - 不把 `DiagnosticManager` 注入 `ScopeTypeResolver`、`Scope` 或其他 shared resolver
   - 不放宽当前 strict declared type 的容器规则
   - 不让 `ClassRegistry#resolveTypeMetaHere(...)` 反向依赖 `ScopeTypeResolver`
@@ -91,15 +92,26 @@
 对 inner class 而言：
 
 - registry 只按 `canonicalName` 注册 gdcc class
-- `gdccClassSourceNameByCanonicalName` 只记录 inner class 的 source-facing `sourceName`
+- `gdccClassSourceNameByCanonicalName` 记录任意 `sourceName != canonicalName` 的 gdcc class source-facing `sourceName`
 - global namespace 不为 inner class 建立 `sourceName` alias
+
+若后续 resolver 的消费方需要统一展示类名，应从 `canonicalName` 派生 display 视图；resolver 本身不承担持久化 `runtimeName` 的职责。
+
+因此当前 registry 返回的 `ScopeTypeMeta` 已可同时覆盖：
+
+- inner class 的 `canonicalName != sourceName`
+- mapped top-level gdcc class 的 `canonicalName != sourceName`
+- `displayName() == canonicalName`
 
 ### 2.3 Frontend skeleton
 
 `FrontendClassSkeletonBuilder` 当前事实：
 
 - declared type 解析已经切到 shared `ScopeTypeResolver`
-- strict frontend 位置继续使用 no-mapper overload
+- frontend source-facing declared type 入口现统一遵循 caller-side remap-on-miss 规则
+  - 先按源码字面名执行正常 lexical strict 查找
+  - 只有 miss 时才按 `FrontendModuleSkeleton.topLevelCanonicalNameMap()` 重试 canonical
+  - 底层 strict lookup 仍使用 shared resolver 的 no-mapper overload；mapping 只发生在 frontend 调用侧
 - parser 当前会把 inferred declaration marker `:=` 暴露到 `TypeRef.sourceText()`
   - 这不意味着 `:=` 的最终语义就是 `Variant`
   - 正确语义应当是在后续 `FrontendExprTypeAnalyzer` 中分析右侧表达式类型，并据此确定声明类型
@@ -152,6 +164,13 @@
 - compatibility fallback 必须显式出现
 - fallback 只能恢复 unresolved leaf type，不能吞掉 malformed structured text
 - frontend strict 位置不得默认走这些兼容入口
+- `ScopeTypeParsers.parseExtensionTypeMetadata(...)` 当前只覆盖：
+  - blank metadata
+  - ordinary type names
+  - `enum::...`
+  - `bitfield::...`
+  - `typedarray::...`
+- `typeddictionary::K;V` 这种 composite exported spelling 目前不在 shared parser 合同内；它仍由 backend typed-dictionary ABI 独立处理
 
 ---
 
@@ -162,7 +181,7 @@
 当前 skeleton 与 shared resolver 的契约：
 
 - member filling 只能依赖最小 type-scope 链，不直接回放 relation 私有解析逻辑
-- strict declared type 解析必须走 shared resolver 的 no-mapper overload
+- skeleton member declared type 解析必须先走 lexical strict lookup；mapped top-level source-facing miss 再由 caller-side remap helper 重试 canonical
 - inner class、outer class、same-module class 的 type 解析必须通过 lexical type namespace 生效
 - diagnostics 继续由 skeleton 自己决定何时发出、如何恢复
 
@@ -174,6 +193,7 @@
 - callable / block scope 继续沿 parent chain 继承 type namespace
 - type namespace 与 value/function namespace 必须保持独立
 - outer type 的可见性只能通过 type-meta parent chain 实现
+- mapped top-level 自身或跨文件 top-level 的 source-facing `TYPE_META` / strict declared type 恢复，不通过 scope graph 额外发布 source alias，而由 analyzer 调用侧按“lexical first, remap-on-miss second”统一完成
 
 ### 4.3 诊断边界
 
@@ -225,6 +245,8 @@ GDCC 当前的 type-meta 解析仍主要建立在 lexical parent chain 上。结
 
 后续若要让 header inheritance 与 shared resolver 严格对齐，需要单独设计 super path 的 canonical 绑定产物，而不是默认复用当前字符串字段。
 
+同理，若后续要统一 frontend 中映射类的展示文案，也应建立在 `sourceName + canonicalName` 合同之上，通过 `canonicalName` 派生展示名，而不是把第三层持久化名字重新引入 resolver。
+
 ### 5.3 deferred / unsupported source 目前必须显式诊断
 
 当前 strict declared-type 位置若遇到当前阶段无法稳定发布的 type-meta 来源，行为必须是：
@@ -255,11 +277,14 @@ GDCC 当前的 type-meta 解析仍主要建立在 lexical parent chain 上。结
 当前测试已经把以下行为固定下来：
 
 - shared resolver 能在 lexical scope 中解析 inner class `sourceName`
+- shared resolver 与 frontend lexical scope 都继续按 mapped top-level `sourceName` 命中，再发布 canonical-derived `displayName()`
+- `FrontendModuleSkeleton` caller-side remap helper 已覆盖 skeleton、variable inventory、top binding、chain binding、expr type 与 compile-only gate 的 mapped top-level source-facing 回归
 - malformed structured text 不会触发 compatibility mapper
 - skeleton 与 analyzer 对 immediate inner class type-meta 的发布规则保持一致
 - deferred type-meta 来源会产生显式 diagnostic，而不是静默忽略
 - `findType(...)` / `tryParseTextType(...)` 仍然有活跃的兼容消费面
 - base-vs-outer precedence 差异与 canonical header-super 合同都已有显式回归测试
+- DOM/LIR parser/serializer 与 backend adapter 继续证明 downstream canonical-only contract 没被破坏
 
 后续工程若要改变这些行为，必须同步更新：
 

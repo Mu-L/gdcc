@@ -21,20 +21,21 @@ import java.util.Objects;
 /// class skeleton facts even when one file contributes multiple classes and nested classes need to
 /// be recovered from their exact AST owner and lexical owner chain.
 ///
-/// The top-level script class intentionally stores only one `name` field here. By invariant,
-/// top-level gdcc classes use the same source-facing and canonical name, so keeping two separate
-/// fields would add ambiguity without carrying extra information. The record itself also
-/// implements the shared ownership protocol for that top-level class, so callers do not need a
-/// separate adapter object.
+/// The top-level script class keeps both its source-facing name and the canonical identity already
+/// frozen for registry/LIR/backend use. This lets module-level top-level canonical mapping rewrite
+/// the canonical top-level identity without losing the original source lookup name that same-module
+/// lexical scopes still need.
 public record FrontendSourceClassRelation(
         @NotNull FrontendSourceUnit unit,
-        @NotNull String name,
+        @NotNull String sourceName,
+        @NotNull String canonicalName,
         @NotNull FrontendSuperClassRef superClassRef,
         @NotNull LirClassDef topLevelClassDef,
         @NotNull List<FrontendInnerClassRelation> innerClassRelations
 ) implements FrontendOwnedClassRelation {
     public FrontendSourceClassRelation {
-        Objects.requireNonNull(name, "name must not be null");
+        Objects.requireNonNull(sourceName, "sourceName must not be null");
+        Objects.requireNonNull(canonicalName, "canonicalName must not be null");
         Objects.requireNonNull(superClassRef, "superClassRef must not be null");
         Objects.requireNonNull(topLevelClassDef, "topLevelClassDef must not be null");
         Objects.requireNonNull(unit, "unit must not be null");
@@ -45,8 +46,8 @@ public record FrontendSourceClassRelation(
         FrontendOwnedClassRelation.validateOwnedRelation(
                 unit.ast(),
                 unit.ast(),
-                name,
-                name,
+                sourceName,
+                canonicalName,
                 superClassRef,
                 topLevelClassDef,
                 "Top-level relation"
@@ -64,16 +65,6 @@ public record FrontendSourceClassRelation(
     }
 
     @Override
-    public @NotNull String sourceName() {
-        return name;
-    }
-
-    @Override
-    public @NotNull String canonicalName() {
-        return name;
-    }
-
-    @Override
     public @NotNull LirClassDef classDef() {
         return topLevelClassDef;
     }
@@ -81,16 +72,6 @@ public record FrontendSourceClassRelation(
     @Override
     public @NotNull FrontendSuperClassRef superClassRef() {
         return superClassRef;
-    }
-
-    /// Compatibility view of nested class skeletons in source traversal order.
-    ///
-    /// Callers that need stable AST ownership should prefer `innerClassRelations()` so they can
-    /// recover the exact `ClassDeclaration` matched by each source-local skeleton.
-    public @NotNull List<LirClassDef> innerClassDefs() {
-        return innerClassRelations.stream()
-                .map(FrontendInnerClassRelation::classDef)
-                .toList();
     }
 
     /// Resolves the source-local skeleton matched to one parsed inner class declaration.
@@ -130,7 +111,9 @@ public record FrontendSourceClassRelation(
     public @NotNull List<LirClassDef> allClassDefs() {
         var classDefs = new ArrayList<LirClassDef>(1 + innerClassRelations.size());
         classDefs.add(topLevelClassDef);
-        classDefs.addAll(innerClassDefs());
+        classDefs.addAll(innerClassRelations.stream()
+                .map(FrontendInnerClassRelation::classDef)
+                .toList());
         return List.copyOf(classDefs);
     }
 }

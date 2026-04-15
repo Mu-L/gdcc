@@ -2,6 +2,8 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.scope.ScopeOwnerKind;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -25,12 +27,12 @@ public record FrontendResolvedCall(
         @Nullable String detailReason
 ) {
     public FrontendResolvedCall {
-        callableName = requireNonBlank(callableName, "callableName");
+        callableName = StringUtil.requireNonBlank(callableName, "callableName");
         Objects.requireNonNull(callKind, "callKind must not be null");
         Objects.requireNonNull(status, "status must not be null");
         Objects.requireNonNull(receiverKind, "receiverKind must not be null");
         argumentTypes = copyArgumentTypes(argumentTypes);
-        validateState(callKind, status, receiverKind, returnType, detailReason);
+        validateState(callKind, status, receiverKind, receiverType, returnType, detailReason);
     }
 
     public static @NotNull FrontendResolvedCall resolved(
@@ -181,6 +183,7 @@ public record FrontendResolvedCall(
             @NotNull FrontendCallResolutionKind callKind,
             @NotNull FrontendCallResolutionStatus status,
             @NotNull FrontendReceiverKind receiverKind,
+            @Nullable GdType receiverType,
             @Nullable GdType returnType,
             @Nullable String detailReason
     ) {
@@ -194,11 +197,22 @@ public record FrontendResolvedCall(
                 throw new IllegalArgumentException("receiverKind must not be UNKNOWN for resolved/blocked call results");
             }
             Objects.requireNonNull(returnType, "returnType must not be null for resolved/blocked call results");
+            // Exact instance-method resolution must never publish a Variant receiver surface.
+            // `Variant` instance receivers are forced onto the runtime-dynamic route earlier by
+            // shared method resolution; only the call result/outgoing carrier may still be Variant.
+            if (status == FrontendCallResolutionStatus.RESOLVED
+                    && callKind == FrontendCallResolutionKind.INSTANCE_METHOD
+                    && receiverKind == FrontendReceiverKind.INSTANCE
+                    && receiverType instanceof GdVariantType) {
+                throw new IllegalArgumentException(
+                        "RESOLVED instance method calls must not publish Variant receiverType; use DYNAMIC_FALLBACK instead"
+                );
+            }
             if (status == FrontendCallResolutionStatus.RESOLVED && detailReason != null) {
                 throw new IllegalArgumentException("detailReason must be null for RESOLVED call results");
             }
             if (status == FrontendCallResolutionStatus.BLOCKED) {
-                requireNonBlank(detailReason, "detailReason");
+                StringUtil.requireNonBlank(detailReason, "detailReason");
             }
             return;
         }
@@ -206,7 +220,7 @@ public record FrontendResolvedCall(
         if (returnType != null) {
             throw new IllegalArgumentException("returnType must be null for non-success call results");
         }
-        requireNonBlank(detailReason, "detailReason");
+        StringUtil.requireNonBlank(detailReason, "detailReason");
         if (status == FrontendCallResolutionStatus.DYNAMIC) {
             if (callKind != FrontendCallResolutionKind.DYNAMIC_FALLBACK) {
                 throw new IllegalArgumentException("DYNAMIC call results must use DYNAMIC_FALLBACK callKind");
@@ -219,14 +233,6 @@ public record FrontendResolvedCall(
         if (callKind == FrontendCallResolutionKind.DYNAMIC_FALLBACK) {
             throw new IllegalArgumentException("DYNAMIC_FALLBACK callKind is only valid for DYNAMIC call results");
         }
-    }
-
-    private static @NotNull String requireNonBlank(@Nullable String value, @NotNull String fieldName) {
-        var text = Objects.requireNonNull(value, fieldName + " must not be null");
-        if (text.isBlank()) {
-            throw new IllegalArgumentException(fieldName + " must not be blank");
-        }
-        return text;
     }
 
     private static @NotNull List<GdType> copyArgumentTypes(@Nullable List<GdType> argumentTypes) {

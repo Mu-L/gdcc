@@ -19,6 +19,7 @@ import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.resolver.ScopeMethodResolver;
 import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
@@ -42,7 +43,7 @@ class MethodResolverParityTest {
         var workerClass = newClass("Worker", "RefCounted");
         var ping = newFunction("ping");
         ping.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, ping));
-        entry(ping).instructions().add(new ReturnInsn(null));
+        entry(ping).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(ping);
 
         var bodyBuilder = newBodyBuilder(emptyApi(), List.of(workerClass));
@@ -143,10 +144,73 @@ class MethodResolverParityTest {
         assertTrue(ex.getMessage().contains("No applicable overload"), ex.getMessage());
     }
 
+    @Test
+    @DisplayName("backend method adapter should preserve mapped canonical GDCC owner names")
+    void backendMethodAdapterShouldPreserveMappedCanonicalGdccOwnerNames() {
+        var parentClass = newClass("RuntimeOuter$Shared", "RefCounted");
+        var ping = newFunction("ping");
+        ping.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter$Shared"), null, ping));
+        entry(ping).appendInstruction(new ReturnInsn(null));
+        parentClass.addFunction(ping);
+
+        var childClass = newClass("RuntimeOuter$Leaf", "RuntimeOuter$Shared");
+        var bodyBuilder = newBodyBuilder(
+                emptyApi(),
+                List.of(parentClass, childClass),
+                Map.of(
+                        "RuntimeOuter$Shared", "Shared",
+                        "RuntimeOuter$Leaf", "Leaf"
+                )
+        );
+        var receiverVar = new LirVariable("leaf", new GdObjectType("RuntimeOuter$Leaf"), bodyBuilder.func());
+
+        var shared = ScopeMethodResolver.resolveInstanceMethod(
+                bodyBuilder.classRegistry(),
+                receiverVar.type(),
+                "ping",
+                List.of()
+        );
+        var sharedResolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, shared);
+
+        var backendResolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "ping", List.of());
+        assertEquals("RuntimeOuter$Shared", sharedResolved.method().ownerClass().getName());
+        assertEquals(sharedResolved.method().ownerClass().getName(), backendResolved.ownerClassName());
+        assertEquals(BackendMethodCallResolver.DispatchMode.GDCC, backendResolved.mode());
+    }
+
+    @Test
+    @DisplayName("backend method adapter should reject _init because constructor routes are not ordinary method calls")
+    void backendMethodAdapterShouldRejectInitConstructorRoute() {
+        var workerClass = newClass("Worker", "RefCounted");
+        var init = newFunction("_init");
+        init.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, init));
+        init.addParameter(new LirParameterDef("value", GdIntType.INT, null, init));
+        entry(init).appendInstruction(new ReturnInsn(null));
+        workerClass.addFunction(init);
+
+        var bodyBuilder = newBodyBuilder(emptyApi(), List.of(workerClass));
+        var receiverVar = new LirVariable("worker", new GdObjectType("Worker"), bodyBuilder.func());
+        var argVar = new LirVariable("value", GdIntType.INT, bodyBuilder.func());
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "_init", List.of(argVar))
+        );
+        assertTrue(ex.getMessage().contains("_init"), ex.getMessage());
+    }
+
     private static CBodyBuilder newBodyBuilder(ExtensionAPI api, List<LirClassDef> gdccClasses) {
+        return newBodyBuilder(api, gdccClasses, Map.of());
+    }
+
+    private static CBodyBuilder newBodyBuilder(
+            ExtensionAPI api,
+            List<LirClassDef> gdccClasses,
+            Map<String, String> sourceNameOverrides
+    ) {
         var classRegistry = new ClassRegistry(api);
         for (var gdccClass : gdccClasses) {
-            classRegistry.addGdccClass(gdccClass);
+            classRegistry.addGdccClass(gdccClass, sourceNameOverrides.get(gdccClass.getName()));
         }
 
         ProjectInfo projectInfo = new ProjectInfo("TestProject", GodotVersion.V451, Path.of(".")) {

@@ -8,7 +8,7 @@
 >
 > 目标：仅保留当前代码库已落地且可验证的实现语义、长期风险和工程反思。
 >
-> 校对基线：2026-02-25（代码与单测已交叉检查）
+> 校对基线：2026-04-11（代码与单测已交叉检查）
 
 ## 1. 范围与对齐关系
 
@@ -34,14 +34,50 @@
 - 非对象类型写入统一走 `emitNonObjectSlotWrite(...)`：
   1. 满足条件时 destroy old（`destroyOldValue && !__prepare__ && type.isDestroyable()`）
   2. 赋值
+- 对 destroyable/value-semantic 非对象 overwrite，Builder 先在
+  `CBodyBuilderAliasSafetySupport` 中统一判定 stable-carrier 需求与 alias safety：
+  - `requiresStableCarrier(...)` 先收口 overwrite 前提（`!__prepare__`、可 destroy old、copy helper 可用、`BORROWED` source 等）
+  - `classifyNonObjectSlotWriteAliasSafety(...)` 再只回答当前 sealed `ValueRef` / `TargetRef` surface 上的
+    `PROVEN_NO_ALIAS` / `MAY_ALIAS`
+  - `PROVEN_NO_ALIAS`：
+    - 继续使用 `destroy old -> slot = godot_new_<Type>_with_<Type>(source_ptr)` 快路
+  - `MAY_ALIAS`：
+    - 先生成 stable carrier
+      `__gdcc_tmp_* = godot_new_<Type>_with_<Type>(source_ptr)`
+    - 再 `destroy old -> slot = __gdcc_tmp_*`
+    - 这个 carrier 被 slot consume 后不会再进入普通 temp destroy 路径
+- 这条约束的核心不是“总要造 temp”，而是“不允许生成 `copy temp -> 裸 = 写槽 -> destroy temp`”。
+  后者只有浅层 struct 赋值，销毁 temp 会提前释放 slot 刚接管的底层状态。
 - `markTargetInitialized(...)` 与 temp 生命周期仍由调用方控制（未内聚到槽位写入 helper）。
+- constructor-time property initializer apply 当前通过 `CCodegen#generatePropertyInitApplyBody(...)` 调用 direct backing-field helper：
+  - `${Class}_class_apply_property_init_<property>(self)`
+  - 该 helper 明确不是 setter route
+  - object-valued apply 通过 `applyPropertyInitializerFirstWrite(...)` 复用统一 ptr conversion / ownership consume 语义
+  - constructor-time first write 仍不释放旧字段值
 
 ### 2.2 所有权与值来源模型
 
 - `OwnershipKind`：`BORROWED` / `OWNED`
 - `ValueRef#ownership()` 默认 `BORROWED`
+- `valueOfVar(...)`、`valueOfCastedVar(...)`、默认 `valueOfExpr(...)` 都表示“读取现有值或包装现有表达式”，因此保持 `BORROWED`
+- `valueOfAddressableExpr(...)` 表示“这是一个现有的、可安全取地址的 lvalue storage expression”，
+  例如 `self->field` backing slot。
+  它仍然是 `BORROWED`，但 copy-by-address 路径会直接使用 `&expr`，避免先浅拷贝到 temp。
 - `valueOfOwnedExpr(...)` 用于显式 `OWNED` 值来源（例如 call result 语义）
-- `callAssign(...)` 将对象返回值按 `OWNED` 路径写入目标槽，避免重复 own。
+- `callAssign(...)` 将对象返回值按 `OWNED` 路径写入目标槽，避免重复 own
+- constructor/materialization helper 与 property-init helper 这类 fresh object producer 也必须显式走 `OWNED`
+- `generatePropertyInitApplyBody(...)` 也会把 property init helper 的对象返回值标记为 `OWNED`，因为该 helper 语义上返回 fresh value。
+- 当前已审计并绑定到该合同的 backend fresh-object 入口只有三类：
+  - `emitCallResultAssignment(...)`
+  - `ConstructInsnGen` 中的 `construct_object`
+  - `CCodegen.generatePropertyInitApplyBody(...)`
+- `OwnershipKind` 不是“注释性标记”，而是直接驱动对象槽位写入行为：
+  - `emitObjectSlotWrite(...)` 遇到 `BORROWED` rhs 会补发 `own_object` / `try_own_object`
+  - 遇到 `OWNED` rhs 则直接 consume，不重复 own
+- 因此把某个值来源从 `OWNED` 改成 `BORROWED` 的连锁反应不是文档层面的，而是会真实改变引用计数平衡：
+  - `callAssign(...)` 的对象返回若改成 `BORROWED`，当前所有“fresh owned call result”写槽都会额外 retain 一次
+  - constructor/property-init 这类 fresh object first-write 若误标成 `BORROWED`，字段析构只释放一次，最终会留下泄漏
+  - `returnValue(...)` 对 borrowed 参数/字段返回依赖该标记来决定是否为 `_return_val` retain；误标会在“缺 retain”与“多 retain”之间直接切换
 
 ### 2.3 指针表示模型与转换
 
@@ -51,9 +87,13 @@
 - Godot -> GDCC 统一使用：
   - `gdcc_object_from_godot_object_ptr(...)`
 - `convertPtrIfNeeded(...)` 仅做表示转换，不改变所有权类别。
+- 这条合同同时约束 owned/borrowed 两种路径：
+  - `OWNED` 值跨表示转换后仍然是 `OWNED`，不能因为转换而补 own
+  - `BORROWED` 值跨表示转换后仍然是 `BORROWED`，是否 retain 只由后续槽位写入 / `_return_val` 发布决定
 - 显式类型转换表达式统一由 `CBodyBuilder#valueOfCastedVar(LirVariable, GdType)` 构造：
   - 返回 `ExprValueRef`（表达式值），不可作为赋值目标使用。
   - 用于生成器中的“按目标类型强制转换后参与调用参数”的场景，避免手工拼接 cast 字符串。
+  - cast/render helper 不会把 `BORROWED` 读值提升成 `OWNED`
 
 ### 2.4 赋值可兼容性（`ClassRegistry#checkAssignable`）
 
@@ -96,12 +136,32 @@
 - 非 `__finally__` 中的 `returnValue(...)`：写 `_return_val` 后 `goto __finally__`。
 - 非 `__finally__` 中的 `returnVoid()`：仅允许 void 函数并 `goto __finally__`。
 - `returnTerminal()` 仅允许在 `__finally__` 返回 `_return_val`。
+- 对生成后的 backend LIR，非 `void` `__finally__` 只能以 `ReturnInsn("_return_val")` 结束。
+  `ControlFlowIntegrityValidator` 会拒绝 `ReturnInsn(<user-var>)` 之类会绕过 `_return_val` 发布边界的形态。
+  `CBodyBuilder.returnValue(...)` 中保留的 finally-direct-return 分支只服务于手工 builder/test 场景，不属于正常 LIR surface。
 
 ### 4.2 `_return_val` 语义
 
 - 在 `__prepare__` 顶部声明 `_return_val`；对象返回类型初始化为 `NULL`。
-- 对象返回槽写入复用对象槽位写入语义（含 own/release/转换）。
+- 对象返回槽写入复用对象槽位写入语义（含 own/release/转换）：
+  - borrowed source -> `_return_val` retain
+  - owned source -> `_return_val` consume
+- 当返回值来自普通本地 owning object slot 时，Builder 会把该 slot move 到 `_return_val` 并清空源槽，避免 `__finally__` auto-destruction 释放已发布的返回对象。
+  parameter、`ref` alias、capture，以及 field/property 这类非 slot expression 不参与 move-return，而是继续走 `_return_val` retain。
 - 非对象返回槽目前保持 direct assignment（不走 `emitNonObjectSlotWrite`）。
+- `_return_val` 不属于变量表 auto-cleanup 集合；它是 return publish 边界，而不是普通 local slot。
+- `CCodegen` 的 `__finally__` auto-destruction 目前只覆盖：
+  - value-semantic destroyable locals
+  - `RefCountedStatus.YES/UNKNOWN` 的对象 locals
+- finally cleanup 针对的是“当前函数仍然持有的 managed local slot”，不是对所有仍然活着的对象值统一做一次 release。
+- `RefCountedStatus.NO` 的对象 local 不会自动生成 cleanup；这类对象遵循 Godot 的显式生命周期合同，不因离开局部作用域而自动 `free` / destroy。
+
+### 4.3 明确拒绝的误读
+
+- 不允许把 object return 理解成“函数尾部统一 retain 一次”。
+  当前实现的 retain/consume 决策发生在写 `_return_val` 时，而不是函数退出时的额外补救逻辑。
+- 不允许把 finally cleanup 理解成“对所有对象 slot 统一 release 一次”。
+  cleanup 面向 managed locals；`_return_val`、moved source、`ref` 变量和 definite non-`RefCounted` locals 都不在这个集合内。
 
 ## 5. TempVar 与首写语义
 
@@ -129,6 +189,9 @@
 
 - 现状：setter-self 分支已收敛到 `assignVar(targetOfExpr(...), valueOfVar(...))`，
   通过 Builder 统一槽位写入语义处理生命周期和指针转换。
+- 对 value-semantic backing field，这条路径现在固定生成
+  `self->field = godot_new_<Type>_with_<Type>(source_ptr)`，
+  不再残留“copy temp 写槽后再 destroy temp”的生命周期泄漏形状。
 - 收敛收益：
   - 不再需要在生成器里手工拼接 own/release。
   - 对象写槽顺序与 `assignVar` / `callAssign` / `_return_val` 保持一致。
@@ -138,6 +201,7 @@
 ### 7.2 FTL 与 Java 路径演进偏差风险
 
 - 模板层（`entry.c.ftl`）仍保留部分生命周期代码。
+- property initializer constructor-time apply 已通过 Java 侧统一 body generation 收口为单一 apply helper，降低了 class constructor 或模板层继续内联字段写入的漂移风险。
 - 后续若 Java 语义继续收敛，需同步审计模板逻辑，避免双轨语义漂移。
 
 ### 7.3 helper 宏可移植性

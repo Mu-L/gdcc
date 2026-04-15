@@ -74,7 +74,11 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
                         var inGetterSelf = isLoadingInsideGetterSelf(bodyBuilder, objectVar, lookup);
                         if (inGetterSelf) {
                             var expr = "$" + objectVar.id() + "->" + insn.propertyName();
-                            bodyBuilder.assignExpr(target, expr, propertyType);
+                            // Getter-self fast path must treat the backing field as existing storage.
+                            // Value-semantic types need copy-by-address from `&self->field`, not
+                            // `tmp = self->field; copy(&tmp); destroy(tmp)`, otherwise the temp destroy
+                            // can invalidate the field's engine-side storage.
+                            bodyBuilder.assignVar(target, bodyBuilder.valueOfAddressableExpr(expr, propertyType));
                             break;
                         }
                         var getterName = lookup.property().getGetterFunc();

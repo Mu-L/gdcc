@@ -1,6 +1,7 @@
 package dev.superice.gdcc.scope.resolver;
 
 import dev.superice.gdcc.gdextension.ExtensionAPI;
+import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ScopeOwnerKind;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
@@ -13,11 +14,13 @@ import dev.superice.gdcc.type.GdStringType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ScopePropertyResolverTest {
@@ -71,6 +74,28 @@ class ScopePropertyResolverTest {
     }
 
     @Test
+    @DisplayName("shared object property resolver should follow mapped canonical inner-class superclass names")
+    void resolveObjectPropertyShouldFollowMappedCanonicalInnerSuperclassNames() {
+        var parentClass = new LirClassDef("RuntimeOuter$Shared", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING));
+
+        var childClass = new LirClassDef("RuntimeOuter$Leaf", "RuntimeOuter$Shared", false, false, Map.of(), List.of(), List.of(), List.of());
+        var registry = newRegistry(
+                emptyApi(),
+                List.of(parentClass, childClass),
+                Map.of(
+                        "RuntimeOuter$Shared", "Shared",
+                        "RuntimeOuter$Leaf", "Leaf"
+                )
+        );
+        var result = ScopePropertyResolver.resolveObjectProperty(registry, new GdObjectType("RuntimeOuter$Leaf"), "value");
+
+        var resolved = assertInstanceOf(ScopePropertyResolver.Resolved.class, result);
+        assertEquals("RuntimeOuter$Shared", resolved.property().ownerClass().getName());
+        assertEquals("String", resolved.property().property().getType().getTypeName());
+    }
+
+    @Test
     @DisplayName("shared object property resolver should classify engine owner")
     void resolveObjectPropertyShouldClassifyEngineOwner() {
         var nodeClass = new ExtensionGdClass(
@@ -99,11 +124,12 @@ class ScopePropertyResolverTest {
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
                 List.of()
         );
         var registry = newRegistry(apiWith(List.of(stringBuiltin), List.of()), List.of());
         var stringTypeMeta = registry.resolveTypeMeta("String");
+        assertNotNull(stringTypeMeta);
 
         var result = ScopePropertyResolver.resolveBuiltinProperty(
                 registry,
@@ -115,6 +141,30 @@ class ScopePropertyResolverTest {
         assertEquals(ScopeOwnerKind.BUILTIN, resolved.property().ownerKind());
         assertEquals("String", resolved.property().ownerClass().getName());
         assertEquals("length", resolved.property().property().getName());
+    }
+
+    @Test
+    @DisplayName("shared builtin property resolver should resolve member-backed builtin properties from default API")
+    void resolveBuiltinPropertyShouldResolveMemberBackedBuiltinPropertiesFromDefaultApi() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        assertBuiltinPropertyResolved(registry, "Vector3", "x", "float");
+        assertBuiltinPropertyResolved(registry, "Color", "r", "float");
+    }
+
+    @Test
+    @DisplayName("shared builtin property resolver should still report missing builtin member on default API")
+    void resolveBuiltinPropertyShouldStillReportMissingBuiltinMemberOnDefaultApi() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var vector3Type = registry.findType("Vector3");
+        assertNotNull(vector3Type);
+
+        var result = ScopePropertyResolver.resolveBuiltinProperty(registry, vector3Type, "missing_axis");
+        var failed = assertInstanceOf(ScopePropertyResolver.Failed.class, result);
+
+        assertEquals(ScopePropertyResolver.FailureKind.BUILTIN_PROPERTY_MISSING, failed.kind());
+        assertEquals("Vector3", failed.ownerClassName());
+        assertEquals("missing_axis", failed.propertyName());
     }
 
     @Test
@@ -160,6 +210,28 @@ class ScopePropertyResolverTest {
     }
 
     @Test
+    @DisplayName("shared object property resolver should reject stale source-styled mapped inner superclass names")
+    void resolveObjectPropertyShouldRejectSourceStyledMappedInnerSuperclassNames() {
+        var parentClass = new LirClassDef("RuntimeOuter$Shared", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING));
+
+        var childClass = new LirClassDef("RuntimeOuter$Leaf", "Shared", false, false, Map.of(), List.of(), List.of(), List.of());
+        var registry = newRegistry(
+                emptyApi(),
+                List.of(parentClass, childClass),
+                Map.of(
+                        "RuntimeOuter$Shared", "Shared",
+                        "RuntimeOuter$Leaf", "Leaf"
+                )
+        );
+        var result = ScopePropertyResolver.resolveObjectProperty(registry, new GdObjectType("RuntimeOuter$Leaf"), "value");
+
+        var failed = assertInstanceOf(ScopePropertyResolver.Failed.class, result);
+        assertEquals(ScopePropertyResolver.FailureKind.MISSING_SUPER_METADATA, failed.kind());
+        assertEquals("Shared", failed.relatedClassName());
+    }
+
+    @Test
     @DisplayName("shared object property resolver should report inheritance cycle")
     void resolveObjectPropertyShouldReportInheritanceCycle() {
         var classA = new LirClassDef("ClassA", "ClassB", false, false, Map.of(), List.of(), List.of(), List.of());
@@ -175,9 +247,17 @@ class ScopePropertyResolverTest {
     }
 
     private static ClassRegistry newRegistry(ExtensionAPI api, List<LirClassDef> gdccClasses) {
+        return newRegistry(api, gdccClasses, Map.of());
+    }
+
+    private static ClassRegistry newRegistry(
+            ExtensionAPI api,
+            List<LirClassDef> gdccClasses,
+            Map<String, String> sourceNameOverrides
+    ) {
         var registry = new ClassRegistry(api);
         for (var gdccClass : gdccClasses) {
-            registry.addGdccClass(gdccClass);
+            registry.addGdccClass(gdccClass, sourceNameOverrides.get(gdccClass.getName()));
         }
         return registry;
     }
@@ -189,5 +269,21 @@ class ScopePropertyResolverTest {
 
     private static ExtensionAPI emptyApi() {
         return apiWith(List.of(), List.of());
+    }
+
+    private static void assertBuiltinPropertyResolved(
+            ClassRegistry registry,
+            String builtinName,
+            String propertyName,
+            String expectedTypeName
+    ) {
+        var builtinType = registry.findType(builtinName);
+        assertNotNull(builtinType);
+        var result = ScopePropertyResolver.resolveBuiltinProperty(registry, builtinType, propertyName);
+        var resolved = assertInstanceOf(ScopePropertyResolver.Resolved.class, result);
+        assertEquals(ScopeOwnerKind.BUILTIN, resolved.property().ownerKind());
+        assertEquals(builtinName, resolved.property().ownerClass().getName());
+        assertEquals(propertyName, resolved.property().property().getName());
+        assertEquals(expectedTypeName, resolved.property().property().getType().getTypeName());
     }
 }

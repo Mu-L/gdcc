@@ -15,6 +15,7 @@ import dev.superice.gdcc.lir.insn.UnpackVariantInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdStringType;
@@ -41,8 +42,8 @@ public class CPackUnpackVariantInsnGenTest {
         func.createAndAddVariable("variant", GdVariantType.VARIANT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new UnpackVariantInsn("result", "variant"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new UnpackVariantInsn("result", "variant"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -56,6 +57,29 @@ public class CPackUnpackVariantInsnGenTest {
     }
 
     @Test
+    @DisplayName("unpack_variant to int should use numeric Variant helper")
+    void unpackVariantToIntShouldUseNumericVariantHelper() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("unpack_int");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("result", GdIntType.INT);
+        func.createAndAddVariable("variant", GdVariantType.VARIANT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new UnpackVariantInsn("result", "variant"));
+        entry.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("$result = godot_new_int_with_Variant(&$variant);"));
+    }
+
+    @Test
     @DisplayName("unpack_variant to RefCounted object should release and consume owned return")
     void unpackVariantToRefCountedObjectShouldReleaseAndConsumeOwnedReturn() {
         var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
@@ -65,8 +89,8 @@ public class CPackUnpackVariantInsnGenTest {
         func.createAndAddVariable("variant", GdVariantType.VARIANT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new UnpackVariantInsn("result", "variant"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new UnpackVariantInsn("result", "variant"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -100,6 +124,30 @@ public class CPackUnpackVariantInsnGenTest {
     }
 
     @Test
+    @DisplayName("unpack_variant to typed Array should use normalized Array symbol without generic suffix")
+    void unpackVariantToTypedArrayShouldUseNormalizedArraySymbol() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("unpack_typed_array");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("result", new GdArrayType(GdStringNameType.STRING_NAME));
+        func.createAndAddVariable("variant", GdVariantType.VARIANT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new UnpackVariantInsn("result", "variant"));
+        entry.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("$result = godot_new_Array_with_Variant(&$variant);"));
+        assertFalse(body.contains("godot_new_Array["));
+    }
+
+    @Test
     @DisplayName("pack_variant from GDCC object should use gdcc object pack path")
     void packVariantFromGdccObjectShouldUseObjectPackPath() {
         var targetClass = new LirClassDef("TargetClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
@@ -110,8 +158,8 @@ public class CPackUnpackVariantInsnGenTest {
         func.createAndAddVariable("value", new GdObjectType("TargetClass"));
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new PackVariantInsn("result", "value"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new PackVariantInsn("result", "value"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -135,8 +183,8 @@ public class CPackUnpackVariantInsnGenTest {
         func.createAndAddVariable("value", new GdArrayType(GdStringNameType.STRING_NAME));
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new PackVariantInsn("result", "value"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new PackVariantInsn("result", "value"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
@@ -159,8 +207,8 @@ public class CPackUnpackVariantInsnGenTest {
         func.createAndAddVariable("variant", GdVariantType.VARIANT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new UnpackVariantInsn("result", "variant"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new UnpackVariantInsn("result", "variant"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);

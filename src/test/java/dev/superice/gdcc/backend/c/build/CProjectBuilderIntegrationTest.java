@@ -73,9 +73,9 @@ public class CProjectBuilderIntegrationTest {
             Objects.requireNonNull(v0);
             Objects.requireNonNull(v1);
             var bb1 = new LirBasicBlock("bb1");
-            bb1.instructions().add(new LiteralStringInsn(v0.id(), "Camera ready."));
-            bb1.instructions().add(new PackVariantInsn(v1.id(), v0.id()));
-            bb1.instructions().add(new CallGlobalInsn("print", List.of(new LirInstruction.VariableOperand(v1.id()))));
+            bb1.appendInstruction(new LiteralStringInsn(v0.id(), "Camera ready."));
+            bb1.appendInstruction(new PackVariantInsn(v1.id(), v0.id()));
+            bb1.appendInstruction(new CallGlobalInsn("print", List.of(new LirInstruction.VariableOperand(v1.id()))));
             readyFunc.addBasicBlock(bb1);
             rotatingCameraClass.addFunction(readyFunc);
         }
@@ -90,18 +90,18 @@ public class CProjectBuilderIntegrationTest {
             Objects.requireNonNull(v1);
 
             var bb1 = new LirBasicBlock("bb1");
-            bb1.instructions().add(new GoIfInsn("to_radians", "bb2", "bb3"));
+            bb1.appendInstruction(new GoIfInsn("to_radians", "bb2", "bb3"));
             getPitchFunc.addBasicBlock(bb1);
 
             var bb2 = new LirBasicBlock("bb2");
-            bb2.instructions().add(new LoadPropertyInsn(v0.id(), "pitch_degree", "self"));
-            bb2.instructions().add(new CallGlobalInsn(v1.id(), "deg_to_rad", List.of(new LirInstruction.VariableOperand(v0.id()))));
-            bb2.instructions().add(new ReturnInsn(v1.id()));
+            bb2.appendInstruction(new LoadPropertyInsn(v0.id(), "pitch_degree", "self"));
+            bb2.appendInstruction(new CallGlobalInsn(v1.id(), "deg_to_rad", List.of(new LirInstruction.VariableOperand(v0.id()))));
+            bb2.appendInstruction(new ReturnInsn(v1.id()));
             getPitchFunc.addBasicBlock(bb2);
 
             var bb3 = new LirBasicBlock("bb3");
-            bb3.instructions().add(new LoadPropertyInsn(v0.id(), "pitch_degree", "self"));
-            bb3.instructions().add(new ReturnInsn(v0.id()));
+            bb3.appendInstruction(new LoadPropertyInsn(v0.id(), "pitch_degree", "self"));
+            bb3.appendInstruction(new ReturnInsn(v0.id()));
             getPitchFunc.addBasicBlock(bb3);
 
             rotatingCameraClass.addFunction(getPitchFunc);

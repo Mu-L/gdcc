@@ -42,6 +42,14 @@
     - or pass `&` of a non-`ref` variable.
   - When returning them from functions, we need to return the struct by value.
   - When assigning them to variables or using them to call functions, we have to copy them using `godot_new_<TypeName>_with_<TypeName>(TypeName* value)`.
+  - For writes into an existing managed slot:
+    - backend centralizes the overwrite/stable-carrier decision in `CBodyBuilderAliasSafetySupport`
+    - `proven no-alias` overwrite routes can still emit `slot = godot_new_<TypeName>_with_<TypeName>(source_ptr)`
+    - `may-alias` overwrite routes must first materialize a stable carrier with the copy ctor, then destroy the old slot, then consume the carrier into the slot
+    - do not lower it as `tmp = godot_new_<TypeName>_with_<TypeName>(source_ptr); slot = tmp; destroy(tmp);`
+      because the plain `slot = tmp` step is only a shallow struct assignment, and destroying the temp can
+      prematurely release the same engine-side state that the slot now refers to
+    - once a stable carrier has been consumed by the slot, it must not enter the ordinary temp-destroy path again
   - When a value of these types are no longer used, call `godot_destroy_<TypeName>(TypeName* value)` to destroy them properly.
 - For `Dictionary`, `Array` and `Variant`:
   - They are wrapper structs with shared/ref-counted internals (not raw C pointers).
@@ -53,6 +61,11 @@
     - or pass `&` of non-`ref` variable.
   - Return value convention remains struct-by-value.
   - The copy function of these actually creates a new struct pointing to the same underlying C++ object, so we still need to use `godot_new_<TypeName>_with_<TypeName>(TypeName* value)` to copy them.
+  - The same slot-write rule applies here:
+    - backend centralizes the overwrite/stable-carrier decision in `CBodyBuilderAliasSafetySupport`
+    - `proven no-alias` overwrite routes copy directly from the current source address into the destination slot
+    - `may-alias` overwrite routes stage a stable carrier first, then destroy the old slot, then consume that carrier into the destination slot
+    - for backing-field reads, prefer `&($self->field)` over first shallow-copying `self->field` into a temp
   - Destroying them using `godot_destroy_<TypeName>(TypeName* value)` is also needed which will decrease the reference count, and actually destroy the underlying C++ object only when the reference count reaches zero.
 - Especially for `Variant` & `Object`gdcc_object_from_godot_object_ptr the copy, construct and destroy function name use `variant` and `object` (lowercase).
 - Some objects that extends `RefCounted` are reference counted, and they need to be retained and released properly.
@@ -83,6 +96,89 @@
 - If a new helper is defined to accept `GDExtensionObjectPtr` (for example `gdcc_cmp_object`), add its function name to `checkGlobalFuncRequireGodotRawPtr`.
 - Instruction generators should pass object arguments as regular `valueOfVar(...)` values and let `CBodyBuilder` handle pointer conversion centrally.
 - Do not duplicate per-generator object pointer normalization helpers for this case.
+
+### Backend-owned Runtime Writeback Helper
+
+- `CallGlobalInsn` now accepts a narrow set of backend-owned helpers in addition to class-registry utility functions.
+- The only frozen helper today is `gdcc_variant_requires_writeback(const godot_Variant *value) -> godot_bool`.
+- This helper is not a Godot utility function:
+  - both lookup key and C symbol are fixed to `gdcc_variant_requires_writeback`
+  - it must not go through `godot_` prefix normalization
+  - `CGenHelper.resolveUtilityCall(...)` must recognize it before falling back to class-registry utility lookup
+- Call shape contract:
+  - the argument is an ordinary `Variant` value, so existing argument rendering still applies and the emitted C argument is `&$carrier`
+  - the return value is `godot_bool` and can be written into an ordinary bool slot directly
+- Semantic boundary:
+  - this helper only answers the receiver-side runtime writeback gate for runtime-open `Variant` carriers
+  - it does not participate in callable resolution, receiver provenance, or owner-route reconstruction
+  - its false/true family matrix is owned by `gdcc_type_system.md` and `gdcc_helper.h`; backend must not drift into a second independent classification table
+
+### Variant Outward ABI Contract
+
+- Ordinary method/property `Variant` ABI is owned by backend metadata generation plus generated `call_func` wrappers.
+- For ordinary outward `Variant` slots:
+  - publish `GDEXTENSION_VARIANT_TYPE_NIL`
+  - append `godot_PROPERTY_USAGE_NIL_IS_VARIANT`
+- This applies to:
+  - method arguments
+  - method return metadata
+  - property registration metadata
+- `call_func` wrappers must skip the exact `type == NIL` gate only for `Variant` parameters.
+- Non-`Variant` parameters must keep their existing exact runtime type gate.
+- `ptrcall` ABI shape remains unchanged by this contract.
+- Typed dictionary ABI is now maintained as a separate implemented contract:
+  - `doc/module_impl/backend/typed_dictionary_abi_contract.md`
+- Implementation touchpoints should stay centralized in backend helpers/templates:
+  - `CGenHelper.renderBoundMetadata(...)`
+  - `CGenHelper.renderPropertyMetadata(...)`
+  - `gdcc_make_property_full(...)`
+  - `gdcc_bind_property_full(...)`
+- Do not push this metadata contract into frontend ordinary lowering or LIR shape just to carry `hint/usage/class_name`.
+- Do not silently fuse typed dictionary fixes back into this `Variant` section:
+  - it reuses some of the same touchpoints
+  - but it has its own metadata rules, runtime gate rules, reconstruction rules, and regression surface
+
+### Typed Dictionary Outward ABI Contract
+
+- Ordinary method / return / property `Dictionary[K, V]` ABI is also owned by backend metadata generation plus generated `call_func` wrappers.
+- For non-generic typed dictionary outward slots:
+  - publish `GDEXTENSION_VARIANT_TYPE_DICTIONARY`
+  - publish `godot_PROPERTY_HINT_DICTIONARY_TYPE`
+  - publish the flat `hint_string = "<key>;<value>"`
+- Generated `call_func` wrappers must:
+  - keep the base `type == DICTIONARY` gate
+  - run a typed-dictionary preflight only for non-generic typed dictionary parameters
+  - keep that preflight before wrapper-owned parameter locals are materialized
+- For object leaves in typed-dictionary preflight:
+  - compare builtin type first
+  - compare class name
+  - treat script metadata as null-object aware by checking `Variant == nil`, not by requiring `TYPE_NIL`
+- When backend reconstructs a typed dictionary locally, it must pass real nil `Variant` script carriers rather than raw `NULL`.
+- Generic `Dictionary[Variant, Variant]` remains plain `Dictionary` outwardly:
+  - no typed `hint_string`
+  - no typed-dictionary preflight
+- Long-term fact source:
+  - `doc/module_impl/backend/typed_dictionary_abi_contract.md`
+
+### call_func Wrapper Local Cleanup Contract
+
+- Generated `call_func` wrappers own the temporary non-object wrapper locals they materialize themselves:
+  - parameter locals created by `godot_new_<Type>_with_Variant(...)`
+  - the staged `godot_Variant ret` used to publish non-`void` returns
+  - the non-`void` local `r` when the returned type is a destroyable non-object wrapper
+- Those locals are outside ordinary `CBodyBuilder` slot lifecycle:
+  - they live only inside the generated wrapper glue
+  - the wrapper must destroy them explicitly before returning to Godot
+- Cleanup order is fixed:
+  1. publish `r_return` with `godot_variant_new_copy(...)`
+  2. destroy local `ret`
+  3. destroy local `r` when its source type is a destroyable non-object wrapper
+  4. destroy wrapper-owned argument locals in reverse order
+- Do not apply this cleanup contract to object pointers or primitives:
+  - object args/returns are plain pointer locals here, not value wrappers with `destroy(&slot)` semantics
+  - primitive args/returns never need wrapper cleanup
+- Backend touchpoint:
+  - `CGenHelper.renderCallWrapperDestroyStmt(...)` is the single type-driven helper that decides whether an argument/return local needs this wrapper cleanup
 
 ### Receiver Value Terminology
 
@@ -130,19 +226,39 @@ Object category rules:
       - `Dictionary[K, V]` -> `Dictionary` / `Dictionary[Variant, Variant]`
       - `Dictionary[K1, V1]` -> `Dictionary[K2, V2]` when both key/value directions are assignable.
     - Always remember if the value that is assigning into a result variable whose type is a GDCC object is returned from a GDExtension function, it is always a `godot_Object*` that needs to be converted to the correct GDCC type.
-- When assigning a value to a variable, it implies that we destroy the old value in the variable and replace it with the new value. 
-  If they are `Object`, that means we have to release the ownership of the old value and obtain the ownership of the new value properly, 
-  otherwise it will cause memory leak or premature destruction. 
-  So always remember to call `try_release_object` on the old value and `try_own_object` on the new value if they are Objects, and use non-try version if you are 100% sure they are ref-counted (no operation if 100% sure they are not ref-counted).
+- For object slot writes, ownership comes from producer provenance, not from the target slot shape alone:
+  - fresh function/method/constructor/property-init helper results are `OWNED`
+  - reads from existing storage (`local` / `parameter` / `field` / property / index / `self`) are `BORROWED`
+  - ptr conversion (`gdcc_object_from_godot_object_ptr(...)` / `gdcc_object_to_godot_object_ptr(...)`) is representation-only and does not change ownership
+- The canonical object slot write order is:
+  1. capture old value when this is an overwrite route
+  2. assign new value after ptr conversion if needed
+  3. retain the new value only when RHS is `BORROWED`
+  4. release the captured old value
+- Do not blanket `try_own_object`/`own_object` the new object value for every object assignment.
+  `OWNED` RHS must be consumed directly, otherwise fresh call results leak an extra reference.
 
 ### Lifecycle
 
-- `gdcc_object_from_godot_object_ptr` does not own the object, you still need to call `try_own_object` or `own_object` to retain the object if you want to keep it.
+- `gdcc_object_from_godot_object_ptr(...)` and `gdcc_object_to_godot_object_ptr(...)` are ownership-neutral.
+  They only change pointer representation and must not be treated as retain/release boundaries.
+  Converting an `OWNED` object value does not force an extra retain, and converting a `BORROWED` value
+  does not upgrade it; the later slot write / return publish decides whether retain is needed.
 - When construct a `Variant` from an object, the new `Variant` owns the object, so you do not need to call `try_own_object` or `own_object` again.
 - `try_own_object`, `try_release_object` are safe to use on non-ref-counted objects, they will do nothing in that case, but always use non-try version if you are 100% sure the object is ref-counted for better performance.
 - `try_own_object`, `try_release_object`, `own_object` and `release_object` receives only Godot object ptr but not GDCC object ptr, so remember to pass helper-converted Godot object ptr instead of raw `gdcc_object`.
 - `try_destroy_object` is used to destroy an object that we own, if an object is ref-counted it is the same as `try_release_object`, if it is not ref-counted, it will be actually destroyed, so always remember to check the type and use it properly.
 - Call lifecycle functions on `NULL` is safe, they will do nothing in that case, so you do not need to check if the pointer is `NULL` before calling lifecycle functions.
+- Object return publishing is modeled as writing `_return_val`:
+  - borrowed source -> retain at `_return_val`
+  - owned source -> consume directly into `_return_val`
+  - do not add a blanket retain step for all returns at function end
+- `__finally__` auto-cleanup is limited to managed local slots.
+  It cleans up slots the current function still owns, not arbitrary object values that happen to be live.
+  `_return_val`, moved-out return sources, `ref` locals, and definite non-`RefCounted` locals are outside that blanket cleanup set.
+- Explicitly reject these maintenance shortcuts:
+  - “retain every object return once before function exit”
+  - “release every object slot once at function exit”
 
 ### Lifecycle Provenance Restrictions
 
@@ -195,10 +311,24 @@ Object category rules:
   - For non-void functions, the return value is assigned to an implicit `_return_val` variable.
   - Control flow then jumps to `__finally__`.
 - Only `__finally__` emits the actual `return` statement.
+  - For non-void functions, the only valid backend-IR terminator in `__finally__` is `ReturnInsn("_return_val")`.
+    Direct `ReturnInsn(<user-var>)` in `__finally__` is rejected by control-flow validation so object returns
+    cannot bypass the `_return_val` publish boundary.
 - For non-void functions, `_return_val` is declared at the top of the `__prepare__` block.
   - `_return_val` does not require automatic destruction.
 - Once `_return_val` is written, a goto to `__finally__` is emitted immediately, so `_return_val` is always live until the end of the function, and its value is published through return flow. 
   - What's more, `_return_val` is never written twice since `__finally__` block directly returns after reading `_return_val`.
+
+### Property Init Helper Ownership
+
+- `LirPropertyDef.initFunc == null` is the only state where backend owns property default helper synthesis.
+- Once `initFunc` points at a named helper, backend treats it as a fully lowered executable helper and never tries to repair or synthesize its body.
+- Template rendering keeps the current constructor call shape `self->prop = Class_<init_func>(self);`, but this now has a hard precondition:
+  - the helper is hidden/internal
+  - the helper returns exactly the property type
+  - the helper takes exactly one owning-class `self` parameter
+  - the helper already has real basic blocks and a valid entry block
+- Missing helper, shell-only helper, or helper-signature drift must fail fast before backend starts grafting `__prepare__` / `__finally__` or rendering templates.
 
 ### Default Argument Values
 
@@ -210,17 +340,34 @@ Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "000000000000000000000000000000000000
 - For `"..."` and `&"..."`, generate `GD_STATIC_S(u8"...")` and `GD_STATIC_SN(u8"...)` respectively.
 - For `null`, generate `NULL`.
 - For non-object type constructor, generate a c constructor function call, see more details in `gdextension-lite.md`.
+- For object constructor route (`construct_object` / frontend `.new(...)` object target), call
+  `godot_new_XXX()` directly for engine classes, and call generated `XXX_class_create_instance(...)`
+  directly for gdcc classes. For non-`RefCounted` gdcc classes this remains `XXX_class_create_instance(NULL, true)`.
+  When the GDCC target definitely inherits `RefCounted`, generated C constructor call sites must use
+  `XXX_class_create_instance(NULL, false)` first, then wrap that external create call with
+  `gdcc_ref_counted_init_raw(..., true)` before the result enters the existing object slot write /
+  pointer-conversion path. The generated `*_class_create_instance(...)` itself stays a raw native-object
+  allocation/binding helper and
+  must not perform the external RefCounted init on behalf of every caller. When the same GDCC
+  `RefCounted` class is instantiated by Godot engine entry points or by GDScript, Godot itself is
+  responsible for initializing the reference count as part of its own creation path. GDCC custom constructors
+  themselves remain zero-arg only; parameterized custom constructor routes are blocked in frontend
+  compile mode.
 - For `$"..."`, generate NodePath constructor with utf8_chars.
 
 ### Extension Type Metadata Parsing Ownership
 
-- `parseExtensionType` is a shared helper capability owned by `CGenHelper`.
-- Resolver/generator code (including `MethodCallResolver`) must reuse `CGenHelper.parseExtensionType(...)` instead of defining local parsing forks.
+- `parseExtensionType` is now a thin backend wrapper over the shared scope-layer parser.
+- Resolver/generator code that only needs current shared-normalized single-atom metadata must reuse `CGenHelper.parseExtensionType(...)` instead of defining local parsing forks.
 - Required normalization behavior remains:
   - `enum::...` / `bitfield::...` -> `int`
   - `typedarray::Packed*Array` -> `GdPacked*ArrayType`
   - non-packed `typedarray::T` -> `GdArrayType(T)`
   - malformed or unsupported text -> fail fast
+- `typeddictionary::K;V` is intentionally outside this helper's ownership:
+  - it is a composite exported spelling, not a single leaf atom
+  - current shared parser does not normalize it
+  - it remains governed by the dedicated backend typed-dictionary ABI contract
 
 ### Validation Logic
 

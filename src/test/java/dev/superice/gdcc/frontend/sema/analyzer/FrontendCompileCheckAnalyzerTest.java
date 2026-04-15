@@ -5,20 +5,29 @@ import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
+import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
+import dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
+import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.scope.ScopeOwnerKind;
+import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
-import dev.superice.gdparser.frontend.ast.Expression;
+import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
@@ -30,6 +39,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Predicate;
@@ -37,13 +47,12 @@ import java.util.function.Predicate;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendCompileCheckAnalyzerTest {
     @Test
-    void analyzeRejectsMissingModuleSkeletonBoundary() throws Exception {
+    void analyzeRejectsMissingModuleSkeletonBoundary() {
         var analyzer = new FrontendCompileCheckAnalyzer();
         var analysisData = FrontendAnalysisData.bootstrap();
 
@@ -142,7 +151,140 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileLeavesResolvedUnaryAndBinaryExpressionsOutOfCompileBlocks() throws Exception {
+    void analyzeForCompileTreatsVariableInventoryErrorsAsCompileBlockingWithoutSynthesizingCompileCheckDuplicates()
+            throws Exception {
+        var compiled = analyzeForCompile("compile_check_duplicate_local.gd", """
+                class_name CompileCheckDuplicateLocal
+                extends RefCounted
+                
+                func ping():
+                    var value := 1
+                    var value := 2
+                    return value
+                """);
+
+        var variableDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.variable_binding");
+        var slotPublicationWarnings = diagnosticsByCategory(
+                compiled.diagnostics(),
+                FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY
+        );
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(compiled.diagnostics().hasErrors());
+        assertEquals(1, variableDiagnostics.size());
+        assertTrue(variableDiagnostics.getFirst().message().contains("Duplicate local variable 'value'"));
+        assertTrue(variableDiagnostics.getFirst().message().contains(Path.of("tmp", "compile_check_duplicate_local.gd").toString()));
+        assertEquals(1, slotPublicationWarnings.size());
+        assertTrue(slotPublicationWarnings.getFirst().message().contains("has no lowering-ready published slot type"));
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(compileDiagnostics.getFirst().message().contains("missing a lowering-ready published slot type"));
+    }
+
+    @Test
+    void analyzeForCompileEscalatesShadowingLocalSlotTypeWarningIntoCompileBlock() throws Exception {
+        var compiled = analyzeForCompile("compile_check_shadowing_local.gd", """
+                class_name CompileCheckShadowingLocal
+                extends RefCounted
+                
+                func ping(seed: int):
+                    var value := seed
+                    if seed > 0:
+                        var value := 1
+                    return value
+                """);
+
+        var slotPublicationWarnings = diagnosticsByCategory(
+                compiled.diagnostics(),
+                FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY
+        );
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(compiled.diagnostics().hasErrors());
+        assertEquals(1, slotPublicationWarnings.size());
+        assertTrue(slotPublicationWarnings.getFirst().message().contains("if-body of function 'ping'"));
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(compileDiagnostics.getFirst().message().contains("Local variable 'value'"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("missing a lowering-ready published slot type"));
+    }
+
+    @Test
+    void analyzeForCompileBlocksStaticPropertyDeclarationsWhileAnalyzeLeavesSharedDiagnosticsUntouched() throws Exception {
+        var source = """
+                class_name CompileCheckStaticPropertyDeclaration
+                extends RefCounted
+                
+                static var shared: int = 1
+                
+                static func build() -> int:
+                    return shared
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_static_property_declaration.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_static_property_declaration.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertEquals(1, compileDiagnostics.size());
+        assertEquals(
+                FrontendRange.fromAstRange(findVariable(compiled.unit().ast().statements(), "shared").range()),
+                compileDiagnostics.getFirst().range()
+        );
+        assertTrue(compileDiagnostics.getFirst().message().contains("Static property 'shared'"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("does not support script static fields"));
+    }
+
+    @Test
+    void analyzeForCompileBlocksStaticPropertyDeclarationsWithoutInitializer() throws Exception {
+        var source = """
+                class_name CompileCheckStaticPropertyWithoutInitializer
+                extends RefCounted
+                
+                static var shared: int
+                
+                static func set_shared(value: int):
+                    shared = value
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_static_property_without_initializer.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_static_property_without_initializer.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertEquals(1, compileDiagnostics.size());
+        assertEquals(
+                FrontendRange.fromAstRange(findVariable(compiled.unit().ast().statements(), "shared").range()),
+                compileDiagnostics.getFirst().range()
+        );
+        assertTrue(compileDiagnostics.getFirst().message().contains("Static property 'shared'"));
+    }
+
+    @Test
+    void analyzeForCompileStopsAtStaticPropertyDeclarationInsteadOfRecursingIntoInitializerSubtree() throws Exception {
+        var source = """
+                class_name CompileCheckStaticPropertyInitializerSubtree
+                extends Node
+                
+                static var shared = [1]
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_static_property_initializer_subtree.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_static_property_initializer_subtree.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(compileDiagnostics.getFirst().message().contains("Static property 'shared'"));
+        assertFalse(compileDiagnostics.getFirst().message().contains("Array literal"));
+    }
+
+    @Test
+    void analyzeForCompileLeavesResolvedUnaryAndEagerBinaryExpressionsOutOfCompileBlocks() throws Exception {
         var source = """
                 class_name CompileCheckUnaryBinaryResolved
                 extends RefCounted
@@ -150,14 +292,12 @@ class FrontendCompileCheckAnalyzerTest {
                 func ping(
                     items_a: Array[int],
                     items_b: Array[int],
-                    payload,
                     typed_variant: Variant
                 ):
                     var negated: int = -1
                     var logical_not: bool = !true
                     var dynamic_not := not typed_variant
                     var sum: int = 1 + 2
-                    var truthy: bool = payload and 0
                     var typed_merge := items_a + items_b
                     var dynamic_sum := typed_variant + 1
                 """;
@@ -172,6 +312,183 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.deferred_chain_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileLeavesShortCircuitBinaryExpressionsOnCompileSurface() throws Exception {
+        var source = """
+                class_name CompileCheckShortCircuitBinary
+                extends RefCounted
+                
+                func helper(value):
+                    return value
+                
+                func ping(left, right):
+                    var both := left and helper(right)
+                    return left or right
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_short_circuit_binary.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_short_circuit_binary.gd", source);
+        assertFalse(compiled.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.deferred_chain_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileAllowsCompoundAssignmentOnceBodyLoweringContractLands() throws Exception {
+        var source = """
+                class_name CompileCheckCompoundAssignment
+                extends RefCounted
+                
+                var hp: int = 0
+                
+                func ping():
+                    hp += 1
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_compound_assignment.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.unsupported_expression_route").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_compound_assignment.gd", source);
+        assertFalse(compiled.diagnostics().hasErrors(), () -> "Unexpected compile diagnostics: " + compiled.diagnostics().asList());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.unsupported_expression_route").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileLeavesStaticMethodRoutesOutOfStaticPropertyCompileBlocks() throws Exception {
+        var source = """
+                class_name CompileCheckStaticMethodRoute
+                extends RefCounted
+                
+                class Worker:
+                    static func build() -> Worker:
+                        return Worker.new()
+                
+                var worker := Worker.build()
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_static_method_route.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_static_method_route.gd", source);
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileLeavesMappedTopLevelStaticMethodRoutesOutOfCompileBlocks() throws Exception {
+        var source = """
+                class_name MappedWorker
+                extends RefCounted
+                
+                static func build() -> MappedWorker:
+                    return MappedWorker.new()
+                
+                var worker := MappedWorker.build()
+                """;
+
+        var sharedAnalyzed = analyzeShared(
+                "compile_check_mapped_static_method_route.gd",
+                source,
+                Map.of("MappedWorker", "RuntimeWorker")
+        );
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile(
+                "compile_check_mapped_static_method_route.gd",
+                source,
+                Map.of("MappedWorker", "RuntimeWorker")
+        );
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileBlocksParameterizedGdccConstructorRoutes() throws Exception {
+        var compiled = analyzeForCompile("compile_check_parameterized_gdcc_constructor.gd", """
+                class_name CompileCheckParameterizedCtor
+                extends RefCounted
+                
+                class Worker:
+                    func _init(value: int):
+                        pass
+                
+                func build(seed):
+                    return Worker.new(seed)
+                """);
+
+        var callDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.call_resolution");
+        var typeCheckDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.type_check");
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(compiled.diagnostics().hasErrors());
+        assertEquals(1, callDiagnostics.size());
+        assertTrue(callDiagnostics.getFirst().message().contains("does not support arguments"));
+        assertEquals(1, typeCheckDiagnostics.size());
+        assertTrue(typeCheckDiagnostics.getFirst().message().contains("supports only zero parameters"));
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(
+                compileDiagnostics.getFirst().message().contains("supports only zero-argument custom object construction"),
+                compileDiagnostics.getFirst().message()
+        );
+    }
+
+    @Test
+    void analyzeForCompileKeepsDedicatedGuardForResolvedParameterizedGdccConstructorRegression() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_parameterized_gdcc_constructor_regression.gd", """
+                        class_name CompileCheckParameterizedCtorRegression
+                        extends RefCounted
+                
+                        class Worker:
+                            func _init(value: int):
+                                pass
+                
+                        func build(seed):
+                            return Worker.new(seed)
+                """);
+        var buildFunction = findFunction(preparedInput.unit().ast().statements(), "build");
+        var newStep = findNode(buildFunction, AttributeCallStep.class, step -> step.name().equals("new"));
+        preparedInput.analysisData().expressionTypes().clear();
+        preparedInput.analysisData().resolvedCalls().clear();
+        preparedInput.analysisData().resolvedCalls().put(
+                newStep,
+                FrontendResolvedCall.resolved(
+                        "new",
+                        FrontendCallResolutionKind.CONSTRUCTOR,
+                        FrontendReceiverKind.TYPE_META,
+                        ScopeOwnerKind.GDCC,
+                        new GdObjectType("CompileCheckParameterizedCtorRegression$Worker"),
+                        new GdObjectType("CompileCheckParameterizedCtorRegression$Worker"),
+                        List.of(GdVariantType.VARIANT),
+                        new Object()
+                )
+        );
+        preparedInput.analysisData().updateDiagnostics(new DiagnosticSnapshot(List.of()));
+        var cleanDiagnosticManager = new DiagnosticManager();
+
+        runCompileCheck(new PreparedCompileCheckInput(
+                preparedInput.unit(),
+                preparedInput.analysisData(),
+                cleanDiagnosticManager
+        ));
+
+        var compileDiagnostics = diagnosticsByCategory(
+                preparedInput.analysisData().diagnostics(),
+                "sema.compile_check"
+        );
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(
+                compileDiagnostics.getFirst().message().contains("supports only zero-argument custom object construction"),
+                compileDiagnostics.getFirst().message()
+        );
     }
 
     @Test
@@ -374,6 +691,78 @@ class FrontendCompileCheckAnalyzerTest {
         assertEquals(1, compileDiagnostics.size());
         assertEquals(FrontendRange.fromAstRange(readStep.range()), compileDiagnostics.getFirst().range());
         assertTrue(compileDiagnostics.getFirst().message().contains("synthetic failed attribute expression"));
+    }
+
+    @Test
+    void analyzeReportsCompileBlocksForPublishedBareCallFacts() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_bare_call_fact.gd", """
+                class_name CompileCheckBareCallFact
+                extends RefCounted
+                
+                func helper(value: int) -> int:
+                    return value
+                
+                static func ping_static(value: int):
+                    helper(value)
+                """);
+        var pingStaticFunction = findFunction(preparedInput.unit().ast().statements(), "ping_static");
+        var bareCall = findNode(
+                assertInstanceOf(ExpressionStatement.class, pingStaticFunction.body().statements().getFirst()),
+                CallExpression.class,
+                ignored -> true
+        );
+        var publishedBareCall = Objects.requireNonNull(preparedInput.analysisData().resolvedCalls().get(bareCall));
+
+        assertEquals(FrontendCallResolutionStatus.BLOCKED, publishedBareCall.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, publishedBareCall.callKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, publishedBareCall.receiverKind());
+        preparedInput.analysisData().expressionTypes().put(
+                bareCall,
+                FrontendExpressionType.resolved(publishedBareCall.returnType())
+        );
+
+        runCompileCheck(preparedInput);
+
+        var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
+        assertEquals(1, compileDiagnostics.size());
+        assertEquals(FrontendRange.fromAstRange(bareCall.range()), compileDiagnostics.getFirst().range());
+        assertTrue(compileDiagnostics.getFirst().message().contains("Call expression 'helper(...)'"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("not accessible in the current context"));
+    }
+
+    @Test
+    void analyzeUsesCompileGateForUnsupportedPublishedAttributeSubscriptStepFacts() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_attribute_subscript_step.gd", """
+                class_name CompileCheckAttributeSubscriptStep
+                extends RefCounted
+                
+                class Worker:
+                    var payloads: Dictionary[int, int]
+                
+                func ping(worker: Worker, seed: int):
+                    var value = worker.payloads[seed]
+                """);
+        var pingFunction = findFunction(preparedInput.unit().ast().statements(), "ping");
+        var valueDeclaration = findVariable(pingFunction.body().statements(), "value");
+        var payloadsStep = findNode(
+                valueDeclaration.value(),
+                AttributeSubscriptStep.class,
+                step -> step.name().equals("payloads")
+        );
+
+        assertTrue(diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.type_check").isEmpty());
+        preparedInput.analysisData().expressionTypes().put(
+                payloadsStep,
+                FrontendExpressionType.unsupported("synthetic unsupported attribute subscript step")
+        );
+
+        runCompileCheck(preparedInput);
+
+        var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
+        assertEquals(1, compileDiagnostics.size());
+        assertEquals(FrontendRange.fromAstRange(payloadsStep.range()), compileDiagnostics.getFirst().range());
+        assertTrue(compileDiagnostics.getFirst().message().contains("Subscript step 'payloads[...]'"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("synthetic unsupported attribute subscript step"));
     }
 
     @Test
@@ -594,6 +983,14 @@ class FrontendCompileCheckAnalyzerTest {
             @NotNull String fileName,
             @NotNull String source
     ) throws Exception {
+        return analyzeShared(fileName, source, Map.of());
+    }
+
+    private static @NotNull AnalyzedScript analyzeShared(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) throws Exception {
         var parserService = new GdScriptParserService();
         var parseDiagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, parseDiagnostics);
@@ -601,8 +998,7 @@ class FrontendCompileCheckAnalyzerTest {
 
         var diagnosticManager = new DiagnosticManager();
         var analysisData = new FrontendSemanticAnalyzer().analyze(
-                "test_module",
-                List.of(unit),
+                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
                 diagnosticManager
         );
@@ -613,6 +1009,14 @@ class FrontendCompileCheckAnalyzerTest {
             @NotNull String fileName,
             @NotNull String source
     ) throws Exception {
+        return analyzeForCompile(fileName, source, Map.of());
+    }
+
+    private static @NotNull AnalyzedScript analyzeForCompile(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) throws Exception {
         var parserService = new GdScriptParserService();
         var parseDiagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, parseDiagnostics);
@@ -620,8 +1024,7 @@ class FrontendCompileCheckAnalyzerTest {
 
         var diagnosticManager = new DiagnosticManager();
         var analysisData = new FrontendSemanticAnalyzer().analyzeForCompile(
-                "test_module",
-                List.of(unit),
+                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
                 diagnosticManager
         );
@@ -640,8 +1043,7 @@ class FrontendCompileCheckAnalyzerTest {
         var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = FrontendAnalysisData.bootstrap();
         var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
-                "test_module",
-                List.of(unit),
+                new FrontendModule("test_module", List.of(unit)),
                 classRegistry,
                 diagnosticManager,
                 analysisData

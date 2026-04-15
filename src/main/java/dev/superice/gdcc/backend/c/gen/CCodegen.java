@@ -9,8 +9,10 @@ import dev.superice.gdcc.enums.GdInstruction;
 import dev.superice.gdcc.enums.LifecycleProvenance;
 import dev.superice.gdcc.lir.*;
 import dev.superice.gdcc.lir.insn.*;
+import dev.superice.gdcc.lir.validation.ControlFlowIntegrityValidator;
 import dev.superice.gdcc.lir.validation.LifecycleInstructionRestrictionValidator;
 import dev.superice.gdcc.scope.ParameterDef;
+import dev.superice.gdcc.scope.RefCountedStatus;
 import dev.superice.gdcc.type.*;
 import dev.superice.gdcc.util.CCodeFormatter;
 import freemarker.template.TemplateException;
@@ -24,6 +26,7 @@ import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class CCodegen implements Codegen {
     private static final Logger LOGGER = LoggerFactory.getLogger(CCodegen.class);
@@ -53,6 +56,8 @@ public class CCodegen implements Codegen {
     public CodegenContext ctx;
     public LirModule module;
     private CGenHelper helper;
+    /// Validator for block layout and successor integrity.
+    private final ControlFlowIntegrityValidator controlFlowValidator = new ControlFlowIntegrityValidator();
     /// Validator for lifecycle instruction usage restrictions.
     private final LifecycleInstructionRestrictionValidator lifecycleValidator = new LifecycleInstructionRestrictionValidator();
 
@@ -63,7 +68,7 @@ public class CCodegen implements Codegen {
     }
 
     private static boolean containsInstruction(@NotNull LirBasicBlock block, @NotNull LirInstruction instruction) {
-        for (var existingInsn : block.instructions()) {
+        for (var existingInsn : block.getInstructions()) {
             if (existingInsn.checkEquals(instruction)) {
                 return true;
             }
@@ -81,14 +86,17 @@ public class CCodegen implements Codegen {
                     instruction);
             return;
         }
-        block.instructions().add(instruction);
+        if (instruction instanceof ControlFlowInstruction controlFlowInstruction) {
+            block.setTerminator(controlFlowInstruction);
+            return;
+        }
+        block.appendNonTerminatorInstruction(instruction);
     }
 
     private @NotNull String resolvePrepareEntryTarget(@NotNull LirFunctionDef func, @NotNull LirBasicBlock prepareBB) {
-        for (var instruction : prepareBB.instructions()) {
-            if (instruction instanceof GotoInsn(var targetBbId) && !"__prepare__".equals(targetBbId)) {
-                return targetBbId;
-            }
+        var terminator = prepareBB.getTerminator();
+        if (terminator instanceof GotoInsn(var targetBbId) && !"__prepare__".equals(targetBbId)) {
+            return targetBbId;
         }
         LOGGER.warn("Function {} already enters __prepare__ without a non-self goto target, keep __prepare__ as goto target.",
                 func.getName());
@@ -114,8 +122,8 @@ public class CCodegen implements Codegen {
                     var tmpVar = func.createAndAddTmpVariable(propertyDef.getType());
                     var bb = new LirBasicBlock("entry");
                     func.addBasicBlock(bb);
-                    bb.instructions().add(new LoadPropertyInsn(tmpVar.id(), propertyDef.getName(), "self"));
-                    bb.instructions().add(new ReturnInsn(tmpVar.id()));
+                    bb.appendNonTerminatorInstruction(new LoadPropertyInsn(tmpVar.id(), propertyDef.getName(), "self"));
+                    bb.setTerminator(new ReturnInsn(tmpVar.id()));
                     func.setEntryBlockId("entry");
                     classDef.addFunction(func);
                 }
@@ -129,8 +137,8 @@ public class CCodegen implements Codegen {
 
                     var bb = new LirBasicBlock("entry");
                     func.addBasicBlock(bb);
-                    bb.instructions().add(new StorePropertyInsn(propertyDef.getName(), "self", "value"));
-                    bb.instructions().add(new ReturnInsn(null));
+                    bb.appendNonTerminatorInstruction(new StorePropertyInsn(propertyDef.getName(), "self", "value"));
+                    bb.setTerminator(new ReturnInsn(null));
                     func.setEntryBlockId("entry");
                     classDef.addFunction(func);
                 }
@@ -138,27 +146,32 @@ public class CCodegen implements Codegen {
                     var initName = "_field_init_" + propertyDef.getName();
                     propertyDef.setInitFunc(initName);
                     var func = new LirFunctionDef(initName);
+                    func.setHidden(true);
                     func.setReturnType(propertyDef.getType());
                     func.addParameter(new LirParameterDef("self", selfType, null, func));
                     var tmpVar = func.createAndAddTmpVariable(propertyDef.getType());
                     var bb = new LirBasicBlock("entry");
                     func.addBasicBlock(bb);
                     switch (propertyDef.getType()) {
-                        case GdObjectType _ -> bb.instructions().add(new LiteralNullInsn(tmpVar.id()));
-                        case GdVariantType _, GdNilType _ -> bb.instructions().add(new LiteralNilInsn(tmpVar.id()));
-                        case GdBoolType _ -> bb.instructions().add(new LiteralBoolInsn(tmpVar.id(), false));
-                        case GdIntType _ -> bb.instructions().add(new LiteralIntInsn(tmpVar.id(), 0));
-                        case GdFloatType _ -> bb.instructions().add(new LiteralFloatInsn(tmpVar.id(), 0.0));
-                        case GdStringType _ -> bb.instructions().add(new LiteralStringInsn(tmpVar.id(), ""));
-                        case GdStringNameType _ -> bb.instructions().add(new LiteralStringNameInsn(tmpVar.id(), ""));
+                        case GdObjectType _ -> bb.appendNonTerminatorInstruction(new LiteralNullInsn(tmpVar.id()));
+                        case GdVariantType _, GdNilType _ ->
+                                bb.appendNonTerminatorInstruction(new LiteralNilInsn(tmpVar.id()));
+                        case GdBoolType _ -> bb.appendNonTerminatorInstruction(new LiteralBoolInsn(tmpVar.id(), false));
+                        case GdIntType _ -> bb.appendNonTerminatorInstruction(new LiteralIntInsn(tmpVar.id(), 0));
+                        case GdFloatType _ -> bb.appendNonTerminatorInstruction(new LiteralFloatInsn(tmpVar.id(), 0.0));
+                        case GdStringType _ ->
+                                bb.appendNonTerminatorInstruction(new LiteralStringInsn(tmpVar.id(), ""));
+                        case GdStringNameType _ ->
+                                bb.appendNonTerminatorInstruction(new LiteralStringNameInsn(tmpVar.id(), ""));
                         case GdArrayType gdArrayType ->
-                                bb.instructions().add(new ConstructArrayInsn(tmpVar.id(), gdArrayType.getValueType().getTypeName()));
-                        case GdPackedArrayType _ -> bb.instructions().add(new ConstructArrayInsn(tmpVar.id(), null));
+                                bb.appendNonTerminatorInstruction(new ConstructArrayInsn(tmpVar.id(), gdArrayType.getValueType().getTypeName()));
+                        case GdPackedArrayType _ ->
+                                bb.appendNonTerminatorInstruction(new ConstructArrayInsn(tmpVar.id(), null));
                         case GdDictionaryType gdDictionaryType ->
-                                bb.instructions().add(new ConstructDictionaryInsn(tmpVar.id(), gdDictionaryType.getKeyType().getTypeName(), gdDictionaryType.getValueType().getTypeName()));
-                        default -> bb.instructions().add(new ConstructBuiltinInsn(tmpVar.id(), List.of()));
+                                bb.appendNonTerminatorInstruction(new ConstructDictionaryInsn(tmpVar.id(), gdDictionaryType.getKeyType().getTypeName(), gdDictionaryType.getValueType().getTypeName()));
+                        default -> bb.appendNonTerminatorInstruction(new ConstructBuiltinInsn(tmpVar.id(), List.of()));
                     }
-                    bb.instructions().add(new ReturnInsn(tmpVar.id()));
+                    bb.setTerminator(new ReturnInsn(tmpVar.id()));
                     func.setEntryBlockId("entry");
                     classDef.addFunction(func);
                 }
@@ -175,12 +188,20 @@ public class CCodegen implements Codegen {
                     func.addBasicBlock(prepareBB);
                 }
                 // initialize variables
-                var parameterNames = func.getParameters().stream().map(ParameterDef::getName).collect(HashSet::new, HashSet::add, HashSet::addAll);
+                var parameterNames = func.getParameters().stream()
+                        .map(ParameterDef::getName)
+                        .collect(HashSet<String>::new, HashSet::add, HashSet::addAll);
                 for (var variable : func.getVariables().values()) {
                     if (parameterNames.contains(variable.id())) {
                         continue;
                     }
                     if (variable.ref()) {
+                        continue;
+                    }
+                    // Discarded void-return calls no longer publish result slots, but backend still
+                    // skips any stray void variables so invalid IR fails at the real opcode/value
+                    // contract boundary instead of drifting into a fake constructor path.
+                    if (variable.type() instanceof GdVoidType) {
                         continue;
                     }
                     var initInsn = switch (variable.type()) {
@@ -210,6 +231,151 @@ public class CCodegen implements Codegen {
         }
     }
 
+    /// `initFunc == null` means backend still owns default-value helper synthesis. Once a property
+    /// points at a named init function, backend only accepts an already materialized executable body.
+    private void validatePropertyInitFunctionsReadyForCodegen() {
+        for (var classDef : module.getClassDefs()) {
+            for (var propertyDef : classDef.getProperties()) {
+                validatePropertyInitFunctionReadyForCodegen(classDef, propertyDef);
+            }
+        }
+    }
+
+    private void validatePropertyInitFunctionReadyForCodegen(
+            @NotNull LirClassDef classDef,
+            @NotNull LirPropertyDef propertyDef
+    ) {
+        var function = resolvePropertyInitFunction(classDef, propertyDef);
+        validatePropertyInitFunctionSignature(classDef, propertyDef, function);
+        if (function.getBasicBlockCount() == 0 || function.getEntryBlockId().isEmpty()) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references shell-only init function '"
+                            + function.getName()
+                            + "'; property init must be fully lowered before backend codegen"
+            );
+        }
+        if (!function.hasBasicBlock(function.getEntryBlockId())) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references init function '"
+                            + function.getName()
+                            + "' with invalid entry block ID: "
+                            + function.getEntryBlockId()
+            );
+        }
+    }
+
+    private @NotNull LirFunctionDef resolvePropertyInitFunction(
+            @NotNull LirClassDef classDef,
+            @NotNull LirPropertyDef propertyDef
+    ) {
+        var initFuncName = propertyDef.getInitFunc();
+        if (initFuncName == null) {
+            throw new IllegalStateException(
+                    "Property '" + classDef.getName() + "." + propertyDef.getName() + "' does not define initFunc"
+            );
+        }
+        var matches = classDef.getFunctions().stream()
+                .filter(function -> function.getName().equals(initFuncName))
+                .toList();
+        if (matches.isEmpty()) {
+            throw new IllegalStateException(
+                    "Property init function '"
+                            + classDef.getName()
+                            + "."
+                            + initFuncName
+                            + "' referenced by property '"
+                            + propertyDef.getName()
+                            + "' does not exist"
+            );
+        }
+        if (matches.size() != 1) {
+            throw new IllegalStateException(
+                    "Expected exactly one property init function '"
+                            + classDef.getName()
+                            + "."
+                            + initFuncName
+                            + "' for property '"
+                            + propertyDef.getName()
+                            + "', but found "
+                            + matches.size()
+            );
+        }
+        return matches.getFirst();
+    }
+
+    /// Property-init helpers are always internal single-return helpers with the owning-class `self`
+    /// parameter. Backend keeps this contract explicit so template rendering never has to guess
+    /// whether a named `initFunc` still needs repair.
+    private void validatePropertyInitFunctionSignature(
+            @NotNull LirClassDef classDef,
+            @NotNull LirPropertyDef propertyDef,
+            @NotNull LirFunctionDef function
+    ) {
+        if (!function.isHidden()) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references non-hidden init function '"
+                            + function.getName()
+                            + "'; property init helpers must stay internal to backend/template wiring"
+            );
+        }
+        if (!function.getReturnType().equals(propertyDef.getType())) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references init function '"
+                            + function.getName()
+                            + "' with mismatched return type "
+                            + function.getReturnType().getTypeName()
+                            + "; expected "
+                            + propertyDef.getType().getTypeName()
+            );
+        }
+        if (function.getParameterCount() != 1) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references init function '"
+                            + function.getName()
+                            + "' with "
+                            + function.getParameterCount()
+                            + " parameters; expected exactly one owning-class self parameter"
+            );
+        }
+
+        var selfParameter = function.getParameter(0);
+        if (selfParameter == null
+                || !selfParameter.getName().equals("self")
+                || !selfParameter.getType().equals(new GdObjectType(classDef.getName()))) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references init function '"
+                            + function.getName()
+                            + "' with invalid self parameter; expected `self: "
+                            + classDef.getName()
+                            + "`"
+            );
+        }
+    }
+
     private void ensureFunctionFinallyBlock() {
         for (var classDef : module.getClassDefs()) {
             for (var func : classDef.getFunctions()) {
@@ -221,15 +387,9 @@ public class CCodegen implements Codegen {
 
                 var parameterNames = func.getParameters().stream()
                         .map(ParameterDef::getName)
-                        .collect(HashSet::new, HashSet::add, HashSet::addAll);
+                        .collect(HashSet<String>::new, HashSet::add, HashSet::addAll);
                 for (var variable : func.getVariables().values()) {
-                    if (parameterNames.contains(variable.id())) {
-                        continue;
-                    }
-                    if (variable.ref()) {
-                        continue;
-                    }
-                    if (!variable.type().isDestroyable()) {
+                    if (!shouldInsertAutoGeneratedFinallyDestruct(variable, parameterNames)) {
                         continue;
                     }
                     appendInsnIfAbsent(func, finallyBB,
@@ -244,12 +404,36 @@ public class CCodegen implements Codegen {
         }
     }
 
+    /// `__finally__` auto-cleanup is slot-based: it only targets managed local slots still owned by the
+    /// current function. `_return_val` stays outside this set because it is the hidden return-publish
+    /// boundary declared by `CBodyBuilder`, not a normal LIR variable slot.
+    private boolean shouldInsertAutoGeneratedFinallyDestruct(@NotNull LirVariable variable,
+                                                             @NotNull Set<String> parameterNames) {
+        if ("_return_val".equals(variable.id())) {
+            return false;
+        }
+        if (parameterNames.contains(variable.id()) || variable.ref()) {
+            return false;
+        }
+        if (!variable.type().isDestroyable()) {
+            return false;
+        }
+        if (variable.type() instanceof GdObjectType objectType) {
+            var refCountedStatus = ctx.classRegistry().getRefCountedStatus(objectType);
+            // Godot does not auto-free non-RefCounted objects at local scope exit.
+            // They stay under explicit user-managed lifetime (`free`, `queue_free`, etc.).
+            return refCountedStatus != RefCountedStatus.NO;
+        }
+        return true;
+    }
+
     @SuppressWarnings("unchecked")
     public @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
                                             @NotNull LirFunctionDef func) {
         if (ctx == null || module == null) {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generateBlock().");
         }
+        controlFlowValidator.validateFunction(func);
         lifecycleValidator.validateFunction(ctx, func);
         // Check if the entry block is valid
         if (!func.hasBasicBlock(func.getEntryBlockId())) {
@@ -260,8 +444,8 @@ public class CCodegen implements Codegen {
         bodyBuilder.appendRaw("goto " + func.getEntryBlockId() + ";\n");
         for (var bb : func) {
             bodyBuilder.beginBasicBlock(bb.id());
-            for (int i = 0; i < bb.instructions().size(); i++) {
-                var insn = bb.instructions().get(i);
+            for (int i = 0; i < bb.getInstructionCount(); i++) {
+                var insn = bb.getInstruction(i);
                 CInsnGen<LirInstruction> insnGen = (CInsnGen<LirInstruction>) INSN_GENS.get(insn.opcode());
                 if (insnGen == null) {
                     throw new UnsupportedOperationException("Unsupported instruction opcode: " + insn.opcode().opcode());
@@ -273,6 +457,31 @@ public class CCodegen implements Codegen {
         return bodyBuilder.build();
     }
 
+    /// Renders the constructor-time property initializer apply body.
+    /// The init helper still only produces a value; this method owns the direct backing-field first-write
+    /// route so property initialization keeps unified slot-write semantics without becoming a setter call.
+    public @NotNull String generatePropertyInitApplyBody(@NotNull LirClassDef clazz,
+                                                         @NotNull LirPropertyDef property) {
+        if (ctx == null || module == null) {
+            throw new IllegalStateException("CCodegen not prepared. Call prepare() before generating property init apply code.");
+        }
+        var initFunction = resolvePropertyInitFunction(clazz, property);
+        var bodyBuilder = new CBodyBuilder(helper, clazz, initFunction);
+        bodyBuilder.applyPropertyInitializerFirstWrite(
+                "self->" + property.getName(),
+                property.getType(),
+                clazz.getName() + "_" + initFunction.getName() + "(self)",
+                initFunction.getReturnType(),
+                initFunction.getReturnType() instanceof GdObjectType objectType
+                        ? (objectType.checkGdccType(ctx.classRegistry()) ? CBodyBuilder.PtrKind.GDCC_PTR : CBodyBuilder.PtrKind.GODOT_PTR)
+                        : CBodyBuilder.PtrKind.NON_OBJECT,
+                // Property-init helpers are a dedicated fresh-producer entry: the apply helper must
+                // consume the returned object directly instead of re-owning the field write.
+                CBodyBuilder.OwnershipKind.OWNED
+        );
+        return bodyBuilder.build();
+    }
+
 
     @Override
     public List<GeneratedFile> generate() {
@@ -280,10 +489,12 @@ public class CCodegen implements Codegen {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generate().");
         }
         this.generateDefaultGetterSetterInitialization();
+        this.validatePropertyInitFunctionsReadyForCodegen();
         this.generateFunctionPrepareBlock();
         this.ensureFunctionFinallyBlock();
         for (var classDef : module.getClassDefs()) {
             for (var function : classDef.getFunctions()) {
+                controlFlowValidator.validateFunction(function);
                 lifecycleValidator.validateFunction(ctx, function);
             }
         }

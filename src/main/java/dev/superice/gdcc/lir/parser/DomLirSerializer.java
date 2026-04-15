@@ -150,7 +150,7 @@ public final class DomLirSerializer implements LirSerializer {
 
                     // serialize instructions for this basic block into textual form and attach as text node
                     try (var sw = new StringWriter()) {
-                        insnSerializer.serialize(bb.instructions(), sw);
+                        insnSerializer.serialize(bb.getInstructions(), sw);
                         var textNode = doc.createTextNode(sw.toString());
                         bbEl.appendChild(textNode);
                     }

@@ -4,6 +4,7 @@ import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
@@ -32,7 +33,6 @@ import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -384,6 +384,58 @@ class FrontendTypeCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeReportsParameterizedGdccConstructorDeclarationAsSemanticError() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_parameterized_gdcc_constructor.gd", """
+                class_name TypeCheckParameterizedCtor
+                extends RefCounted
+                
+                class Worker:
+                    func _init(value: int):
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var typeCheckDiagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        );
+
+        assertEquals(1, typeCheckDiagnostics.size());
+        assertTrue(typeCheckDiagnostics.getFirst().message().contains("supports only zero parameters"));
+        assertTrue(typeCheckDiagnostics.getFirst().message().contains("Worker._init(...)"));
+        assertEquals(Path.of("tmp", "type_check_parameterized_gdcc_constructor.gd"), typeCheckDiagnostics.getFirst().sourcePath());
+        assertNotNull(typeCheckDiagnostics.getFirst().range());
+    }
+
+    @Test
+    void analyzeDoesNotReportZeroArgGdccConstructorDeclaration() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_zero_arg_gdcc_constructor.gd", """
+                class_name TypeCheckZeroArgCtor
+                extends RefCounted
+                
+                class Worker:
+                    func _init():
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        assertTrue(diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        ).isEmpty());
+    }
+
+    @Test
     void analyzeChecksOnlyExplicitOrdinaryLocalDeclaredSlotsAndSkipsUnstableInitializerFacts() throws Exception {
         var preparedInput = prepareTypeCheckInput("type_check_local_compatibility.gd", """
                 class_name TypeCheckLocalCompatibility
@@ -396,8 +448,10 @@ class FrontendTypeCheckAnalyzerTest {
                 
                 static func ping(worker):
                     var accepts_variant: Variant = 1
+                    var exact_variant_source: int = accepts_variant
                     var strict_float: float = 1
                     var dynamic_variant: Variant = worker.ping().length
+                    var dynamic_int: int = worker.ping().length
                     var inferred := 1
                     var skipped_blocked: int = self.payload
                     var skipped_deferred: int = 1 + 2
@@ -414,8 +468,16 @@ class FrontendTypeCheckAnalyzerTest {
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                requireInitializerType(pingFunction.body().statements(), "exact_variant_source", preparedInput).status()
+        );
+        assertEquals(
                 FrontendExpressionTypeStatus.DYNAMIC,
                 requireInitializerType(pingFunction.body().statements(), "dynamic_variant", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.DYNAMIC,
+                requireInitializerType(pingFunction.body().statements(), "dynamic_int", preparedInput).status()
         );
         assertEquals(
                 FrontendExpressionTypeStatus.BLOCKED,
@@ -464,7 +526,11 @@ class FrontendTypeCheckAnalyzerTest {
                     static func make():
                         return "value"
                 
+                    static func make_count():
+                        return 1
+                
                 var accepts_variant: Variant = 1
+                var accepts_variant_source: int = Worker.make_count()
                 var wrong_type: int = "x"
                 var inferred_int := 1
                 var missing_type = 1
@@ -485,6 +551,10 @@ class FrontendTypeCheckAnalyzerTest {
                 preparedInput.diagnosticManager()
         );
 
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                requireInitializerType(preparedInput.unit().ast(), "accepts_variant_source", preparedInput).status()
+        );
         assertEquals(
                 FrontendExpressionTypeStatus.BLOCKED,
                 requireInitializerType(preparedInput.unit().ast(), "skipped_blocked", preparedInput).status()
@@ -620,7 +690,19 @@ class FrontendTypeCheckAnalyzerTest {
                 func accepts_variant_bare() -> Variant:
                     return
                 
+                func accepts_weak_bare():
+                    return
+                
+                func accepts_exact_variant_source(value: Variant) -> int:
+                    return value
+                
+                func accepts_dynamic_variant_source(worker) -> int:
+                    return worker.ping().length
+                
                 func rejects_bare() -> int:
+                    return
+                
+                func rejects_object_bare() -> Object:
                     return
                 
                 func rejects_type() -> int:
@@ -644,15 +726,19 @@ class FrontendTypeCheckAnalyzerTest {
 
         var diagnostics = preparedInput.diagnosticManager().snapshot();
         var typeCheckDiagnostics = diagnosticsByCategory(diagnostics, "sema.type_check");
-        assertEquals(3, typeCheckDiagnostics.size());
+        assertEquals(4, typeCheckDiagnostics.size());
         assertTrue(typeCheckDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
                         && Path.of("tmp", "type_check_return_compatibility.gd").equals(diagnostic.sourcePath())
                         && diagnostic.range() != null
         ));
         assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.message().contains("Return value type 'Nil'")
+                diagnostic.message().contains("Bare 'return'")
                         && diagnostic.message().contains("int")
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Bare 'return'")
+                        && diagnostic.message().contains("Object")
         ));
         assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
                 diagnostic.message().contains("Return value type 'String'")
@@ -662,6 +748,26 @@ class FrontendTypeCheckAnalyzerTest {
                 diagnostic.message().contains("returns 'void'")
                         && diagnostic.message().contains("return expr")
         ));
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                Objects.requireNonNull(
+                        preparedInput.analysisData().expressionTypes().get(
+                                findNode(findFunction(preparedInput.unit().ast(), "accepts_exact_variant_source"),
+                                        dev.superice.gdparser.frontend.ast.ReturnStatement.class,
+                                        ignored -> true).value()
+                        )
+                ).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.DYNAMIC,
+                Objects.requireNonNull(
+                        preparedInput.analysisData().expressionTypes().get(
+                                findNode(findFunction(preparedInput.unit().ast(), "accepts_dynamic_variant_source"),
+                                        dev.superice.gdparser.frontend.ast.ReturnStatement.class,
+                                        ignored -> true).value()
+                        )
+                ).status()
+        );
 
         assertEquals(
                 FrontendExpressionTypeStatus.FAILED,
@@ -683,6 +789,54 @@ class FrontendTypeCheckAnalyzerTest {
                         )
                 ).status()
         );
+    }
+
+    @Test
+    void analyzeAcceptsNullAtObjectInitializerAndReturnBoundariesButKeepsNilToScalarRejected()
+            throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_null_object_boundaries.gd", """
+                class_name TypeCheckNullObjectBoundaries
+                extends RefCounted
+                
+                var accepted_obj: Object = null
+                var rejected_int: int = null
+                
+                func ping() -> void:
+                    var local_obj: Object = null
+                    var local_i: int = null
+                
+                func ret_obj() -> Object:
+                    return null
+                
+                func ret_int() -> int:
+                    return null
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        );
+        assertEquals(3, diagnostics.size());
+        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Property 'rejected_int'")
+                        && diagnostic.message().contains("Nil")
+                        && diagnostic.message().contains("int")
+        ));
+        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Local variable 'local_i'")
+                        && diagnostic.message().contains("Nil")
+                        && diagnostic.message().contains("int")
+        ));
+        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Return value type 'Nil'")
+                        && diagnostic.message().contains("int")
+        ));
     }
 
     @Test
@@ -855,8 +1009,7 @@ class FrontendTypeCheckAnalyzerTest {
 
         var analysisData = FrontendAnalysisData.bootstrap();
         var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
-                "test_module",
-                List.of(unit),
+                new FrontendModule("test_module", List.of(unit)),
                 classRegistry,
                 diagnosticManager,
                 analysisData

@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、shared expression semantic support、unary/binary expression semantics、class property initializer support island、subscript / assignment typed contract、`:=` 最小回填与 expr-owned diagnostics 已落地）
-- 更新时间：2026-03-20
+- 更新时间：2026-04-14
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
@@ -29,7 +29,7 @@
   - 不新增新的全局 side table，也不让已有 side table 互相越权
   - 不把 `FrontendBinding` 重塑为 usage-aware 模型
   - 不在这里转正 parameter default、lambda、`for`、`match`、block-local `const`、class constant 的正式 body 语义
-  - 不在这里扩张 keyed builtin、numeric promotion、`StringName` / `String` 互转、`null -> Object` 等更宽隐式兼容
+  - 不在这里扩张 keyed builtin、numeric promotion、`StringName` / `String` 互转等更宽隐式兼容
 
 ---
 
@@ -56,7 +56,7 @@
 这意味着：
 
 - `FrontendChainBindingAnalyzer` 只运行在 skeleton、scope graph、variable inventory 与 `symbolBindings()` 已发布之后
-- `FrontendExprTypeAnalyzer` 只运行在 `symbolBindings()`、`resolvedMembers()`、`resolvedCalls()` 已发布之后
+- `FrontendExprTypeAnalyzer` 只运行在 `symbolBindings()`、`resolvedMembers()` 与当前 `resolvedCalls()` published surface 已发布之后
 - body phase 仍保持“先发布 member/call，再发布 expression type”的顶层边界，不回头重开更早 phase
 
 ### 1.2 当前 owner 边界
@@ -68,11 +68,11 @@
   - 负责 bare `TYPE_META` ordinary-value misuse 的首条 `sema.binding`
   - 负责 bare identifier 在 value namespace / function namespace / type-meta namespace 之间的最外层分流
 - `FrontendChainBindingAnalyzer`
-  - 只发布 `resolvedMembers()` 与 `resolvedCalls()`
+  - 发布 `resolvedMembers()` 与 chain-owned `resolvedCalls()` facts
   - 负责 `sema.member_resolution`、`sema.call_resolution`、`sema.deferred_chain_resolution`、`sema.unsupported_chain_route`
   - 负责链式 route 级别的恢复与 suffix 封口
 - `FrontendExprTypeAnalyzer`
-  - 只发布 `expressionTypes()`
+  - 发布 `expressionTypes()`，并补充 bare `CallExpression` 的 `resolvedCalls()` facts
   - 负责 `sema.expression_resolution`、`sema.deferred_expression_resolution`、`sema.unsupported_expression_route`、`sema.discarded_expression`
   - 负责 expression-only 路径的恢复、statement warning 与 `:=` 最小回填
 
@@ -149,7 +149,7 @@
 配套约束为：
 
 - `FrontendChainBindingAnalyzer` 不写 `expressionTypes()`
-- `FrontendExprTypeAnalyzer` 不改写 `resolvedMembers()` / `resolvedCalls()`
+- `FrontendExprTypeAnalyzer` 不改写 `resolvedMembers()`，且只允许向 `resolvedCalls()` 补充 bare `CallExpression` published facts
 - `FrontendTopBindingAnalyzer` 继续不解析尾部成员、尾部调用或 assignment target
 - class property `var` initializer subtree 已进入这三张表的正式 published support surface；class constant initializer 仍不属于该支持面
 - 但这张 published support surface 的稳定含义只保证 subtree facts 可发布，不自动承诺同 class 非静态依赖已属于 MVP 正式语义面
@@ -169,6 +169,18 @@
 - `FrontendCallResolutionStatus`
 - `FrontendReceiverKind`
 - owner / receiver type / return type / argument type snapshot / declaration metadata / detail reason
+
+当前与 builtin property 相关的稳定事实还包括：
+
+- builtin instance property access（例如 `vector.x`、`Color(...).r`、`Basis.IDENTITY.x`）已经属于 compile-ready shared semantic surface
+- 这类 route 继续走 ordinary attribute/member contract，chain binding 产出 `FrontendResolvedMember(status = RESOLVED)`，expr typing 直接桥接其 result type
+- builtin member-backed property target 同样继续走 ordinary property writable contract；`vector.x = 1.0`、`color.a = 0.5` 这类 assignment route 由 `PropertyDefAccessSupport` 统一消费 normalized metadata，不额外引入 builtin 专用写路径
+- builtin keyed access 仍与之严格区分，继续保持 unsupported；不得因为 builtin property 支持已经闭环，就把 `vector["x"]` 之类 route 静默并入同一条规则
+
+`resolvedCalls()` 的当前 AST key 合同同样冻结为：
+
+- `AttributeCallStep`
+- bare `CallExpression`
 
 ### 3.2 状态语义
 
@@ -211,6 +223,13 @@
 - `DEFERRED` / `FAILED` / `UNSUPPORTED`
   - 不发布 concrete type，只保留状态与 detail reason
 
+`expressionTypes()` 的 key-space 合同也已经冻结：
+
+- 默认 expression root 仍以 `Expression` 自身为 key
+- 当 compile/lowering 需要更精确的 chain anchor 时，`AttributePropertyStep` /
+  `AttributeCallStep` / `AttributeSubscriptStep` 也会直接作为 key 发布同类 fact
+- 因而任何消费者都不得再假定 `expressionTypes()` 是 expression-only side table
+
 `rootOwnsOutcome` 也是正式合同的一部分：
 
 - 它区分“当前 root 自己产生的非成功结果”和“从依赖上传播上来的结果”
@@ -227,6 +246,7 @@
   - generic unknown miss
 - bare function-like symbol 在 value position 会 materialize 为 `Callable`
 - bare `TYPE_META` ordinary-value misuse 会保留真实 `TYPE_META` binding，并在 expression typing 中保留 `FAILED` provenance
+- bare identifier call 在 expression typing 时会同步发布正式 `FrontendResolvedCall`，供 compile-check / inspection / lowering 直接消费
 
 当前 route-head-only `TYPE_META` 规则同样冻结为：
 
@@ -260,6 +280,16 @@
   - `Type.func.bind(...)`
 
 这些 route 当前不仅可出现在 executable body，也可出现在 class property `var` initializer subtree；该支持岛会继承 property 自身的 static/instance restriction，但不会把整个 class body 打开成 executable region。
+
+当前 constructor route 的事实源合同已经闭合到 downstream：
+
+- `.new(...)` 与 bare builtin direct constructor 统一发布为 `FrontendResolvedCall(callKind = CONSTRUCTOR)`
+- bare builtin direct constructor 若命中 unary stable-`Variant` special route，expr analyzer 还会额外发一条 `sema.unsafe_call_argument` warning；该 warning 不改变 published call 的 `RESOLVED` 状态
+- frontend body lowering 直接消费该 route，并按已发布 shape 分流：
+  - builtin 单参数 stable `Variant` constructor special route -> `UnpackVariantInsn`
+  - 其它 builtin/container constructor -> `ConstructBuiltinInsn`
+  - object constructor -> `ConstructObjectInsn`
+- engine object 与 gdcc zero-arg custom object 都已能闭合到 backend object construction；gdcc 带参 constructor 则保持 fail-closed
 
 需要补充的稳定 MVP 合同是：
 
@@ -354,6 +384,13 @@
 - 它不再 hardcode unsupported
 - 可以继续 exact suffix
 - 也能作为 chain-local dependency 的一等节点支撑 outer call exact resolution
+- `FrontendExprTypeAnalyzer.resolveAttributeExpressionType(...)` 会把每个 attribute step 本身作为
+  `analysisData.expressionTypes()` 的 AST key 发布：
+  - `AttributePropertyStep` / `AttributeCallStep` 优先复用已发布的 `resolvedMembers()` /
+    `resolvedCalls()` 结果
+  - `AttributeSubscriptStep` 直接桥接 step trace 的 outgoing receiver / status
+  - `UPSTREAM_BLOCKED` suffix step 明确发布为 `BLOCKED(null)`，避免把上游幸存类型误写成当前 step 的精确结果
+- 因此 lowering 等下游现在可以直接读取 `AttributeSubscriptStep` 的 published fact，而不需要重跑 chain reduction
 
 ### 4.4 assignment
 
@@ -362,7 +399,10 @@
 - assignment-success root 发布 `RESOLVED(void)`
 - statement-position 的 assignment-success root 不发 discarded warning
 - value-required 的 nested assignment 会 fail-closed
-- compound assignment 当前显式 `UNSUPPORTED`
+- plain `=` 与 parser 已识别的 closed-set compound assignment 现在都进入 shared assignment semantic contract
+- compound assignment 当前共享语义支持面固定为：`+=`、`-=`、`*=`、`/=`、`%=`、`**=`、`>>=`、`<<=`、`&=`、`^=`、`|=`
+- compound operator 的中间结果类型统一复用 ordinary binary operator typing；若 operator 对给定 operand 不成立，继续发布 `FAILED` 而不是回退成 `UNSUPPORTED`
+- compound assignment 不再停留在 compile-only blocker；compile-ready lowering surface 现已直接消费这条 shared assignment contract
 
 当前正式支持的 assignment target 为：
 
@@ -376,10 +416,9 @@ writable / compatibility 规则为：
 - bare identifier property 与 attribute-property 必须共用同一 property writable 解释
 - `ScopeValue.writable` 只表达 bare identifier direct-write contract
 - `PropertyDefAccessSupport` 是唯一允许解释 engine/builtin property writable 元数据的 shared helper
-- `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)` 只负责 concrete slot compatibility
-- exact `Variant` slot 允许任意来源类型
+- `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)` 只负责 concrete slot compatibility，具体 conversion 规则以 `frontend_implicit_conversion_matrix.md` 为唯一真源
 - `DYNAMIC` target 的 runtime-open 语义只允许保留在 assignment helper 内部
-- 其余 compatibility 继续回退 `ClassRegistry.checkAssignable(...)`
+- 其他 consumer 不得在 assignment path 单独补写一份 `Variant` / `Nil` / scalar family conversion 规则
 
 当前仍需明确保留的一条边界是：
 

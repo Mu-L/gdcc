@@ -28,10 +28,14 @@ public final class GdArrayType implements GdContainerType {
 
     @Override
     public @NotNull String getTypeName() {
-        if (elementType instanceof GdVariantType) {
+        if (isGenericArray()) {
             return "Array";
         }
         return "Array[" + elementType.getTypeName() + "]";
+    }
+
+    public boolean isGenericArray() {
+        return elementType instanceof GdVariantType;
     }
 
     @Override

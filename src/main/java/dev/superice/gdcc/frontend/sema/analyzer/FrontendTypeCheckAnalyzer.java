@@ -19,7 +19,6 @@ import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeValue;
 import dev.superice.gdcc.type.GdType;
-import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
@@ -63,6 +62,12 @@ import java.util.Objects;
 public class FrontendTypeCheckAnalyzer {
     private static final @NotNull String TYPE_CHECK_CATEGORY = "sema.type_check";
     private static final @NotNull String TYPE_HINT_CATEGORY = "sema.type_hint";
+
+    private static @NotNull String parameterizedGdccConstructorUnsupportedMessage(@NotNull ClassDef currentClass) {
+        return "GDCC custom class constructor '" + Objects.requireNonNull(currentClass, "currentClass must not be null").getName()
+                + "._init(...)' currently supports only zero parameters; parameterized '_init' would not be honored "
+                + "by the runtime construction path";
+    }
 
     public void analyze(
             @NotNull ClassRegistry classRegistry,
@@ -198,10 +203,10 @@ public class FrontendTypeCheckAnalyzer {
             if (returnSlot instanceof GdVoidType) {
                 return;
             }
-            if (access.checkAssignmentCompatible(returnSlot, GdNilType.NIL)) {
+            if (returnSlot instanceof GdVariantType) {
                 return;
             }
-            reportReturnTypeMismatch(access, returnStatement, returnSlot, GdNilType.NIL);
+            reportBareReturnNotAllowed(access, returnStatement, returnSlot);
             return;
         }
         if (returnSlot instanceof GdVoidType) {
@@ -257,22 +262,32 @@ public class FrontendTypeCheckAnalyzer {
             @NotNull Path sourcePath,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager,
-            @NotNull FrontendAssignmentSemanticSupport assignmentSemanticSupport,
+            @NotNull FrontendAssignmentSemanticSupport.Context assignmentSemanticContext,
             @NotNull TypeCheckVisitContext context
     ) {
         public TypeCheckAccess {
             Objects.requireNonNull(sourcePath, "sourcePath must not be null");
             Objects.requireNonNull(analysisData, "analysisData must not be null");
             Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
-            Objects.requireNonNull(assignmentSemanticSupport, "assignmentSemanticSupport must not be null");
+            Objects.requireNonNull(assignmentSemanticContext, "assignmentSemanticContext must not be null");
             Objects.requireNonNull(context, "context must not be null");
         }
 
+        /// Type-check intentionally delegates the full typed-boundary matrix to the shared helper.
+        /// See `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md` for the single
+        /// compatibility source of truth and
+        /// `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md` for the matching
+        /// consumer/materialization contract; do not reintroduce local
+        /// `Variant`/`Nil`/scalar special cases here.
         public boolean checkAssignmentCompatible(
                 @NotNull GdType slotType,
                 @NotNull GdType valueType
         ) {
-            return assignmentSemanticSupport.checkAssignmentCompatible(slotType, valueType);
+            return FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
+                    assignmentSemanticContext,
+                    slotType,
+                    valueType
+            );
         }
     }
 
@@ -394,11 +409,11 @@ public class FrontendTypeCheckAnalyzer {
         var typeRef = variableDeclaration.type();
         var message = FrontendDeclaredTypeSupport.isInferredTypeRef(typeRef)
                 ? "Property '" + variableDeclaration.name()
-                + "' uses ':=' but MVP does not infer property types. Add an explicit type such as '"
-                + explicitTypeSuggestion + "'."
+                  + "' uses ':=' but MVP does not infer property types. Add an explicit type such as '"
+                  + explicitTypeSuggestion + "'."
                 : "Property '" + variableDeclaration.name()
-                + "' has no explicit type and MVP does not infer property types. Add an explicit type such as '"
-                + explicitTypeSuggestion + "'.";
+                  + "' has no explicit type and MVP does not infer property types. Add an explicit type such as '"
+                  + explicitTypeSuggestion + "'.";
         access.diagnosticManager().warning(
                 TYPE_HINT_CATEGORY,
                 message,
@@ -440,6 +455,23 @@ public class FrontendTypeCheckAnalyzer {
         );
     }
 
+    private static void reportBareReturnNotAllowed(
+            @NotNull TypeCheckAccess access,
+            @NotNull ReturnStatement returnStatement,
+            @NotNull GdType slotType
+    ) {
+        Objects.requireNonNull(access, "access must not be null");
+        Objects.requireNonNull(returnStatement, "returnStatement must not be null");
+        Objects.requireNonNull(slotType, "slotType must not be null");
+        access.diagnosticManager().error(
+                TYPE_CHECK_CATEGORY,
+                "Bare 'return' is only allowed for callables returning 'void' or 'Variant', but current return slot type is '"
+                        + slotType.getTypeName() + "'",
+                access.sourcePath(),
+                FrontendRange.fromAstRange(returnStatement.range())
+        );
+    }
+
     private static @NotNull String describeCallableOwner(@NotNull TypeCheckAccess access) {
         Objects.requireNonNull(access, "access must not be null");
         var currentClass = access.context().currentClass();
@@ -461,7 +493,7 @@ public class FrontendTypeCheckAnalyzer {
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
-        private final @NotNull FrontendAssignmentSemanticSupport assignmentSemanticSupport;
+        private final @NotNull FrontendAssignmentSemanticSupport.Context assignmentSemanticContext;
         private int supportedExecutableBlockDepth;
         private @Nullable ClassDef currentClass;
         private @Nullable GdType currentCallableReturnSlot;
@@ -491,9 +523,10 @@ public class FrontendTypeCheckAnalyzer {
                     classRegistry,
                     this::resolvePublishedExpressionType
             );
-            assignmentSemanticSupport = new FrontendAssignmentSemanticSupport(
+            assignmentSemanticContext = FrontendAssignmentSemanticSupport.createContext(
                     analysisData.symbolBindings(),
                     scopesByAst,
+                    analysisData.moduleSkeleton(),
                     () -> currentRestriction,
                     classRegistry,
                     chainReduction
@@ -531,6 +564,7 @@ public class FrontendTypeCheckAnalyzer {
             if (isNotPublished(functionDeclaration)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
+            reportParameterizedGdccConstructorIfNeeded(functionDeclaration);
             walkCallableBody(
                     functionDeclaration,
                     functionDeclaration.body(),
@@ -550,6 +584,7 @@ public class FrontendTypeCheckAnalyzer {
             if (isNotPublished(constructorDeclaration)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
+            reportParameterizedGdccConstructorIfNeeded(constructorDeclaration);
             walkCallableBody(
                     constructorDeclaration,
                     constructorDeclaration.body(),
@@ -558,6 +593,39 @@ public class FrontendTypeCheckAnalyzer {
                     false
             );
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
+        }
+
+        /// Parameterized GDCC `_init(...)` definitions are a semantic contract violation, not just a
+        /// compile-mode lowering gap. Report them on the declaration itself so they cannot fail
+        /// silently when no constructor call site is analyzed yet.
+        private void reportParameterizedGdccConstructorIfNeeded(@NotNull ConstructorDeclaration constructorDeclaration) {
+            if (constructorDeclaration.parameters().isEmpty() || currentClass == null) {
+                return;
+            }
+            diagnosticManager.error(
+                    TYPE_CHECK_CATEGORY,
+                    parameterizedGdccConstructorUnsupportedMessage(currentClass),
+                    sourcePath,
+                    FrontendRange.fromAstRange(constructorDeclaration.range())
+            );
+        }
+
+        /// Frontend source still models ordinary `_init` declarations as functions in the common
+        /// path, so the semantic guard must live here as well instead of relying only on the legacy
+        /// `ConstructorDeclaration` node kind.
+        private void reportParameterizedGdccConstructorIfNeeded(@NotNull FunctionDeclaration functionDeclaration) {
+            if (!functionDeclaration.name().equals("_init")
+                    || functionDeclaration.isStatic()
+                    || functionDeclaration.parameters().isEmpty()
+                    || currentClass == null) {
+                return;
+            }
+            diagnosticManager.error(
+                    TYPE_CHECK_CATEGORY,
+                    parameterizedGdccConstructorUnsupportedMessage(currentClass),
+                    sourcePath,
+                    FrontendRange.fromAstRange(functionDeclaration.range())
+            );
         }
 
         @Override
@@ -794,7 +862,7 @@ public class FrontendTypeCheckAnalyzer {
                     sourcePath,
                     analysisData,
                     diagnosticManager,
-                    assignmentSemanticSupport,
+                    assignmentSemanticContext,
                     snapshotContext()
             );
         }

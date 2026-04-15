@@ -344,8 +344,8 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
         func.addParameter(new LirParameterDef("control", new GdObjectType("Control"), null, func));
         func.createAndAddVariable("mode", GdIntType.INT);
         var entry = func.getBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("mode", "process_mode", "control"));
-        entry.instructions().add(new ReturnInsn("mode"));
+        entry.appendInstruction(new LoadPropertyInsn("mode", "process_mode", "control"));
+        entry.appendInstruction(new ReturnInsn("mode"));
         clazz.addFunction(func);
         return clazz;
     }
@@ -358,8 +358,8 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
         func.addParameter(new LirParameterDef("control", new GdObjectType("Control"), null, func));
         func.addParameter(new LirParameterDef("value", GdIntType.INT, null, func));
         var entry = func.getBasicBlock("entry");
-        entry.instructions().add(new StorePropertyInsn("process_mode", "control", "value"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new StorePropertyInsn("process_mode", "control", "value"));
+        entry.appendInstruction(new ReturnInsn(null));
         clazz.addFunction(func);
         return clazz;
     }
@@ -372,8 +372,8 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
         func.addParameter(new LirParameterDef("obj", new GdObjectType("GDGdccEnginePropertyBridgeChild"), null, func));
         func.createAndAddVariable("mode", GdIntType.INT);
         var entry = func.getBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("mode", "process_mode", "obj"));
-        entry.instructions().add(new ReturnInsn("mode"));
+        entry.appendInstruction(new LoadPropertyInsn("mode", "process_mode", "obj"));
+        entry.appendInstruction(new ReturnInsn("mode"));
         clazz.addFunction(func);
         return clazz;
     }
@@ -386,8 +386,8 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
         func.addParameter(new LirParameterDef("obj", new GdObjectType("GDGdccEnginePropertyBridgeChild"), null, func));
         func.addParameter(new LirParameterDef("value", GdIntType.INT, null, func));
         var entry = func.getBasicBlock("entry");
-        entry.instructions().add(new StorePropertyInsn("process_mode", "obj", "value"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new StorePropertyInsn("process_mode", "obj", "value"));
+        entry.appendInstruction(new ReturnInsn(null));
         clazz.addFunction(func);
         return clazz;
     }
@@ -419,9 +419,9 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
         var func = newLirMethod(owner, "_field_getter_obj", new GdObjectType("RefCounted"));
         func.createAndAddVariable("tmp", new GdObjectType("RefCounted"));
         var entry = func.getBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "obj", "self"));
-        entry.instructions().add(new LoadPropertyInsn("tmp", "obj", "self"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "obj", "self"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "obj", "self"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         return func;
     }
 
@@ -429,8 +429,8 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
         var func = newLirMethod(owner, "_field_setter_obj", GdVoidType.VOID);
         func.addParameter(new LirParameterDef("value", new GdObjectType("RefCounted"), null, func));
         var entry = func.getBasicBlock("entry");
-        entry.instructions().add(new StorePropertyInsn("obj", "self", "value"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new StorePropertyInsn("obj", "self", "value"));
+        entry.appendInstruction(new ReturnInsn(null));
         return func;
     }
 

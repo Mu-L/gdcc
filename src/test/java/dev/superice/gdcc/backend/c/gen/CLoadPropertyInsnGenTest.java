@@ -5,6 +5,7 @@ import dev.superice.gdcc.backend.ProjectInfo;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
+import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.lir.LirBasicBlock;
@@ -17,15 +18,18 @@ import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdColorType;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdFloatVectorType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdStringType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -37,7 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CLoadPropertyInsnGenTest {
     @Test
-    @DisplayName("GDCC getter should load field directly when inside getter")
+    @DisplayName("GDCC getter should stage a stable carrier from backing field address when overwriting target inside getter")
     void gdccGetterUsesFieldAccessInsideGetter() {
         var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var propertyDef = new LirPropertyDef("value", GdStringType.STRING, false, null, "_field_getter_value", null, Map.of());
@@ -49,8 +53,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "value", "self"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "value", "self"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         gdccClass.addFunction(func);
@@ -63,8 +67,47 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("$self->value"));
+        assertTrue(body.contains("godot_String __gdcc_tmp_string_0 = godot_new_String_with_String(&($self->value));"), body);
+        assertTrue(body.contains("godot_String_destroy(&$tmp);"), body);
+        assertTrue(body.contains("$tmp = __gdcc_tmp_string_0;"), body);
+        assertFalse(body.contains("__gdcc_tmp_string_0 = $self->value;"), body);
+        assertFalse(body.contains("godot_String_destroy(&__gdcc_tmp_string_0);"), body);
         assertFalse(body.contains("MyClass__field_getter_value("));
+    }
+
+    @Test
+    @DisplayName("GDCC Variant getter should stage a stable carrier from backing field address instead of shallow temp materialization")
+    void gdccVariantGetterCopiesBackingFieldByAddress() {
+        var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var propertyDef = new LirPropertyDef("payload", GdVariantType.VARIANT, false, null, "_field_getter_payload", null, Map.of());
+        gdccClass.addProperty(propertyDef);
+
+        var func = new LirFunctionDef("_field_getter_payload");
+        func.setReturnType(GdVariantType.VARIANT);
+        func.addParameter(new LirParameterDef("self", new GdObjectType("MyClass"), null, func));
+        func.createAndAddVariable("tmp", GdVariantType.VARIANT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "payload", "self"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(gdccClass, func);
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_variant_0 = godot_new_Variant_with_Variant(&($self->payload));"), body);
+        assertTrue(body.contains("godot_Variant_destroy(&$tmp);"), body);
+        assertTrue(body.contains("$tmp = __gdcc_tmp_variant_0;"), body);
+        assertFalse(body.contains("__gdcc_tmp_variant_0 = $self->payload;"), body);
+        assertFalse(body.contains("godot_Variant_destroy(&__gdcc_tmp_variant_0);"), body);
+        assertFalse(body.contains("MyClass__field_getter_payload("), body);
     }
 
     @Test
@@ -80,8 +123,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "value", "obj"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "value", "obj"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         gdccClass.addFunction(func);
@@ -115,8 +158,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "name", "node"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "name", "node"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         gdccClass.addFunction(func);
@@ -149,8 +192,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "name", "node"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "name", "node"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         gdccClass.addFunction(func);
@@ -176,8 +219,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "name", "obj"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "name", "obj"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         gdccClass.addFunction(func);
@@ -211,8 +254,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", new GdObjectType("Node"));
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "child", "obj"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "child", "obj"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         gdccClass.addFunction(func);
@@ -240,8 +283,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", new GdObjectType("TargetClass"));
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "target", "obj"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "target", "obj"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         gdccClass.addFunction(func);
@@ -269,8 +312,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", new GdArrayType(GdStringNameType.STRING_NAME));
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "items", "obj"));
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "items", "obj"));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         gdccClass.addFunction(func);
@@ -294,7 +337,7 @@ public class CLoadPropertyInsnGenTest {
                 "Vector2", false,
                 List.of(), List.of(), List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("x", "float", true, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("x", "float")),
                 List.of()
         );
         var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(vector2Class), List.of(), List.of(), List.of());
@@ -306,8 +349,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdFloatType.FLOAT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "x", "vec"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "x", "vec"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         gdccClass.addFunction(func);
@@ -335,8 +378,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddRefVariable("tmp", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "value", "obj"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "value", "obj"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         gdccClass.addFunction(func);
@@ -365,8 +408,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "value", "obj"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "value", "obj"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         gdccClass.addFunction(func);
@@ -390,7 +433,7 @@ public class CLoadPropertyInsnGenTest {
                 "Vector2", false,
                 List.of(), List.of(), List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("x", "float", true, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("x", "float")),
                 List.of()
         );
         var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(vector2Class), List.of(), List.of(), List.of());
@@ -402,8 +445,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdFloatType.FLOAT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "x", "vec"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "x", "vec"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         gdccClass.addFunction(func);
@@ -420,13 +463,89 @@ public class CLoadPropertyInsnGenTest {
     }
 
     @Test
-    @DisplayName("Builtin unreadable property should throw")
-    void builtinUnreadablePropertyShouldThrow() {
+    @DisplayName("Default API builtin member-backed properties should use builtin getter names")
+    void defaultApiBuiltinMemberBackedPropertiesShouldUseBuiltinGetterNames() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+
+        var vectorFunc = new LirFunctionDef("axis_x");
+        vectorFunc.setReturnType(GdFloatType.FLOAT);
+        vectorFunc.addParameter(new LirParameterDef("vector", GdFloatVectorType.VECTOR3, null, vectorFunc));
+        vectorFunc.createAndAddVariable("axis", GdFloatType.FLOAT);
+        var vectorEntry = new LirBasicBlock("entry");
+        vectorEntry.appendInstruction(new LoadPropertyInsn("axis", "x", "vector"));
+        vectorEntry.appendInstruction(new ReturnInsn("axis"));
+        vectorFunc.addBasicBlock(vectorEntry);
+        vectorFunc.setEntryBlockId("entry");
+        gdccClass.addFunction(vectorFunc);
+
+        var colorFunc = new LirFunctionDef("red");
+        colorFunc.setReturnType(GdFloatType.FLOAT);
+        colorFunc.addParameter(new LirParameterDef("color", GdColorType.COLOR, null, colorFunc));
+        colorFunc.createAndAddVariable("channel", GdFloatType.FLOAT);
+        var colorEntry = new LirBasicBlock("entry");
+        colorEntry.appendInstruction(new LoadPropertyInsn("channel", "r", "color"));
+        colorEntry.appendInstruction(new ReturnInsn("channel"));
+        colorFunc.addBasicBlock(colorEntry);
+        colorFunc.setEntryBlockId("entry");
+        gdccClass.addFunction(colorFunc);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(api, List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var vectorBody = codegen.generateFuncBody(gdccClass, vectorFunc);
+        /// Unit-level body generation sees the builtin parameter as an already-usable ref slot.
+        /// The end-to-end ABI contract is covered separately by the integration test, where the
+        /// generated method wrapper passes a builtin-value pointer into the user method.
+        assertTrue(vectorBody.contains("godot_Vector3_get_x($vector)"), vectorBody);
+        assertFalse(vectorBody.contains("godot_Object_get"), vectorBody);
+
+        var colorBody = codegen.generateFuncBody(gdccClass, colorFunc);
+        assertTrue(colorBody.contains("godot_Color_get_r($color)"), colorBody);
+        assertFalse(colorBody.contains("godot_Object_get"), colorBody);
+    }
+
+    @Test
+    @DisplayName("Default API missing builtin member should still fail-fast on load")
+    void defaultApiMissingBuiltinMemberShouldStillFailFastOnLoad() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("missing_axis");
+        func.setReturnType(GdFloatType.FLOAT);
+        func.addParameter(new LirParameterDef("vector", GdFloatVectorType.VECTOR3, null, func));
+        func.createAndAddVariable("axis", GdFloatType.FLOAT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new LoadPropertyInsn("axis", "missing_axis", "vector"));
+        entry.appendInstruction(new ReturnInsn("axis"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(api, List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertTrue(ex.getMessage().contains("missing_axis"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("Vector3"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("Missing builtin property should throw")
+    void missingBuiltinPropertyShouldThrow() {
         var vector2Class = new ExtensionBuiltinClass(
                 "Vector2", false,
                 List.of(), List.of(), List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("x", "float", false, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("y", "float")),
                 List.of()
         );
         var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(vector2Class), List.of(), List.of(), List.of());
@@ -438,8 +557,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdFloatType.FLOAT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "x", "vec"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "x", "vec"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         gdccClass.addFunction(func);
@@ -467,8 +586,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "value", "obj"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "value", "obj"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         gdccClass.addFunction(func);
@@ -498,8 +617,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "value", "child"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "value", "child"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         hostClass.addFunction(func);
@@ -535,8 +654,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "value", "grand"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "value", "grand"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         hostClass.addFunction(func);
@@ -573,8 +692,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "value", "grand"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "value", "grand"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         hostClass.addFunction(func);
@@ -612,8 +731,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "name", "obj"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "name", "obj"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         hostClass.addFunction(func);
@@ -663,8 +782,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "name", "control"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "name", "control"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         hostClass.addFunction(func);
@@ -700,8 +819,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "name", "grand"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "name", "grand"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         hostClass.addFunction(func);
@@ -729,8 +848,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "missing_prop", "child"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "missing_prop", "child"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         hostClass.addFunction(func);
@@ -763,8 +882,8 @@ public class CLoadPropertyInsnGenTest {
         func.createAndAddVariable("tmp", GdFloatType.FLOAT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new LoadPropertyInsn("tmp", "value", "obj"));
-        entry.instructions().add(new ReturnInsn("tmp"));
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "value", "obj"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         hostClass.addFunction(func);

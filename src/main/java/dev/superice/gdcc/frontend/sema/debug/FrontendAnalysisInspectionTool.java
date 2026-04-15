@@ -20,6 +20,7 @@ import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
@@ -33,6 +34,7 @@ import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -84,24 +86,27 @@ public final class FrontendAnalysisInspectionTool {
 
         var diagnosticManager = new DiagnosticManager();
         var unit = parserService.parseUnit(sourcePath, source, diagnosticManager);
-        var analysisData = semanticAnalyzer.analyze(moduleName, List.of(unit), classRegistry, diagnosticManager);
-        return new InspectionResult(unit, analysisData, renderSingleUnitReport(moduleName, unit, analysisData));
+        var module = FrontendModule.singleUnit(moduleName, unit);
+        var analysisData = semanticAnalyzer.analyze(module, classRegistry, diagnosticManager);
+        return new InspectionResult(module, unit, analysisData, renderSingleUnitReport(module, unit, analysisData));
     }
 
     public @NotNull String renderSingleUnitReport(
-            @NotNull String moduleName,
+            @NotNull FrontendModule module,
             @NotNull FrontendSourceUnit unit,
             @NotNull FrontendAnalysisData analysisData
     ) {
-        return new ReportRenderer(moduleName, unit, analysisData).render();
+        return new ReportRenderer(module, unit, analysisData).render();
     }
 
     public record InspectionResult(
+            @NotNull FrontendModule module,
             @NotNull FrontendSourceUnit unit,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull String report
     ) {
         public InspectionResult {
+            Objects.requireNonNull(module, "module must not be null");
             Objects.requireNonNull(unit, "unit must not be null");
             Objects.requireNonNull(analysisData, "analysisData must not be null");
             Objects.requireNonNull(report, "report must not be null");
@@ -113,7 +118,7 @@ public final class FrontendAnalysisInspectionTool {
                 .comparingInt(Range::startByte)
                 .thenComparingInt(Range::endByte);
 
-        private final @NotNull String moduleName;
+        private final @NotNull FrontendModule module;
         private final @NotNull FrontendSourceUnit unit;
         private final @NotNull FrontendAnalysisData analysisData;
         private final @NotNull SourceTextIndex sourceTextIndex;
@@ -132,11 +137,11 @@ public final class FrontendAnalysisInspectionTool {
         private int nextVisitIndex;
 
         private ReportRenderer(
-                @NotNull String moduleName,
+                @NotNull FrontendModule module,
                 @NotNull FrontendSourceUnit unit,
                 @NotNull FrontendAnalysisData analysisData
         ) {
-            this.moduleName = Objects.requireNonNull(moduleName, "moduleName must not be null");
+            this.module = Objects.requireNonNull(module, "module must not be null");
             this.unit = Objects.requireNonNull(unit, "unit must not be null");
             this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
             sourceTextIndex = new SourceTextIndex(unit.source());
@@ -150,7 +155,7 @@ public final class FrontendAnalysisInspectionTool {
             var report = new StringBuilder(8_192);
             report.append("FORMAT ").append(REPORT_FORMAT).append('\n');
             report.append("FILE ").append(unit.path()).append('\n');
-            report.append("MODULE ").append(moduleName).append('\n');
+            report.append("MODULE ").append(module.moduleName()).append('\n');
             report.append("SUMMARY diagnostics=").append(diagnostics.size())
                     .append(" expressions=").append(expressions.size())
                     .append(" publishedExpressions=").append(countPublishedExpressions())
@@ -509,6 +514,10 @@ public final class FrontendAnalysisInspectionTool {
                 @NotNull String id,
                 @NotNull CallExpression callExpression
         ) {
+            var published = analysisData.resolvedCalls().get(callExpression);
+            var derivedCallKind = callExpression.callee() instanceof IdentifierExpression
+                    ? "BARE_CALL_DERIVED"
+                    : "CALL_DERIVED";
             var expressionType = analysisData.expressionTypes().get(callExpression);
             var calleeBinding = callExpression.callee() instanceof IdentifierExpression identifierExpression
                     ? analysisData.symbolBindings().get(identifierExpression)
@@ -519,16 +528,24 @@ public final class FrontendAnalysisInspectionTool {
                     callExpression,
                     sourceTextIndex.formatRange(callExpression.range()),
                     sourceTextIndex.snippet(callExpression.range()),
-                    "derived",
-                    expressionType != null ? expressionType.status().name() : "UNPUBLISHED",
-                    "BARE_CALL_DERIVED",
-                    "UNKNOWN",
+                    published != null ? "published" : "derived",
+                    published != null
+                            ? published.status().name()
+                            : expressionType != null ? expressionType.status().name() : "UNPUBLISHED",
+                    published != null ? published.callKind().name() : derivedCallKind,
+                    published != null ? published.receiverKind().name() : "UNKNOWN",
                     calleeBinding != null ? calleeBinding.kind().name() : null,
-                    null,
-                    formatExpressionArgumentTypes(callExpression.arguments()),
-                    expressionType != null ? formatTypeName(expressionType.publishedType()) : null,
-                    calleeBinding != null ? formatDeclarationSite(calleeBinding.declarationSite()) : null,
-                    deriveCallExpressionReason(callExpression, expressionType, calleeBinding)
+                    published != null ? formatTypeName(published.receiverType()) : null,
+                    published != null ? formatTypeList(published.argumentTypes()) : formatExpressionArgumentTypes(callExpression.arguments()),
+                    published != null
+                            ? formatTypeName(published.returnType())
+                            : expressionType != null ? formatTypeName(expressionType.publishedType()) : null,
+                    published != null
+                            ? formatDeclarationSite(published.declarationSite())
+                            : calleeBinding != null ? formatDeclarationSite(calleeBinding.declarationSite()) : null,
+                    published != null
+                            ? Objects.requireNonNullElse(published.detailReason(), "Published bare call fact")
+                            : deriveCallExpressionReason(callExpression, expressionType, calleeBinding)
             );
         }
 
@@ -880,7 +897,7 @@ public final class FrontendAnalysisInspectionTool {
         }
 
         private static void appendIndent(@NotNull StringBuilder report, int indent) {
-            report.append(" ".repeat(Math.max(indent, 0)));
+            report.repeat(" ", Math.max(indent, 0));
         }
 
         private static void appendSnippetLines(
@@ -975,11 +992,11 @@ public final class FrontendAnalysisInspectionTool {
 
         public @NotNull Snippet snippet(@NotNull FrontendRange range) {
             var raw = slice(range.startByte(), range.endByte());
-            var normalized = normalizeSnippet(raw);
+            var normalized = StringUtil.normalizeIndentedSnippet(raw);
             if (!normalized.contains("\n") && normalized.length() <= 120) {
                 return new Snippet(true, normalized, List.of());
             }
-            return new Snippet(false, null, splitSnippetLines(normalized));
+            return new Snippet(false, null, StringUtil.splitLines(normalized));
         }
 
         private @NotNull String slice(int startByte, int endByte) {
@@ -1024,35 +1041,5 @@ public final class FrontendAnalysisInspectionTool {
             return 4;
         }
 
-        private static @NotNull String normalizeSnippet(@NotNull String rawSnippet) {
-            var normalized = rawSnippet.replace("\r\n", "\n").replace('\r', '\n').strip();
-            if (normalized.isEmpty()) {
-                return rawSnippet.trim();
-            }
-            var lines = normalized.lines().toList();
-            var commonIndent = Integer.MAX_VALUE;
-            for (var line : lines) {
-                if (line.isBlank()) {
-                    continue;
-                }
-                var indent = 0;
-                while (indent < line.length() && Character.isWhitespace(line.charAt(indent))) {
-                    indent++;
-                }
-                commonIndent = Math.min(commonIndent, indent);
-            }
-            if (commonIndent == Integer.MAX_VALUE || commonIndent == 0) {
-                return normalized;
-            }
-            var strippedLines = new ArrayList<String>(lines.size());
-            for (var line : lines) {
-                strippedLines.add(line.isBlank() ? "" : line.substring(Math.min(commonIndent, line.length())));
-            }
-            return String.join("\n", strippedLines);
-        }
-
-        private static @NotNull List<String> splitSnippetLines(@NotNull String snippet) {
-            return snippet.lines().toList();
-        }
     }
 }

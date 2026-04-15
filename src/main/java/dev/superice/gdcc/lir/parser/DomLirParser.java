@@ -229,7 +229,7 @@ public final class DomLirParser implements LirParser {
                                 try (var sr = new StringReader(text)) {
                                     var insns = parser.parse(sr);
                                     for (var insn : insns) {
-                                        block.instructions().add(insn);
+                                        block.appendInstruction(insn);
                                     }
                                 }
                             }

@@ -3,20 +3,32 @@ package dev.superice.gdcc.frontend.sema.analyzer.support;
 import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendBinding;
+import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
+import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
+import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
+import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
+import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
+import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
+import dev.superice.gdcc.scope.ScopeOwnerKind;
+import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdcc.type.GdDictionaryType;
+import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -66,7 +78,8 @@ public final class FrontendExpressionSemanticSupport {
 
     public record ExpressionSemanticResult(
             @NotNull FrontendExpressionType expressionType,
-            boolean rootOwnsOutcome
+            boolean rootOwnsOutcome,
+            @Nullable FrontendResolvedCall publishedCallOrNull
     ) {
         public ExpressionSemanticResult {
             Objects.requireNonNull(expressionType, "expressionType must not be null");
@@ -197,6 +210,14 @@ public final class FrontendExpressionSemanticSupport {
             boolean finalizeWindow
     ) {
         if (callExpression.callee() instanceof IdentifierExpression bareCallee) {
+            var bareBinding = symbolBindings.get(bareCallee);
+            if (bareBinding != null && bareBinding.kind() == FrontendBindingKind.TYPE_META) {
+                var argumentResolution = resolveCallArgumentTypes(callExpression.arguments(), nestedResolver, finalizeWindow);
+                if (argumentResolution.issue() != null) {
+                    return propagated(argumentResolution.issue());
+                }
+                return resolveBareTypeMetaConstructorCallExpression(bareCallee, argumentResolution.argumentTypes());
+            }
             var calleeType = nestedResolver.resolve(bareCallee, finalizeWindow);
             if (calleeType.status() != FrontendExpressionTypeStatus.RESOLVED
                     && !shouldContinueBlockedBareCallResolution(bareCallee, calleeType)) {
@@ -227,6 +248,58 @@ public final class FrontendExpressionSemanticSupport {
                 "Direct invocation of callable values is not implemented yet unless the callee is a bare identifier"
         )
                 : FrontendExpressionType.failed("Call target does not resolve to a callable value"));
+    }
+
+    /// Bare builtin direct constructors are the one intentional exception to the ordinary
+    /// "type-meta is not a value" rule used by identifier typing.
+    ///
+    /// This path keeps object construction strict:
+    /// - builtin types may use `Vector3i(...)`, `Array(...)`, ...
+    /// - object types must continue to use `TypeName.new(...)`
+    private @NotNull ExpressionSemanticResult resolveBareTypeMetaConstructorCallExpression(
+            @NotNull IdentifierExpression bareCallee,
+            @NotNull List<GdType> argumentTypes
+    ) {
+        var receiverState = headReceiverSupportSupplier.get().resolveTypeMetaReceiver(bareCallee);
+        if (receiverState.status() != FrontendChainReductionHelper.Status.RESOLVED) {
+            return rootOutcome(switch (receiverState.status()) {
+                case UNSUPPORTED -> FrontendExpressionType.unsupported(
+                        Objects.requireNonNull(receiverState.detailReason(), "detailReason must not be null")
+                );
+                case FAILED, BLOCKED, DEFERRED, DYNAMIC -> FrontendExpressionType.failed(
+                        Objects.requireNonNull(receiverState.detailReason(), "detailReason must not be null")
+                );
+                case RESOLVED ->
+                        throw new IllegalStateException("resolved receiver state unexpectedly missing type-meta metadata");
+            });
+        }
+        var receiverTypeMeta = Objects.requireNonNull(
+                receiverState.receiverTypeMeta(),
+                "resolved type-meta constructor call must carry receiverTypeMeta"
+        );
+        if (receiverTypeMeta.kind() != dev.superice.gdcc.scope.ScopeTypeMetaKind.BUILTIN) {
+            return rootOutcome(FrontendExpressionType.failed(
+                    "Type-meta bare call '" + bareCallee.name()
+                            + "(...)' is not a builtin direct constructor; use '" + bareCallee.name()
+                            + ".new(...)' or a static route instead"
+            ));
+        }
+
+        var resolution = FrontendConstructorResolutionSupport.resolveConstructor(classRegistry, receiverTypeMeta, argumentTypes);
+        return switch (resolution.status()) {
+            case RESOLVED -> rootOutcome(
+                    FrontendExpressionType.resolved(receiverTypeMeta.instanceType()),
+                    resolvedBareConstructorCall(bareCallee, receiverTypeMeta, argumentTypes, resolution)
+            );
+            case FAILED -> rootOutcome(
+                    FrontendExpressionType.failed(
+                            Objects.requireNonNull(resolution.detailReason(), "detailReason must not be null")
+                    ),
+                    failedBareConstructorCall(bareCallee, receiverTypeMeta, argumentTypes, resolution)
+            );
+            default ->
+                    throw new IllegalStateException("unexpected bare constructor resolution status: " + resolution.status());
+        };
     }
 
     /// A blocked bare identifier callee may still be a valid bare-call winner:
@@ -361,58 +434,72 @@ public final class FrontendExpressionSemanticSupport {
             return propagated(rightDependencyIssue);
         }
 
-        var publishedLeftType = Objects.requireNonNull(
-                leftOperandType.publishedType(),
-                "publishedType must not be null for stable binary left operand"
-        );
-        var publishedRightType = Objects.requireNonNull(
-                rightOperandType.publishedType(),
-                "publishedType must not be null for stable binary right operand"
-        );
+        return rootOutcome(resolveBinaryOperatorResultType(
+                classRegistry,
+                binaryExpression.operator(),
+                leftOperandType,
+                rightOperandType
+        ));
+    }
 
-        if ("not in".equals(binaryExpression.operator())) {
-            return rootOutcome(FrontendExpressionType.unsupported(
+    /// Shared binary-operator typing entry used by ordinary `BinaryExpression` roots and compound
+    /// assignment semantic checks.
+    ///
+    /// Callers must pass only stable operands (`RESOLVED` / `DYNAMIC`) whose published type is already
+    /// available. Dependency propagation stays outside this helper so the owner can keep precise
+    /// root-vs-propagated diagnostic ownership.
+    public static @NotNull FrontendExpressionType resolveBinaryOperatorResultType(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull String operatorText,
+            @NotNull FrontendExpressionType leftOperandType,
+            @NotNull FrontendExpressionType rightOperandType
+    ) {
+        Objects.requireNonNull(classRegistry, "classRegistry must not be null");
+        var actualOperatorText = Objects.requireNonNull(operatorText, "operatorText must not be null");
+        var publishedLeftType = requireStableOperatorOperandType("leftOperandType", leftOperandType);
+        var publishedRightType = requireStableOperatorOperandType("rightOperandType", rightOperandType);
+
+        if ("not in".equals(actualOperatorText)) {
+            return FrontendExpressionType.unsupported(
                     "Binary operator 'not in' is recognized but still uses an explicit unsupported boundary; "
                             + "it must not be silently normalized to 'in'"
-            ));
+            );
         }
 
         final GodotOperator operator;
         try {
-            operator = GodotOperator.fromSourceLexeme(
-                    binaryExpression.operator(),
-                    GodotOperator.OperatorArity.BINARY
-            );
+            operator = GodotOperator.fromSourceLexeme(actualOperatorText, GodotOperator.OperatorArity.BINARY);
         } catch (IllegalArgumentException ex) {
-            return rootOutcome(FrontendExpressionType.failed(ex.getMessage()));
+            return FrontendExpressionType.failed(ex.getMessage());
         }
 
-        var specialReturnType = resolveBinarySpecialReturnType(
-                operator,
-                publishedLeftType,
-                publishedRightType
-        );
+        var specialReturnType = resolveBinarySpecialReturnType(operator, publishedLeftType, publishedRightType);
         if (specialReturnType != null) {
-            return rootOutcome(FrontendExpressionType.resolved(specialReturnType));
+            return FrontendExpressionType.resolved(specialReturnType);
         }
 
         if (isRuntimeOpenOperatorOperand(leftOperandType, publishedLeftType)
                 || isRuntimeOpenOperatorOperand(rightOperandType, publishedRightType)) {
-            return rootOutcome(FrontendExpressionType.dynamic(
-                    "Runtime-open operand routes binary operator '" + binaryExpression.operator()
+            return FrontendExpressionType.dynamic(
+                    "Runtime-open operand routes binary operator '" + actualOperatorText
                             + "' through Variant semantics"
-            ));
+            );
         }
 
-        var exactReturnType = resolveBinaryExactReturnType(operator, publishedLeftType, publishedRightType);
+        var exactReturnType = resolveBinaryExactReturnType(
+                classRegistry,
+                operator,
+                publishedLeftType,
+                publishedRightType
+        );
         if (exactReturnType != null) {
-            return rootOutcome(FrontendExpressionType.resolved(exactReturnType));
+            return FrontendExpressionType.resolved(exactReturnType);
         }
-        return rootOutcome(FrontendExpressionType.failed(
-                "Binary operator '" + binaryExpression.operator()
+        return FrontendExpressionType.failed(
+                "Binary operator '" + actualOperatorText
                         + "' is not defined for operand types '" + publishedLeftType.getTypeName()
                         + "' and '" + publishedRightType.getTypeName() + "'"
-        ));
+        );
     }
 
     /// Exhaustive routing for the remaining explicitly deferred expression kinds.
@@ -608,31 +695,40 @@ public final class FrontendExpressionSemanticSupport {
                     "Bare call '" + bareCallee.name() + "(...)' is inside a skipped subtree"
             ));
         }
+        var bareCallRoute = bareCallRoute(bareCallee);
         var functionResult = currentScope.resolveFunctions(bareCallee.name(), currentRestriction());
         if (functionResult.isAllowed()) {
             var overloadSelection = selectCallableOverload(functionResult.requireValue(), argumentTypes);
             if (overloadSelection.selected() != null) {
-                return rootOutcome(FrontendExpressionType.resolved(
-                        overloadSelection.selected().getReturnType()
-                ));
+                var selected = overloadSelection.selected();
+                return rootOutcome(
+                        FrontendExpressionType.resolved(selected.getReturnType()),
+                        resolvedBareCall(bareCallee, bareCallRoute, selected, argumentTypes)
+                );
             }
-            return rootOutcome(FrontendExpressionType.failed(
-                    Objects.requireNonNull(overloadSelection.detailReason(), "detailReason must not be null")
-            ));
+            var detailReason = Objects.requireNonNull(overloadSelection.detailReason(), "detailReason must not be null");
+            return rootOutcome(
+                    FrontendExpressionType.failed(detailReason),
+                    failedBareCall(bareCallee, bareCallRoute, argumentTypes, detailReason)
+            );
         }
         if (functionResult.isBlocked()) {
             var overloadSelection = selectCallableOverload(functionResult.requireValue(), argumentTypes);
-            var blockedReturnType = overloadSelection.selected() != null
-                    ? overloadSelection.selected().getReturnType()
+            var selected = overloadSelection.selected();
+            var blockedReturnType = selected != null
+                    ? selected.getReturnType()
                     : null;
-            return rootOutcome(FrontendExpressionType.blocked(
-                    blockedReturnType,
-                    "Binding '" + bareCallee.name() + "' is not accessible in the current context"
-            ));
+            var detailReason = "Binding '" + bareCallee.name() + "' is not accessible in the current context";
+            return rootOutcome(
+                    FrontendExpressionType.blocked(blockedReturnType, detailReason),
+                    selected != null ? blockedBareCall(bareCallee, bareCallRoute, selected, argumentTypes, detailReason) : null
+            );
         }
-        return rootOutcome(FrontendExpressionType.failed(
-                "Published bare callee binding '" + bareCallee.name() + "' is no longer visible"
-        ));
+        var detailReason = "Published bare callee binding '" + bareCallee.name() + "' is no longer visible";
+        return rootOutcome(
+                FrontendExpressionType.failed(detailReason),
+                failedBareCall(bareCallee, bareCallRoute, argumentTypes, detailReason)
+        );
     }
 
     @NotNull CallableOverloadSelection selectCallableOverload(
@@ -654,11 +750,159 @@ public final class FrontendExpressionSemanticSupport {
         var detailReason = overloadSet.isEmpty()
                 ? "Bare call resolves to an empty overload set"
                 : "No applicable overload for bare call: "
-                + buildCallableMismatchReason(overloadSet.getFirst(), argumentTypes)
-                + ". candidates: " + renderCallableSignatures(overloadSet);
+                  + buildCallableMismatchReason(overloadSet.getFirst(), argumentTypes)
+                  + ". candidates: " + renderCallableSignatures(overloadSet);
         return new CallableOverloadSelection(null, detailReason);
     }
 
+    private @NotNull BareCallRoute bareCallRoute(@NotNull IdentifierExpression bareCallee) {
+        var binding = symbolBindings.get(Objects.requireNonNull(bareCallee, "bareCallee must not be null"));
+        var receiverType = currentClassReceiverType(bareCallee);
+        if (binding == null) {
+            return new BareCallRoute(FrontendCallResolutionKind.UNKNOWN, FrontendReceiverKind.UNKNOWN, receiverType);
+        }
+        return switch (binding.kind()) {
+            case METHOD -> new BareCallRoute(
+                    FrontendCallResolutionKind.INSTANCE_METHOD,
+                    FrontendReceiverKind.INSTANCE,
+                    receiverType
+            );
+            case STATIC_METHOD -> new BareCallRoute(
+                    FrontendCallResolutionKind.STATIC_METHOD,
+                    FrontendReceiverKind.TYPE_META,
+                    receiverType
+            );
+            case UTILITY_FUNCTION -> new BareCallRoute(
+                    FrontendCallResolutionKind.STATIC_METHOD,
+                    FrontendReceiverKind.TYPE_META,
+                    null
+            );
+            default ->
+                    new BareCallRoute(FrontendCallResolutionKind.UNKNOWN, FrontendReceiverKind.UNKNOWN, receiverType);
+        };
+    }
+
+    private @NotNull FrontendResolvedCall resolvedBareCall(
+            @NotNull IdentifierExpression bareCallee,
+            @NotNull BareCallRoute bareCallRoute,
+            @NotNull FunctionDef selected,
+            @NotNull List<GdType> argumentTypes
+    ) {
+        return FrontendResolvedCall.resolved(
+                bareCallee.name(),
+                bareCallRoute.callKind(),
+                bareCallRoute.receiverKind(),
+                ownerKind(selected),
+                bareCallRoute.receiverType(),
+                selected.getReturnType(),
+                argumentTypes,
+                selected
+        );
+    }
+
+    private @NotNull FrontendResolvedCall blockedBareCall(
+            @NotNull IdentifierExpression bareCallee,
+            @NotNull BareCallRoute bareCallRoute,
+            @NotNull FunctionDef selected,
+            @NotNull List<GdType> argumentTypes,
+            @NotNull String detailReason
+    ) {
+        return FrontendResolvedCall.blocked(
+                bareCallee.name(),
+                bareCallRoute.callKind(),
+                bareCallRoute.receiverKind(),
+                ownerKind(selected),
+                bareCallRoute.receiverType(),
+                selected.getReturnType(),
+                argumentTypes,
+                selected,
+                detailReason
+        );
+    }
+
+    private @NotNull FrontendResolvedCall failedBareCall(
+            @NotNull IdentifierExpression bareCallee,
+            @NotNull BareCallRoute bareCallRoute,
+            @NotNull List<GdType> argumentTypes,
+            @NotNull String detailReason
+    ) {
+        return FrontendResolvedCall.failed(
+                bareCallee.name(),
+                bareCallRoute.callKind(),
+                bareCallRoute.receiverKind(),
+                null,
+                bareCallRoute.receiverType(),
+                argumentTypes,
+                null,
+                detailReason
+        );
+    }
+
+    private @NotNull FrontendResolvedCall resolvedBareConstructorCall(
+            @NotNull IdentifierExpression bareCallee,
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull List<GdType> argumentTypes,
+            @NotNull FrontendConstructorResolutionSupport.Resolution resolution
+    ) {
+        return FrontendResolvedCall.resolved(
+                bareCallee.name(),
+                FrontendCallResolutionKind.CONSTRUCTOR,
+                FrontendReceiverKind.TYPE_META,
+                resolution.ownerKind(),
+                receiverTypeMeta.instanceType(),
+                receiverTypeMeta.instanceType(),
+                argumentTypes,
+                resolution.declarationSite()
+        );
+    }
+
+    private @NotNull FrontendResolvedCall failedBareConstructorCall(
+            @NotNull IdentifierExpression bareCallee,
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull List<GdType> argumentTypes,
+            @NotNull FrontendConstructorResolutionSupport.Resolution resolution
+    ) {
+        return FrontendResolvedCall.failed(
+                bareCallee.name(),
+                FrontendCallResolutionKind.CONSTRUCTOR,
+                FrontendReceiverKind.TYPE_META,
+                resolution.ownerKind(),
+                receiverTypeMeta.instanceType(),
+                argumentTypes,
+                resolution.declarationSite(),
+                Objects.requireNonNull(resolution.detailReason(), "detailReason must not be null")
+        );
+    }
+
+    private @Nullable ScopeOwnerKind ownerKind(@Nullable FunctionDef functionDef) {
+        if (functionDef == null) {
+            return null;
+        }
+        return switch (functionDef) {
+            case LirFunctionDef _ -> ScopeOwnerKind.GDCC;
+            case ExtensionBuiltinClass.ClassMethod _, ExtensionBuiltinClass.ConstructorInfo _ -> ScopeOwnerKind.BUILTIN;
+            case ExtensionGdClass.ClassMethod _, ExtensionUtilityFunction _ -> ScopeOwnerKind.ENGINE;
+            default -> null;
+        };
+    }
+
+    private @Nullable GdType currentClassReceiverType(@NotNull IdentifierExpression anchor) {
+        var currentScope = scopesByAst.get(Objects.requireNonNull(anchor, "anchor must not be null"));
+        while (currentScope != null) {
+            if (currentScope instanceof ClassScope classScope) {
+                return new GdObjectType(classScope.getCurrentClass().getName());
+            }
+            currentScope = currentScope.getParentScope();
+        }
+        return null;
+    }
+
+    /// Fixed-argument call compatibility is another direct consumer of the typed-boundary matrix in
+    /// `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`.
+    /// Call resolution must reuse the shared frontend boundary helper instead of carrying a
+    /// call-specific handwritten conversion table. The corresponding ordinary `(un)pack`
+    /// materialization contract is documented in
+    /// `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md`.
     private boolean matchesCallableArguments(
             @NotNull FunctionDef callable,
             @NotNull List<GdType> argumentTypes
@@ -674,7 +918,11 @@ public final class FrontendExpressionSemanticSupport {
         }
         var fixedPrefixCount = Math.min(providedCount, fixedCount);
         for (var index = 0; index < fixedPrefixCount; index++) {
-            if (!classRegistry.checkAssignable(argumentTypes.get(index), parameters.get(index).getType())) {
+            if (!FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                    classRegistry,
+                    argumentTypes.get(index),
+                    parameters.get(index).getType()
+            )) {
                 return false;
             }
         }
@@ -705,7 +953,11 @@ public final class FrontendExpressionSemanticSupport {
         for (var index = 0; index < fixedPrefixCount; index++) {
             var argumentType = argumentTypes.get(index);
             var parameter = parameters.get(index);
-            if (!classRegistry.checkAssignable(argumentType, parameter.getType())) {
+            if (!FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                    classRegistry,
+                    argumentType,
+                    parameter.getType()
+            )) {
                 return "argument #" + (index + 1) + " of type '" + argumentType.getTypeName()
                         + "' is not assignable to parameter '" + parameter.getName()
                         + "' of type '" + parameter.getType().getTypeName() + "'";
@@ -724,7 +976,7 @@ public final class FrontendExpressionSemanticSupport {
             @NotNull GodotOperator operator,
             @NotNull GdType operandType
     ) {
-        var builtinClass = findOperatorOwnerClass(operandType);
+        var builtinClass = findOperatorOwnerClass(classRegistry, operandType);
         if (builtinClass == null) {
             return null;
         }
@@ -732,10 +984,10 @@ public final class FrontendExpressionSemanticSupport {
             if (classOperator == null || classOperator.operator() != operator) {
                 continue;
             }
-            if (!normalizeTypeName(classOperator.rightType()).isEmpty()) {
+            if (!StringUtil.trimToEmpty(classOperator.rightType()).isEmpty()) {
                 continue;
             }
-            var returnType = parseOperatorReturnType(classOperator);
+            var returnType = parseOperatorReturnType(classRegistry, classOperator);
             if (returnType != null) {
                 return returnType;
             }
@@ -743,7 +995,25 @@ public final class FrontendExpressionSemanticSupport {
         return null;
     }
 
-    private @Nullable GdType resolveBinarySpecialReturnType(
+    private static @NotNull GdType requireStableOperatorOperandType(
+            @NotNull String operandName,
+            @NotNull FrontendExpressionType operandType
+    ) {
+        var actualOperandType = Objects.requireNonNull(operandType, "operandType must not be null");
+        if (actualOperandType.status() != FrontendExpressionTypeStatus.RESOLVED
+                && actualOperandType.status() != FrontendExpressionTypeStatus.DYNAMIC) {
+            throw new IllegalStateException(
+                    Objects.requireNonNull(operandName, "operandName must not be null")
+                            + " must be RESOLVED or DYNAMIC before binary operator typing"
+            );
+        }
+        return Objects.requireNonNull(
+                actualOperandType.publishedType(),
+                operandName + ".publishedType() must not be null for stable operator typing"
+        );
+    }
+
+    private static @Nullable GdType resolveBinarySpecialReturnType(
             @NotNull GodotOperator operator,
             @NotNull GdType publishedLeftType,
             @NotNull GdType publishedRightType
@@ -761,7 +1031,7 @@ public final class FrontendExpressionSemanticSupport {
         return null;
     }
 
-    private boolean isRuntimeOpenOperatorOperand(
+    private static boolean isRuntimeOpenOperatorOperand(
             @NotNull FrontendExpressionType operandType,
             @NotNull GdType publishedOperandType
     ) {
@@ -769,25 +1039,26 @@ public final class FrontendExpressionSemanticSupport {
                 || publishedOperandType instanceof GdVariantType;
     }
 
-    private @Nullable GdType resolveBinaryExactReturnType(
+    private static @Nullable GdType resolveBinaryExactReturnType(
+            @NotNull ClassRegistry classRegistry,
             @NotNull GodotOperator operator,
             @NotNull GdType leftType,
             @NotNull GdType rightType
     ) {
-        var builtinClass = findOperatorOwnerClass(leftType);
+        var builtinClass = findOperatorOwnerClass(classRegistry, leftType);
         if (builtinClass == null) {
             return null;
         }
-        var normalizedRightType = normalizeTypeName(operatorOperandTypeName(rightType));
+        var normalizedRightType = StringUtil.trimToEmpty(operatorOperandTypeName(rightType));
         for (var classOperator : builtinClass.operators()) {
             if (classOperator == null || classOperator.operator() != operator) {
                 continue;
             }
-            var metadataRightType = normalizeTypeName(classOperator.rightType());
+            var metadataRightType = StringUtil.trimToEmpty(classOperator.rightType());
             if (metadataRightType.isEmpty() || !metadataRightType.equals(normalizedRightType)) {
                 continue;
             }
-            var returnType = parseOperatorReturnType(classOperator);
+            var returnType = parseOperatorReturnType(classRegistry, classOperator);
             if (returnType != null) {
                 return returnType;
             }
@@ -795,11 +1066,15 @@ public final class FrontendExpressionSemanticSupport {
         return null;
     }
 
-    private @Nullable ExtensionBuiltinClass findOperatorOwnerClass(@NotNull GdType operandType) {
-        return classRegistry.findBuiltinClass(operatorOperandTypeName(operandType));
+    private static @Nullable ExtensionBuiltinClass findOperatorOwnerClass(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull GdType operandType
+    ) {
+        return Objects.requireNonNull(classRegistry, "classRegistry must not be null")
+                .findBuiltinClass(operatorOperandTypeName(operandType));
     }
 
-    private @NotNull String operatorOperandTypeName(@NotNull GdType operandType) {
+    private static @NotNull String operatorOperandTypeName(@NotNull GdType operandType) {
         if (operandType instanceof GdArrayType) {
             return "Array";
         }
@@ -809,16 +1084,16 @@ public final class FrontendExpressionSemanticSupport {
         return operandType.getTypeName();
     }
 
-    private @Nullable GdType parseOperatorReturnType(@NotNull ExtensionBuiltinClass.ClassOperator classOperator) {
-        var returnTypeName = normalizeTypeName(classOperator.returnType());
+    private static @Nullable GdType parseOperatorReturnType(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ExtensionBuiltinClass.ClassOperator classOperator
+    ) {
+        var returnTypeName = StringUtil.trimToEmpty(classOperator.returnType());
         if (returnTypeName.isEmpty()) {
             return null;
         }
-        return classRegistry.tryResolveDeclaredType(returnTypeName);
-    }
-
-    private static @NotNull String normalizeTypeName(@Nullable String typeName) {
-        return typeName == null ? "" : typeName.trim();
+        return Objects.requireNonNull(classRegistry, "classRegistry must not be null")
+                .tryResolveDeclaredType(returnTypeName);
     }
 
     private boolean canOmitTrailingParameters(
@@ -900,11 +1175,18 @@ public final class FrontendExpressionSemanticSupport {
     }
 
     private static @NotNull ExpressionSemanticResult propagated(@NotNull FrontendExpressionType expressionType) {
-        return new ExpressionSemanticResult(expressionType, false);
+        return new ExpressionSemanticResult(expressionType, false, null);
     }
 
     private static @NotNull ExpressionSemanticResult rootOutcome(@NotNull FrontendExpressionType expressionType) {
-        return new ExpressionSemanticResult(expressionType, true);
+        return rootOutcome(expressionType, null);
+    }
+
+    private static @NotNull ExpressionSemanticResult rootOutcome(
+            @NotNull FrontendExpressionType expressionType,
+            @Nullable FrontendResolvedCall publishedCallOrNull
+    ) {
+        return new ExpressionSemanticResult(expressionType, true, publishedCallOrNull);
     }
 
     private record CallArgumentResolution(
@@ -920,5 +1202,16 @@ public final class FrontendExpressionSemanticSupport {
             @Nullable FunctionDef selected,
             @Nullable String detailReason
     ) {
+    }
+
+    private record BareCallRoute(
+            @NotNull FrontendCallResolutionKind callKind,
+            @NotNull FrontendReceiverKind receiverKind,
+            @Nullable GdType receiverType
+    ) {
+        private BareCallRoute {
+            Objects.requireNonNull(callKind, "callKind must not be null");
+            Objects.requireNonNull(receiverKind, "receiverKind must not be null");
+        }
     }
 }

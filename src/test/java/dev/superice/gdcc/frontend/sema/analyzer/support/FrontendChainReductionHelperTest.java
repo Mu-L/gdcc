@@ -45,6 +45,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -145,8 +146,8 @@ class FrontendChainReductionHelperTest {
                 registry,
                 (expression, finalizeWindow) -> expression == seed
                         ? (finalizeWindow
-                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdIntType.INT)
-                        : FrontendChainReductionHelper.ExpressionTypeResult.deferred("seed type pending"))
+                           ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdIntType.INT)
+                           : FrontendChainReductionHelper.ExpressionTypeResult.deferred("seed type pending"))
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
         ));
 
@@ -205,9 +206,9 @@ class FrontendChainReductionHelperTest {
     }
 
     @Test
-    void reduceUsesDynamicArgumentVariantToContinueExactCallResolution() {
+    void reduceUsesDynamicVariantArgumentToContinueExactInstanceCallResolution() {
         var worker = newClass("Worker");
-        worker.addFunction(newMethod("consume", GdStringType.STRING, false, GdVariantType.VARIANT));
+        worker.addFunction(newMethod("consume", GdStringType.STRING, false, GdIntType.INT));
         var registry = newRegistry(List.of(stringBuiltinWithLength()), List.of(worker));
         var seed = identifier("seed");
         var chain = chain(identifier("worker"), call("consume", seed), property("length"));
@@ -226,6 +227,31 @@ class FrontendChainReductionHelperTest {
         var consumeCall = result.stepTraces().getFirst().suggestedCall();
         assertNotNull(consumeCall);
         assertEquals(List.of(GdVariantType.VARIANT), consumeCall.argumentTypes());
+    }
+
+    @Test
+    void reduceUsesExactVariantArgumentToResolveStaticTypeMetaCall() {
+        var worker = newClass("Worker");
+        worker.addFunction(newMethod("build", GdStringType.STRING, true, GdIntType.INT));
+        var registry = newRegistry(List.of(), List.of(worker));
+        var seed = identifier("seed");
+        var chain = chain(identifier("Worker"), call("build", seed));
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(typeMeta("Worker")),
+                registry,
+                (expression, finalizeWindow) -> expression == seed
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdVariantType.VARIANT)
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status());
+        assertEquals(FrontendChainReductionHelper.RouteKind.STATIC_METHOD, result.stepTraces().getFirst().routeKind());
+        var buildCall = result.stepTraces().getFirst().suggestedCall();
+        assertNotNull(buildCall);
+        assertEquals(FrontendCallResolutionKind.STATIC_METHOD, buildCall.callKind());
+        assertEquals(List.of(GdVariantType.VARIANT), buildCall.argumentTypes());
     }
 
     @Test
@@ -438,6 +464,34 @@ class FrontendChainReductionHelperTest {
     }
 
     @Test
+    void reduceUsesDisplayNameForMappedTypeMetaFailureMessages() {
+        var runtimeWorker = newClass("RuntimeWorker");
+        var registry = newRegistry(List.of(), List.of(runtimeWorker));
+        var chain = chain(identifier("Worker"), call("missing"));
+        var mappedTypeMeta = new ScopeTypeMeta(
+                "RuntimeWorker",
+                "Worker",
+                new GdObjectType("RuntimeWorker"),
+                ScopeTypeMetaKind.GDCC_CLASS,
+                runtimeWorker,
+                false
+        );
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(mappedTypeMeta),
+                registry,
+                noExpressionTypes()
+        ));
+
+        var firstTrace = result.stepTraces().getFirst();
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, firstTrace.status());
+        assertNotNull(firstTrace.detailReason());
+        assertTrue(firstTrace.detailReason().contains("RuntimeWorker"), firstTrace.detailReason());
+        assertFalse(firstTrace.detailReason().contains("type 'Worker'"), firstTrace.detailReason());
+    }
+
+    @Test
     void reduceResolvesInstanceMethodReferenceAfterPropertyAndSignalMiss() {
         var worker = newClass("Worker");
         worker.addFunction(newMethod("speak", GdStringType.STRING, false));
@@ -535,6 +589,115 @@ class FrontendChainReductionHelperTest {
         var builtinLengthType = builtinLengthMember.resultType();
         assertNotNull(builtinLengthType);
         assertEquals("int", builtinLengthType.getTypeName());
+    }
+
+    @Test
+    void reduceUsesVariantArgumentToResolveBuiltinConstructor() {
+        var registry = newRegistry(List.of(stringBuiltinWithLengthAndIntConstructor()), List.of());
+        var chain = chain(identifier("String"), call("new", identifier("seed")), property("length"));
+        var constructorStep = assertInstanceOf(AttributeCallStep.class, chain.steps().getFirst());
+        var constructorArgument = constructorStep.arguments().getFirst();
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("String", GdStringType.STRING, ScopeTypeMetaKind.BUILTIN, null, false)
+                ),
+                registry,
+                (expression, finalizeWindow) -> expression == constructorArgument
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdVariantType.VARIANT)
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status());
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().get(1).status());
+        var constructorCall = result.stepTraces().getFirst().suggestedCall();
+        assertNotNull(constructorCall);
+        assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, constructorCall.callKind());
+        assertEquals(List.of(GdVariantType.VARIANT), constructorCall.argumentTypes());
+    }
+
+    @Test
+    void reduceTargetsSingleArgVariantDrivenBuiltinConstructorsBeforeGenericOverloadRanking() {
+        var registry = newRegistry(List.of(stringBuiltinWithAmbiguousConstructors()), List.of());
+        var chain = chain(identifier("String"), call("new", identifier("seed")));
+        var constructorStep = assertInstanceOf(AttributeCallStep.class, chain.steps().getFirst());
+        var constructorArgument = constructorStep.arguments().getFirst();
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("String", GdStringType.STRING, ScopeTypeMetaKind.BUILTIN, null, false)
+                ),
+                registry,
+                (expression, finalizeWindow) -> expression == constructorArgument
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdVariantType.VARIANT)
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status());
+        var resolvedCall = result.stepTraces().getFirst().suggestedCall();
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedCall.callKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, resolvedCall.receiverKind());
+        assertEquals(List.of(GdVariantType.VARIANT), resolvedCall.argumentTypes());
+        var constructorReturnType = resolvedCall.returnType();
+        assertNotNull(constructorReturnType);
+        assertEquals("String", constructorReturnType.getTypeName());
+    }
+
+    @Test
+    void reduceKeepsGenericBuiltinConstructorRankingFailClosedForMultiArgumentVariantAmbiguity() {
+        var registry = newRegistry(List.of(stringBuiltinWithAmbiguousPairConstructors()), List.of());
+        var first = identifier("first");
+        var second = identifier("second");
+        var chain = chain(identifier("String"), call("new", first, second));
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("String", GdStringType.STRING, ScopeTypeMetaKind.BUILTIN, null, false)
+                ),
+                registry,
+                (expression, finalizeWindow) -> expression == first || expression == second
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdVariantType.VARIANT)
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, result.stepTraces().getFirst().status());
+        var detailReason = result.stepTraces().getFirst().detailReason();
+        assertNotNull(detailReason);
+        assertTrue(detailReason.contains("Ambiguous constructor overload"));
+    }
+
+    @Test
+    void reducePrefersMoreSpecificBuiltinConstructorOverVariantFallback() {
+        var registry = newRegistry(List.of(stringBuiltinWithSpecificConstructors()), List.of());
+        var chain = chain(identifier("String"), call("new", literal("\"seed\"")));
+        var constructorStep = assertInstanceOf(AttributeCallStep.class, chain.steps().getFirst());
+        var constructorArgument = constructorStep.arguments().getFirst();
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("String", GdStringType.STRING, ScopeTypeMetaKind.BUILTIN, null, false)
+                ),
+                registry,
+                (expression, finalizeWindow) -> expression == constructorArgument
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdStringType.STRING)
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status());
+        var resolvedCall = result.stepTraces().getFirst().suggestedCall();
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedCall.callKind());
+        assertInstanceOf(ExtensionBuiltinClass.ConstructorInfo.class, resolvedCall.declarationSite());
+        var selectedConstructor = assertInstanceOf(
+                ExtensionBuiltinClass.ConstructorInfo.class,
+                resolvedCall.declarationSite()
+        );
+        assertEquals("String", selectedConstructor.arguments().getFirst().type());
     }
 
     @Test
@@ -792,7 +955,7 @@ class FrontendChainReductionHelperTest {
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
                 List.of()
         );
     }
@@ -809,7 +972,87 @@ class FrontendChainReductionHelperTest {
                         0,
                         List.of(new ExtensionFunctionArgument("value", "int", null, null))
                 )),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionBuiltinClass stringBuiltinWithAmbiguousConstructors() {
+        return new ExtensionBuiltinClass(
+                "String",
+                false,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                0,
+                                List.of(new ExtensionFunctionArgument("value", "int", null, null))
+                        ),
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                1,
+                                List.of(new ExtensionFunctionArgument("value", "String", null, null))
+                        )
+                ),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
+                List.of()
+        );
+    }
+
+    /// Keep one synthetic multi-arg ambiguity in tests so the future single-arg Variant shortcut does
+    /// not accidentally erase the ordinary constructor ranking fail-closed boundary.
+    private static @NotNull ExtensionBuiltinClass stringBuiltinWithAmbiguousPairConstructors() {
+        return new ExtensionBuiltinClass(
+                "String",
+                false,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument("first", "int", null, null),
+                                        new ExtensionFunctionArgument("second", "String", null, null)
+                                )
+                        ),
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                1,
+                                List.of(
+                                        new ExtensionFunctionArgument("first", "String", null, null),
+                                        new ExtensionFunctionArgument("second", "int", null, null)
+                                )
+                        )
+                ),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionBuiltinClass stringBuiltinWithSpecificConstructors() {
+        return new ExtensionBuiltinClass(
+                "String",
+                false,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                0,
+                                List.of(new ExtensionFunctionArgument("value", "Variant", null, null))
+                        ),
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                1,
+                                List.of(new ExtensionFunctionArgument("value", "String", null, null))
+                        )
+                ),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
                 List.of()
         );
     }
@@ -822,7 +1065,7 @@ class FrontendChainReductionHelperTest {
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
                 List.of()
         );
     }

@@ -5,6 +5,7 @@ import dev.superice.gdcc.frontend.sema.FrontendBinding;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import dev.superice.gdcc.frontend.sema.FrontendModuleSkeleton;
 import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
 import dev.superice.gdcc.scope.ClassRegistry;
@@ -17,6 +18,7 @@ import dev.superice.gdcc.scope.ScopeValueKind;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
+import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
@@ -40,6 +42,10 @@ import java.util.function.Supplier;
 /// - target resolution needs its own writable-slot model
 /// - successful assignment publishes `RESOLVED(void)` instead of the RHS type
 /// - value-required contexts must fail closed after the target and RHS are otherwise valid
+/// - ordinary typed-boundary legality is still owned by
+///   `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`, with the corresponding
+///   `(un)pack` lowering contract documented in
+///   `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md`
 public final class FrontendAssignmentSemanticSupport {
     public enum AssignmentUsage {
         STATEMENT_ROOT,
@@ -83,7 +89,7 @@ public final class FrontendAssignmentSemanticSupport {
                 }
                 case DYNAMIC -> {
                     Objects.requireNonNull(slotType, "slotType must not be null for dynamic assignment targets");
-                    requireNonBlank(detailReason, "detailReason");
+                    StringUtil.requireNonBlank(detailReason, "detailReason");
                     if (!(slotType instanceof GdVariantType)) {
                         throw new IllegalArgumentException("dynamic assignment targets must publish Variant");
                     }
@@ -94,7 +100,7 @@ public final class FrontendAssignmentSemanticSupport {
                                 "slotType must be null for %s assignment targets".formatted(status)
                         );
                     }
-                    requireNonBlank(detailReason, "detailReason");
+                    StringUtil.requireNonBlank(detailReason, "detailReason");
                 }
             }
         }
@@ -187,35 +193,63 @@ public final class FrontendAssignmentSemanticSupport {
         ASSIGNMENT_OWNED_BLOCKED_FAILED
     }
 
-    private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
-    private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
-    private final @NotNull Supplier<ResolveRestriction> restrictionSupplier;
-    private final @NotNull ClassRegistry classRegistry;
-    private final @NotNull FrontendChainReductionFacade chainReduction;
-    private final @NotNull FrontendSubscriptSemanticSupport subscriptSemanticSupport;
-
-    public FrontendAssignmentSemanticSupport(
+    public record Context(
             @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
             @NotNull FrontendAstSideTable<Scope> scopesByAst,
+            @NotNull FrontendModuleSkeleton moduleSkeleton,
+            @NotNull Supplier<ResolveRestriction> restrictionSupplier,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FrontendChainReductionFacade chainReduction,
+            @NotNull FrontendSubscriptSemanticSupport subscriptSemanticSupport
+    ) {
+        public Context {
+            Objects.requireNonNull(symbolBindings, "symbolBindings must not be null");
+            Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
+            Objects.requireNonNull(moduleSkeleton, "moduleSkeleton must not be null");
+            Objects.requireNonNull(restrictionSupplier, "restrictionSupplier must not be null");
+            Objects.requireNonNull(classRegistry, "classRegistry must not be null");
+            Objects.requireNonNull(chainReduction, "chainReduction must not be null");
+            Objects.requireNonNull(subscriptSemanticSupport, "subscriptSemanticSupport must not be null");
+        }
+    }
+
+    private FrontendAssignmentSemanticSupport() {
+    }
+
+    public static @NotNull Context createContext(
+            @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
+            @NotNull FrontendAstSideTable<Scope> scopesByAst,
+            @NotNull FrontendModuleSkeleton moduleSkeleton,
             @NotNull Supplier<ResolveRestriction> restrictionSupplier,
             @NotNull ClassRegistry classRegistry,
             @NotNull FrontendChainReductionFacade chainReduction
     ) {
-        this.symbolBindings = Objects.requireNonNull(symbolBindings, "symbolBindings must not be null");
-        this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
-        this.restrictionSupplier = Objects.requireNonNull(restrictionSupplier, "restrictionSupplier must not be null");
-        this.classRegistry = Objects.requireNonNull(classRegistry, "classRegistry must not be null");
-        this.chainReduction = Objects.requireNonNull(chainReduction, "chainReduction must not be null");
-        subscriptSemanticSupport = new FrontendSubscriptSemanticSupport(this.classRegistry);
+        var actualRegistry = Objects.requireNonNull(classRegistry, "classRegistry must not be null");
+        return new Context(
+                Objects.requireNonNull(symbolBindings, "symbolBindings must not be null"),
+                Objects.requireNonNull(scopesByAst, "scopesByAst must not be null"),
+                Objects.requireNonNull(moduleSkeleton, "moduleSkeleton must not be null"),
+                Objects.requireNonNull(restrictionSupplier, "restrictionSupplier must not be null"),
+                actualRegistry,
+                Objects.requireNonNull(chainReduction, "chainReduction must not be null"),
+                new FrontendSubscriptSemanticSupport(actualRegistry)
+        );
     }
 
-    public @NotNull FrontendExpressionSemanticSupport.ExpressionSemanticResult resolveAssignmentExpressionType(
+    public static @NotNull FrontendExpressionSemanticSupport.ExpressionSemanticResult resolveAssignmentExpressionType(
+            @NotNull Context context,
             @NotNull AssignmentExpression assignmentExpression,
             @NotNull AssignmentUsage usage,
             @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver nestedResolver,
             boolean finalizeWindow
     ) {
-        var targetResult = resolveAssignmentTarget(assignmentExpression.left(), nestedResolver, finalizeWindow);
+        var supportContext = Objects.requireNonNull(context, "context must not be null");
+        var targetResult = resolveAssignmentTarget(
+                supportContext,
+                assignmentExpression.left(),
+                nestedResolver,
+                finalizeWindow
+        );
         var targetIssue = toTargetIssue(targetResult);
         var rightType = nestedResolver.resolve(assignmentExpression.right(), finalizeWindow);
         var dependencyIssue = firstNonResolvedDependency(rightType);
@@ -225,15 +259,35 @@ public final class FrontendAssignmentSemanticSupport {
         if (dependencyIssue != null) {
             return propagated(dependencyIssue);
         }
-        if (!"=".equals(assignmentExpression.operator())) {
-            return rootOutcome(FrontendExpressionType.unsupported(
-                    "Compound assignment operator '" + assignmentExpression.operator()
-                            + "' is not supported by the current frontend assignment contract"
-            ));
+
+        var operatorText = assignmentExpression.operator();
+        var valueType = Objects.requireNonNull(rightType.publishedType(), "publishedType must not be null");
+        if (!"=".equals(operatorText)) {
+            var compoundBinaryOperator = resolveCompoundBinaryOperatorLexeme(operatorText);
+            if (compoundBinaryOperator == null) {
+                return rootOutcome(FrontendExpressionType.unsupported(
+                        "Compound assignment operator '" + operatorText
+                                + "' is not supported by the current frontend assignment contract"
+                ));
+            }
+            var targetValueType = requireCompoundTargetValueType(targetResult);
+            var compoundResultType = FrontendExpressionSemanticSupport.resolveBinaryOperatorResultType(
+                    supportContext.classRegistry(),
+                    compoundBinaryOperator,
+                    targetValueType,
+                    rightType
+            );
+            if (compoundResultType.status() != FrontendExpressionTypeStatus.RESOLVED
+                    && compoundResultType.status() != FrontendExpressionTypeStatus.DYNAMIC) {
+                return rootOutcome(compoundResultType);
+            }
+            valueType = Objects.requireNonNull(
+                    compoundResultType.publishedType(),
+                    "publishedType must not be null for successful compound assignment"
+            );
         }
 
-        var valueType = Objects.requireNonNull(rightType.publishedType(), "publishedType must not be null");
-        var compatibilityIssue = resolveAssignmentCompatibilityIssue(targetResult, valueType);
+        var compatibilityIssue = resolveAssignmentCompatibilityIssue(supportContext, targetResult, valueType);
         if (compatibilityIssue != null) {
             return rootOutcome(compatibilityIssue);
         }
@@ -248,19 +302,24 @@ public final class FrontendAssignmentSemanticSupport {
     /// The left side is resolved through a dedicated writable-target model instead of the ordinary
     /// expression resolver. This keeps assignment-target semantics independent from ordinary value
     /// typing and prevents left-value rules from drifting with read/call semantics.
-    public @NotNull AssignmentTargetResult resolveAssignmentTarget(
+    public static @NotNull AssignmentTargetResult resolveAssignmentTarget(
+            @NotNull Context context,
             @NotNull Expression targetExpression,
             @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver nestedResolver,
             boolean finalizeWindow
     ) {
+        var supportContext = Objects.requireNonNull(context, "context must not be null");
         return switch (Objects.requireNonNull(targetExpression, "targetExpression must not be null")) {
-            case IdentifierExpression identifierExpression -> resolveIdentifierTarget(identifierExpression);
+            case IdentifierExpression identifierExpression ->
+                    resolveIdentifierTarget(supportContext, identifierExpression);
             case AttributeExpression attributeExpression -> resolveAttributeTarget(
+                    supportContext,
                     attributeExpression,
                     nestedResolver,
                     finalizeWindow
             );
             case SubscriptExpression subscriptExpression -> resolveSubscriptTarget(
+                    supportContext,
                     subscriptExpression,
                     nestedResolver,
                     finalizeWindow
@@ -274,10 +333,11 @@ public final class FrontendAssignmentSemanticSupport {
         };
     }
 
-    private @NotNull AssignmentTargetResult resolveIdentifierTarget(
+    private static @NotNull AssignmentTargetResult resolveIdentifierTarget(
+            @NotNull Context context,
             @NotNull IdentifierExpression identifierExpression
     ) {
-        var currentScope = scopesByAst.get(identifierExpression);
+        var currentScope = context.scopesByAst().get(identifierExpression);
         if (currentScope == null) {
             return AssignmentTargetResult.unsupported(
                     AssignmentTargetKind.IDENTIFIER,
@@ -286,7 +346,7 @@ public final class FrontendAssignmentSemanticSupport {
             );
         }
 
-        var valueResult = currentScope.resolveValue(identifierExpression.name(), currentRestriction());
+        var valueResult = currentScope.resolveValue(identifierExpression.name(), currentRestriction(context));
         if (valueResult.isAllowed()) {
             return resolveWritableIdentifierValue(identifierExpression, valueResult.requireValue());
         }
@@ -298,7 +358,7 @@ public final class FrontendAssignmentSemanticSupport {
             );
         }
 
-        var functionResult = currentScope.resolveFunctions(identifierExpression.name(), currentRestriction());
+        var functionResult = currentScope.resolveFunctions(identifierExpression.name(), currentRestriction(context));
         if (functionResult.isBlocked()) {
             return AssignmentTargetResult.blocked(
                     AssignmentTargetKind.IDENTIFIER,
@@ -315,7 +375,11 @@ public final class FrontendAssignmentSemanticSupport {
             );
         }
 
-        var typeMetaResult = currentScope.resolveTypeMeta(identifierExpression.name(), currentRestriction());
+        var typeMetaResult = context.moduleSkeleton().resolveSourceFacingTypeMeta(
+                currentScope,
+                identifierExpression.name(),
+                currentRestriction(context)
+        );
         if (typeMetaResult.isAllowed()) {
             return AssignmentTargetResult.failed(
                     AssignmentTargetKind.IDENTIFIER,
@@ -324,16 +388,16 @@ public final class FrontendAssignmentSemanticSupport {
             );
         }
 
-        var publishedBinding = symbolBindings.get(identifierExpression);
+        var publishedBinding = context.symbolBindings().get(identifierExpression);
         var detailReason = publishedBinding == null || publishedBinding.kind() == FrontendBindingKind.UNKNOWN
                 ? "No published assignment-target binding fact is available for identifier '"
-                + identifierExpression.name() + "'"
+                  + identifierExpression.name() + "'"
                 : "Published assignment-target binding '" + identifierExpression.name()
-                + "' is no longer visible";
+                  + "' is no longer visible";
         return AssignmentTargetResult.failed(AssignmentTargetKind.IDENTIFIER, false, detailReason);
     }
 
-    private @NotNull AssignmentTargetResult resolveWritableIdentifierValue(
+    private static @NotNull AssignmentTargetResult resolveWritableIdentifierValue(
             @NotNull IdentifierExpression identifierExpression,
             @NotNull ScopeValue scopeValue
     ) {
@@ -362,7 +426,8 @@ public final class FrontendAssignmentSemanticSupport {
         return AssignmentTargetResult.resolved(AssignmentTargetKind.IDENTIFIER, scopeValue.type());
     }
 
-    private @NotNull AssignmentTargetResult resolveAttributeTarget(
+    private static @NotNull AssignmentTargetResult resolveAttributeTarget(
+            @NotNull Context context,
             @NotNull AttributeExpression attributeExpression,
             @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver nestedResolver,
             boolean finalizeWindow
@@ -370,11 +435,13 @@ public final class FrontendAssignmentSemanticSupport {
         var finalStep = attributeExpression.steps().getLast();
         return switch (finalStep) {
             case AttributePropertyStep _ -> resolvePropertyLikeAttributeTarget(
+                    context,
                     attributeExpression,
                     AssignmentTargetKind.ATTRIBUTE_PROPERTY,
                     PropertyFailureOwnership.CHAIN_OWNED
             );
             case AttributeSubscriptStep attributeSubscriptStep -> resolveAttributeSubscriptTarget(
+                    context,
                     attributeExpression,
                     attributeSubscriptStep,
                     nestedResolver,
@@ -389,12 +456,13 @@ public final class FrontendAssignmentSemanticSupport {
         };
     }
 
-    private @NotNull AssignmentTargetResult resolveSubscriptTarget(
+    private static @NotNull AssignmentTargetResult resolveSubscriptTarget(
+            @NotNull Context context,
             @NotNull SubscriptExpression subscriptExpression,
             @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver nestedResolver,
             boolean finalizeWindow
     ) {
-        var baseReceiver = chainReduction.headReceiverSupport().resolveHeadReceiver(subscriptExpression.base());
+        var baseReceiver = context.chainReduction().headReceiverSupport().resolveHeadReceiver(subscriptExpression.base());
         var baseIssue = toBaseReceiverIssue(AssignmentTargetKind.SUBSCRIPT, baseReceiver);
         if (baseIssue != null) {
             return baseIssue;
@@ -414,7 +482,7 @@ public final class FrontendAssignmentSemanticSupport {
             return targetFromDependency(AssignmentTargetKind.SUBSCRIPT, argumentResolution.issue());
         }
 
-        var subscriptType = subscriptSemanticSupport.resolveSubscriptType(
+        var subscriptType = context.subscriptSemanticSupport().resolveSubscriptType(
                 Objects.requireNonNull(receiverState.receiverType(), "receiverType must not be null"),
                 argumentResolution.argumentTypes(),
                 "subscript assignment target"
@@ -422,7 +490,8 @@ public final class FrontendAssignmentSemanticSupport {
         return targetFromSubscriptSemantic(AssignmentTargetKind.SUBSCRIPT, subscriptType, true);
     }
 
-    private @NotNull AssignmentTargetResult resolveAttributeSubscriptTarget(
+    private static @NotNull AssignmentTargetResult resolveAttributeSubscriptTarget(
+            @NotNull Context context,
             @NotNull AttributeExpression attributeExpression,
             @NotNull AttributeSubscriptStep attributeSubscriptStep,
             @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver nestedResolver,
@@ -432,6 +501,7 @@ public final class FrontendAssignmentSemanticSupport {
         // property value type. Getter-only properties do not yet add a second aliasing-specific
         // block here; that boundary remains coupled to the broader property/container mutation model.
         var propertyTarget = resolvePropertyLikeAttributeTarget(
+                context,
                 syntheticPropertyExpression(attributeExpression, attributeSubscriptStep),
                 AssignmentTargetKind.ATTRIBUTE_SUBSCRIPT,
                 PropertyFailureOwnership.ASSIGNMENT_OWNED_BLOCKED_FAILED
@@ -450,7 +520,7 @@ public final class FrontendAssignmentSemanticSupport {
             return targetFromDependency(AssignmentTargetKind.ATTRIBUTE_SUBSCRIPT, argumentResolution.issue());
         }
 
-        var subscriptType = subscriptSemanticSupport.resolveSubscriptType(
+        var subscriptType = context.subscriptSemanticSupport().resolveSubscriptType(
                 Objects.requireNonNull(propertyTarget.slotType(), "slotType must not be null"),
                 argumentResolution.argumentTypes(),
                 "attribute subscript assignment target '" + attributeSubscriptStep.name() + "'"
@@ -458,12 +528,13 @@ public final class FrontendAssignmentSemanticSupport {
         return targetFromSubscriptSemantic(AssignmentTargetKind.ATTRIBUTE_SUBSCRIPT, subscriptType, false);
     }
 
-    private @NotNull AssignmentTargetResult resolvePropertyLikeAttributeTarget(
+    private static @NotNull AssignmentTargetResult resolvePropertyLikeAttributeTarget(
+            @NotNull Context context,
             @NotNull AttributeExpression attributeExpression,
             @NotNull AssignmentTargetKind targetKind,
             @NotNull PropertyFailureOwnership failureOwnership
     ) {
-        var reduced = chainReduction.reduce(attributeExpression).result();
+        var reduced = context.chainReduction().reduce(attributeExpression).result();
         if (reduced == null) {
             return AssignmentTargetResult.unsupported(
                     targetKind,
@@ -500,7 +571,7 @@ public final class FrontendAssignmentSemanticSupport {
         };
     }
 
-    private @NotNull AssignmentTargetResult classifyResolvedPropertyTarget(
+    private static @NotNull AssignmentTargetResult classifyResolvedPropertyTarget(
             @NotNull AssignmentTargetKind targetKind,
             @NotNull FrontendResolvedMember resolvedMember
     ) {
@@ -550,7 +621,7 @@ public final class FrontendAssignmentSemanticSupport {
     /// Bare property assignment and attribute-property assignment share the same direct-write
     /// contract. `ATTRIBUTE_SUBSCRIPT` intentionally bypasses this check for now because H2 still
     /// models `obj.prop[i] = value` as container element mutation over the property value.
-    private @NotNull AssignmentTargetResult classifyDirectPropertyTarget(
+    private static @NotNull AssignmentTargetResult classifyDirectPropertyTarget(
             @NotNull AssignmentTargetKind targetKind,
             @NotNull String propertyName,
             @NotNull GdType slotType,
@@ -566,12 +637,12 @@ public final class FrontendAssignmentSemanticSupport {
         return AssignmentTargetResult.resolved(targetKind, slotType);
     }
 
-    private boolean requiresDirectPropertyWriteCheck(@NotNull AssignmentTargetKind targetKind) {
+    private static boolean requiresDirectPropertyWriteCheck(@NotNull AssignmentTargetKind targetKind) {
         return targetKind == AssignmentTargetKind.IDENTIFIER
                 || targetKind == AssignmentTargetKind.ATTRIBUTE_PROPERTY;
     }
 
-    private @Nullable AssignmentTargetResult toBaseReceiverIssue(
+    private static @Nullable AssignmentTargetResult toBaseReceiverIssue(
             @NotNull AssignmentTargetKind targetKind,
             @Nullable FrontendChainReductionHelper.ReceiverState receiverState
     ) {
@@ -607,7 +678,7 @@ public final class FrontendAssignmentSemanticSupport {
         };
     }
 
-    private @NotNull AssignmentTargetResult targetFromSubscriptSemantic(
+    private static @NotNull AssignmentTargetResult targetFromSubscriptSemantic(
             @NotNull AssignmentTargetKind targetKind,
             @NotNull FrontendExpressionType subscriptType,
             boolean rootOwnsUnsupported
@@ -637,7 +708,7 @@ public final class FrontendAssignmentSemanticSupport {
         };
     }
 
-    private @NotNull AssignmentTargetResult targetFromReductionStatus(
+    private static @NotNull AssignmentTargetResult targetFromReductionStatus(
             @NotNull AssignmentTargetKind targetKind,
             @NotNull FrontendChainReductionHelper.Status status,
             boolean rootOwnsOutcome,
@@ -653,7 +724,7 @@ public final class FrontendAssignmentSemanticSupport {
         };
     }
 
-    private @NotNull AssignmentTargetResult targetFromDependency(
+    private static @NotNull AssignmentTargetResult targetFromDependency(
             @NotNull AssignmentTargetKind targetKind,
             @NotNull FrontendExpressionType dependencyIssue
     ) {
@@ -682,7 +753,7 @@ public final class FrontendAssignmentSemanticSupport {
         };
     }
 
-    private @Nullable FrontendExpressionType toTargetIssue(@NotNull AssignmentTargetResult targetResult) {
+    private static @Nullable FrontendExpressionType toTargetIssue(@NotNull AssignmentTargetResult targetResult) {
         return switch (targetResult.status()) {
             case RESOLVED, DYNAMIC -> null;
             case BLOCKED -> FrontendExpressionType.blocked(
@@ -701,7 +772,7 @@ public final class FrontendAssignmentSemanticSupport {
         };
     }
 
-    private @NotNull CallArgumentResolution resolveArgumentTypes(
+    private static @NotNull CallArgumentResolution resolveArgumentTypes(
             @NotNull List<? extends Expression> arguments,
             @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver nestedResolver,
             boolean finalizeWindow
@@ -721,7 +792,7 @@ public final class FrontendAssignmentSemanticSupport {
         return new CallArgumentResolution(List.copyOf(argumentTypes), null);
     }
 
-    private @Nullable FrontendExpressionType firstNonResolvedDependency(
+    private static @Nullable FrontendExpressionType firstNonResolvedDependency(
             @NotNull FrontendExpressionType... dependencies
     ) {
         for (var dependency : dependencies) {
@@ -735,23 +806,27 @@ public final class FrontendAssignmentSemanticSupport {
 
     /// Public frontend assignment compatibility check for already-resolved concrete slots.
     ///
-    /// This API intentionally stays narrower than assignment semantic resolution:
-    /// - exact `Variant` slots accept any source type
-    /// - all other slots fall back to `ClassRegistry.checkAssignable(...)`
+    /// The compatibility matrix is owned by
+    /// `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`.
+    /// This API is only the public assignment-facing gateway for that shared frontend contract and
+    /// must not accumulate a second handwritten conversion table in comments or code.
     ///
     /// Assignment-specific routes such as `DYNAMIC` targets stay encapsulated in this helper and do
     /// not leak into the public API.
-    public boolean checkAssignmentCompatible(
+    public static boolean checkAssignmentCompatible(
+            @NotNull Context context,
             @NotNull GdType slotType,
             @NotNull GdType valueType
     ) {
-        var targetSlotType = Objects.requireNonNull(slotType, "slotType must not be null");
-        var assignedValueType = Objects.requireNonNull(valueType, "valueType must not be null");
-        return targetSlotType instanceof GdVariantType
-                || classRegistry.checkAssignable(assignedValueType, targetSlotType);
+        return FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                Objects.requireNonNull(context, "context must not be null").classRegistry(),
+                Objects.requireNonNull(valueType, "valueType must not be null"),
+                Objects.requireNonNull(slotType, "slotType must not be null")
+        );
     }
 
-    private @Nullable FrontendExpressionType resolveAssignmentCompatibilityIssue(
+    private static @Nullable FrontendExpressionType resolveAssignmentCompatibilityIssue(
+            @NotNull Context context,
             @NotNull AssignmentTargetResult targetResult,
             @NotNull GdType valueType
     ) {
@@ -759,7 +834,7 @@ public final class FrontendAssignmentSemanticSupport {
             return null;
         }
         var slotType = Objects.requireNonNull(targetResult.slotType(), "slotType must not be null");
-        if (checkAssignmentCompatible(slotType, valueType)) {
+        if (checkAssignmentCompatible(context, slotType, valueType)) {
             return null;
         }
         return FrontendExpressionType.failed(
@@ -768,7 +843,45 @@ public final class FrontendAssignmentSemanticSupport {
         );
     }
 
-    private @NotNull AttributeExpression syntheticPropertyExpression(
+    /// Compound assignment reuses ordinary binary-operator typing, but the left operand comes from the
+    /// already-validated assignment target instead of the ordinary nested expression resolver.
+    private static @NotNull FrontendExpressionType requireCompoundTargetValueType(
+            @NotNull AssignmentTargetResult targetResult
+    ) {
+        var actualTargetResult = Objects.requireNonNull(targetResult, "targetResult must not be null");
+        return switch (actualTargetResult.status()) {
+            case RESOLVED -> FrontendExpressionType.resolved(
+                    Objects.requireNonNull(actualTargetResult.slotType(), "slotType must not be null")
+            );
+            case DYNAMIC -> FrontendExpressionType.dynamic(
+                    Objects.requireNonNull(actualTargetResult.detailReason(), "detailReason must not be null")
+            );
+            case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> throw new IllegalStateException(
+                    "compound assignment target must be stable before operator typing: " + actualTargetResult.status()
+            );
+        };
+    }
+
+    /// The mapping intentionally stays closed over the parser-recognized compound token set so the
+    /// frontend keeps fail-closed behavior for any future syntax it has not implemented yet.
+    private static @Nullable String resolveCompoundBinaryOperatorLexeme(@NotNull String assignmentOperator) {
+        return switch (Objects.requireNonNull(assignmentOperator, "assignmentOperator must not be null")) {
+            case "+=" -> "+";
+            case "-=" -> "-";
+            case "*=" -> "*";
+            case "/=" -> "/";
+            case "%=" -> "%";
+            case "**=" -> "**";
+            case ">>=" -> ">>";
+            case "<<=" -> "<<";
+            case "&=" -> "&";
+            case "^=" -> "^";
+            case "|=" -> "|";
+            default -> null;
+        };
+    }
+
+    private static @NotNull AttributeExpression syntheticPropertyExpression(
             @NotNull AttributeExpression attributeExpression,
             @NotNull AttributeSubscriptStep attributeSubscriptStep
     ) {
@@ -780,15 +893,15 @@ public final class FrontendAssignmentSemanticSupport {
         return new AttributeExpression(attributeExpression.base(), List.copyOf(steps), attributeExpression.range());
     }
 
-    private @NotNull ResolveRestriction currentRestriction() {
-        return Objects.requireNonNull(restrictionSupplier.get(), "currentRestriction must not be null");
+    private static @NotNull ResolveRestriction currentRestriction(@NotNull Context context) {
+        return Objects.requireNonNull(context.restrictionSupplier().get(), "currentRestriction must not be null");
     }
 
     private static @NotNull FrontendExpressionSemanticSupport.ExpressionSemanticResult expressionResult(
             @NotNull FrontendExpressionType expressionType,
             boolean rootOwnsOutcome
     ) {
-        return new FrontendExpressionSemanticSupport.ExpressionSemanticResult(expressionType, rootOwnsOutcome);
+        return new FrontendExpressionSemanticSupport.ExpressionSemanticResult(expressionType, rootOwnsOutcome, null);
     }
 
     private static @NotNull FrontendExpressionSemanticSupport.ExpressionSemanticResult propagated(
@@ -801,14 +914,6 @@ public final class FrontendAssignmentSemanticSupport {
             @NotNull FrontendExpressionType expressionType
     ) {
         return expressionResult(expressionType, true);
-    }
-
-    private static @NotNull String requireNonBlank(@Nullable String value, @NotNull String fieldName) {
-        var text = Objects.requireNonNull(value, fieldName + " must not be null");
-        if (text.isBlank()) {
-            throw new IllegalArgumentException(fieldName + " must not be blank");
-        }
-        return text;
     }
 
     private record CallArgumentResolution(

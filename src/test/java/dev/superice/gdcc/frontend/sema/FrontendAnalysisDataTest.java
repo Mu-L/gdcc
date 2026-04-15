@@ -6,6 +6,7 @@ import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeOwnerKind;
+import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdVariantType;
@@ -15,6 +16,7 @@ import dev.superice.gdparser.frontend.ast.Range;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -30,11 +32,13 @@ class FrontendAnalysisDataTest {
         var analysisData = FrontendAnalysisData.bootstrap();
 
         assertTrue(analysisData.annotationsByAst().isEmpty());
+        assertTrue(analysisData.skippedSubtreeRoots().isEmpty());
         assertTrue(analysisData.scopesByAst().isEmpty());
         assertTrue(analysisData.symbolBindings().isEmpty());
         assertTrue(analysisData.expressionTypes().isEmpty());
         assertTrue(analysisData.resolvedMembers().isEmpty());
         assertTrue(analysisData.resolvedCalls().isEmpty());
+        assertTrue(analysisData.slotTypes().isEmpty());
         assertThrows(IllegalStateException.class, analysisData::moduleSkeleton);
         assertThrows(IllegalStateException.class, analysisData::diagnostics);
     }
@@ -45,7 +49,7 @@ class FrontendAnalysisDataTest {
         var diagnostics = new DiagnosticSnapshot(List.of(
                 FrontendDiagnostic.warning("sema.unsupported_annotation", "warning", null, null)
         ));
-        var moduleSkeleton = new FrontendModuleSkeleton("test_module", List.of(), diagnostics);
+        var moduleSkeleton = new FrontendModuleSkeleton("test_module", List.of(), Map.of(), diagnostics);
 
         analysisData.updateModuleSkeleton(moduleSkeleton);
         analysisData.updateDiagnostics(diagnostics);
@@ -199,6 +203,24 @@ class FrontendAnalysisDataTest {
         assertSame(originalSideTable, analysisData.resolvedCalls());
         assertNull(analysisData.resolvedCalls().get(staleNode));
         assertSame(publishedCall, analysisData.resolvedCalls().get(freshNode));
+    }
+
+    @Test
+    void updateSlotTypesClearsStaleEntriesWithoutReplacingStableSideTableReference() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var originalSideTable = analysisData.slotTypes();
+        var staleNode = passNode();
+        var freshNode = passNode();
+        originalSideTable.put(staleNode, GdVariantType.VARIANT);
+
+        var replacement = new FrontendAstSideTable<GdType>();
+        replacement.put(freshNode, GdIntType.INT);
+
+        analysisData.updateSlotTypes(replacement);
+
+        assertSame(originalSideTable, analysisData.slotTypes());
+        assertNull(analysisData.slotTypes().get(staleNode));
+        assertEquals(GdIntType.INT, analysisData.slotTypes().get(freshNode));
     }
 
     private static PassStatement passNode() {

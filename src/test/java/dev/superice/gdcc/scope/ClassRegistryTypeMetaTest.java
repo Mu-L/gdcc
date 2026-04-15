@@ -27,6 +27,7 @@ public class ClassRegistryTypeMetaTest {
         assertEquals(ScopeTypeMetaKind.BUILTIN, stringType.kind());
         assertEquals("String", stringType.canonicalName());
         assertEquals("String", stringType.sourceName());
+        assertEquals("String", stringType.displayName());
         assertEquals(GdStringType.STRING, stringType.instanceType());
 
         var nodeType = registry.resolveTypeMeta("Node");
@@ -34,6 +35,7 @@ public class ClassRegistryTypeMetaTest {
         assertEquals(ScopeTypeMetaKind.ENGINE_CLASS, nodeType.kind());
         assertEquals("Node", nodeType.canonicalName());
         assertEquals("Node", nodeType.sourceName());
+        assertEquals("Node", nodeType.displayName());
         assertInstanceOf(GdObjectType.class, nodeType.instanceType());
         assertEquals("Node", nodeType.instanceType().getTypeName());
     }
@@ -49,6 +51,7 @@ public class ClassRegistryTypeMetaTest {
         assertEquals(ScopeTypeMetaKind.GDCC_CLASS, gdccType.kind());
         assertEquals("MyUserClass", gdccType.canonicalName());
         assertEquals("MyUserClass", gdccType.sourceName());
+        assertEquals("MyUserClass", gdccType.displayName());
         assertEquals("MyUserClass", gdccType.instanceType().getTypeName());
 
         if (!api.globalEnums().isEmpty()) {
@@ -58,9 +61,25 @@ public class ClassRegistryTypeMetaTest {
             assertEquals(ScopeTypeMetaKind.GLOBAL_ENUM, enumType.kind());
             assertEquals(enumName, enumType.canonicalName());
             assertEquals(enumName, enumType.sourceName());
+            assertEquals(enumName, enumType.displayName());
             assertEquals(GdIntType.INT, enumType.instanceType());
             assertTrue(enumType.pseudoType());
         }
+    }
+
+    @Test
+    void resolveMappedTopLevelGdccTypeMetaUsesSourceOverrideButDisplaysCanonicalName() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        registry.addGdccClass(new LirClassDef("RuntimeOuter", "Object"), "MappedOuter");
+
+        var mappedType = registry.resolveTypeMeta("RuntimeOuter");
+        assertNotNull(mappedType);
+        assertEquals(ScopeTypeMetaKind.GDCC_CLASS, mappedType.kind());
+        assertEquals("RuntimeOuter", mappedType.canonicalName());
+        assertEquals("MappedOuter", mappedType.sourceName());
+        assertEquals("RuntimeOuter", mappedType.displayName());
+        assertEquals("MappedOuter", registry.findGdccClassSourceNameOverride("RuntimeOuter"));
+        assertNull(registry.resolveTypeMeta("MappedOuter"));
     }
 
     @Test
@@ -74,6 +93,7 @@ public class ClassRegistryTypeMetaTest {
         assertEquals(ScopeTypeMetaKind.GDCC_CLASS, innerType.kind());
         assertEquals("Outer$Inner", innerType.canonicalName());
         assertEquals("Inner", innerType.sourceName());
+        assertEquals("Outer$Inner", innerType.displayName());
         assertEquals("Outer$Inner", innerType.instanceType().getTypeName());
 
         assertNull(registry.findGdccClassSourceNameOverride("Outer"));

@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -38,6 +39,7 @@ class FrontendDeclaredTypeSupportTest {
         var resolvedType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 null,
                 registry,
+                Map.of(),
                 SOURCE_PATH,
                 diagnostics
         );
@@ -55,12 +57,14 @@ class FrontendDeclaredTypeSupportTest {
         var blankType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 new TypeRef("   ", SYNTHETIC_RANGE),
                 registry,
+                Map.of(),
                 SOURCE_PATH,
                 diagnostics
         );
         var inferredType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 inferredTypeRef,
                 registry,
+                Map.of(),
                 SOURCE_PATH,
                 diagnostics
         );
@@ -79,12 +83,14 @@ class FrontendDeclaredTypeSupportTest {
         var intType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 new TypeRef("  int  ", SYNTHETIC_RANGE),
                 registry,
+                Map.of(),
                 SOURCE_PATH,
                 diagnostics
         );
         var helperArrayType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 new TypeRef("  Array[Helper]  ", SYNTHETIC_RANGE),
                 registry,
+                Map.of(),
                 SOURCE_PATH,
                 diagnostics
         );
@@ -102,6 +108,7 @@ class FrontendDeclaredTypeSupportTest {
         var resolvedType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 new TypeRef("MissingType", SYNTHETIC_RANGE),
                 registry,
+                Map.of(),
                 SOURCE_PATH,
                 diagnostics
         );
@@ -124,6 +131,7 @@ class FrontendDeclaredTypeSupportTest {
         var resolvedType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 new TypeRef("Array[Array[int]]", SYNTHETIC_RANGE),
                 registry,
+                Map.of(),
                 SOURCE_PATH,
                 diagnostics
         );
@@ -133,6 +141,23 @@ class FrontendDeclaredTypeSupportTest {
         assertEquals(1, diagnostics.snapshot().size());
         assertEquals("sema.type_resolution", diagnostic.category());
         assertTrue(diagnostic.message().contains("Array[Array[int]]"));
+    }
+
+    @Test
+    void resolveTypeOrVariantRemapsMappedTopLevelSourceNameAfterStrictLexicalMiss() throws IOException {
+        var diagnostics = new DiagnosticManager();
+        var registry = registryWithGdccClass("Game$Player");
+
+        var resolvedType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
+                new TypeRef("Player", SYNTHETIC_RANGE),
+                registry,
+                Map.of("Player", "Game$Player"),
+                SOURCE_PATH,
+                diagnostics
+        );
+
+        assertEquals(new GdObjectType("Game$Player"), resolvedType);
+        assertTrue(diagnostics.isEmpty());
     }
 
     private ClassRegistry registryWithGdccClass(String className) throws IOException {

@@ -21,7 +21,7 @@ public record ExtensionBuiltinClass(
         @SerializedName("methods") List<ClassMethod> methods,
         @SerializedName("enums") List<ClassEnum> enums,
         @SerializedName("constructors") List<ConstructorInfo> constructors,
-        @SerializedName("properties") List<PropertyInfo> properties,
+        @SerializedName("members") List<MemberInfo> members,
         @SerializedName("constants") List<ConstantInfo> constants
 ) implements ClassDef {
     @Override
@@ -66,7 +66,15 @@ public record ExtensionBuiltinClass(
 
     @Override
     public @NotNull @UnmodifiableView List<? extends PropertyDef> getProperties() {
-        return properties;
+        // Godot builtin metadata does not export a raw builtin `properties` array.
+        // Shared consumers treat builtin instance fields from `members` as a synthesized
+        // property surface so `vector.x` can reuse the ordinary property route.
+        if (members.isEmpty()) {
+            return List.of();
+        }
+        return members.stream()
+                .map(MemberInfo::syntheticProperty)
+                .toList();
     }
 
     @Override
@@ -271,6 +279,12 @@ public record ExtensionBuiltinClass(
         @Override
         public @NotNull GdType getReturnType() {
             return Objects.requireNonNull(ClassRegistry.tryParseTextType(className));
+        }
+    }
+
+    public record MemberInfo(String name, String type) {
+        private PropertyInfo syntheticProperty() {
+            return new PropertyInfo(name, type, true, true, null);
         }
     }
 

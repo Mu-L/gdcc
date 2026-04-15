@@ -11,9 +11,11 @@ import java.net.URL;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeSet;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -52,6 +54,32 @@ public final class ResourceExtractor {
                 default -> throw new IOException("Cannot list resources for protocol: " + url.getProtocol());
             }
         }
+    }
+
+    /// Recursively lists every resource file under the given classpath folder and returns their
+    /// relative paths using `/` separators. Directories are omitted and duplicate entries across
+    /// multiple classpath roots are collapsed.
+    public static @NotNull List<String> listResourceFilesRecursively(@NotNull String resourceFolderPath, @NotNull ClassLoader loader) throws IOException {
+        Objects.requireNonNull(resourceFolderPath);
+        Objects.requireNonNull(loader);
+
+        var roots = loader.getResources(resourceFolderPath);
+        var seenRoots = new LinkedHashSet<URI>();
+        var resourcePaths = new TreeSet<String>();
+        while (roots.hasMoreElements()) {
+            var url = roots.nextElement();
+            var uri = toUri(url);
+            if (!seenRoots.add(uri)) {
+                continue;
+            }
+
+            switch (url.getProtocol()) {
+                case "file" -> listFromFile(url, resourcePaths);
+                case "jar" -> listFromJar(url, resourcePaths);
+                default -> throw new IOException("Cannot list resources for protocol: " + url.getProtocol());
+            }
+        }
+        return List.copyOf(resourcePaths);
     }
 
     /// Extract specific resources under resourceFolderPath. The list is checked first: if any
@@ -174,6 +202,43 @@ public final class ResourceExtractor {
                     return FileVisitResult.CONTINUE;
                 }
             });
+        } catch (Exception e) {
+            throw new IOException(e);
+        }
+    }
+
+    private static void listFromFile(@NotNull URL url, @NotNull TreeSet<String> resourcePaths) throws IOException {
+        try {
+            var rootPath = Paths.get(toUri(url));
+            if (!Files.exists(rootPath)) {
+                return;
+            }
+            try (var walk = Files.walk(rootPath)) {
+                for (var path : walk.filter(Files::isRegularFile).toList()) {
+                    resourcePaths.add(normalizeRelativeResourcePath(rootPath.relativize(path)));
+                }
+            }
+        } catch (Exception e) {
+            throw new IOException(e);
+        }
+    }
+
+    private static void listFromJar(@NotNull URL url, @NotNull TreeSet<String> resourcePaths) throws IOException {
+        var conn = (JarURLConnection) url.openConnection();
+        var entryName = conn.getEntryName();
+        if (entryName == null) {
+            throw new IOException("Cannot determine jar entry for URL: " + url);
+        }
+        try (var jarFs = FileSystems.newFileSystem(conn.getJarFileURL().toURI(), Map.of())) {
+            var pathInJar = jarFs.getPath("/" + entryName);
+            if (!Files.exists(pathInJar)) {
+                return;
+            }
+            try (var walk = Files.walk(pathInJar)) {
+                for (var path : walk.filter(Files::isRegularFile).toList()) {
+                    resourcePaths.add(normalizeRelativeResourcePath(pathInJar.relativize(path)));
+                }
+            }
         } catch (Exception e) {
             throw new IOException(e);
         }
@@ -378,5 +443,9 @@ public final class ResourceExtractor {
     private static String stripZipExt(String name) {
         if (name.toLowerCase().endsWith(".zip")) return name.substring(0, name.length() - 4);
         return name;
+    }
+
+    private static @NotNull String normalizeRelativeResourcePath(@NotNull Path relativePath) {
+        return relativePath.toString().replace('\\', '/');
     }
 }

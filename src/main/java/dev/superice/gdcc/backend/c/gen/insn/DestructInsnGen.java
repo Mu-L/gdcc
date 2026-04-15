@@ -32,7 +32,7 @@ public final class DestructInsnGen implements CInsnGen<DestructInsn> {
         switch (variable.type()) {
             case GdVoidType _ ->
                     throw bodyBuilder.invalidInsn("Cannot destruct variable of type " + variable.type().getTypeName());
-            case GdObjectType objectType -> generateObjectDestruct(bodyBuilder, objectType, variable);
+            case GdObjectType objectType -> generateObjectDestruct(bodyBuilder, insn, objectType, variable);
             case GdVariantType _, GdStringLikeType _, GdMetaType _, GdContainerType _ -> {
                 var destroyFunc = bodyBuilder.helper().renderDestroyFunctionName(variable.type());
                 bodyBuilder.callVoid(destroyFunc, List.of(bodyBuilder.valueOfVar(variable)));
@@ -61,13 +61,21 @@ public final class DestructInsnGen implements CInsnGen<DestructInsn> {
     }
 
     private void generateObjectDestruct(@NotNull CBodyBuilder bodyBuilder,
+                                        @NotNull DestructInsn insn,
                                         @NotNull GdObjectType objectType,
                                         @NotNull LirVariable variable) {
-        var releaseFunc = switch (bodyBuilder.classRegistry().getRefCountedStatus(objectType)) {
+        var refCountedStatus = bodyBuilder.classRegistry().getRefCountedStatus(objectType);
+        if (insn.getProvenance() == LifecycleProvenance.AUTO_GENERATED && refCountedStatus == RefCountedStatus.NO) {
+            // AUTO_GENERATED cleanup is about managed local slots still owned by the current function, not
+            // about destroying every object value that happens to be live at scope exit. Definite
+            // non-RefCounted objects stay under Godot's explicit lifetime contract and must be skipped here.
+            return;
+        }
+        var cleanupFunction = switch (refCountedStatus) {
             case RefCountedStatus.YES -> "release_object";
             case RefCountedStatus.UNKNOWN -> "try_release_object";
             case RefCountedStatus.NO -> "try_destroy_object";
         };
-        bodyBuilder.callVoid(releaseFunc, List.of(bodyBuilder.valueOfVar(variable)));
+        bodyBuilder.callVoid(cleanupFunction, List.of(bodyBuilder.valueOfVar(variable)));
     }
 }

@@ -1,6 +1,6 @@
 # GDCC C Backend Lifecycle and Ownership Specification (Unified)
 
-> Status: Draft (proposed)  
+> Status: Active baseline (Step 1 synced on 2026-04-09)  
 > Scope: Code generation semantics under `src/main/java/dev/superice/gdcc/backend/c/**` and `src/main/c/codegen/**`
 
 ## 1. Background and Goals
@@ -39,13 +39,25 @@ A writable storage location, including but not limited to:
 - For example: `gdcc_object_from_godot_object_ptr(...)`, `gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)`
 
 **Representation conversion does not change ownership category.**
+An `OWNED` value stays `OWNED` after conversion, and a `BORROWED` value stays `BORROWED`;
+slot-write / discard / `_return_val` publish remain the only boundaries that may add or consume ownership.
 
 ## 3. Unified Semantic Rules (Normative)
 
 ### 3.1 Production Rules
 
-- Function calls that return object values produce `OWNED` by default.
-- Reading object values from variables produces `BORROWED` by default.
+- Fresh object-producing routes produce `OWNED` by default:
+  - function calls
+  - method calls
+  - constructor/materialization helpers
+  - property-init helpers that semantically return a fresh object value
+- Reading object values from existing storage produces `BORROWED` by default:
+  - local variables
+  - parameters
+  - backing fields / `self` field reads
+  - property reads
+  - index reads
+- Raw expression wrappers stay `BORROWED` unless the producer route explicitly upgrades them to `OWNED`.
 - `literal_null` / `NULL` is treated as `BORROWED` (no release needed for null).
 - Pure representation-converted values keep their original ownership category.
 
@@ -73,12 +85,25 @@ Implementation note:
 
 - For first write to an uninitialized slot, skip step 1 (no old value to release).
 - Variable initialization in `__prepare__` is first-write semantics and must not clean old value.
+- Constructor-time property initializer apply is also a first-write route:
+  - it writes the backing field directly
+  - it must not be modeled as a property setter call
+  - object-valued apply still follows the unified slot-write core for ptr conversion and ownership consume
+  - it skips old-value release because constructor-time property apply is not an overwrite route
 
 ### 3.4 Return Rules
 
 - Object values returned to the caller are considered `OWNED`.
 - In non-`__finally__` paths: write to `_return_val`, then `goto __finally__`.
-- Writing `_return_val` follows the same slot write rules from 3.2.
+- Writing `_return_val` follows the same slot write rules from 3.2:
+  - borrowed source -> retain in `_return_val`
+  - owned source -> consume directly into `_return_val`
+- Returning an owning local object slot moves that slot into `_return_val`:
+  - write `_return_val` with `OWNED` rhs semantics
+  - clear the source slot before entering `__finally__`
+  - this prevents local auto-destruction from releasing the published return object again
+- On the LIR surface, a non-`void` `__finally__` block must terminate with `ReturnInsn("_return_val")`.
+  Direct `ReturnInsn(<user-var>)` in `__finally__` is invalid backend IR and is rejected before C emission.
 - `_return_val` is outside the LIR variable table auto-destruction scope (it is published through return flow).
 
 ### 3.5 Discard Rules
@@ -95,13 +120,35 @@ Select operation by `RefCountedStatus`:
 - `UNKNOWN`: `try_own_object` / `try_release_object`
 - `NO`: object own/release is a no-op
 
+Automatic local cleanup rule:
+
+- `AUTO_GENERATED` `destruct` in `__finally__` is slot-based cleanup for managed locals still owned by the
+  current function, not a blanket rule over every live object value.
+- `AUTO_GENERATED` `destruct` in `__finally__` must never destroy definite non-`RefCounted` object locals.
+- Scope-exit cleanup for object locals is only allowed to release reference-managed object slots:
+  - `YES` -> `release_object`
+  - `UNKNOWN` -> `try_release_object`
+  - `NO` -> no cleanup
+- `_return_val` is the hidden return-publish slot, not a normal local variable entry, so it is excluded from
+  the auto-cleanup set by contract.
+- This matches Godot's contract where non-`RefCounted` objects stay under explicit user-managed lifetime (`free`, `queue_free`, etc.) even when stored in local variables.
+
 ### 3.7 Constraints
 
 - Do not infer ownership from function name prefixes (e.g. `godot_`).
 - Do not treat `gdcc_object_from_godot_object_ptr(...)` as a retain operation.
 - `OWNED` values must be consumed exactly once; repeated consumption is forbidden.
 
-### 3.8 Lifecycle Instruction Provenance Restrictions
+### 3.8 Explicitly Rejected Shortcuts
+
+- Reject “retain every object return once before function exit”.
+  - Fresh `OWNED` call results are already caller-owned at the producer boundary.
+  - Re-retaining them at function exit leaks one reference.
+- Reject “release every object slot once at function exit”.
+  - Scope-exit cleanup applies only to managed local slots.
+  - `_return_val`, moved-out sources, `ref` locals, and definite non-`RefCounted` locals are outside that blanket model.
+
+### 3.9 Lifecycle Instruction Provenance Restrictions
 
 Lifecycle instructions are controlled by provenance and validated before backend generation.
 
@@ -126,6 +173,7 @@ Strict/compat policy:
 
 Interaction with `__prepare__` / `__finally__`:
 - `__finally__` auto-destruct remains enabled and uses `AUTO_GENERATED`.
+- For object locals, that auto-destruct path is refcount-only; it must not synthesize destruction for definite non-`RefCounted` types.
 - `USER_EXPLICIT` is rejected in `__prepare__` and `__finally__` to avoid semantic collision with auto lifecycle flow.
 - Conflict is resolved by validation stage before code generation.
 
@@ -141,11 +189,30 @@ Interaction with `__prepare__` / `__finally__`:
 
 - Keep `__prepare__` / `__finally__` framework unchanged.
 - `_return_val` is still generated and managed by `CBodyBuilder`, and must not be moved into variable-table auto-destruction.
+- Property initializer lowering may materialize helper-produced values, but constructor-time application of those values to backing fields remains a separate backend-owned route.
 
 ### 4.3 Instruction Generators
 
 - Continue emitting assignment/call code through Builder APIs.
 - Keep generators focused on semantic validation; do not hand-write object lifecycle code.
+
+### 4.4 Generated call_func Wrappers
+
+- Generated GDExtension `call_func` wrappers own a narrow class of wrapper-local values that never enter the ordinary Builder slot model:
+  - argument locals unpacked from `Variant`
+  - local `ret` used to publish the outward `Variant` return
+  - local non-`void` return carrier `r`
+- Cleanup rule for those locals is value-wrapper specific:
+  - destroyable non-object wrappers must be explicitly destroyed before the wrapper returns
+  - object pointers and primitives must not go through this `destroy(&slot)` path
+- Required success-path order:
+  1. publish `r_return`
+  2. destroy local `ret`
+  3. destroy destroyable non-object `r`
+  4. destroy wrapper-owned argument locals in reverse order
+- This rule complements, but does not replace, the function-body ownership model in Section 3:
+  - Builder-managed slots still follow the unified slot-write/return/discard rules
+  - wrapper locals stay a template-owned responsibility boundary
 
 ## 5. Compatibility and Migration Constraints
 

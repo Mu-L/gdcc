@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.sema.resolver;
 
 import dev.superice.gdcc.scope.ResolveRestriction;
+import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.Node;
 import org.jetbrains.annotations.NotNull;
 
@@ -17,10 +18,7 @@ public record FrontendVisibleValueResolveRequest(
         @NotNull FrontendVisibleValueDomain domain
 ) {
     public FrontendVisibleValueResolveRequest {
-        name = Objects.requireNonNull(name, "name must not be null").trim();
-        if (name.isEmpty()) {
-            throw new IllegalArgumentException("name must not be blank");
-        }
+        name = StringUtil.requireTrimmedNonBlank(name, "name");
         Objects.requireNonNull(useSite, "useSite must not be null");
         Objects.requireNonNull(restriction, "restriction must not be null");
         Objects.requireNonNull(domain, "domain must not be null");

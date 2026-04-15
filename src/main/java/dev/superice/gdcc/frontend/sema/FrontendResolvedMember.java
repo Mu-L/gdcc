@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.scope.ScopeOwnerKind;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -25,7 +26,7 @@ public record FrontendResolvedMember(
         @Nullable String detailReason
 ) {
     public FrontendResolvedMember {
-        memberName = requireNonBlank(memberName, "memberName");
+        memberName = StringUtil.requireNonBlank(memberName, "memberName");
         Objects.requireNonNull(bindingKind, "bindingKind must not be null");
         Objects.requireNonNull(status, "status must not be null");
         Objects.requireNonNull(receiverKind, "receiverKind must not be null");
@@ -185,7 +186,7 @@ public record FrontendResolvedMember(
                 throw new IllegalArgumentException("detailReason must be null for RESOLVED member results");
             }
             if (status == FrontendMemberResolutionStatus.BLOCKED) {
-                requireNonBlank(detailReason, "detailReason");
+                StringUtil.requireNonBlank(detailReason, "detailReason");
             }
             return;
         }
@@ -193,18 +194,10 @@ public record FrontendResolvedMember(
         if (resultType != null) {
             throw new IllegalArgumentException("resultType must be null for non-success member results");
         }
-        requireNonBlank(detailReason, "detailReason");
+        StringUtil.requireNonBlank(detailReason, "detailReason");
         if (status == FrontendMemberResolutionStatus.DYNAMIC
                 && receiverKind == FrontendReceiverKind.UNKNOWN) {
             throw new IllegalArgumentException("receiverKind must not be UNKNOWN for DYNAMIC member results");
         }
-    }
-
-    private static @NotNull String requireNonBlank(@Nullable String value, @NotNull String fieldName) {
-        var text = Objects.requireNonNull(value, fieldName + " must not be null");
-        if (text.isBlank()) {
-            throw new IllegalArgumentException(fieldName + " must not be blank");
-        }
-        return text;
     }
 }

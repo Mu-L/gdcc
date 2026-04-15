@@ -5,8 +5,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / expr-typing / type-check / exception 诊断链路已落地）
-- 更新时间：2026-03-20
+- 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / expr-typing / type-check / loop-control / compile-check / exception 诊断链路已落地）
+- 更新时间：2026-04-01
 - 适用范围：
     - `src/main/java/dev/superice/gdcc/frontend/diagnostic/**`
     - `src/main/java/dev/superice/gdcc/frontend/parse/**`
@@ -15,6 +15,7 @@
 - 关联文档：
     - `doc/module_impl/common_rules.md`
     - `doc/module_impl/frontend/scope_architecture_refactor_plan.md`
+    - `doc/module_impl/frontend/frontend_loop_control_flow_analyzer_implementation.md`
     - `doc/module_impl/frontend/frontend_compile_check_analyzer_implementation.md`
     - `doc/analysis/frontend_semantic_analyzer_research_report.md`
 
@@ -128,6 +129,7 @@ frontend 当前已经冻结的诊断承载方式如下：
 - `expressionTypes`
 - `resolvedMembers`
 - `resolvedCalls`
+- `slotTypes`
 
 其中：
 
@@ -135,6 +137,7 @@ frontend 当前已经冻结的诊断承载方式如下：
 - `symbolBindings` 已由 `FrontendTopBindingAnalyzer` 稳定发布
 - `resolvedMembers` / `resolvedCalls` 已由 `FrontendChainBindingAnalyzer` MVP 发布
 - `expressionTypes` 已由 `FrontendExprTypeAnalyzer` 稳定发布，并承担 expression-only 恢复状态的 side-table 真源
+- `slotTypes` 已由 `FrontendVarTypePostAnalyzer` 稳定发布，并承担 callable-local parameter/local 最终 slot type 的 lowering-only published fact 真源
 
 ### 2.6 `SkeletonBuildContext` 只服务于 skeleton phase
 
@@ -180,6 +183,10 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.class_skeleton`
 - `sema.inheritance_cycle`
 - `sema.type_resolution`
+- `sema.variable_binding`
+- `sema.unsupported_parameter_default_value`
+- `sema.unsupported_variable_inventory_subtree`
+- `sema.variable_slot_publication`
 - `sema.binding`
 - `sema.unsupported_binding_subtree`
 - `sema.member_resolution`
@@ -192,11 +199,23 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.discarded_expression`
 - `sema.type_check`
 - `sema.type_hint`
+- `sema.loop_control_flow`
 - `sema.unsupported_annotation`
 - `sema.compile_check`
 
 其中 body/binding phase 新增 category 的语义固定为：
 
+- `sema.variable_binding`
+  - variable analyzer 对 duplicate parameter、duplicate local、same-callable local shadowing、scope kind mismatch 发出的恢复性 source error
+  - duplicate / shadowing local 的消息现在必须包含：当前声明位置、冲突声明位置、callable / block 归属、source path
+- `sema.unsupported_parameter_default_value`
+  - variable analyzer 对 parameter default value 当前尚未接线时发出的 feature-boundary error
+- `sema.unsupported_variable_inventory_subtree`
+  - variable analyzer 对 lambda / `for` / `match` / block-local `const` inventory 边界发出的 feature-boundary error
+- `sema.variable_slot_publication`
+  - var-type-post analyzer 对 supported callable-local `var` 因 earlier duplicate/shadowing reject 而无法发布 `slotTypes()` 时发出的 warning
+  - warning message 若能在当前 callable 边界内找到幸存的 accepted local / parameter / capture，必须带出该幸存绑定的语义类别与声明位置
+  - 该 warning 允许与 earlier `sema.variable_binding` 共存；compile-only gate 必须把“warning + 缺失 slot type”升级为 compile-blocking `sema.compile_check`
 - `sema.binding`
   - top binding 命中的 blocked / unknown / shadowing 诊断
 - `sema.unsupported_binding_subtree`
@@ -220,19 +239,30 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - expr analyzer 对当前明确不支持的 direct-callable-invocation 等 expression route 的 error
 - `sema.discarded_expression`
   - expr analyzer 对 bare expression statement 中被丢弃的非 `void` 结果发出的 warning
+- `sema.unsafe_call_argument`
+  - expr analyzer 对 bare builtin direct constructor 命中 unary stable-`Variant` special route 时发出的 warning
+  - 与 `resolvedCalls()` 中的 `RESOLVED(CONSTRUCTOR)` 并存；它提示该 route 会依赖 runtime-open `Variant -> concrete builtin` 转换，而不是 exact constructor metadata winner
 - `sema.type_check`
   - type-check analyzer 对 ordinary local / class property / return typed contract 不兼容发出的 error
 - `sema.type_hint`
   - type-check analyzer 对 property `:=` / 未声明显式类型 property 发出的手动显式类型提醒 warning
   - 该 warning 只提示建议的显式类型，不表示 property metadata 已被推导或回写
+- `sema.loop_control_flow`
+  - shared `FrontendLoopControlFlowAnalyzer` 对非法 `break` / `continue` 发出的 source-level error
+  - 当前固定用于：
+    - loop 之外的 `break`
+    - loop 之外的 `continue`
+    - nested function / constructor / lambda 不继承外层 loop depth 的非法 loop control
+  - 该 category 属于 shared semantic，而不是 compile-only final gate
 - `sema.compile_check`
   - compile-only `FrontendCompileCheckAnalyzer` 对进入 lowering 前仍不可编译的 surface 发出的最终 error
   - 同时覆盖：
     - 当前首批显式封口的 `assert`、`ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression`
     - compile surface 上 `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 中仍残留的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`
+    - supported callable-local `var` 因 `sema.variable_slot_publication` warning 仍缺失 `slotTypes()` 的 lowering-only fact 缺洞
   - `assert` 在这里仍只是 compile-only blocked；共享 type-check 继续保留 Godot-compatible condition contract，不把它回退成 strict-bool `sema.type_check`
   - 上述 7 类表达式属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
-  - `ConditionalExpression` 当前单独被列入这份清单，是因为真正的 lowering 需要等 control-flow / CFG 侧合同冻结后再接通
+  - `ConditionalExpression` 当前单独被列入这份清单，是因为真正的 lowering 需要等 frontend CFG graph / condition-evaluation-region 合同冻结后再接通；现有 metadata-only `FrontendLoweringCfgPass` 仍属于过渡层
   - `DYNAMIC` 不属于 compile blocker；它保留为 frontend 已接受的 runtime-open 事实，而不是 lowering 未实现状态
   - 该 category 只属于 compile-only 入口，不属于默认共享语义 / inspection / 未来 LSP 入口
 
@@ -301,8 +331,9 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - 调用 `FrontendChainBindingAnalyzer.analyze(...)` 发布 `resolvedMembers()` / `resolvedCalls()`
     - 调用 `FrontendExprTypeAnalyzer.analyze(...)` 发布 `expressionTypes()` 并补齐 expression-only diagnostics / discarded-expression warning
     - 调用 `FrontendTypeCheckAnalyzer.analyze(...)` 对 ordinary local / class property / return typed contract 发出 `sema.type_check`，并对 property hint 发出 `sema.type_hint`
+    - 调用 `FrontendLoopControlFlowAnalyzer.analyze(...)` 对非法 `break` / `continue` 发出 `sema.loop_control_flow`
     - 每个 phase 结束后都再次 `updateDiagnostics(...)`，把阶段边界快照刷新到最新 shared manager 状态
-- `analyzeForCompile(...)` 在共享 8 phase 之后追加：
+- `analyzeForCompile(...)` 在共享 9 phase 之后追加：
     - 调用 `FrontendCompileCheckAnalyzer.analyze(...)`
     - 再次 `updateDiagnostics(...)`，把 compile-only final gate 的诊断写回最终边界快照
 - 共享 `analyze(...)` 的结果当前仍只是 frontend semantic snapshot，不应直接视为 lowering-ready
@@ -339,10 +370,14 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - `export` / `onready` retention 语义稳定
     - unsupported property annotation 会发 error，且仍保留 side-table 事实
 - `FrontendSemanticAnalyzerFrameworkTest`
-    - analyzer 返回共享 `FrontendAnalysisData`
-    - parse->analyze shared pipeline 不重复导入 parse diagnostics
-    - `FrontendAnalysisData` / `FrontendModuleSkeleton` 的 snapshot 在阶段后保持稳定
-    - `analyzeForCompile(...)` 与共享 `analyze(...)` 的 lowering-readiness 边界被显式锁定
+  - analyzer 返回共享 `FrontendAnalysisData`
+  - parse->analyze shared pipeline 不重复导入 parse diagnostics
+  - `FrontendAnalysisData` / `FrontendModuleSkeleton` 的 snapshot 在阶段后保持稳定
+  - `analyzeForCompile(...)` 与共享 `analyze(...)` 的 lowering-readiness 边界被显式锁定
+- `FrontendLoopControlFlowAnalyzerTest`
+  - shared semantic 会对非法 `break` / `continue` 发出 `sema.loop_control_flow`
+  - 合法 `while` / `for` loop body 不会误报 loop-control error
+  - nested lambda 会切断外层 loop depth
 - `FrontendCompileCheckAnalyzerTest`
     - compile-only gate 会显式封口 `assert` 与当前暂不 lowering 的表达式形态
     - compile surface 上的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 会被补成最终 compile blocker

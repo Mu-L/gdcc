@@ -215,13 +215,17 @@ public final class CBodyBuilder {
         return PtrKind.NON_OBJECT;
     }
 
-    /// Creates a value reference from a variable.
+    /// Creates a value reference from an existing storage read.
+    /// Reads from locals/parameters/fields remain `BORROWED` producers even when the value later
+    /// needs pointer-shape conversion, because the conversion changes representation only.
     public @NotNull ValueRef valueOfVar(@NotNull LirVariable variable) {
         return new VarValue(variable, resolvePtrKind(variable.type()));
     }
 
     /// Creates a value reference by explicitly casting a variable expression to `castType`.
     /// This is expression-only and must not be used as an assignment target.
+    /// Cast/render helpers keep the source storage provenance, so the returned value stays
+    /// `BORROWED` unless a fresh producer explicitly marks it as `OWNED`.
     public @NotNull ValueRef valueOfCastedVar(@NotNull LirVariable variable, @NotNull GdType castType) {
         var sourceType = variable.type();
         if (sourceType instanceof GdObjectType sourceObjectType && castType instanceof GdObjectType targetObjectType) {
@@ -307,19 +311,38 @@ public final class CBodyBuilder {
 
     /// Creates a value reference from a raw C expression and type.
     /// PtrKind is auto-resolved from the type.
+    ///
+    /// Even for object-typed expressions this route stays `BORROWED`: it is only a raw wrapper over
+    /// an existing C expression and must not be used for fresh object producers such as call/construct
+    /// results. Fresh object routes must opt into `valueOfOwnedExpr(...)` explicitly so slot writes do
+    /// not re-retain caller-owned results.
+    /// If the expression denotes an existing addressable storage slot, use `valueOfAddressableExpr(...)`
+    /// instead so copy-by-address paths can borrow `&expr` directly without first materializing a
+    /// shallow temp.
     public @NotNull ValueRef valueOfExpr(@NotNull String code, @NotNull GdType type) {
         return new ExprValue(code, type, resolvePtrKind(type));
     }
 
     /// Creates a value reference from a raw C expression, type, and explicit pointer kind.
+    /// This overload keeps the same `BORROWED` provenance contract as `valueOfExpr(code, type)`.
     public @NotNull ValueRef valueOfExpr(@NotNull String code, @NotNull GdType type, @NotNull PtrKind ptrKind) {
         return new ExprValue(code, type, ptrKind);
     }
 
     /// Creates an OWNED value reference from a raw C expression.
+    /// Use this only for audited fresh object producer routes where the expression already transfers
+    /// ownership to the current lowering site, for example direct constructor/materialization calls.
     public @NotNull ValueRef valueOfOwnedExpr(@NotNull String code, @NotNull GdType type, @NotNull PtrKind ptrKind) {
         // OWNED sources are consumed by destination slots and must not be owned again.
         return new ExprValue(code, type, ptrKind, OwnershipKind.OWNED);
+    }
+
+    /// Creates a BORROWED value reference for an already-existing addressable storage expression.
+    /// This is narrower than `valueOfExpr(...)`: callers must only use it for lvalues whose address
+    /// can be taken safely (for example `self->field` backing slots). The payoff is that copy paths
+    /// can use `&expr` directly instead of shallow-copying the storage into a temp first.
+    public @NotNull ValueRef valueOfAddressableExpr(@NotNull String code, @NotNull GdType type) {
+        return new AddressableExprValue(code, type, resolvePtrKind(type));
     }
 
     /// Creates a value reference for a static StringName pointer literal.
@@ -368,11 +391,11 @@ public final class CBodyBuilder {
         var targetType = target.type();
         var canDestroyOldValue = canDestroyOldValue(target);
 
-        // Prepare RHS first to avoid destroying sources for self/alias assignments.
-        var rhsResult = prepareRhsValue(value, targetType);
-        emitTempDecls(rhsResult.temps());
-
         if (targetType instanceof GdObjectType objType) {
+            // Object writes only need representation conversion; alias-sensitive borrow handling is specific
+            // to non-object value-semantic slots where destroy(target) can invalidate source_ptr.
+            var rhsResult = prepareRhsValue(value, targetType);
+            emitTempDecls(rhsResult.temps());
             // Route all object writes through one ownership-aware slot write path.
             emitObjectSlotWrite(
                     targetCode,
@@ -383,13 +406,17 @@ public final class CBodyBuilder {
                     value.type() instanceof GdObjectType objectType ? objectType : null,
                     value.ownership()
             );
+            markTargetInitialized(target);
+            emitTempDestroys(rhsResult.temps());
+            return this;
         } else {
-            emitNonObjectSlotWrite(targetCode, targetType, canDestroyOldValue, rhsResult.code());
+            var rhsPlan = prepareAssignedNonObjectRhs(target, value);
+            emitTempDecls(rhsPlan.tempsToDeclare());
+            emitNonObjectSlotWrite(targetCode, targetType, canDestroyOldValue, rhsPlan.code());
+            markTargetInitialized(target);
+            emitTempDestroys(rhsPlan.tempsToDestroy());
+            return this;
         }
-
-        markTargetInitialized(target);
-        emitTempDestroys(rhsResult.temps());
-        return this;
     }
 
     /// Assigns a raw expression into a target variable.
@@ -400,6 +427,40 @@ public final class CBodyBuilder {
     /// Assigns a raw expression into a target variable with an explicit pointer kind.
     public @NotNull CBodyBuilder assignExpr(@NotNull TargetRef target, @NotNull String expr, @NotNull GdType type, @NotNull PtrKind ptrKind) {
         return assignVar(target, valueOfExpr(expr, type, ptrKind));
+    }
+
+    /// Emits constructor-time property initializer application as a direct backing-field first write.
+    /// This route intentionally stays separate from setter dispatch and from ordinary overwrite stores:
+    /// - it never destroys/releases an old field value
+    /// - object writes still reuse the unified ptr-conversion and ownership-consume rules
+    /// - OWNED rhs is consumed directly; BORROWED rhs is retained by the field
+    public @NotNull CBodyBuilder applyPropertyInitializerFirstWrite(@NotNull String targetCode,
+                                                                    @NotNull GdType targetType,
+                                                                    @NotNull String rhsCode,
+                                                                    @NotNull GdType rhsType,
+                                                                    @NotNull PtrKind rhsPtrKind,
+                                                                    @NotNull OwnershipKind ownership) {
+        checkAssignable(rhsType, targetType);
+        if (targetType instanceof GdObjectType targetObjType) {
+            if (!(rhsType instanceof GdObjectType rhsObjType)) {
+                throw invalidInsn(
+                        "Property initializer first-write target '" + targetObjType.getTypeName()
+                                + "' requires object rhs, but got '" + rhsType.getTypeName() + "'"
+                );
+            }
+            emitObjectSlotWrite(
+                    targetCode,
+                    targetObjType,
+                    false,
+                    rhsCode,
+                    rhsPtrKind,
+                    rhsObjType,
+                    ownership
+            );
+            return this;
+        }
+        emitNonObjectSlotWrite(targetCode, targetType, false, rhsCode);
+        return this;
     }
 
     /// Assigns a global enum constant to a target variable.
@@ -504,8 +565,9 @@ public final class CBodyBuilder {
         return this;
     }
 
-    /// Common logic for writing a call expression result into a target variable.
-    /// Handles: capture old slot value → ptr conversion + assignment → ownership consume/own → release captured old → mark initialized.
+    /// Common logic for writing a fresh call result into a target variable.
+    /// Call/construct/helper returns are treated as `OWNED` producers and therefore flow into the
+    /// slot-write core without an extra retain on the new value.
     private void emitCallResultAssignment(@NotNull TargetRef target,
                                           @NotNull String cFuncName,
                                           @NotNull GdType returnType,
@@ -590,12 +652,18 @@ public final class CBodyBuilder {
         return this;
     }
 
+    /// Returns a value from the current function.
+    /// Generated non-void LIR must publish through `_return_val` and let `__finally__` emit the
+    /// terminal return. The direct-return branch below remains a low-level escape hatch for manual
+    /// builder use and tests, but `ControlFlowIntegrityValidator` rejects non-void `__finally__`
+    /// blocks that try to return anything other than `_return_val`.
     public @NotNull CBodyBuilder returnValue(@NotNull ValueRef value) {
         var returnType = func.getReturnType();
         if (returnType instanceof GdVoidType) {
             throw invalidInsn("Cannot return a value from void function");
         }
         checkAssignable(value.type(), returnType);
+        var movedReturnSource = resolveMovedObjectReturnSource(value, returnType);
 
         var returnResult = prepareReturnValue(value);
         emitTempDecls(returnResult.temps());
@@ -603,7 +671,9 @@ public final class CBodyBuilder {
 
         if (!checkInFinallyBlock()) {
             if (returnType instanceof GdObjectType objType) {
-                // _return_val follows the same slot-write rules as normal object assignments.
+                // Object return publishing is modeled as writing `_return_val`, not as a blanket
+                // "retain everything before function exit" rule. Borrowed sources retain here;
+                // owned sources are consumed here.
                 emitObjectSlotWrite(
                         RETURN_SLOT_NAME,
                         objType,
@@ -611,8 +681,13 @@ public final class CBodyBuilder {
                         returnCode,
                         value.ptrKind(),
                         value.type() instanceof GdObjectType objectType ? objectType : null,
-                        value.ownership()
+                        movedReturnSource != null ? OwnershipKind.OWNED : value.ownership()
                 );
+                if (movedReturnSource != null) {
+                    // Returning an owning local object slot transfers that ownership to `_return_val`.
+                    // Clearing the source slot prevents `__finally__` auto-destruction from releasing it again.
+                    out.append(movedReturnSource.generateCode()).append(" = NULL;\n");
+                }
             } else {
                 // Keep non-object return-slot write as a direct assignment.
                 // _return_val for non-object return types is not modeled as a regular managed slot:
@@ -625,6 +700,9 @@ public final class CBodyBuilder {
         }
 
         if (returnType instanceof GdObjectType objType) {
+            // This branch is intentionally not the published LIR return surface for non-void
+            // functions. It exists so the builder can still emit direct C returns in manual/test
+            // scenarios after the value has already been prepared.
             var sourceObjType = value.type() instanceof GdObjectType objectType ? objectType : null;
             returnCode = convertPtrIfNeeded(returnCode, value.ptrKind(), sourceObjType, objType);
         }
@@ -640,6 +718,26 @@ public final class CBodyBuilder {
         emitTempDestroys(returnResult.temps());
         out.append("return ").append(retTemp.name()).append(";\n");
         return this;
+    }
+
+    /// Only ordinary local object slots may transfer ownership directly into `_return_val`.
+    /// Parameters, ref aliases, captures, and non-slot expressions stay on the borrowed-return path,
+    /// so the publish boundary itself performs the retain when needed.
+    private @Nullable VarValue resolveMovedObjectReturnSource(@NotNull ValueRef value, @NotNull GdType returnType) {
+        if (!(returnType instanceof GdObjectType)) {
+            return null;
+        }
+        if (!(value instanceof VarValue varValue)) {
+            return null;
+        }
+        var variable = varValue.variable();
+        if (variable.ref() || func.checkVariableParameter(variable.id())) {
+            return null;
+        }
+        if (func.getCapture(variable.id()) != null) {
+            return null;
+        }
+        return varValue;
     }
 
     private @NotNull RenderResult renderArgs(@NotNull String funcName, @NotNull List<ValueRef> args) {
@@ -847,15 +945,58 @@ public final class CBodyBuilder {
         // For String, StringName, Variant, Array, Dictionary, etc.
         var copyFunc = helper.renderCopyAssignFunctionName(type);
         if (!copyFunc.isEmpty()) {
-            // Need to copy: godot_new_<Type>_with_<Type>(source_ptr)
+            // This is the proven-no-alias fast path used when the destination slot can consume the
+            // copy result directly. may-alias overwrite routes must stage a separate stable carrier
+            // before destroy(target); see prepareAssignedNonObjectRhs(...).
             var sourcePtr = renderValueAddress(value);
-            var temp = newTempVariable(renderSafeTempPrefix(type), type, copyFunc + "(" + sourcePtr.code() + ")");
-            var temps = new ArrayList<>(sourcePtr.temps());
-            temps.add(temp);
-            return new RenderResult(temp.name(), temps);
+            return new RenderResult(copyFunc + "(" + sourcePtr.code() + ")", sourcePtr.temps());
         }
 
         return new RenderResult(code, List.of());
+    }
+
+    /// Prepares the RHS for non-object assignment.
+    /// - proven no-alias: keep the direct `slot = copy(source_ptr)` fast path
+    /// - may-alias overwrite: stage an independent stable carrier before destroy(target)
+    private @NotNull PreparedAssignmentRhs prepareAssignedNonObjectRhs(@NotNull TargetRef target,
+                                                                       @NotNull ValueRef value) {
+        var rhsResult = prepareRhsValue(value, target.type());
+        if (!CBodyBuilderAliasSafetySupport.requiresStableCarrier(
+                checkInPrepareBlock(),
+                canDestroyOldValue(target),
+                target,
+                value,
+                !helper.renderCopyAssignFunctionName(value.type()).isEmpty()
+        )) {
+            return PreparedAssignmentRhs.ordinary(rhsResult);
+        }
+
+        var copyFunc = helper.renderCopyAssignFunctionName(value.type());
+        if (copyFunc.isEmpty()) {
+            throw new IllegalStateException(
+                    "Alias-safe stable carrier requires copy helper for type '" + value.type().getTypeName() + "'"
+            );
+        }
+
+        var sourcePtr = renderValueAddress(value);
+        var stableCarrier = newTempVariable(
+                renderSafeTempPrefix(target.type()),
+                target.type(),
+                copyFunc + "(" + sourcePtr.code() + ")"
+        );
+        var tempsToDeclare = new ArrayList<TempVar>(sourcePtr.temps().size() + 1);
+        tempsToDeclare.addAll(sourcePtr.temps());
+        tempsToDeclare.add(stableCarrier);
+
+        // `target = stableCarrier;` is a plain struct assignment that transfers the copied carrier
+        // into the managed slot. The temp must not flow into the ordinary destroy-temp path after
+        // assignment, otherwise we would reintroduce the old "copy temp -> assign -> destroy temp"
+        // premature-release bug through a different code shape.
+        return new PreparedAssignmentRhs(
+                stableCarrier.name(),
+                List.copyOf(tempsToDeclare),
+                List.copyOf(sourcePtr.temps())
+        );
     }
 
     /// Prepares a value for return, copying if needed.
@@ -916,16 +1057,25 @@ public final class CBodyBuilder {
         if (value instanceof StringNamePtrLiteralValue || value instanceof StringPtrLiteralValue || value instanceof CStringLiteralValue) {
             return new RenderResult(value.generateCode(), List.of());
         }
-        if (value instanceof VarValue varValue) {
-            var code = value.generateCode();
-            if (varValue.variable().ref()) {
-                return new RenderResult(code, List.of());
+        switch (value) {
+            case VarValue varValue -> {
+                var code = value.generateCode();
+                if (varValue.variable().ref()) {
+                    return new RenderResult(code, List.of());
+                }
+                return new RenderResult("&" + code, List.of());
             }
-            return new RenderResult("&" + code, List.of());
-        }
-        if (value instanceof ExprValue exprValue) {
-            var temp = newTempVariable(renderSafeTempPrefix(exprValue.type()), exprValue.type(), exprValue.generateCode());
-            return new RenderResult("&" + temp.name(), List.of(temp));
+            case AddressableExprValue addressableExprValue -> {
+                // Existing lvalue storage can be borrowed by address directly; avoid materializing a
+                // shallow temp from the slot before copy helpers such as `godot_new_Variant_with_Variant`.
+                return new RenderResult("&(" + addressableExprValue.generateCode() + ")", List.of());
+            }
+            case ExprValue exprValue -> {
+                var temp = newTempVariable(renderSafeTempPrefix(exprValue.type()), exprValue.type(), exprValue.generateCode());
+                return new RenderResult("&" + temp.name(), List.of(temp));
+            }
+            default -> {
+            }
         }
         return new RenderResult("&" + value.generateCode(), List.of());
     }
@@ -978,6 +1128,7 @@ public final class CBodyBuilder {
 
     /// Writes a non-object value into a storage slot with value-lifecycle semantics:
     /// destroy old when needed (skip in __prepare__/first-write) -> assign rhs.
+    /// Any may-alias stable carrier must already have been prepared before entering this helper.
     /// Caller keeps target-initialization and temp lifecycle responsibilities.
     private void emitNonObjectSlotWrite(@NotNull String targetCode,
                                         @NotNull GdType targetType,
@@ -1028,9 +1179,11 @@ public final class CBodyBuilder {
         ownOrTryOwn(godotPtrCode, objType);
     }
 
-    /// Converts a GDCC object pointer to Godot object pointer.
+    /// Converts a GDCC object pointer expression to the Godot raw-object representation expected by
+    /// engine helpers and lifecycle calls.
+    /// This is representation-only: caller-owned vs borrowed state stays unchanged across conversion.
     /// For GDCC types: use class-specific helper through gdcc_object_to_godot_object_ptr.
-    /// For engine types: use as-is
+    /// For engine types: use as-is.
     private @NotNull String toGodotObjectPtr(@NotNull String varCode, @NotNull GdObjectType objType) {
         if (objType.checkGdccType(classRegistry())) {
             var objectPtrHelper = helper.renderGdccObjectPtrHelperName(objType);
@@ -1040,6 +1193,7 @@ public final class CBodyBuilder {
     }
 
     /// Converts an object pointer expression between GDCC and Godot representations if needed.
+    /// This helper is ownership-neutral: it must never introduce retain/release behavior.
     ///
     /// - GODOT_PTR value → GDCC_PTR target: wraps with `fromGodotObjectPtr`
     /// - GDCC_PTR value → GODOT_PTR target: wraps with `gdcc_object_to_godot_object_ptr(...)`
@@ -1062,9 +1216,10 @@ public final class CBodyBuilder {
         return code;
     }
 
-    /// Converts a Godot object pointer to a GDCC object pointer when needed.
-    /// For GDCC types: wraps with gdcc_object_from_godot_object_ptr
-    /// For engine types: use as-is
+    /// Converts a Godot raw-object pointer to the GDCC native-object representation when needed.
+    /// This is representation-only: caller-owned vs borrowed state stays unchanged across conversion.
+    /// For GDCC types: wraps with gdcc_object_from_godot_object_ptr.
+    /// For engine types: use as-is.
     private @NotNull String fromGodotObjectPtr(@NotNull String godotPtrCode, @NotNull GdObjectType objType) {
         if (objType.checkGdccType(classRegistry())) {
             var castType = helper.renderGdTypeInC(objType);
@@ -1146,12 +1301,32 @@ public final class CBodyBuilder {
     }
 
     /// Ownership category for object values.
+    /// This is executable lowering data, not passive metadata.
+    ///
+    /// Current production sites:
+    /// - `ValueRef#ownership()` defaults existing vars/exprs to `BORROWED`
+    /// - `valueOfOwnedExpr(...)` marks explicit fresh/transfer-producing expressions as `OWNED`
+    /// - `callAssign(...)` currently treats object call returns as `OWNED`
+    /// - constructor/property-init first-write uses `OWNED` when the init helper semantically produces a fresh value
+    ///
+    /// Current consumers:
+    /// - `assignVar(...)`
+    /// - `emitCallResultAssignment(...)`
+    /// - `returnValue(...)`
+    ///
+    /// All of those routes funnel into `emitObjectSlotWrite(...)`, which uses the ownership kind to decide
+    /// whether the destination slot must retain the RHS:
+    /// - `BORROWED` => emit `own_object` / `try_own_object`
+    /// - `OWNED` => consume directly, do not retain again
+    ///
+    /// Because of that, changing a value source from `OWNED` to `BORROWED` (or the reverse) changes generated C
+    /// and reference-count balance. It is not safe to treat this enum as documentation-only metadata.
     public enum OwnershipKind {
         BORROWED,
         OWNED
     }
 
-    public sealed interface ValueRef permits VarValue, ExprValue, StringNamePtrLiteralValue, StringPtrLiteralValue, CStringLiteralValue, TempVar {
+    public sealed interface ValueRef permits VarValue, ExprValue, AddressableExprValue, StringNamePtrLiteralValue, StringPtrLiteralValue, CStringLiteralValue, TempVar {
         @NotNull GdType type();
 
         @NotNull String generateCode();
@@ -1194,6 +1369,26 @@ public final class CBodyBuilder {
             Objects.requireNonNull(type);
             Objects.requireNonNull(ptrKind);
             Objects.requireNonNull(ownership);
+        }
+
+        @Override
+        public @NotNull GdType type() {
+            return type;
+        }
+
+        @Override
+        public @NotNull String generateCode() {
+            return code;
+        }
+    }
+
+    public record AddressableExprValue(@NotNull String code,
+                                       @NotNull GdType type,
+                                       @NotNull PtrKind ptrKind) implements ValueRef {
+        public AddressableExprValue {
+            Objects.requireNonNull(code);
+            Objects.requireNonNull(type);
+            Objects.requireNonNull(ptrKind);
         }
 
         @Override
@@ -1419,6 +1614,20 @@ public final class CBodyBuilder {
         public RenderResult {
             Objects.requireNonNull(code);
             Objects.requireNonNull(temps);
+        }
+    }
+
+    private record PreparedAssignmentRhs(@NotNull String code,
+                                         @NotNull List<TempVar> tempsToDeclare,
+                                         @NotNull List<TempVar> tempsToDestroy) {
+        private PreparedAssignmentRhs {
+            Objects.requireNonNull(code);
+            Objects.requireNonNull(tempsToDeclare);
+            Objects.requireNonNull(tempsToDestroy);
+        }
+
+        private static @NotNull PreparedAssignmentRhs ordinary(@NotNull RenderResult rhsResult) {
+            return new PreparedAssignmentRhs(rhsResult.code(), rhsResult.temps(), rhsResult.temps());
         }
     }
 }

@@ -3,7 +3,6 @@ package dev.superice.gdcc.frontend.sema;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.scope.Scope;
-import dev.superice.gdcc.scope.resolver.ScopeTypeResolver;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.TypeRef;
@@ -11,6 +10,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.Objects;
 
 /// Shared strict declared-type resolution helper for frontend semantic phases.
@@ -36,10 +36,12 @@ public final class FrontendDeclaredTypeSupport {
     public static @NotNull GdType resolveTypeOrVariant(
             @Nullable TypeRef typeRef,
             @NotNull Scope declaredTypeScope,
+            @NotNull Map<String, String> topLevelCanonicalNameMap,
             @NotNull Path sourcePath,
             @NotNull DiagnosticManager diagnostics
     ) {
         Objects.requireNonNull(declaredTypeScope, "declaredTypeScope must not be null");
+        Objects.requireNonNull(topLevelCanonicalNameMap, "topLevelCanonicalNameMap must not be null");
         Objects.requireNonNull(sourcePath, "sourcePath must not be null");
         Objects.requireNonNull(diagnostics, "diagnostics must not be null");
         if (typeRef == null) {
@@ -51,7 +53,11 @@ public final class FrontendDeclaredTypeSupport {
             return GdVariantType.VARIANT;
         }
 
-        var resolvedType = ScopeTypeResolver.tryResolveDeclaredType(declaredTypeScope, typeText);
+        var resolvedType = FrontendModuleSkeleton.tryResolveSourceFacingDeclaredType(
+                declaredTypeScope,
+                typeText,
+                topLevelCanonicalNameMap
+        );
         if (resolvedType != null) {
             return resolvedType;
         }

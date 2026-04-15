@@ -3,16 +3,19 @@ package dev.superice.gdcc.frontend.sema;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendChainBindingAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendCompileCheckAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendExprTypeAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendAnnotationUsageAnalyzer;
+import dev.superice.gdcc.frontend.sema.analyzer.FrontendLoopControlFlowAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendTopBindingAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendTypeCheckAnalyzer;
+import dev.superice.gdcc.frontend.sema.analyzer.FrontendVarTypePostAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
 import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.frontend.scope.CallableScope;
@@ -22,8 +25,10 @@ import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.gdextension.ExtensionHeader;
 import dev.superice.gdcc.gdextension.ExtensionSingleton;
 import dev.superice.gdcc.lir.LirClassDef;
+import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.Block;
+import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ClassNameStatement;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -94,15 +99,15 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
 
-        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule(analyzer, "test_module", List.of(unit), registry, diagnostics);
         var topLevelStatements = unit.ast().statements();
         var hpProperty = findVariable(topLevelStatements, "hp");
         var tmpProperty = findVariable(topLevelStatements, "tmp");
         var keepProperty = findVariable(topLevelStatements, "keep");
         var pingFunction = findFunction(topLevelStatements, "ping");
 
-        assertEquals(1, result.moduleSkeleton().classDefs().size());
-        assertEquals("AnnotatedPlayer", result.moduleSkeleton().classDefs().getFirst().getName());
+        assertEquals(1, topLevelClassDefs(result.moduleSkeleton()).size());
+        assertEquals("AnnotatedPlayer", topLevelClassDefs(result.moduleSkeleton()).getFirst().getName());
         assertEquals(List.of("tool"), annotationNames(result.annotationsByAst().get(unit.ast())));
         assertEquals(List.of("export"), annotationNames(result.annotationsByAst().get(hpProperty)));
         assertEquals(List.of("rpc"), annotationNames(result.annotationsByAst().get(pingFunction)));
@@ -125,6 +130,11 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertNotNull(localBinding);
         assertEquals(GdVariantType.VARIANT, localBinding.type());
         assertEquals(ScopeValueKind.LOCAL, localBinding.kind());
+        assertEquals(GdVariantType.VARIANT, result.slotTypes().get(pingFunction.parameters().getFirst()));
+        assertEquals(
+                GdVariantType.VARIANT,
+                result.slotTypes().get(findVariable(pingFunction.body().statements(), "local"))
+        );
         var localInitializerUseSite = assertInstanceOf(
                 IdentifierExpression.class,
                 findVariable(pingFunction.body().statements(), "local").value()
@@ -157,6 +167,50 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
+    void analyzeAndAnalyzeForCompileAcceptFrontendModuleWhileKeepingCompileGateSplitStable() throws Exception {
+        var parserService = new GdScriptParserService();
+        var unit = parserService.parseUnit(Path.of("tmp", "module_compile_split.gd"), """
+                class_name ModuleCompileSplit
+                extends Node
+                
+                static var blocked := 1
+                
+                func ping():
+                    pass
+                """, new DiagnosticManager());
+        var module = new FrontendModule(
+                "test_module",
+                List.of(unit),
+                java.util.Map.of("ModuleCompileSplit", "RuntimeModuleCompileSplit")
+        );
+
+        var sharedDiagnostics = new DiagnosticManager();
+        var sharedResult = new FrontendSemanticAnalyzer().analyze(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                sharedDiagnostics
+        );
+
+        assertEquals("test_module", sharedResult.moduleSkeleton().moduleName());
+        assertEquals(List.of(unit), sourceUnits(sharedResult.moduleSkeleton()));
+        assertFalse(sharedResult.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.compile_check")
+        ));
+
+        var compileDiagnostics = new DiagnosticManager();
+        var compileResult = new FrontendSemanticAnalyzer().analyzeForCompile(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                compileDiagnostics
+        );
+
+        assertTrue(compileResult.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.compile_check")
+                        && diagnostic.message().contains("Static property 'blocked'")
+        ));
+    }
+
+    @Test
     void analyzeCollectsNestedBlockAnnotationsAndStillIgnoresRegionAnnotations() throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
@@ -173,7 +227,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
 
-        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule(analyzer, "test_module", List.of(unit), registry, diagnostics);
         var pingFunction = findFunction(unit.ast().statements(), "ping");
         var bodyStatements = pingFunction.body().statements();
         var innerVariable = findVariable(bodyStatements, "inner");
@@ -185,7 +239,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void analyzePublishesTopBindingsForChainHeadsWhileKeepingDeferredWarningsExplicit() throws Exception {
+    void analyzePublishesTopBindingsForChainHeadsWhileKeepingUnsupportedBoundariesExplicit() throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "framework_top_binding.gd"), """
@@ -207,13 +261,20 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 """, diagnostics);
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 
-        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
 
         var pingFunction = findFunction(unit.ast().statements(), "ping");
         var headRead = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
         var stepCall = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1));
         var lambdaHolder = findVariable(pingFunction.body().statements(), "f");
         var outerReturn = assertInstanceOf(ReturnStatement.class, pingFunction.body().statements().getLast());
+        var moveStep = findNode(stepCall, AttributeCallStep.class, step -> step.name().equals("move"));
+        var getPlayerCall = findNode(
+                outerReturn,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifierExpression
+                        && identifierExpression.name().equals("get_player")
+        );
 
         assertEquals(
                 FrontendBindingKind.PARAMETER,
@@ -249,7 +310,13 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 IdentifierExpression.class,
                 identifierExpression -> identifierExpression.name().equals("helper")
         );
+        var helperDefaultCall = findNode(
+                pingFunction.parameters().getLast().defaultValue(),
+                CallExpression.class,
+                candidate -> true
+        );
         assertNull(result.symbolBindings().get(helperUseSite));
+        assertNull(result.resolvedCalls().get(helperDefaultCall));
 
         var lambdaPlayerUseSite = findNode(
                 lambdaHolder.value(),
@@ -257,10 +324,16 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 identifierExpression -> identifierExpression.name().equals("player")
         );
         assertNull(result.symbolBindings().get(lambdaPlayerUseSite));
+        assertEquals("move", Objects.requireNonNull(result.resolvedCalls().get(moveStep)).callableName());
+        assertEquals(
+                FrontendCallResolutionStatus.RESOLVED,
+                Objects.requireNonNull(result.resolvedCalls().get(getPlayerCall)).status()
+        );
+        assertEquals("get_player", Objects.requireNonNull(result.resolvedCalls().get(getPlayerCall)).callableName());
 
         assertEquals(5, result.symbolBindings().size());
         assertEquals(2, result.resolvedMembers().size());
-        assertEquals(1, result.resolvedCalls().size());
+        assertEquals(2, result.resolvedCalls().size());
         assertEquals(
                 2,
                 result.diagnostics().asList().stream()
@@ -268,9 +341,21 @@ class FrontendSemanticAnalyzerFrameworkTest {
                         .count()
         );
         assertEquals(
-                1,
+                0,
                 result.diagnostics().asList().stream()
                         .filter(diagnostic -> diagnostic.category().equals("sema.deferred_chain_resolution"))
+                        .count()
+        );
+        assertEquals(
+                2,
+                result.diagnostics().asList().stream()
+                        .filter(diagnostic -> diagnostic.category().equals("sema.unsupported_chain_route"))
+                        .count()
+        );
+        assertEquals(
+                1,
+                result.diagnostics().asList().stream()
+                        .filter(diagnostic -> diagnostic.category().equals("sema.unsupported_expression_route"))
                         .count()
         );
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
@@ -284,8 +369,19 @@ class FrontendSemanticAnalyzerFrameworkTest {
                         && diagnostic.message().contains("lambda subtree")
         ));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.deferred_chain_resolution")
-                        && diagnostic.message().contains("Argument #1 type is still deferred")
+                diagnostic.category().equals("sema.unsupported_chain_route")
+                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && diagnostic.message().contains("parameter default")
+        ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_chain_route")
+                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && diagnostic.message().contains("lambda subtree")
+        ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_expression_route")
+                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && diagnostic.message().contains("Lambda expression typing is not supported")
         ));
     }
 
@@ -312,7 +408,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 """, diagnostics);
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 
-        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
 
         var readyValue = findVariable(unit.ast().statements(), "ready_value");
         var readyInitializer = assertInstanceOf(AttributeExpression.class, readyValue.value());
@@ -386,9 +482,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var analyzer = new FrontendSemanticAnalyzer();
         var diagnostics = new DiagnosticManager();
 
-        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule(analyzer, "test_module", List.of(unit), registry, diagnostics);
 
-        assertEquals(1, result.moduleSkeleton().classDefs().size());
+        assertEquals(1, topLevelClassDefs(result.moduleSkeleton()).size());
         assertTrue(diagnostics.isEmpty());
         assertTrue(result.moduleSkeleton().diagnostics().isEmpty());
         assertTrue(result.diagnostics().isEmpty());
@@ -411,7 +507,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
 
-        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule(analyzer, "test_module", List.of(unit), registry, diagnostics);
         var parseSnapshot = diagnostics.snapshot();
         var beforeMutation = result.diagnostics();
         diagnostics.error("sema.synthetic", "late diagnostic", unit.path(), null);
@@ -440,8 +536,10 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var probeTopBindingAnalyzer = new RecordingTopBindingAnalyzer();
         var probeChainBindingAnalyzer = new RecordingChainBindingAnalyzer();
         var probeExprTypeAnalyzer = new RecordingExprTypeAnalyzer();
+        var probeVarTypePostAnalyzer = new RecordingVarTypePostAnalyzer();
         var probeAnnotationUsageAnalyzer = new RecordingAnnotationUsageAnalyzer();
         var probeTypeCheckAnalyzer = new RecordingTypeCheckAnalyzer();
+        var probeLoopControlFlowAnalyzer = new RecordingLoopControlFlowAnalyzer();
         var analyzer = new FrontendSemanticAnalyzer(
                 new FrontendClassSkeletonBuilder(),
                 probeScopeAnalyzer,
@@ -449,11 +547,14 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 probeTopBindingAnalyzer,
                 probeChainBindingAnalyzer,
                 probeExprTypeAnalyzer,
+                probeVarTypePostAnalyzer,
                 probeAnnotationUsageAnalyzer,
-                probeTypeCheckAnalyzer
+                probeTypeCheckAnalyzer,
+                probeLoopControlFlowAnalyzer,
+                new FrontendCompileCheckAnalyzer()
         );
 
-        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule(analyzer, "test_module", List.of(unit), registry, diagnostics);
 
         assertTrue(probeScopeAnalyzer.invoked);
         assertTrue(probeScopeAnalyzer.moduleSkeletonPublished);
@@ -478,8 +579,13 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(probeExprTypeAnalyzer.preExprTypeDiagnosticsMatchedManager);
         assertTrue(probeExprTypeAnalyzer.stableExpressionTypesReferencePreserved);
         assertTrue(probeExprTypeAnalyzer.expressionTypePublicationClearedProbeEntry);
+        assertTrue(probeVarTypePostAnalyzer.invoked);
+        assertTrue(probeVarTypePostAnalyzer.exprTypeBoundaryPublished);
+        assertTrue(probeVarTypePostAnalyzer.preVarTypePostDiagnosticsMatchedManager);
+        assertTrue(probeVarTypePostAnalyzer.stableSlotTypesReferencePreserved);
+        assertTrue(probeVarTypePostAnalyzer.slotTypePublicationClearedProbeEntry);
         assertTrue(probeAnnotationUsageAnalyzer.invoked);
-        assertTrue(probeAnnotationUsageAnalyzer.exprTypeBoundaryPublished);
+        assertTrue(probeAnnotationUsageAnalyzer.varTypeBoundaryPublished);
         assertTrue(probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnosticsMatchedManager);
         assertTrue(probeAnnotationUsageAnalyzer.stableAnnotationsReferencePreserved);
         assertTrue(probeTypeCheckAnalyzer.invoked);
@@ -487,6 +593,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(probeTypeCheckAnalyzer.preTypeCheckDiagnosticsMatchedManager);
         assertTrue(probeTypeCheckAnalyzer.stableExpressionTypesReferencePreserved);
         assertTrue(probeTypeCheckAnalyzer.expressionTypesRemainPublishedAfterTypeCheck);
+        assertTrue(probeLoopControlFlowAnalyzer.invoked);
+        assertTrue(probeLoopControlFlowAnalyzer.typeCheckBoundaryPublished);
+        assertTrue(probeLoopControlFlowAnalyzer.preLoopControlFlowDiagnosticsMatchedManager);
         assertEquals(probeScopeAnalyzer.preScopeDiagnostics.size() + 1, probeVariableAnalyzer.preVariableDiagnostics.size());
         assertTrue(probeVariableAnalyzer.preVariableDiagnostics.asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.scope_phase_probe")
@@ -514,10 +623,17 @@ class FrontendSemanticAnalyzerFrameworkTest {
         ));
         assertEquals(
                 probeExprTypeAnalyzer.preExprTypeDiagnostics.size() + 1,
+                probeVarTypePostAnalyzer.preVarTypePostDiagnostics.size()
+        );
+        assertTrue(probeVarTypePostAnalyzer.preVarTypePostDiagnostics.asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.expr_type_phase_probe")
+        ));
+        assertEquals(
+                probeVarTypePostAnalyzer.preVarTypePostDiagnostics.size() + 1,
                 probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnostics.size()
         );
         assertTrue(probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnostics.asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.expr_type_phase_probe")
+                diagnostic.category().equals("sema.var_type_post_phase_probe")
         ));
         assertEquals(
                 probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnostics.size() + 1,
@@ -526,7 +642,14 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(probeTypeCheckAnalyzer.preTypeCheckDiagnostics.asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.annotation_usage_phase_probe")
         ));
-        assertEquals(probeTypeCheckAnalyzer.preTypeCheckDiagnostics.size() + 1, result.diagnostics().size());
+        assertEquals(
+                probeTypeCheckAnalyzer.preTypeCheckDiagnostics.size() + 1,
+                probeLoopControlFlowAnalyzer.preLoopControlFlowDiagnostics.size()
+        );
+        assertTrue(probeLoopControlFlowAnalyzer.preLoopControlFlowDiagnostics.asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.type_check_phase_probe")
+        ));
+        assertEquals(probeLoopControlFlowAnalyzer.preLoopControlFlowDiagnostics.size() + 1, result.diagnostics().size());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.scope_phase_probe")
         ));
@@ -543,19 +666,26 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 diagnostic.category().equals("sema.expr_type_phase_probe")
         ));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.var_type_post_phase_probe")
+        ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.annotation_usage_phase_probe")
         ));
-        assertEquals("sema.type_check_phase_probe", result.diagnostics().getLast().category());
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.type_check_phase_probe")
+        ));
+        assertEquals("sema.loop_control_flow_phase_probe", result.diagnostics().getLast().category());
         assertEquals(probeScopeAnalyzer.preScopeDiagnostics, result.moduleSkeleton().diagnostics());
         assertEquals(result.diagnostics(), diagnostics.snapshot());
         assertTrue(result.symbolBindings().isEmpty());
         assertTrue(result.resolvedMembers().isEmpty());
         assertTrue(result.resolvedCalls().isEmpty());
         assertTrue(result.expressionTypes().isEmpty());
+        assertFalse(result.slotTypes().isEmpty());
     }
 
     @Test
-    void analyzeForCompileRunsCompileGateAfterTypeCheckWhileAnalyzeStaysCompileCheckFree() throws Exception {
+    void analyzeForCompileRunsCompileGateAfterLoopControlWhileAnalyzeStaysCompileCheckFree() throws Exception {
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", "compile_check_phase_probe.gd"), """
                 class_name CompileCheckPhaseProbe
@@ -567,6 +697,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 
         var sharedDiagnostics = new DiagnosticManager();
+        var sharedLoopControlProbe = new RecordingLoopControlFlowAnalyzer();
         var sharedProbe = new RecordingCompileCheckAnalyzer();
         var sharedAnalyzer = new FrontendSemanticAnalyzer(
                 new FrontendClassSkeletonBuilder(),
@@ -577,15 +708,20 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 new FrontendExprTypeAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
+                sharedLoopControlProbe,
                 sharedProbe
         );
-        var sharedResult = sharedAnalyzer.analyze("test_module", List.of(unit), registry, sharedDiagnostics);
+        var sharedResult = analyzeModule(sharedAnalyzer, "test_module", List.of(unit), registry, sharedDiagnostics);
 
+        assertTrue(sharedLoopControlProbe.invoked);
+        assertTrue(sharedLoopControlProbe.preLoopControlFlowDiagnosticsMatchedManager);
         assertFalse(sharedProbe.invoked);
+        assertEquals(1, diagnosticsByCategory(sharedResult.diagnostics(), "sema.loop_control_flow_phase_probe").size());
         assertTrue(diagnosticsByCategory(sharedResult.diagnostics(), "sema.compile_check_phase_probe").isEmpty());
         assertEquals(sharedDiagnostics.snapshot(), sharedResult.diagnostics());
 
         var compileDiagnostics = new DiagnosticManager();
+        var compileLoopControlProbe = new RecordingLoopControlFlowAnalyzer();
         var compileProbe = new RecordingCompileCheckAnalyzer();
         var compileAnalyzer = new FrontendSemanticAnalyzer(
                 new FrontendClassSkeletonBuilder(),
@@ -596,18 +732,23 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 new FrontendExprTypeAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
+                compileLoopControlProbe,
                 compileProbe
         );
-        var compileResult = compileAnalyzer.analyzeForCompile(
+        var compileResult = analyzeModuleForCompile(
+                compileAnalyzer,
                 "test_module",
                 List.of(unit),
                 registry,
                 compileDiagnostics
         );
 
+        assertTrue(compileLoopControlProbe.invoked);
+        assertTrue(compileLoopControlProbe.preLoopControlFlowDiagnosticsMatchedManager);
         assertTrue(compileProbe.invoked);
         assertTrue(compileProbe.preCompileCheckDiagnosticsMatchedManager);
-        assertTrue(compileProbe.typeCheckBoundaryPublished);
+        assertTrue(compileProbe.loopControlBoundaryPublished);
+        assertEquals(1, diagnosticsByCategory(compileResult.diagnostics(), "sema.loop_control_flow_phase_probe").size());
         assertEquals("sema.compile_check_phase_probe", compileResult.diagnostics().getLast().category());
         assertEquals(1, diagnosticsByCategory(compileResult.diagnostics(), "sema.compile_check_phase_probe").size());
         assertEquals(compileDiagnostics.snapshot(), compileResult.diagnostics());
@@ -626,22 +767,12 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 
         var sharedDiagnostics = new DiagnosticManager();
-        var sharedResult = new FrontendSemanticAnalyzer().analyze(
-                "test_module",
-                List.of(unit),
-                registry,
-                sharedDiagnostics
-        );
+        var sharedResult = analyzeModule("test_module", List.of(unit), registry, sharedDiagnostics);
         assertFalse(sharedResult.diagnostics().hasErrors());
         assertTrue(diagnosticsByCategory(sharedResult.diagnostics(), "sema.compile_check").isEmpty());
 
         var compileDiagnostics = new DiagnosticManager();
-        var compileResult = new FrontendSemanticAnalyzer().analyzeForCompile(
-                "test_module",
-                List.of(unit),
-                registry,
-                compileDiagnostics
-        );
+        var compileResult = analyzeModuleForCompile("test_module", List.of(unit), registry, compileDiagnostics);
         assertTrue(compileResult.diagnostics().hasErrors());
         assertEquals(1, diagnosticsByCategory(compileResult.diagnostics(), "sema.compile_check").size());
         assertEquals(compileDiagnostics.snapshot(), compileResult.diagnostics());
@@ -675,13 +806,16 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
 
-        var result = analyzer.analyze("test_module", List.of(duplicateA, duplicateB, stable), registry, diagnostics);
+        var result = analyzeModule(analyzer, "test_module", List.of(duplicateA, duplicateB, stable), registry, diagnostics);
 
-        assertEquals(List.of("SharedName", "StableAfterError"), result.moduleSkeleton().classDefs().stream().map(LirClassDef::getName).toList());
+        assertEquals(
+                List.of("SharedName", "StableAfterError"),
+                topLevelClassDefs(result.moduleSkeleton()).stream().map(LirClassDef::getName).toList()
+        );
         assertFalse(result.scopesByAst().isEmpty());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
-                        && diagnostic.message().contains("Duplicate class name 'SharedName'")
+                        && diagnostic.message().contains("Duplicate top-level class source name 'SharedName'")
         ));
         assertNotNull(registry.findGdccClass("SharedName"));
         assertNotNull(registry.findGdccClass("StableAfterError"));
@@ -704,9 +838,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
                     pass
                 """, diagnostics);
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
 
-        var topLevel = findClassByName(result.moduleSkeleton().classDefs(), "ScopeTypeResolverParity");
+        var topLevel = findClassByName(topLevelClassDefs(result.moduleSkeleton()), "ScopeTypeResolverParity");
         var inner = findClassByName(result.moduleSkeleton().allClassDefs(), "ScopeTypeResolverParity$Inner");
         var sourceScope = assertInstanceOf(ClassScope.class, result.scopesByAst().get(unit.ast()));
 
@@ -746,12 +880,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                     var picked: Shared
                 """, diagnostics);
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var result = new FrontendSemanticAnalyzer().analyze(
-                "test_module",
-                List.of(baseUnit, outerUnit),
-                registry,
-                diagnostics
-        );
+        var result = analyzeModule("test_module", List.of(baseUnit, outerUnit), registry, diagnostics);
 
         var leaf = findClassByName(result.moduleSkeleton().allClassDefs(), "OuterPrecedence$Leaf");
         var pickedType = assertInstanceOf(GdObjectType.class, findPropertyByName(leaf, "picked").getType());
@@ -782,7 +911,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                     var picked: Shared
                 """, diagnostics);
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
 
         var leaf = findClassByName(result.moduleSkeleton().allClassDefs(), "HeaderResolverGap$Leaf");
         var leafDeclaration = findClass(unit.ast().statements(), "Leaf");
@@ -836,7 +965,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 )
         );
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
 
         var leafDeclaration = findClass(unit.ast().statements(), "Leaf");
         var sourceRelation = result.moduleSkeleton().sourceClassRelations().getFirst();
@@ -871,9 +1000,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
                     pass
                 """, diagnostics);
         var registry = createRegistryWithSingleton("GameSingleton");
-        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
 
-        assertTrue(result.moduleSkeleton().classDefs().isEmpty());
+        assertTrue(topLevelClassDefs(result.moduleSkeleton()).isEmpty());
         assertTrue(result.moduleSkeleton().sourceClassRelations().isEmpty());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
@@ -884,6 +1013,46 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertNull(result.scopesByAst().get(unit.ast()));
     }
 
+    @Test
+    void semanticAnalysisSkipsReservedSyntheticPropertyHelperMemberSubtrees() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "reserved_helper_subtree_skip.gd"), """
+                class_name ReservedHelperSubtreeSkip
+                extends RefCounted
+                
+                var _field_getter_value := 1
+                
+                func _field_setter_value() -> int:
+                    return 1
+                
+                func ok() -> int:
+                    return 2
+                """, diagnostics);
+        var reservedProperty = findVariable(unit.ast().statements(), "_field_getter_value");
+        var reservedFunction = findFunction(unit.ast().statements(), "_field_setter_value");
+        var okFunction = findFunction(unit.ast().statements(), "ok");
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
+        var classDef = findClassByName(topLevelClassDefs(result.moduleSkeleton()), "ReservedHelperSubtreeSkip");
+
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("_field_getter_value")
+        ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("_field_setter_value")
+        ));
+        assertNull(result.scopesByAst().get(reservedProperty));
+        assertNull(result.scopesByAst().get(reservedFunction));
+        assertNotNull(result.scopesByAst().get(okFunction));
+        assertTrue(classDef.getProperties().stream().noneMatch(property -> property.getName().equals("_field_getter_value")));
+        assertTrue(classDef.getFunctions().stream().noneMatch(function -> function.getName().equals("_field_setter_value")));
+        assertTrue(classDef.getFunctions().stream().anyMatch(function -> function.getName().equals("ok")));
+    }
+
     private VariableDeclaration findVariable(List<?> statements, String name) {
         return statements.stream()
                 .filter(VariableDeclaration.class::isInstance)
@@ -891,6 +1060,56 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 .filter(variableDeclaration -> variableDeclaration.name().equals(name))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Variable not found: " + name));
+    }
+
+    private List<FrontendSourceUnit> sourceUnits(FrontendModuleSkeleton result) {
+        return result.sourceClassRelations().stream()
+                .map(FrontendSourceClassRelation::unit)
+                .toList();
+    }
+
+    private List<LirClassDef> topLevelClassDefs(FrontendModuleSkeleton result) {
+        return result.sourceClassRelations().stream()
+                .map(FrontendSourceClassRelation::topLevelClassDef)
+                .toList();
+    }
+
+    private FrontendAnalysisData analyzeModule(
+            @NotNull String moduleName,
+            @NotNull List<FrontendSourceUnit> units,
+            @NotNull ClassRegistry registry,
+            @NotNull DiagnosticManager diagnostics
+    ) {
+        return analyzeModule(new FrontendSemanticAnalyzer(), moduleName, units, registry, diagnostics);
+    }
+
+    private FrontendAnalysisData analyzeModule(
+            @NotNull FrontendSemanticAnalyzer analyzer,
+            @NotNull String moduleName,
+            @NotNull List<FrontendSourceUnit> units,
+            @NotNull ClassRegistry registry,
+            @NotNull DiagnosticManager diagnostics
+    ) {
+        return analyzer.analyze(new FrontendModule(moduleName, units), registry, diagnostics);
+    }
+
+    private FrontendAnalysisData analyzeModuleForCompile(
+            @NotNull String moduleName,
+            @NotNull List<FrontendSourceUnit> units,
+            @NotNull ClassRegistry registry,
+            @NotNull DiagnosticManager diagnostics
+    ) {
+        return analyzeModuleForCompile(new FrontendSemanticAnalyzer(), moduleName, units, registry, diagnostics);
+    }
+
+    private FrontendAnalysisData analyzeModuleForCompile(
+            @NotNull FrontendSemanticAnalyzer analyzer,
+            @NotNull String moduleName,
+            @NotNull List<FrontendSourceUnit> units,
+            @NotNull ClassRegistry registry,
+            @NotNull DiagnosticManager diagnostics
+    ) {
+        return analyzer.analyzeForCompile(new FrontendModule(moduleName, units), registry, diagnostics);
     }
 
     private FunctionDeclaration findFunction(List<?> statements, String name) {
@@ -1017,8 +1236,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 @NotNull DiagnosticManager diagnosticManager
         ) {
             invoked = true;
-            moduleSkeletonPublished = analysisData.moduleSkeleton().sourceClassRelations().size() == 1
-                    && analysisData.moduleSkeleton().classDefs().size() == 1;
+            moduleSkeletonPublished = analysisData.moduleSkeleton().sourceClassRelations().size() == 1;
             preScopeDiagnostics = analysisData.diagnostics();
             preScopeDiagnosticsMatchedManager = preScopeDiagnostics.equals(diagnosticManager.snapshot());
             diagnosticManager.warning(
@@ -1205,9 +1423,49 @@ class FrontendSemanticAnalyzerFrameworkTest {
         }
     }
 
-    private static final class RecordingAnnotationUsageAnalyzer extends FrontendAnnotationUsageAnalyzer {
+    private static final class RecordingVarTypePostAnalyzer extends FrontendVarTypePostAnalyzer {
         private boolean invoked;
         private boolean exprTypeBoundaryPublished;
+        private boolean preVarTypePostDiagnosticsMatchedManager;
+        private boolean stableSlotTypesReferencePreserved;
+        private boolean slotTypePublicationClearedProbeEntry;
+        private DiagnosticSnapshot preVarTypePostDiagnostics;
+
+        @Override
+        public void analyze(
+                @NotNull FrontendAnalysisData analysisData,
+                @NotNull DiagnosticManager diagnosticManager
+        ) {
+            invoked = true;
+            preVarTypePostDiagnostics = analysisData.diagnostics();
+            preVarTypePostDiagnosticsMatchedManager = preVarTypePostDiagnostics.equals(diagnosticManager.snapshot());
+            exprTypeBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+                    .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
+                    && analysisData.symbolBindings().isEmpty()
+                    && analysisData.resolvedMembers().isEmpty()
+                    && analysisData.resolvedCalls().isEmpty()
+                    && analysisData.expressionTypes().isEmpty();
+            var publishedSlotTypes = analysisData.slotTypes();
+            var probeNode = new PassStatement(SYNTHETIC_RANGE);
+            publishedSlotTypes.put(probeNode, GdVariantType.VARIANT);
+
+            super.analyze(analysisData, diagnosticManager);
+
+            stableSlotTypesReferencePreserved = publishedSlotTypes == analysisData.slotTypes();
+            slotTypePublicationClearedProbeEntry = !analysisData.slotTypes().containsKey(probeNode)
+                    && !analysisData.slotTypes().isEmpty();
+            diagnosticManager.warning(
+                    "sema.var_type_post_phase_probe",
+                    "var-type-post phase probe diagnostic",
+                    null,
+                    null
+            );
+        }
+    }
+
+    private static final class RecordingAnnotationUsageAnalyzer extends FrontendAnnotationUsageAnalyzer {
+        private boolean invoked;
+        private boolean varTypeBoundaryPublished;
         private boolean preAnnotationUsageDiagnosticsMatchedManager;
         private boolean stableAnnotationsReferencePreserved;
         private DiagnosticSnapshot preAnnotationUsageDiagnostics;
@@ -1222,12 +1480,13 @@ class FrontendSemanticAnalyzerFrameworkTest {
             preAnnotationUsageDiagnostics = analysisData.diagnostics();
             preAnnotationUsageDiagnosticsMatchedManager =
                     preAnnotationUsageDiagnostics.equals(diagnosticManager.snapshot());
-            exprTypeBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+            varTypeBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
                     .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
                     && analysisData.symbolBindings().isEmpty()
                     && analysisData.resolvedMembers().isEmpty()
                     && analysisData.resolvedCalls().isEmpty()
-                    && analysisData.expressionTypes().isEmpty();
+                    && analysisData.expressionTypes().isEmpty()
+                    && !analysisData.slotTypes().isEmpty();
             var publishedAnnotations = analysisData.annotationsByAst();
 
             super.analyze(classRegistry, analysisData, diagnosticManager);
@@ -1264,7 +1523,8 @@ class FrontendSemanticAnalyzerFrameworkTest {
                     && analysisData.symbolBindings().isEmpty()
                     && analysisData.resolvedMembers().isEmpty()
                     && analysisData.resolvedCalls().isEmpty()
-                    && analysisData.expressionTypes().isEmpty();
+                    && analysisData.expressionTypes().isEmpty()
+                    && !analysisData.slotTypes().isEmpty();
             var publishedExpressionTypes = analysisData.expressionTypes();
 
             super.analyze(classRegistry, analysisData, diagnosticManager);
@@ -1280,9 +1540,41 @@ class FrontendSemanticAnalyzerFrameworkTest {
         }
     }
 
-    private static final class RecordingCompileCheckAnalyzer extends FrontendCompileCheckAnalyzer {
+    private static final class RecordingLoopControlFlowAnalyzer extends FrontendLoopControlFlowAnalyzer {
         private boolean invoked;
         private boolean typeCheckBoundaryPublished;
+        private boolean preLoopControlFlowDiagnosticsMatchedManager;
+        private DiagnosticSnapshot preLoopControlFlowDiagnostics;
+
+        @Override
+        public void analyze(
+                @NotNull FrontendAnalysisData analysisData,
+                @NotNull DiagnosticManager diagnosticManager
+        ) {
+            invoked = true;
+            preLoopControlFlowDiagnostics = analysisData.diagnostics();
+            preLoopControlFlowDiagnosticsMatchedManager =
+                    preLoopControlFlowDiagnostics.equals(diagnosticManager.snapshot());
+            typeCheckBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+                    .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
+                    && analysisData.symbolBindings().isEmpty()
+                    && analysisData.resolvedMembers().isEmpty()
+                    && analysisData.resolvedCalls().isEmpty()
+                    && analysisData.expressionTypes().isEmpty()
+                    && !analysisData.slotTypes().isEmpty();
+            super.analyze(analysisData, diagnosticManager);
+            diagnosticManager.warning(
+                    "sema.loop_control_flow_phase_probe",
+                    "loop-control phase probe diagnostic",
+                    null,
+                    null
+            );
+        }
+    }
+
+    private static final class RecordingCompileCheckAnalyzer extends FrontendCompileCheckAnalyzer {
+        private boolean invoked;
+        private boolean loopControlBoundaryPublished;
         private boolean preCompileCheckDiagnosticsMatchedManager;
 
         @Override
@@ -1293,7 +1585,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
             invoked = true;
             var preCompileCheckDiagnostics = analysisData.diagnostics();
             preCompileCheckDiagnosticsMatchedManager = preCompileCheckDiagnostics.equals(diagnosticManager.snapshot());
-            typeCheckBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+            loopControlBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
                     .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
                     && analysisData.symbolBindings().isEmpty()
                     && analysisData.resolvedMembers().isEmpty()

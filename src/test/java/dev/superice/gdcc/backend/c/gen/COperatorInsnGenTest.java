@@ -743,7 +743,7 @@ class COperatorInsnGenTest {
         }
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(instruction);
+        entry.appendInstruction(instruction);
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);

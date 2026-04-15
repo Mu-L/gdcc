@@ -17,6 +17,10 @@ import org.jetbrains.annotations.Nullable;
 /// - `bitfield::MethodFlags`
 /// - `typedarray::PackedByteArray`
 ///
+/// Current scope-layer support is intentionally limited to single-atom metadata spellings plus the
+/// array wrapper form above. Composite exported spellings such as `typeddictionary::K;V` are not
+/// parsed here today; they remain covered by the dedicated backend typed-dictionary ABI contract.
+///
 /// Backend code used to normalize those spellings through `CGenHelper.parseExtensionType(...)`.
 /// The normalization now lives in the neutral `scope` layer so shared member resolvers can reuse the
 /// same rules without depending on backend-only helpers.
@@ -30,6 +34,7 @@ public final class ScopeTypeParsers {
     /// - blank metadata means `void`
     /// - `enum::...` / `bitfield::...` collapse to `int`
     /// - `typedarray::T` becomes `Packed*Array` when `T` is packed, otherwise `Array[T]`
+    /// - composite metadata such as `typeddictionary::K;V` is not supported here
     /// - all other names fall back to the existing compatibility parser in `ClassRegistry`
     public static @NotNull GdType parseExtensionTypeMetadata(@Nullable String rawTypeName,
                                                              @NotNull String typeUseSite) {

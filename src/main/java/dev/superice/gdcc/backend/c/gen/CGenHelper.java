@@ -7,6 +7,7 @@ import dev.superice.gdcc.exception.NotImplementedException;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirModule;
+import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.UnaryOpInsn;
@@ -18,8 +19,17 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 
+import static dev.superice.gdcc.util.StringUtil.escapeStringLiteral;
+
 public final class CGenHelper {
     private static final String GODOT_UTILITY_PREFIX = "godot_";
+    private static final String VARIANT_WRITEBACK_HELPER_NAME = "gdcc_variant_requires_writeback";
+    private static final FunctionSignature VARIANT_WRITEBACK_HELPER_SIGNATURE = new FunctionSignature(
+            VARIANT_WRITEBACK_HELPER_NAME,
+            List.of(new FunctionSignature.Parameter("value", GdVariantType.VARIANT, null)),
+            false,
+            GdBoolType.BOOL
+    );
 
     private final @NotNull CodegenContext context;
     private final @NotNull CBuiltinBuilder builtinBuilder;
@@ -71,6 +81,22 @@ public final class CGenHelper {
         }
     }
 
+    public record BoundMetadata(
+            @NotNull String typeEnumLiteral,
+            @NotNull String hintEnumLiteral,
+            @NotNull String hintStringExpr,
+            @NotNull String classNameExpr,
+            @NotNull String usageExpr
+    ) {
+    }
+
+    private record TypedContainerRuntimeLeaf(
+            @NotNull String typeIntLiteral,
+            @NotNull String classNameExpr,
+            boolean objectLeaf
+    ) {
+    }
+
     public @NotNull List<BindingData> getBindingDataList() {
         return List.copyOf(bindingDataSet);
     }
@@ -113,7 +139,7 @@ public final class CGenHelper {
         for (var func : classDef.getFunctions()) {
             var bodyBuilder = new CBodyBuilder(this, classDef, func);
             for (var block : func) {
-                var instructions = block.instructions();
+                var instructions = block.getInstructions();
                 for (var i = 0; i < instructions.size(); i++) {
                     var instruction = instructions.get(i);
                     bodyBuilder.setCurrentPosition(block, i, instruction);
@@ -391,7 +417,10 @@ public final class CGenHelper {
         };
     }
 
-    /// This is a thin layer
+    /// Thin wrapper around the shared scope-layer parser for single-atom extension metadata.
+    ///
+    /// This helper intentionally does not claim ownership of composite exported spellings such as
+    /// `typeddictionary::K;V`; typed-dictionary outward ABI keeps its dedicated backend contract.
     public @NotNull GdType parseExtensionType(@Nullable String rawTypeName,
                                               @NotNull String typeUseSite) {
         return ScopeTypeParsers.parseExtensionTypeMetadata(rawTypeName, typeUseSite, context.classRegistry());
@@ -482,18 +511,331 @@ public final class CGenHelper {
         }
     }
 
+    /// Render wrapper-local cleanup for generated `call_func` glue code.
+    ///
+    /// This is intentionally narrower than ordinary backend destruct semantics:
+    /// - only destroyable non-object wrappers materialize an addressable local slot that the wrapper must destroy
+    /// - object locals stay as plain pointers here, so they must not be blanket destroy/release'd at wrapper exit
+    public @NotNull String renderCallWrapperDestroyStmt(@NotNull GdType type, @NotNull String varName) {
+        if (type instanceof GdObjectType || !type.isDestroyable()) {
+            return "";
+        }
+        return renderDestroyFunctionName(type) + "(&" + varName + ");";
+    }
+
+    /// Typed Dictionary wrapper preflight only applies to non-generic `Dictionary[K, V]` slots.
+    public boolean needsTypedDictionaryCallGuard(@NotNull GdType type) {
+        return type instanceof GdDictionaryType dictionaryType && !dictionaryType.isGenericDictionary();
+    }
+
+    /// Typed Array wrapper preflight only applies to non-generic `Array[T]` slots.
+    public boolean needsTypedArrayCallGuard(@NotNull GdType type) {
+        return type instanceof GdArrayType arrayType && !arrayType.isGenericArray();
+    }
+
+    /// Render the expected builtin type literal for one typed-array guard element leaf.
+    public @NotNull String renderTypedArrayGuardBuiltinTypeLiteral(@NotNull GdType type) {
+        return renderTypedArrayRuntimeLeaf(resolveTypedArrayGuardLeaf(type), "element leaf")
+                .typeIntLiteral();
+    }
+
+    /// Object leaves need extra class/script metadata comparison in the wrapper guard.
+    public boolean isTypedArrayGuardObjectLeaf(@NotNull GdType type) {
+        return renderTypedArrayRuntimeLeaf(resolveTypedArrayGuardLeaf(type), "element leaf")
+                .objectLeaf();
+    }
+
+    /// Render the expected class-name literal for one typed-array object leaf.
+    public @NotNull String renderTypedArrayGuardClassNameExpr(@NotNull GdType type) {
+        return renderTypedArrayRuntimeLeaf(resolveTypedArrayGuardLeaf(type), "element leaf")
+                .classNameExpr();
+    }
+
+    /// Render the expected builtin type literal for one typed-dictionary guard side.
+    public @NotNull String renderTypedDictionaryGuardBuiltinTypeLiteral(@NotNull GdType type,
+                                                                        @NotNull String sideName) {
+        return renderTypedDictionaryRuntimeLeaf(resolveTypedDictionaryGuardLeaf(type, sideName), sideName + " leaf")
+                .typeIntLiteral();
+    }
+
+    /// Object leaves need extra class/script metadata comparison in the wrapper guard.
+    public boolean isTypedDictionaryGuardObjectLeaf(@NotNull GdType type, @NotNull String sideName) {
+        return renderTypedDictionaryRuntimeLeaf(resolveTypedDictionaryGuardLeaf(type, sideName), sideName + " leaf")
+                .objectLeaf();
+    }
+
+    /// Render the expected class-name literal for one typed-dictionary object leaf.
+    public @NotNull String renderTypedDictionaryGuardClassNameExpr(@NotNull GdType type,
+                                                                   @NotNull String sideName) {
+        return renderTypedDictionaryRuntimeLeaf(resolveTypedDictionaryGuardLeaf(type, sideName), sideName + " leaf")
+                .classNameExpr();
+    }
+
+    /// Renders the outward-facing metadata literals for a bound slot.
+    ///
+    /// Current backend-owned outward ABI rules:
+    /// - `Variant` still uses `NIL + PROPERTY_USAGE_NIL_IS_VARIANT`
+    /// - typed `Array[T]` publishes `PROPERTY_HINT_ARRAY_TYPE` plus one leaf atom whenever `T != Variant`
+    /// - typed `Dictionary[K, V]` publishes `PROPERTY_HINT_DICTIONARY_TYPE` plus a flat `key;value`
+    ///   hint string whenever either side is stricter than `Variant`
+    /// - `class_name` stays on the existing empty default here; typed dictionary leaf identity lives in
+    ///   `hint_string`, not in the top-level property info class slot
+    public @NotNull BoundMetadata renderBoundMetadata(@NotNull GdType type,
+                                                      @NotNull String baseUsageExpr) {
+        return renderBoundMetadata(type, baseUsageExpr, "bound slot");
+    }
+
+    public @NotNull BoundMetadata renderBoundMetadata(@NotNull GdType type,
+                                                      @NotNull String baseUsageExpr,
+                                                      @NotNull String useSite) {
+        var extensionType = requireBoundMetadataType(type);
+        var usageExpr = type instanceof GdVariantType
+                ? baseUsageExpr + " | godot_PROPERTY_USAGE_NIL_IS_VARIANT"
+                : baseUsageExpr;
+        var hintEnumLiteral = "godot_PROPERTY_HINT_NONE";
+        var hintStringExpr = "GD_STATIC_S(u8\"\")";
+        if (type instanceof GdArrayType arrayType && !arrayType.isGenericArray()) {
+            hintEnumLiteral = "godot_PROPERTY_HINT_ARRAY_TYPE";
+            hintStringExpr = "GD_STATIC_S(u8\"" + escapeStringLiteral(renderTypedArrayHintString(arrayType, useSite)) + "\")";
+        } else if (type instanceof GdDictionaryType dictionaryType && !dictionaryType.isGenericDictionary()) {
+            hintEnumLiteral = "godot_PROPERTY_HINT_DICTIONARY_TYPE";
+            hintStringExpr = "GD_STATIC_S(u8\"" + escapeStringLiteral(renderTypedDictionaryHintString(dictionaryType)) + "\")";
+        }
+        return new BoundMetadata(
+                "GDEXTENSION_VARIANT_TYPE_" + extensionType.name(),
+                hintEnumLiteral,
+                hintStringExpr,
+                "GD_STATIC_SN(u8\"\")",
+                usageExpr
+        );
+    }
+
+    /// Property registration keeps the current export/non-export base-usage split
+    /// while reusing the same outward Variant encoding as method args/returns.
+    public @NotNull BoundMetadata renderPropertyMetadata(@NotNull PropertyDef propertyDef) {
+        return renderBoundMetadata(propertyDef.getType(), renderPropertyBaseUsageEnum(propertyDef), "property");
+    }
+
     public @NotNull String renderPropertyUsageEnum(@NotNull PropertyDef propertyDef) {
-        boolean export = false;
+        return renderPropertyMetadata(propertyDef).usageExpr();
+    }
+
+    private @NotNull String renderPropertyBaseUsageEnum(@NotNull PropertyDef propertyDef) {
         for (var entry : propertyDef.getAnnotations().entrySet()) {
             if (entry.getKey().equals("export")) {
-                export = true;
-                break;
+                return "godot_PROPERTY_USAGE_DEFAULT";
             }
         }
-        if (export) {
-            return "godot_PROPERTY_USAGE_DEFAULT";
-        }
         return "godot_PROPERTY_USAGE_NO_EDITOR";
+    }
+
+    private @NotNull GdExtensionTypeEnum requireBoundMetadataType(@NotNull GdType type) {
+        var extensionType = type.getGdExtensionType();
+        if (extensionType == null) {
+            throw new IllegalArgumentException("Type " + type.getTypeName() + " does not have outward GDExtension metadata");
+        }
+        return extensionType;
+    }
+
+    /// Godot encodes typed array outward metadata as one leaf atom.
+    /// Backend only sees object leaves that frontend/lowering has already resolved to stable engine/GDCC
+    /// object identities. `script leaf` unsupported remains a documented ABI boundary rather than a helper-local
+    /// revalidation branch here.
+    private @NotNull String renderTypedArrayHintString(@NotNull GdArrayType type, @NotNull String useSite) {
+        return renderContainerHintAtom(type.getValueType(), useSite, "typed-array", false);
+    }
+
+    /// Shared leaf renderer for typed-container outward hints.
+    /// - typed array forbids `Variant` leaf because `Array[Variant]` must stay generic outwardly
+    /// - typed dictionary still publishes `Variant` as a valid side atom
+    /// - object leaves are emitted directly by name; backend assumes frontend/lowering already resolved them
+    private @NotNull String renderContainerHintAtom(@NotNull GdType type,
+                                                    @NotNull String useSite,
+                                                    @NotNull String containerKind,
+                                                    boolean allowVariantLeaf) {
+        return switch (type) {
+            case GdVariantType _ -> {
+                if (allowVariantLeaf) {
+                    yield type.getTypeName();
+                }
+                throw unsupportedOutwardHintLeaf(
+                        containerKind,
+                        type,
+                        useSite,
+                        "Variant element must stay generic Array outwardly"
+                );
+            }
+            case GdPackedArrayType _ -> type.getTypeName();
+            case GdArrayType arrayType -> {
+                if (arrayType.isGenericArray()) {
+                    yield "Array";
+                }
+                throw unsupportedOutwardHintLeaf(
+                        containerKind,
+                        type,
+                        useSite,
+                        "nested typed Array leaf is not supported"
+                );
+            }
+            case GdDictionaryType dictionaryType -> {
+                if (dictionaryType.isGenericDictionary()) {
+                    yield "Dictionary";
+                }
+                throw unsupportedOutwardHintLeaf(
+                        containerKind,
+                        type,
+                        useSite,
+                        "nested typed Dictionary leaf is not supported"
+                );
+            }
+            case GdObjectType _ -> type.getTypeName();
+            default -> {
+                if (type.getGdExtensionType() == null) {
+                    throw unsupportedOutwardHintLeaf(
+                            containerKind,
+                            type,
+                            useSite,
+                            "missing outward GDExtension metadata"
+                    );
+                }
+                yield type.getTypeName();
+            }
+        };
+    }
+
+    /// Godot encodes typed dictionary outward metadata as a flat `key;value` string.
+    /// We only publish one atom per side here, so nested typed containers must fail fast until we have a
+    /// real recursive outward grammar for them.
+    private @NotNull String renderTypedDictionaryHintString(@NotNull GdDictionaryType type) {
+        return renderContainerHintAtom(type.getKeyType(), "key leaf", "typed-dictionary", true) + ";" +
+                renderContainerHintAtom(type.getValueType(), "value leaf", "typed-dictionary", true);
+    }
+
+    private @NotNull IllegalArgumentException unsupportedOutwardHintLeaf(@NotNull String containerKind,
+                                                                         @NotNull GdType type,
+                                                                         @NotNull String useSite,
+                                                                         @NotNull String reason) {
+        return new IllegalArgumentException(
+                "Unsupported " + containerKind + " outward hint leaf '" + type.getTypeName() +
+                        "' at " + useSite + ": " + reason
+        );
+    }
+
+    private @NotNull TypedContainerRuntimeLeaf renderTypedArrayRuntimeLeaf(@NotNull GdType type,
+                                                                           @NotNull String useSite) {
+        return renderTypedContainerRuntimeLeaf(type, useSite, "typed-array", false);
+    }
+
+    private @NotNull TypedContainerRuntimeLeaf renderTypedDictionaryRuntimeLeaf(@NotNull GdType type,
+                                                                                @NotNull String useSite) {
+        return renderTypedContainerRuntimeLeaf(type, useSite, "typed-dictionary", true);
+    }
+
+    /// Typed array and typed dictionary share the same runtime leaf triple shape even though
+    /// their outward hint grammars and template blocks stay intentionally separate.
+    private @NotNull TypedContainerRuntimeLeaf renderTypedContainerRuntimeLeaf(@NotNull GdType type,
+                                                                               @NotNull String useSite,
+                                                                               @NotNull String containerKind,
+                                                                               boolean allowVariantLeaf) {
+        var typeEnum = requireTypedContainerRuntimeLeafType(type, useSite, containerKind, allowVariantLeaf);
+        if (type instanceof GdObjectType objectType) {
+            return new TypedContainerRuntimeLeaf(
+                    "(godot_int)GDEXTENSION_VARIANT_TYPE_" + typeEnum.name(),
+                    "GD_STATIC_SN(u8\"" + escapeStringLiteral(objectType.getTypeName()) + "\")",
+                    true
+            );
+        }
+
+        return new TypedContainerRuntimeLeaf(
+                "(godot_int)GDEXTENSION_VARIANT_TYPE_" + typeEnum.name(),
+                "GD_STATIC_SN(u8\"\")",
+                false
+        );
+    }
+
+    private @NotNull GdExtensionTypeEnum requireTypedContainerRuntimeLeafType(@NotNull GdType type,
+                                                                              @NotNull String useSite,
+                                                                              @NotNull String containerKind,
+                                                                              boolean allowVariantLeaf) {
+        return switch (type) {
+            case GdVariantType _ -> {
+                if (allowVariantLeaf) {
+                    yield GdExtensionTypeEnum.NIL;
+                }
+                throw unsupportedTypedContainerRuntimeLeaf(
+                        containerKind,
+                        type,
+                        useSite,
+                        "Variant element must stay generic Array runtime guard"
+                );
+            }
+            case GdArrayType arrayType -> {
+                if (arrayType.isGenericArray()) {
+                    yield GdExtensionTypeEnum.ARRAY;
+                }
+                throw unsupportedTypedContainerRuntimeLeaf(
+                        containerKind,
+                        type,
+                        useSite,
+                        "nested typed Array leaf is not supported"
+                );
+            }
+            case GdDictionaryType dictionaryType -> {
+                if (dictionaryType.isGenericDictionary()) {
+                    yield GdExtensionTypeEnum.DICTIONARY;
+                }
+                throw unsupportedTypedContainerRuntimeLeaf(
+                        containerKind,
+                        type,
+                        useSite,
+                        "nested typed Dictionary leaf is not supported"
+                );
+            }
+            default -> {
+                var extensionType = type.getGdExtensionType();
+                if (extensionType == null) {
+                    throw unsupportedTypedContainerRuntimeLeaf(
+                            containerKind,
+                            type,
+                            useSite,
+                            "missing runtime GDExtension metadata"
+                    );
+                }
+                yield extensionType;
+            }
+        };
+    }
+
+    private @NotNull IllegalArgumentException unsupportedTypedContainerRuntimeLeaf(@NotNull String containerKind,
+                                                                                   @NotNull GdType type,
+                                                                                   @NotNull String useSite,
+                                                                                   @NotNull String reason) {
+        return new IllegalArgumentException(
+                "Unsupported " + containerKind + " runtime leaf '" + type.getTypeName() +
+                        "' at " + useSite + ": " + reason
+        );
+    }
+
+    private @NotNull GdType resolveTypedArrayGuardLeaf(@NotNull GdType type) {
+        if (!(type instanceof GdArrayType arrayType) || arrayType.isGenericArray()) {
+            throw new IllegalArgumentException(
+                    "Typed-array guard metadata requested for non-typed Array slot '" + type.getTypeName() + "'"
+            );
+        }
+        return arrayType.getValueType();
+    }
+
+    private @NotNull GdType resolveTypedDictionaryGuardLeaf(@NotNull GdType type, @NotNull String sideName) {
+        if (!(type instanceof GdDictionaryType dictionaryType) || dictionaryType.isGenericDictionary()) {
+            throw new IllegalArgumentException(
+                    "Typed-dictionary guard metadata requested for non-typed Dictionary slot '" + type.getTypeName() + "'"
+            );
+        }
+        return switch (sideName) {
+            case "key" -> dictionaryType.getKeyType();
+            case "value" -> dictionaryType.getValueType();
+            default -> throw new IllegalArgumentException("Unknown typed-dictionary guard side: " + sideName);
+        };
     }
 
     /// Renders a variable assignment statement in C, handling Godot object return types properly.
@@ -570,6 +912,16 @@ public final class CGenHelper {
         return gdObjectType.getTypeName() + "_object_ptr";
     }
 
+    /// Render the dedicated constructor-time property-init apply helper name.
+    /// This stays in `CGenHelper` because it is pure generated-symbol naming, not a codegen-phase
+    /// control-flow concern.
+    public @NotNull String renderPropertyInitApplyHelperName(
+            @NotNull LirClassDef classDef,
+            @NotNull LirPropertyDef propertyDef
+    ) {
+        return classDef.getName() + "_class_apply_property_init_" + propertyDef.getName();
+    }
+
     /// Resolve the nearest constructible native ancestor for a GDCC class.
     /// This walks canonical GDCC superclass names until the first non-GDCC parent.
     public @NotNull String resolveNearestNativeAncestorName(@NotNull ClassDef classDef) {
@@ -621,8 +973,15 @@ public final class CGenHelper {
         return GODOT_UTILITY_PREFIX + functionName;
     }
 
-    /// Resolve utility call metadata from either `foo` or `godot_foo`.
+    /// Resolve utility/helper call metadata from either `foo` or `godot_foo`.
     public @Nullable UtilityCallResolution resolveUtilityCall(@NotNull String functionName) {
+        if (functionName.equals(VARIANT_WRITEBACK_HELPER_NAME)) {
+            return new UtilityCallResolution(
+                    VARIANT_WRITEBACK_HELPER_NAME,
+                    VARIANT_WRITEBACK_HELPER_NAME,
+                    VARIANT_WRITEBACK_HELPER_SIGNATURE
+            );
+        }
         var lookupName = normalizeUtilityLookupName(functionName);
         var signature = context.classRegistry().findUtilityFunctionSignature(lookupName);
         if (signature == null) {

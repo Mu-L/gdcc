@@ -5,6 +5,7 @@ import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdparser.frontend.ast.*;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
@@ -14,6 +15,7 @@ import dev.superice.gdcc.lir.LirSignalDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeTypeMeta;
+import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -34,18 +36,17 @@ public final class FrontendClassSkeletonBuilder {
     /// `FrontendSourceUnit`s. Units themselves no longer store parse diagnostics, so this builder
     /// must treat the shared manager as the only parse diagnostic source of truth.
     public @NotNull FrontendModuleSkeleton build(
-            @NotNull String moduleName,
-            @NotNull List<FrontendSourceUnit> units,
+            @NotNull FrontendModule module,
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnosticManager,
             @NotNull FrontendAnalysisData analysisData
     ) {
-        Objects.requireNonNull(moduleName, "moduleName must not be null");
-        Objects.requireNonNull(units, "units must not be null");
+        Objects.requireNonNull(module, "module must not be null");
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
         Objects.requireNonNull(analysisData, "analysisData must not be null");
 
+        var units = module.units();
         var annotationCollector = new FrontendAnnotationCollector();
 
         for (var unit : units) {
@@ -53,7 +54,8 @@ public final class FrontendClassSkeletonBuilder {
             // annotation ownership map instead of local copies.
             analysisData.annotationsByAst().putAll(annotationCollector.collect(unit));
         }
-        var headerDiscovery = discoverModuleClassHeaders(units, classRegistry, diagnosticManager);
+        var headerDiscovery = discoverModuleClassHeaders(module, classRegistry, diagnosticManager);
+        markSkippedSubtreeRoots(headerDiscovery.rejectedSubtreeRoots(), analysisData);
         var sourceClassRelations = new ArrayList<FrontendSourceClassRelation>();
 
         for (var sourceUnitGraph : headerDiscovery.sourceUnitGraphs()) {
@@ -64,7 +66,8 @@ public final class FrontendClassSkeletonBuilder {
                     classRegistry,
                     diagnosticManager,
                     sourceUnitGraph.unit().path(),
-                    analysisData
+                    analysisData,
+                    module.topLevelCanonicalNameMap()
             );
             sourceClassRelations.add(buildSourceClassRelationShell(sourceUnitGraph, context));
         }
@@ -74,12 +77,18 @@ public final class FrontendClassSkeletonBuilder {
                     classRegistry,
                     diagnosticManager,
                     sourceClassRelation.unit().path(),
-                    analysisData
+                    analysisData,
+                    module.topLevelCanonicalNameMap()
             );
             fillSourceClassRelationMembers(sourceClassRelation, context);
         }
 
-        return new FrontendModuleSkeleton(moduleName, sourceClassRelations, diagnosticManager.snapshot());
+        return new FrontendModuleSkeleton(
+                module.moduleName(),
+                sourceClassRelations,
+                module.topLevelCanonicalNameMap(),
+                diagnosticManager.snapshot()
+        );
     }
 
     /// Builds one accepted source-owned skeleton relation from the validated header graph:
@@ -111,6 +120,7 @@ public final class FrontendClassSkeletonBuilder {
         return new FrontendSourceClassRelation(
                 sourceUnitGraph.unit(),
                 topLevelHeader.sourceName(),
+                topLevelHeader.canonicalName(),
                 topLevelHeader.superClassRef(),
                 topLevelClassDef,
                 innerClassRelations
@@ -124,7 +134,10 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull ClassRegistry classRegistry
     ) {
         for (var sourceClassRelation : sourceClassRelations) {
-            classRegistry.addGdccClass(sourceClassRelation.topLevelClassDef());
+            classRegistry.addGdccClass(
+                    sourceClassRelation.topLevelClassDef(),
+                    sourceClassRelation.sourceName()
+            );
             for (var innerClassRelation : sourceClassRelation.innerClassRelations()) {
                 classRegistry.addGdccClass(
                         innerClassRelation.classDef(),
@@ -165,7 +178,7 @@ public final class FrontendClassSkeletonBuilder {
     }
 
     private @NotNull String resolveClassName(@NotNull Path sourcePath, @Nullable ClassNameStatement classNameStatement) {
-        var className = normalizeHeaderText(classNameStatement != null ? classNameStatement.name() : null);
+        var className = StringUtil.trimToNull(classNameStatement != null ? classNameStatement.name() : null);
         if (className != null) {
             return className;
         }
@@ -179,7 +192,7 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull List<Statement> statements,
             @Nullable ClassNameStatement classNameStatement
     ) {
-        var classNameExtends = normalizeHeaderText(
+        var classNameExtends = StringUtil.trimToNull(
                 classNameStatement != null ? classNameStatement.extendsTarget() : null
         );
         if (classNameExtends != null) {
@@ -187,7 +200,7 @@ public final class FrontendClassSkeletonBuilder {
         }
         for (var statement : statements) {
             if (statement instanceof ExtendsStatement extendsStatement) {
-                var extendsTarget = normalizeHeaderText(extendsStatement.target());
+                var extendsTarget = StringUtil.trimToNull(extendsStatement.target());
                 if (extendsTarget != null) {
                     return extendsTarget;
                 }
@@ -230,28 +243,54 @@ public final class FrontendClassSkeletonBuilder {
     ) {
         for (var statement : statements) {
             switch (statement) {
-                case SignalStatement signalStatement -> classDef.addSignal(
-                        toLirSignal(signalStatement, declaredTypeScope, context)
-                );
+                case SignalStatement signalStatement -> {
+                    if (rejectReservedSyntheticPropertyHelperMember(
+                            signalStatement,
+                            "Signal",
+                            signalStatement.name(),
+                            context
+                    )) {
+                        continue;
+                    }
+                    classDef.addSignal(toLirSignal(signalStatement, declaredTypeScope, context));
+                }
                 case VariableDeclaration variableDeclaration -> {
                     if (variableDeclaration.kind() == DeclarationKind.VAR) {
+                        if (rejectReservedSyntheticPropertyHelperMember(
+                                variableDeclaration,
+                                "Property",
+                                variableDeclaration.name(),
+                                context
+                        )) {
+                            continue;
+                        }
                         classDef.addProperty(
                                 toLirProperty(variableDeclaration, declaredTypeScope, context)
                         );
                     }
                 }
-                case FunctionDeclaration functionDeclaration -> addFunctionMember(
-                        classDef,
-                        functionDeclaration.name().trim().equals("_init")
-                                ? toLirInitFunction(
-                                functionDeclaration.parameters(),
-                                declaredTypeScope,
-                                context
-                        )
-                                : toLirFunction(functionDeclaration, declaredTypeScope, context),
-                        functionDeclaration,
-                        context
-                );
+                case FunctionDeclaration functionDeclaration -> {
+                    if (rejectReservedSyntheticPropertyHelperMember(
+                            functionDeclaration,
+                            "Function",
+                            functionDeclaration.name(),
+                            context
+                    )) {
+                        continue;
+                    }
+                    addFunctionMember(
+                            classDef,
+                            functionDeclaration.name().trim().equals("_init")
+                                    ? toLirInitFunction(
+                                    functionDeclaration.parameters(),
+                                    declaredTypeScope,
+                                    context
+                            )
+                                    : toLirFunction(functionDeclaration, declaredTypeScope, context),
+                            functionDeclaration,
+                            context
+                    );
+                }
                 case ConstructorDeclaration constructorDeclaration -> addFunctionMember(
                         classDef,
                         toLirInitFunction(
@@ -317,6 +356,7 @@ public final class FrontendClassSkeletonBuilder {
             var parameterType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                     parameter.type(),
                     declaredTypeScope,
+                    context.moduleTopLevelCanonicalNameMap(),
                     context.sourcePath(),
                     context.diagnostics()
             );
@@ -338,6 +378,7 @@ public final class FrontendClassSkeletonBuilder {
         var propertyType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 variableDeclaration.type(),
                 declaredTypeScope,
+                context.moduleTopLevelCanonicalNameMap(),
                 context.sourcePath(),
                 context.diagnostics()
         );
@@ -391,6 +432,7 @@ public final class FrontendClassSkeletonBuilder {
         functionDef.setReturnType(FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 functionDeclaration.returnType(),
                 declaredTypeScope,
+                context.moduleTopLevelCanonicalNameMap(),
                 context.sourcePath(),
                 context.diagnostics()
         ));
@@ -430,6 +472,7 @@ public final class FrontendClassSkeletonBuilder {
             var parameterType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                     parameter.type(),
                     declaredTypeScope,
+                    context.moduleTopLevelCanonicalNameMap(),
                     context.sourcePath(),
                     context.diagnostics()
             );
@@ -467,6 +510,45 @@ public final class FrontendClassSkeletonBuilder {
             return;
         }
         classDef.addFunction(functionDef);
+    }
+
+    private void markSkippedSubtreeRoots(
+            @NotNull List<? extends Node> skippedRoots,
+            @NotNull FrontendAnalysisData analysisData
+    ) {
+        for (var skippedRoot : skippedRoots) {
+            analysisData.skippedSubtreeRoots().put(
+                    Objects.requireNonNull(skippedRoot, "skippedRoot must not be null"),
+                    Boolean.TRUE
+            );
+        }
+    }
+
+    /// Compiler-owned synthetic property helpers are materialized later under `_field_init_*`,
+    /// `_field_getter_*`, and `_field_setter_*`. Rejecting source members that reuse those prefixes
+    /// keeps later lowering/backend phases from colliding with user-defined names.
+    private boolean rejectReservedSyntheticPropertyHelperMember(
+            @NotNull Node sourceNode,
+            @NotNull String memberKind,
+            @NotNull String memberName,
+            @NotNull SkeletonBuildContext context
+    ) {
+        var matchedPrefix = FrontendSyntheticPropertyHelperSupport.reservedPrefixOrNull(memberName);
+        if (matchedPrefix == null) {
+            return false;
+        }
+        context.diagnostics().error(
+                "sema.class_skeleton",
+                FrontendSyntheticPropertyHelperSupport.reservedPrefixDiagnosticMessage(
+                        memberKind,
+                        memberName,
+                        matchedPrefix
+                ),
+                context.sourcePath(),
+                FrontendRange.fromAstRange(sourceNode.range())
+        );
+        markSkippedSubtreeRoots(List.of(sourceNode), context.analysisData());
+        return true;
     }
 
     /// Skeleton member filling still runs before the real scope phase, so it materializes a minimal
@@ -541,10 +623,14 @@ public final class FrontendClassSkeletonBuilder {
     /// - records rejected subtree roots explicitly so downstream processing can skip only those
     ///   regions
     private @NotNull ModuleClassHeaderDiscovery discoverModuleClassHeaders(
-            @NotNull List<FrontendSourceUnit> units,
+            @NotNull FrontendModule module,
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnosticManager
     ) {
+        Objects.requireNonNull(module, "module must not be null");
+        // Header discovery now receives the frozen module carrier directly so later canonical-name
+        // identity work can read module-level mapping without reopening another parallel API.
+        var units = module.units();
         var sourceUnitHeaders = new ArrayList<MutableSourceUnitHeaders>(units.size());
         var discoveredHeadersInOrder = new ArrayList<MutableClassHeader>();
         var rejectedCandidates = new ArrayList<RejectedClassHeader>();
@@ -553,6 +639,7 @@ public final class FrontendClassSkeletonBuilder {
         for (var unit : units) {
             var topLevelHeader = discoverTopLevelHeader(
                     unit,
+                    module.topLevelCanonicalNameMap(),
                     discoveredHeadersInOrder,
                     rejectedCandidates,
                     rejectedSubtreeRoots,
@@ -619,20 +706,22 @@ public final class FrontendClassSkeletonBuilder {
     /// on one complete header graph before any skeleton object is published.
     private @NotNull MutableClassHeader discoverTopLevelHeader(
             @NotNull FrontendSourceUnit unit,
+            @NotNull Map<String, String> topLevelCanonicalNameMap,
             @NotNull List<MutableClassHeader> discoveredHeadersInOrder,
             @NotNull List<RejectedClassHeader> rejectedCandidates,
             @NotNull List<Node> rejectedSubtreeRoots,
             @NotNull DiagnosticManager diagnosticManager
     ) {
         var classNameStatement = firstClassNameStatement(unit.ast().statements());
-        var topLevelName = resolveClassName(unit.path(), classNameStatement);
+        var topLevelSourceName = resolveClassName(unit.path(), classNameStatement);
+        var topLevelCanonicalName = resolveTopLevelCanonicalName(topLevelSourceName, topLevelCanonicalNameMap);
         var topLevelHeader = new MutableClassHeader(
                 unit,
                 null,
                 unit.ast(),
                 unit.ast(),
-                topLevelName,
-                topLevelName,
+                topLevelSourceName,
+                topLevelCanonicalName,
                 resolveTopLevelRawExtendsText(unit.ast().statements(), classNameStatement),
                 FrontendRange.fromAstRange(topLevelClassRange(unit)),
                 true
@@ -655,7 +744,6 @@ public final class FrontendClassSkeletonBuilder {
     /// Discovery is intentionally tolerant: malformed inner declarations publish diagnostics and
     /// become rejected subtree roots immediately, while valid siblings continue to be discovered in
     /// the same source unit.
-    @SuppressWarnings("DeconstructionCanBeUsed")
     private void discoverInnerClassHeaders(
             @NotNull FrontendSourceUnit unit,
             @NotNull List<Statement> statements,
@@ -672,7 +760,7 @@ public final class FrontendClassSkeletonBuilder {
                 continue;
             }
 
-            var innerClassName = normalizeHeaderText(classDeclaration.name());
+            var innerClassName = StringUtil.trimToNull(classDeclaration.name());
             if (innerClassName == null) {
                 diagnosticManager.error(
                         "sema.class_skeleton",
@@ -686,7 +774,7 @@ public final class FrontendClassSkeletonBuilder {
                         classDeclaration,
                         null,
                         null,
-                        normalizeHeaderText(classDeclaration.extendsTarget()),
+                        StringUtil.trimToNull(classDeclaration.extendsTarget()),
                         FrontendRange.fromAstRange(classDeclaration.range())
                 ));
                 rejectedSubtreeRoots.add(classDeclaration);
@@ -700,7 +788,7 @@ public final class FrontendClassSkeletonBuilder {
                     classDeclaration,
                     innerClassName,
                     parentCanonicalName + "$" + innerClassName,
-                    normalizeHeaderText(classDeclaration.extendsTarget()),
+                    StringUtil.trimToNull(classDeclaration.extendsTarget()),
                     FrontendRange.fromAstRange(classDeclaration.range()),
                     false
             );
@@ -827,8 +915,8 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull MutableClassHeader duplicate,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        var className = duplicate.canonicalName();
-        var message = "Duplicate class name '" + className + "' found in "
+        var className = duplicate.sourceName();
+        var message = "Duplicate top-level class source name '" + className + "' found in "
                 + existing.unit().path() + " and " + duplicate.unit().path()
                 + "; duplicate skeleton subtree will be skipped";
         diagnosticManager.error(
@@ -1377,12 +1465,13 @@ public final class FrontendClassSkeletonBuilder {
                 || trimmed.contains("\\");
     }
 
-    private @Nullable String normalizeHeaderText(@Nullable String text) {
-        if (text == null) {
-            return null;
-        }
-        var trimmed = text.trim();
-        return trimmed.isEmpty() ? null : trimmed;
+    /// Top-level canonical-name mapping is frozen once at the module boundary and applied during
+    /// header discovery so duplicate/canonical/conflict validation all see the final identity.
+    private @NotNull String resolveTopLevelCanonicalName(
+            @NotNull String sourceName,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) {
+        return topLevelCanonicalNameMap.getOrDefault(sourceName, sourceName);
     }
 
     private @NotNull String describeLexicalOwner(@NotNull MutableClassHeader discoveredHeader) {
@@ -1395,8 +1484,12 @@ public final class FrontendClassSkeletonBuilder {
 
     private @NotNull String describeClassHeaderOrigin(@NotNull MutableClassHeader discoveredHeader) {
         var classKind = discoveredHeader.isTopLevel()
-                ? "top-level class"
-                : "inner class '" + discoveredHeader.sourceName() + "'";
+                ? discoveredHeader.sourceName().equals(discoveredHeader.canonicalName())
+                  ? "top-level class '" + discoveredHeader.sourceName() + "'"
+                  : "top-level class source '" + discoveredHeader.sourceName()
+                    + "' (canonical '" + discoveredHeader.canonicalName() + "')"
+                : "inner class '" + discoveredHeader.sourceName()
+                  + "' (canonical '" + discoveredHeader.canonicalName() + "')";
         return discoveredHeader.unit().path() + " (" + classKind + ")";
     }
 
@@ -1671,7 +1764,8 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnostics,
             @NotNull Path sourcePath,
-            @NotNull FrontendAnalysisData analysisData
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull Map<String, String> moduleTopLevelCanonicalNameMap
     ) {
     }
 }

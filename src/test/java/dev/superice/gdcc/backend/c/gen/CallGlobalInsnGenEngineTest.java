@@ -21,9 +21,16 @@ import dev.superice.gdcc.lir.insn.PackVariantInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.lir.insn.UnpackVariantInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdBoolType;
+import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdFloatType;
+import dev.superice.gdcc.type.GdFloatVectorType;
+import dev.superice.gdcc.type.GdIntVectorType;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdPackedNumericArrayType;
 import dev.superice.gdcc.type.GdStringType;
+import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.Assumptions;
@@ -96,6 +103,63 @@ class CallGlobalInsnGenEngineTest {
         assertFalse(combinedOutput.contains("check failed"), "No check should fail.\nOutput:\n" + combinedOutput);
     }
 
+    @Test
+    @DisplayName("CALL_GLOBAL should execute Variant writeback helper family matrix in real engine")
+    void callGlobalVariantWritebackHelperShouldMatchRuntimeFamilyMatrix() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/call_global_variant_writeback_helper_engine");
+        Files.createDirectories(tempDir);
+
+        var projectInfo = new CProjectInfo(
+                "call_global_variant_writeback_helper_engine",
+                GodotVersion.V451,
+                tempDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var builder = new CProjectBuilder();
+        builder.initProject(projectInfo);
+
+        var probeClass = newVariantWritebackHelperProbeClass();
+        var module = new LirModule("call_global_variant_writeback_helper_module", List.of(probeClass));
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+
+        var buildResult = builder.buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), "Compilation should succeed. Build log:\n" + buildResult.buildLog());
+        assertFalse(buildResult.artifacts().isEmpty(), "Compilation should produce extension artifacts.");
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "CallGlobalWritebackHelperNode",
+                        probeClass.getName(),
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(variantWritebackHelperTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper string true check passed."), "String should require writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper vector2 true check passed."), "Vector2 should require writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper vector3i true check passed."), "Vector3i should require writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper packed array true check passed."), "PackedInt32Array should require writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper array false check passed."), "Array should skip writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper dictionary false check passed."), "Dictionary should skip writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper object false check passed."), "Object should skip writeback.\nOutput:\n" + combinedOutput);
+        assertFalse(combinedOutput.contains("check failed"), "No helper-matrix check should fail.\nOutput:\n" + combinedOutput);
+    }
+
     private static boolean hasZig() {
         return ZigUtil.findZig() != null;
     }
@@ -113,17 +177,48 @@ class CallGlobalInsnGenEngineTest {
         return clazz;
     }
 
+    private static LirClassDef newVariantWritebackHelperProbeClass() {
+        var clazz = new LirClassDef("GDCallGlobalWritebackHelperNode", "Node");
+        clazz.setSourceFile("call_global_variant_writeback_helper.gd");
+
+        var selfType = new GdObjectType(clazz.getName());
+        clazz.addFunction(newVariantWritebackProbeFunction("probe_string", GdStringType.STRING, selfType));
+        clazz.addFunction(newVariantWritebackProbeFunction("probe_vector2", GdFloatVectorType.VECTOR2, selfType));
+        clazz.addFunction(newVariantWritebackProbeFunction("probe_vector3i", GdIntVectorType.VECTOR3I, selfType));
+        clazz.addFunction(newVariantWritebackProbeFunction(
+                "probe_packed_int32_array",
+                GdPackedNumericArrayType.PACKED_INT32_ARRAY,
+                selfType
+        ));
+        clazz.addFunction(newVariantWritebackProbeFunction(
+                "probe_array",
+                new GdArrayType(GdVariantType.VARIANT),
+                selfType
+        ));
+        clazz.addFunction(newVariantWritebackProbeFunction(
+                "probe_dictionary",
+                new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT),
+                selfType
+        ));
+        clazz.addFunction(newVariantWritebackProbeFunction(
+                "probe_node_object",
+                new GdObjectType("Node"),
+                selfType
+        ));
+        return clazz;
+    }
+
     private static LirFunctionDef newTanFunction(GdObjectType selfType) {
         var func = newMethod("call_tan", GdFloatType.FLOAT, selfType);
         func.addParameter(new LirParameterDef("angleRad", GdFloatType.FLOAT, null, func));
         func.createAndAddVariable("result", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "result",
                 "tan",
                 List.of(varRef("angleRad"))
         ));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -133,12 +228,12 @@ class CallGlobalInsnGenEngineTest {
         func.addParameter(new LirParameterDef("y", GdFloatType.FLOAT, null, func));
         func.createAndAddVariable("result", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "result",
                 "fposmod",
                 List.of(varRef("x"), varRef("y"))
         ));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -154,16 +249,16 @@ class CallGlobalInsnGenEngineTest {
         func.createAndAddVariable("resultVariant", GdVariantType.VARIANT);
         func.createAndAddVariable("result", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new PackVariantInsn("fromVariant", "from"));
-        entry(func).instructions().add(new PackVariantInsn("toVariant", "to"));
-        entry(func).instructions().add(new PackVariantInsn("weightVariant", "weight"));
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new PackVariantInsn("fromVariant", "from"));
+        entry(func).appendInstruction(new PackVariantInsn("toVariant", "to"));
+        entry(func).appendInstruction(new PackVariantInsn("weightVariant", "weight"));
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "resultVariant",
                 "lerp",
                 List.of(varRef("fromVariant"), varRef("toVariant"), varRef("weightVariant"))
         ));
-        entry(func).instructions().add(new UnpackVariantInsn("result", "resultVariant"));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new UnpackVariantInsn("result", "resultVariant"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -179,16 +274,16 @@ class CallGlobalInsnGenEngineTest {
         func.createAndAddVariable("resultVariant", GdVariantType.VARIANT);
         func.createAndAddVariable("result", GdFloatType.FLOAT);
 
-        entry(func).instructions().add(new PackVariantInsn("aVariant", "a"));
-        entry(func).instructions().add(new PackVariantInsn("bVariant", "b"));
-        entry(func).instructions().add(new PackVariantInsn("cVariant", "c"));
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new PackVariantInsn("aVariant", "a"));
+        entry(func).appendInstruction(new PackVariantInsn("bVariant", "b"));
+        entry(func).appendInstruction(new PackVariantInsn("cVariant", "c"));
+        entry(func).appendInstruction(new CallGlobalInsn(
                 "resultVariant",
                 "max",
                 List.of(varRef("aVariant"), varRef("bVariant"), varRef("cVariant"))
         ));
-        entry(func).instructions().add(new UnpackVariantInsn("result", "resultVariant"));
-        entry(func).instructions().add(new ReturnInsn("result"));
+        entry(func).appendInstruction(new UnpackVariantInsn("result", "resultVariant"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -197,14 +292,34 @@ class CallGlobalInsnGenEngineTest {
         func.createAndAddVariable("messageText", GdStringType.STRING);
         func.createAndAddVariable("messageVariant", GdVariantType.VARIANT);
 
-        entry(func).instructions().add(new LiteralStringInsn("messageText", "[engine] call_print from extension"));
-        entry(func).instructions().add(new PackVariantInsn("messageVariant", "messageText"));
-        entry(func).instructions().add(new CallGlobalInsn(
+        entry(func).appendInstruction(new LiteralStringInsn("messageText", "[engine] call_print from extension"));
+        entry(func).appendInstruction(new PackVariantInsn("messageVariant", "messageText"));
+        entry(func).appendInstruction(new CallGlobalInsn(
                 null,
                 "print",
                 List.of(varRef("messageVariant"))
         ));
-        entry(func).instructions().add(new ReturnInsn(null));
+        entry(func).appendInstruction(new ReturnInsn(null));
+        return func;
+    }
+
+    private static LirFunctionDef newVariantWritebackProbeFunction(
+            String name,
+            GdType probeType,
+            GdObjectType selfType
+    ) {
+        var func = newMethod(name, GdBoolType.BOOL, selfType);
+        func.addParameter(new LirParameterDef("value", probeType, null, func));
+        func.createAndAddVariable("carrier", GdVariantType.VARIANT);
+        func.createAndAddVariable("requiresWriteback", GdBoolType.BOOL);
+
+        entry(func).appendInstruction(new PackVariantInsn("carrier", "value"));
+        entry(func).appendInstruction(new CallGlobalInsn(
+                "requiresWriteback",
+                "gdcc_variant_requires_writeback",
+                List.of(varRef("carrier"))
+        ));
+        entry(func).appendInstruction(new ReturnInsn("requiresWriteback"));
         return func;
     }
 
@@ -263,6 +378,55 @@ class CallGlobalInsnGenEngineTest {
                         push_error("max check failed.")
                 
                     target.call("call_print")
+                """;
+    }
+
+    private static String variantWritebackHelperTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "CallGlobalWritebackHelperNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    if bool(target.call("probe_string", "alpha")):
+                        print("helper string true check passed.")
+                    else:
+                        push_error("helper string true check failed.")
+                
+                    if bool(target.call("probe_vector2", Vector2(1.0, 2.0))):
+                        print("helper vector2 true check passed.")
+                    else:
+                        push_error("helper vector2 true check failed.")
+                
+                    if bool(target.call("probe_vector3i", Vector3i(1, 2, 3))):
+                        print("helper vector3i true check passed.")
+                    else:
+                        push_error("helper vector3i true check failed.")
+                
+                    if bool(target.call("probe_packed_int32_array", PackedInt32Array([1, 2]))):
+                        print("helper packed array true check passed.")
+                    else:
+                        push_error("helper packed array true check failed.")
+                
+                    if not bool(target.call("probe_array", [1, 2])):
+                        print("helper array false check passed.")
+                    else:
+                        push_error("helper array false check failed.")
+                
+                    if not bool(target.call("probe_dictionary", {"alpha": 1})):
+                        print("helper dictionary false check passed.")
+                    else:
+                        push_error("helper dictionary false check failed.")
+                
+                    if not bool(target.call("probe_node_object", Node.new())):
+                        print("helper object false check passed.")
+                    else:
+                        push_error("helper object false check failed.")
                 """;
     }
 }

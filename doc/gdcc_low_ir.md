@@ -127,6 +127,15 @@ $<result_id> = construct_dictionary "<key_class_name>"? "<value_class_name>"?
 #### construct_object
 Constructs a new Object of a specific class.
 If the new class object extends RefCounted, the returned object is owned (reference count increased by 1).
+Current C backend lowers this instruction by:
+- calling `godot_new_XXX()` directly for engine classes
+- calling generated `XXX_class_create_instance(NULL, true)` for non-`RefCounted` GDCC classes
+- calling `XXX_class_create_instance(NULL, false)` and then `gdcc_ref_counted_init_raw(..., true)`
+  when the constructed GDCC class definitely inherits `RefCounted`
+- leaving engine-driven / GDScript-driven GDCC `RefCounted` instantiation to Godot's own reference
+  count initialization path instead of duplicating that work inside `*_class_create_instance(...)`
+- then reusing the existing object-slot write / pointer-conversion ownership path instead of
+  introducing a dedicated constructor-only lifecycle branch
 ```
 $<result_id> = construct_object <class_name>
 ```

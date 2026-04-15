@@ -24,6 +24,10 @@ public interface FrontendOwnedClassRelation {
 
     @NotNull String canonicalName();
 
+    default @NotNull String displayName() {
+        return canonicalName();
+    }
+
     @NotNull FrontendSuperClassRef superClassRef();
 
     @NotNull LirClassDef classDef();

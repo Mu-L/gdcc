@@ -84,9 +84,12 @@ void ${classDef.name}_class_bind_methods() {
     <#list classDef.properties as property>
     {
         <#if !property.static>
+            <#assign propertyMetadata = helper.renderPropertyMetadata(property)>
 <#--            gdcc_bind_method${helper.renderGetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.getterFunc}"), ${classDef.name}_${property.getterFunc});-->
 <#--            gdcc_bind_method${helper.renderSetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.setterFunc}"), ${classDef.name}_${property.setterFunc}, GD_STATIC_SN(u8"value"), GDEXTENSION_VARIANT_TYPE_${property.type.gdExtensionType.name()});-->
-            gdcc_bind_property(class_name, GD_STATIC_SN(u8"${property.name}"), GDEXTENSION_VARIANT_TYPE_${property.type.gdExtensionType.name()}, ${helper.renderPropertyUsageEnum(property)}, GD_STATIC_SN(u8"${property.getterFunc}"), GD_STATIC_SN(u8"${property.setterFunc}"));
+            <#-- Property outward metadata stays centralized in renderPropertyMetadata(...): it owns type/hint/hint_string/usage
+                 for Variant, typed Array and typed Dictionary alike, while property class_name still uses the current owner-class slot. -->
+            gdcc_bind_property_full(class_name, GD_STATIC_SN(u8"${property.name}"), ${propertyMetadata.typeEnumLiteral}, ${propertyMetadata.hintEnumLiteral}, ${propertyMetadata.hintStringExpr}, class_name, ${propertyMetadata.usageExpr}, GD_STATIC_SN(u8"${property.getterFunc}"), GD_STATIC_SN(u8"${property.setterFunc}"));
         </#if>
     }
     </#list>
@@ -120,6 +123,12 @@ static inline void ${classDef.name}_set_object_ptr(${classDef.name}* self, GDExt
 
 // GdExtension Methods for each class
 <#list module.classDefs as classDef>
+<#list classDef.properties as property>
+static inline void ${helper.renderPropertyInitApplyHelperName(classDef, property)}(${classDef.name}* self) {
+    ${gen.generatePropertyInitApplyBody(classDef, property)}
+}
+</#list>
+
 GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userdata, GDExtensionBool p_notify_postinitialize) {
     GDExtensionObjectPtr obj = godot_classdb_construct_object2(GD_STATIC_SN(u8"${helper.resolveNearestNativeAncestorName(classDef)}"));
     ${classDef.name}* self = godot_mem_alloc(sizeof(${classDef.name}));
@@ -148,11 +157,13 @@ void ${classDef.name}_class_constructor(${classDef.name}* self) {
         ${classDef.superName}_class_constructor(&self->_super);
     </#if>
     <#list classDef.properties as property>
-        self->${property.name} = ${classDef.name}_${property.initFunc}(self);
+        ${helper.renderPropertyInitApplyHelperName(classDef, property)}(self);
     </#list>
-    <#if classDef.hasFunction("_init")>
-        ${classDef.name}__init(self);
-    </#if>
+    <#list classDef.functions as function>
+        <#if function.name == "_init" && !function.static && function.parameters?size == 1>
+            ${classDef.name}__init(self);
+        </#if>
+    </#list>
 }
 
 void ${classDef.name}_class_destructor(${classDef.name}* self) {

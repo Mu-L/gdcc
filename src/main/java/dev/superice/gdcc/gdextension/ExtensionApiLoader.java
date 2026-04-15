@@ -224,16 +224,14 @@ public final class ExtensionApiLoader {
                 }
             }
 
-            var properties = new ArrayList<ExtensionBuiltinClass.PropertyInfo>();
-            if (o.has("properties")) {
-                for (var pe : o.getAsJsonArray("properties")) {
-                    var po = pe.getAsJsonObject();
-                    properties.add(new ExtensionBuiltinClass.PropertyInfo(
-                            po.has("name") ? po.get("name").getAsString() : null,
-                            po.has("type") ? po.get("type").getAsString() : null,
-                            po.has("is_readable") && po.get("is_readable").getAsBoolean(),
-                            po.has("is_writable") && po.get("is_writable").getAsBoolean(),
-                            po.has("default_value") ? po.get("default_value").getAsString() : null
+            // Builtin value types expose fields like `Vector3.x` only via the raw JSON `members` array.
+            var members = new ArrayList<ExtensionBuiltinClass.MemberInfo>();
+            if (o.has("members")) {
+                for (var me : o.getAsJsonArray("members")) {
+                    var mo = me.getAsJsonObject();
+                    members.add(new ExtensionBuiltinClass.MemberInfo(
+                            mo.has("name") ? mo.get("name").getAsString() : null,
+                            mo.has("type") ? mo.get("type").getAsString() : null
                     ));
                 }
             }
@@ -250,7 +248,16 @@ public final class ExtensionApiLoader {
                 }
             }
 
-            out.add(new ExtensionBuiltinClass(name, isKeyed, Collections.unmodifiableList(operators), Collections.unmodifiableList(methods), Collections.unmodifiableList(enums), Collections.unmodifiableList(constructors), Collections.unmodifiableList(properties), Collections.unmodifiableList(constants)));
+            out.add(new ExtensionBuiltinClass(
+                    name,
+                    isKeyed,
+                    Collections.unmodifiableList(operators),
+                    Collections.unmodifiableList(methods),
+                    Collections.unmodifiableList(enums),
+                    Collections.unmodifiableList(constructors),
+                    Collections.unmodifiableList(members),
+                    Collections.unmodifiableList(constants)
+            ));
         }
         return Collections.unmodifiableList(out);
     }

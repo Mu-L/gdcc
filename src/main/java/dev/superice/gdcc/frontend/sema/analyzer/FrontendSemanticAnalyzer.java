@@ -1,18 +1,17 @@
 package dev.superice.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
-import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import dev.superice.gdcc.scope.ClassRegistry;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.Objects;
-import java.util.List;
 
 /// Basic frontend semantic-analyzer framework.
 ///
-/// The current framework wires eight stable frontend phases into one shared
+/// The current framework wires ten shared frontend phases plus one compile-only gate into one shared
 /// `FrontendAnalysisData` carrier:
 /// - skeleton publication
 /// - lexical scope graph construction
@@ -20,8 +19,10 @@ import java.util.List;
 /// - top-binding publication for symbol-category resolution
 /// - chain member/call publication
 /// - expression-type publication
+/// - callable-local slot-type publication
 /// - annotation-usage validation
 /// - diagnostics-only type-check traversal
+/// - diagnostics-only loop-control legality traversal
 /// - compile-only final gate via `analyzeForCompile(...)`
 /// - diagnostics boundary refresh after each phase
 public final class FrontendSemanticAnalyzer {
@@ -31,8 +32,10 @@ public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer;
     private final @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer;
     private final @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer;
+    private final @NotNull FrontendVarTypePostAnalyzer varTypePostAnalyzer;
     private final @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer;
     private final @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer;
+    private final @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer;
     private final @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer;
 
     public FrontendSemanticAnalyzer() {
@@ -43,8 +46,10 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendTopBindingAnalyzer(),
                 new FrontendChainBindingAnalyzer(),
                 new FrontendExprTypeAnalyzer(),
+                new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
+                new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
         );
     }
@@ -57,8 +62,10 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendTopBindingAnalyzer(),
                 new FrontendChainBindingAnalyzer(),
                 new FrontendExprTypeAnalyzer(),
+                new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
+                new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
         );
     }
@@ -74,8 +81,10 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendTopBindingAnalyzer(),
                 new FrontendChainBindingAnalyzer(),
                 new FrontendExprTypeAnalyzer(),
+                new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
+                new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
         );
     }
@@ -110,8 +119,10 @@ public final class FrontendSemanticAnalyzer {
                 topBindingAnalyzer,
                 new FrontendChainBindingAnalyzer(),
                 new FrontendExprTypeAnalyzer(),
+                new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
+                new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
         );
     }
@@ -130,8 +141,10 @@ public final class FrontendSemanticAnalyzer {
                 topBindingAnalyzer,
                 chainBindingAnalyzer,
                 new FrontendExprTypeAnalyzer(),
+                new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
+                new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
         );
     }
@@ -151,8 +164,10 @@ public final class FrontendSemanticAnalyzer {
                 topBindingAnalyzer,
                 chainBindingAnalyzer,
                 exprTypeAnalyzer,
+                new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
+                new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
         );
     }
@@ -173,8 +188,10 @@ public final class FrontendSemanticAnalyzer {
                 topBindingAnalyzer,
                 chainBindingAnalyzer,
                 exprTypeAnalyzer,
+                new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
                 typeCheckAnalyzer,
+                new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
         );
     }
@@ -196,8 +213,36 @@ public final class FrontendSemanticAnalyzer {
                 topBindingAnalyzer,
                 chainBindingAnalyzer,
                 exprTypeAnalyzer,
+                new FrontendVarTypePostAnalyzer(),
                 annotationUsageAnalyzer,
                 typeCheckAnalyzer,
+                new FrontendLoopControlFlowAnalyzer(),
+                new FrontendCompileCheckAnalyzer()
+        );
+    }
+
+    public FrontendSemanticAnalyzer(
+            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
+            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
+            @NotNull FrontendVariableAnalyzer variableAnalyzer,
+            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
+            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
+            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
+            @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer,
+            @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer,
+            @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer
+    ) {
+        this(
+                classSkeletonBuilder,
+                scopeAnalyzer,
+                variableAnalyzer,
+                topBindingAnalyzer,
+                chainBindingAnalyzer,
+                exprTypeAnalyzer,
+                new FrontendVarTypePostAnalyzer(),
+                annotationUsageAnalyzer,
+                typeCheckAnalyzer,
+                loopControlFlowAnalyzer,
                 new FrontendCompileCheckAnalyzer()
         );
     }
@@ -213,17 +258,80 @@ public final class FrontendSemanticAnalyzer {
             @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer,
             @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer
     ) {
+        this(
+                classSkeletonBuilder,
+                scopeAnalyzer,
+                variableAnalyzer,
+                topBindingAnalyzer,
+                chainBindingAnalyzer,
+                exprTypeAnalyzer,
+                new FrontendVarTypePostAnalyzer(),
+                annotationUsageAnalyzer,
+                typeCheckAnalyzer,
+                new FrontendLoopControlFlowAnalyzer(),
+                compileCheckAnalyzer
+        );
+    }
+
+    public FrontendSemanticAnalyzer(
+            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
+            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
+            @NotNull FrontendVariableAnalyzer variableAnalyzer,
+            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
+            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
+            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
+            @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer,
+            @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer,
+            @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer,
+            @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer
+    ) {
+        this(
+                classSkeletonBuilder,
+                scopeAnalyzer,
+                variableAnalyzer,
+                topBindingAnalyzer,
+                chainBindingAnalyzer,
+                exprTypeAnalyzer,
+                new FrontendVarTypePostAnalyzer(),
+                annotationUsageAnalyzer,
+                typeCheckAnalyzer,
+                loopControlFlowAnalyzer,
+                compileCheckAnalyzer
+        );
+    }
+
+    public FrontendSemanticAnalyzer(
+            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
+            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
+            @NotNull FrontendVariableAnalyzer variableAnalyzer,
+            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
+            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
+            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
+            @NotNull FrontendVarTypePostAnalyzer varTypePostAnalyzer,
+            @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer,
+            @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer,
+            @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer,
+            @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer
+    ) {
         this.classSkeletonBuilder = Objects.requireNonNull(classSkeletonBuilder, "classSkeletonBuilder must not be null");
         this.scopeAnalyzer = Objects.requireNonNull(scopeAnalyzer, "scopeAnalyzer must not be null");
         this.variableAnalyzer = Objects.requireNonNull(variableAnalyzer, "variableAnalyzer must not be null");
         this.topBindingAnalyzer = Objects.requireNonNull(topBindingAnalyzer, "topBindingAnalyzer must not be null");
         this.chainBindingAnalyzer = Objects.requireNonNull(chainBindingAnalyzer, "chainBindingAnalyzer must not be null");
         this.exprTypeAnalyzer = Objects.requireNonNull(exprTypeAnalyzer, "exprTypeAnalyzer must not be null");
+        this.varTypePostAnalyzer = Objects.requireNonNull(
+                varTypePostAnalyzer,
+                "varTypePostAnalyzer must not be null"
+        );
         this.annotationUsageAnalyzer = Objects.requireNonNull(
                 annotationUsageAnalyzer,
                 "annotationUsageAnalyzer must not be null"
         );
         this.typeCheckAnalyzer = Objects.requireNonNull(typeCheckAnalyzer, "typeCheckAnalyzer must not be null");
+        this.loopControlFlowAnalyzer = Objects.requireNonNull(
+                loopControlFlowAnalyzer,
+                "loopControlFlowAnalyzer must not be null"
+        );
         this.compileCheckAnalyzer = Objects.requireNonNull(compileCheckAnalyzer, "compileCheckAnalyzer must not be null");
     }
 
@@ -238,20 +346,17 @@ public final class FrontendSemanticAnalyzer {
     /// Compile callers must use `analyzeForCompile(...)` and check the resulting diagnostics for
     /// errors before allowing frontend output to enter lowering.
     public @NotNull FrontendAnalysisData analyze(
-            @NotNull String moduleName,
-            @NotNull List<FrontendSourceUnit> units,
+            @NotNull FrontendModule module,
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        Objects.requireNonNull(moduleName, "moduleName must not be null");
-        Objects.requireNonNull(units, "units must not be null");
+        Objects.requireNonNull(module, "module must not be null");
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
 
         var analysisData = FrontendAnalysisData.bootstrap();
         var moduleSkeleton = classSkeletonBuilder.build(
-                moduleName,
-                units,
+                module,
                 classRegistry,
                 diagnosticManager,
                 analysisData
@@ -290,6 +395,11 @@ public final class FrontendSemanticAnalyzer {
         exprTypeAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
+        // Lowering is only allowed to consume published facts, so the final callable-local slot
+        // types are republished here after expression typing has already settled `:=` backfill.
+        varTypePostAnalyzer.analyze(analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+
         // Annotation-usage validation consumes retained annotations plus the published class/scope
         // facts, but still stays diagnostics-only and does not mutate semantic side tables.
         annotationUsageAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
@@ -298,6 +408,11 @@ public final class FrontendSemanticAnalyzer {
         // Type checking is diagnostics-only for now: it consumes the published frontend facts but
         // must not introduce new side tables or rewrite earlier publication boundaries.
         typeCheckAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+
+        // Loop-control legality is also diagnostics-only, but it must run on the shared semantic
+        // path so invalid `break` / `continue` never rely on lowering fail-fast to become visible.
+        loopControlFlowAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return analysisData;
     }
@@ -309,12 +424,11 @@ public final class FrontendSemanticAnalyzer {
     /// frontend-to-LIR lowering must treat this entrypoint plus `diagnostics().hasErrors() == false`
     /// as the minimum precondition before compilation can continue.
     public @NotNull FrontendAnalysisData analyzeForCompile(
-            @NotNull String moduleName,
-            @NotNull List<FrontendSourceUnit> units,
+            @NotNull FrontendModule module,
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        var analysisData = analyze(moduleName, units, classRegistry, diagnosticManager);
+        var analysisData = analyze(module, classRegistry, diagnosticManager);
         compileCheckAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return analysisData;

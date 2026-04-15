@@ -34,7 +34,7 @@ class FrontendAnalysisInspectionToolTest {
 
         assertEquals(
                 result.report(),
-                tool.renderSingleUnitReport("test_module", result.unit(), result.analysisData())
+                tool.renderSingleUnitReport(result.module(), result.unit(), result.analysisData())
         );
     }
 
@@ -52,10 +52,14 @@ class FrontendAnalysisInspectionToolTest {
                         
                         func helper(seed) -> String:
                             return "ok"
+
+                        func make_cb() -> Callable:
+                            return helper
                         
                         func ping(seed):
                             Worker.build(seed)
                             helper(seed)
+                            self.make_cb()()
                         """
         ).report();
 
@@ -66,9 +70,11 @@ class FrontendAnalysisInspectionToolTest {
         assertTrue(report.contains("route-head TYPE_META is intentionally not published as ordinary value expression"));
         assertTrue(report.contains("call.source = published"));
         assertTrue(report.contains("callKind = STATIC_METHOD"));
-        assertTrue(report.contains("call.source = derived"));
-        assertTrue(report.contains("callKind = BARE_CALL_DERIVED"));
+        assertTrue(report.contains("callKind = INSTANCE_METHOD"));
         assertTrue(report.contains("calleeBinding = METHOD"));
+        assertTrue(report.contains("call.source = derived"));
+        assertTrue(report.contains("callKind = CALL_DERIVED"));
+        assertTrue(report.contains("Direct invocation of callable values"));
     }
 
     @Test

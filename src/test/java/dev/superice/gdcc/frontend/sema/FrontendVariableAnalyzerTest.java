@@ -5,6 +5,7 @@ import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.scope.BlockScope;
@@ -37,6 +38,7 @@ import java.lang.reflect.Modifier;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -66,7 +68,7 @@ class FrontendVariableAnalyzerTest {
         var analyzer = new FrontendVariableAnalyzer();
         var analysisData = FrontendAnalysisData.bootstrap();
         var diagnostics = new DiagnosticManager();
-        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), diagnostics.snapshot()));
+        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), Map.of(), diagnostics.snapshot()));
 
         assertThrows(IllegalStateException.class, () -> analyzer.analyze(analysisData, diagnostics));
     }
@@ -86,8 +88,7 @@ class FrontendVariableAnalyzerTest {
 
         var analysisData = FrontendAnalysisData.bootstrap();
         var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
-                "test_module",
-                List.of(unit),
+                new FrontendModule("test_module", List.of(unit)),
                 newRegistry(),
                 diagnostics,
                 analysisData
@@ -635,6 +636,13 @@ class FrontendVariableAnalyzerTest {
         assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
         assertEquals("sema.variable_binding", error.category());
         assertTrue(error.message().contains("Duplicate local variable 'value'"));
+        assertTrue(error.message().contains("function 'ping'"));
+        assertTrue(error.message().contains(phaseInput.unit().path().toString()));
+        assertTrue(error.message().contains(formatRange(assertInstanceOf(
+                VariableDeclaration.class,
+                pingFunction.body().statements().get(1)
+        ))));
+        assertTrue(error.message().contains(formatRange(firstLocal)));
         assertEquals(GdIntType.INT, binding.type());
         assertEquals(ScopeValueKind.LOCAL, binding.kind());
         assertSame(firstLocal, binding.declaration());
@@ -807,6 +815,12 @@ class FrontendVariableAnalyzerTest {
         assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
         assertEquals("sema.variable_binding", error.category());
         assertTrue(error.message().contains("shadows parameter 'value'"));
+        assertTrue(error.message().contains("if-body of function 'ping'"));
+        assertTrue(error.message().contains(phaseInput.unit().path().toString()));
+        assertTrue(error.message().contains(formatRange(
+                assertInstanceOf(VariableDeclaration.class, ifStatement.body().statements().getFirst())
+        )));
+        assertTrue(error.message().contains(formatRange(pingFunction.parameters().getFirst())));
         assertNull(ifBodyScope.resolveValueHere("value"));
     }
 
@@ -843,6 +857,15 @@ class FrontendVariableAnalyzerTest {
         assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
         assertEquals("sema.variable_binding", error.category());
         assertTrue(error.message().contains("shadows outer local 'value'"));
+        assertTrue(error.message().contains("if-body of function 'ping'"));
+        assertTrue(error.message().contains(phaseInput.unit().path().toString()));
+        assertTrue(error.message().contains(formatRange(
+                assertInstanceOf(VariableDeclaration.class, ifStatement.body().statements().getFirst())
+        )));
+        assertTrue(error.message().contains(formatRange(assertInstanceOf(
+                VariableDeclaration.class,
+                pingFunction.body().statements().getFirst()
+        ))));
         assertNotNull(pingBodyScope.resolveValueHere("value"));
         assertNull(ifBodyScope.resolveValueHere("value"));
     }
@@ -871,10 +894,12 @@ class FrontendVariableAnalyzerTest {
                 List.of(new FrontendSourceClassRelation(
                         unit,
                         "SkippedInnerClass",
+                        "SkippedInnerClass",
                         new FrontendSuperClassRef("Node", "Node"),
                         new LirClassDef("SkippedInnerClass", "Node"),
                         List.of()
                 )),
+                Map.of(),
                 boundaryDiagnostics
         ));
         analysisData.updateDiagnostics(boundaryDiagnostics);
@@ -930,8 +955,7 @@ class FrontendVariableAnalyzerTest {
         var registry = newRegistry();
         var analysisData = FrontendAnalysisData.bootstrap();
         var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
-                "test_module",
-                List.of(unit),
+                new FrontendModule("test_module", List.of(unit)),
                 registry,
                 diagnostics,
                 analysisData
@@ -958,6 +982,17 @@ class FrontendVariableAnalyzerTest {
                 .filter(diagnostic -> diagnostic.range().equals(range))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Diagnostic not found for range: " + range));
+    }
+
+    private static @NotNull String formatRange(@NotNull dev.superice.gdparser.frontend.ast.Node node) {
+        var range = FrontendRange.fromAstRange(node.range());
+        assertNotNull(range);
+        return "%d:%d-%d:%d".formatted(
+                range.start().line(),
+                range.start().column(),
+                range.end().line(),
+                range.end().column()
+        );
     }
 
     private <T extends Statement> T findStatement(

@@ -31,11 +31,15 @@ public final class GdDictionaryType implements GdContainerType {
 
     @Override
     public @NotNull String getTypeName() {
-        if (keyType instanceof GdVariantType && valueType instanceof GdVariantType) {
+        if (isGenericDictionary()) {
             return "Dictionary";
         } else {
             return "Dictionary[" + keyType.getTypeName() + ", " + valueType.getTypeName() + "]";
         }
+    }
+
+    public boolean isGenericDictionary() {
+        return keyType instanceof GdVariantType && valueType instanceof GdVariantType;
     }
 
     @Override

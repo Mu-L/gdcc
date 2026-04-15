@@ -6,6 +6,7 @@ import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.gdextension.ExtensionGlobalEnum;
 import dev.superice.gdcc.gdextension.ExtensionSingleton;
 import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
@@ -18,11 +19,13 @@ import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.lir.insn.ConstructArrayInsn;
 import dev.superice.gdcc.lir.insn.ConstructBuiltinInsn;
 import dev.superice.gdcc.lir.insn.ConstructDictionaryInsn;
+import dev.superice.gdcc.lir.insn.ConstructObjectInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdFloatType;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdPackedNumericArrayType;
 import dev.superice.gdcc.type.GdPackedStringArrayType;
@@ -61,7 +64,7 @@ class CConstructInsnGenTest {
         func.createAndAddVariable("f", GdFloatType.FLOAT);
         func.createAndAddVariable("t", GdTransform2DType.TRANSFORM2D);
 
-        entry(func).instructions().add(new ConstructBuiltinInsn(
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
                 "t",
                 List.of(
                         new LirInstruction.VariableOperand("a"),
@@ -85,7 +88,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_builtin_non_var_operand");
         func.createAndAddVariable("t", GdTransform2DType.TRANSFORM2D);
 
-        entry(func).instructions().add(new ConstructBuiltinInsn(
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
                 "t",
                 List.of(new LirInstruction.StringOperand("not_var"))
         ));
@@ -96,18 +99,41 @@ class CConstructInsnGenTest {
     }
 
     @Test
+    @DisplayName("construct_builtin should keep API constructor matching exact and reject Variant operands")
+    void constructBuiltinShouldRejectVariantOperandWithoutExactMetadata() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_builtin_variant_operand");
+        func.createAndAddVariable("result", GdIntType.INT);
+        func.createAndAddVariable("variant", GdVariantType.VARIANT);
+
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
+                "result",
+                List.of(new LirInstruction.VariableOperand("variant"))
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
+        assertTrue(ex.getMessage().contains("Builtin constructor validation failed"));
+        assertTrue(ex.getMessage().contains("'int' with args [Variant]"));
+    }
+
+    @Test
     @DisplayName("construct_array should emit typed Array constructor when operand type matches result type")
     void constructArrayShouldEmitTypedCtor() {
         var clazz = newTestClass();
         var func = newFunction("construct_typed_array");
         func.createAndAddVariable("arr", new GdArrayType(GdStringNameType.STRING_NAME));
 
-        entry(func).instructions().add(new ConstructArrayInsn("arr", "StringName"));
+        entry(func).appendInstruction(new ConstructArrayInsn("arr", "StringName"));
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func);
         assertTrue(body.contains("godot_new_Array_with_Array_int_StringName_Variant"));
         assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_STRING_NAME"));
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_array_script_"), body);
+        assertTrue(body.contains("godot_new_Variant_nil();"), body);
+        var arrayCtorCall = extractCall(body, "godot_new_Array_with_Array_int_StringName_Variant");
+        assertFalse(arrayCtorCall.contains("NULL"), arrayCtorCall);
     }
 
     @Test
@@ -117,11 +143,28 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_array_mismatch");
         func.createAndAddVariable("arr", new GdArrayType(GdStringNameType.STRING_NAME));
 
-        entry(func).instructions().add(new ConstructArrayInsn("arr", "String"));
+        entry(func).appendInstruction(new ConstructArrayInsn("arr", "String"));
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
         assertTrue(ex.getMessage().contains("construct_array type mismatch"));
+    }
+
+    @Test
+    @DisplayName("construct_array should keep generic Array construction on the plain constructor path")
+    void constructArrayShouldKeepGenericCtorOnPlainPath() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_generic_array");
+        func.createAndAddVariable("arr", new GdArrayType(GdVariantType.VARIANT));
+
+        entry(func).appendInstruction(new ConstructArrayInsn("arr", null));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func);
+        assertTrue(body.contains("godot_new_Array()"), body);
+        assertFalse(body.contains("godot_new_Array_with_Array_int_StringName_Variant"), body);
+        assertFalse(body.contains("__gdcc_tmp_array_script_"), body);
+        assertFalse(body.contains("godot_new_Variant_nil();"), body);
     }
 
     @Test
@@ -131,7 +174,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_packed_array");
         func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
 
-        entry(func).instructions().add(new ConstructArrayInsn("packed", null));
+        entry(func).appendInstruction(new ConstructArrayInsn("packed", null));
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func);
@@ -145,7 +188,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_packed_array_with_class_name");
         func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
 
-        entry(func).instructions().add(new ConstructArrayInsn("packed", "PackedInt32Array"));
+        entry(func).appendInstruction(new ConstructArrayInsn("packed", "PackedInt32Array"));
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
@@ -166,13 +209,18 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_typed_dictionary");
         func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
 
-        entry(func).instructions().add(new ConstructDictionaryInsn("dict", "StringName", "Variant"));
+        entry(func).appendInstruction(new ConstructDictionaryInsn("dict", "StringName", "Variant"));
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func);
         assertTrue(body.contains("godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant"));
         assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_STRING_NAME"));
         assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_NIL"));
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_dict_key_script_"), body);
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_dict_value_script_"), body);
+        assertTrue(body.contains("godot_new_Variant_nil();"), body);
+        var dictCtorCall = extractCall(body, "godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant");
+        assertFalse(dictCtorCall.contains("NULL"), dictCtorCall);
     }
 
     @Test
@@ -182,7 +230,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_dictionary_mismatch");
         func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
 
-        entry(func).instructions().add(new ConstructDictionaryInsn("dict", "String", "Variant"));
+        entry(func).appendInstruction(new ConstructDictionaryInsn("dict", "String", "Variant"));
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
@@ -196,7 +244,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_array_unknown_object_leaf");
         func.createAndAddVariable("arr", new GdArrayType(new GdObjectType("FutureItem")));
 
-        entry(func).instructions().add(new ConstructArrayInsn("arr", "FutureItem"));
+        entry(func).appendInstruction(new ConstructArrayInsn("arr", "FutureItem"));
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func);
@@ -211,7 +259,7 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_dictionary_unknown_object_leaf");
         func.createAndAddVariable("dict", new GdDictionaryType(GdStringType.STRING, new GdObjectType("FutureItem")));
 
-        entry(func).instructions().add(new ConstructDictionaryInsn("dict", "String", "FutureItem"));
+        entry(func).appendInstruction(new ConstructDictionaryInsn("dict", "String", "FutureItem"));
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func);
@@ -246,11 +294,185 @@ class CConstructInsnGenTest {
         var func = newFunction("construct_dictionary_partial_operand_mismatch");
         func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdStringType.STRING));
 
-        entry(func).instructions().add(new ConstructDictionaryInsn("dict", "StringName", null));
+        entry(func).appendInstruction(new ConstructDictionaryInsn("dict", "StringName", null));
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
         assertTrue(ex.getMessage().contains("construct_dictionary value type mismatch"));
+    }
+
+    @Test
+    @DisplayName("construct_object should emit direct gdextension-lite constructor call for engine object targets")
+    void constructObjectShouldEmitEngineConstructCall() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_engine_object");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("node", "Node"));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("godot_new_Node()"));
+        assertFalse(body.contains("gdcc_object_from_godot_object_ptr("), body);
+    }
+
+    @Test
+    @DisplayName("construct_object should consume fresh engine RefCounted results without extra own")
+    void constructObjectShouldNotRetainFreshEngineRefCountedResultAgain() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_engine_refcounted");
+        func.createAndAddVariable("resource", new GdObjectType("RefCounted"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("resource", "RefCounted"));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("$resource = godot_new_RefCounted();"), body);
+        assertFalse(body.contains("own_object($resource);"), body);
+        assertFalse(body.contains("try_own_object($resource);"), body);
+    }
+
+    @Test
+    @DisplayName("construct_object should externally initialize RefCounted gdcc create_instance results and convert into gdcc wrapper target")
+    void constructObjectShouldConvertToGdccRefCountedWrapperTarget() {
+        var holderClass = new LirClassDef("Holder", "Node", false, false, Map.of(), List.of(), List.of(), List.of());
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        var func = newFunction("construct_gdcc_object");
+        func.createAndAddVariable("worker", new GdObjectType("Worker"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("worker", "Worker"));
+        holderClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(holderClass, workerClass));
+        var codegen = newCodegen(module, List.of(holderClass, workerClass), apiWithConstructibleObjectClasses());
+        var body = codegen.generateFuncBody(holderClass, func);
+
+        assertTrue(body.contains("gdcc_ref_counted_init_raw(Worker_class_create_instance(NULL, false), true)"));
+        assertTrue(body.contains("gdcc_object_from_godot_object_ptr("), body);
+        assertFalse(body.contains("own_object("), body);
+        assertFalse(body.contains("try_own_object("), body);
+    }
+
+    @Test
+    @DisplayName("construct_object should keep plain gdcc create_instance raw when target is not RefCounted")
+    void constructObjectShouldKeepPlainGdccCreateInstanceRaw() {
+        var holderClass = new LirClassDef("Holder", "Node", false, false, Map.of(), List.of(), List.of(), List.of());
+        var plainClass = new LirClassDef("PlainWorker", "Object");
+        var func = newFunction("construct_plain_gdcc_object");
+        func.createAndAddVariable("worker", new GdObjectType("PlainWorker"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("worker", "PlainWorker"));
+        holderClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(holderClass, plainClass));
+        var codegen = newCodegen(module, List.of(holderClass, plainClass), apiWithConstructibleObjectClasses());
+        var body = codegen.generateFuncBody(holderClass, func);
+
+        assertTrue(body.contains("PlainWorker_class_create_instance(NULL, true)"), body);
+        assertFalse(body.contains("gdcc_ref_counted_init_raw("), body);
+        assertTrue(body.contains("gdcc_object_from_godot_object_ptr("), body);
+    }
+
+    @Test
+    @DisplayName("construct_object should reject non-object result slots")
+    void constructObjectShouldRejectNonObjectResultSlot() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_object_non_object_slot");
+        func.createAndAddVariable("value", GdFloatType.FLOAT);
+
+        entry(func).appendInstruction(new ConstructObjectInsn("value", "Node"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("must be Object type for construct_object"));
+    }
+
+    @Test
+    @DisplayName("construct_object should reject unknown classes")
+    void constructObjectShouldRejectUnknownClass() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_unknown_object");
+        func.createAndAddVariable("obj", new GdObjectType("UnknownType"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("obj", "UnknownType"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("class 'UnknownType' is not registered"));
+    }
+
+    @Test
+    @DisplayName("construct_object should trim class_name before registry lookup and diagnostics")
+    void constructObjectShouldTrimClassNameBeforeLookup() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_trimmed_object");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("node", "  Node  "));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("godot_new_Node()"), body);
+        assertFalse(body.contains("godot_new_  Node  ()"), body);
+    }
+
+    @Test
+    @DisplayName("construct_object should reject non-instantiable engine classes")
+    void constructObjectShouldRejectNonInstantiableEngineClass() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_non_instantiable_engine");
+        func.createAndAddVariable("obj", new GdObjectType("EditorOnlyThing"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("obj", "EditorOnlyThing"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("class 'EditorOnlyThing' is not instantiable"));
+    }
+
+    @Test
+    @DisplayName("construct_object should reject abstract gdcc classes")
+    void constructObjectShouldRejectAbstractGdccClass() {
+        var holderClass = newTestClass();
+        var abstractWorker = new LirClassDef("AbstractWorker", "RefCounted");
+        abstractWorker.setAbstract(true);
+        var func = newFunction("construct_abstract_gdcc");
+        func.createAndAddVariable("worker", new GdObjectType("AbstractWorker"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("worker", "AbstractWorker"));
+        holderClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(holderClass, abstractWorker));
+        var codegen = newCodegen(module, List.of(holderClass, abstractWorker), apiWithConstructibleObjectClasses());
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(holderClass, func));
+
+        assertTrue(ex.getMessage().contains("class 'AbstractWorker' is abstract"));
+    }
+
+    @Test
+    @DisplayName("construct_object should reject class targets that are not assignable to result slot type")
+    void constructObjectShouldRejectIncompatibleResultType() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_object_type_mismatch");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("node", "RefCounted"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("is not assignable to result variable type 'Node'"));
     }
 
     @Test
@@ -260,7 +482,7 @@ class CConstructInsnGenTest {
         var func = newFunction("prepare_inject_constructs");
         func.createAndAddVariable("arr", new GdArrayType(GdStringNameType.STRING_NAME));
         func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
-        entry(func).instructions().add(new ReturnInsn(null));
+        entry(func).appendInstruction(new ReturnInsn(null));
         clazz.addFunction(func);
 
         var module = new LirModule("test_module", List.of(clazz));
@@ -271,13 +493,13 @@ class CConstructInsnGenTest {
         assertNotNull(prepare);
         assertEquals("__prepare__", func.getEntryBlockId());
 
-        var hasArrayInsn = prepare.instructions().stream()
+        var hasArrayInsn = prepare.getInstructions().stream()
                 .filter(ConstructArrayInsn.class::isInstance)
                 .map(ConstructArrayInsn.class::cast)
                 .anyMatch(insn -> "arr".equals(insn.resultId()) && "StringName".equals(insn.className()));
         assertTrue(hasArrayInsn);
 
-        var hasDictionaryInsn = prepare.instructions().stream()
+        var hasDictionaryInsn = prepare.getInstructions().stream()
                 .filter(ConstructDictionaryInsn.class::isInstance)
                 .map(ConstructDictionaryInsn.class::cast)
                 .anyMatch(insn ->
@@ -294,7 +516,7 @@ class CConstructInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("prepare_inject_packed_construct");
         func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
-        entry(func).instructions().add(new ReturnInsn(null));
+        entry(func).appendInstruction(new ReturnInsn(null));
         clazz.addFunction(func);
 
         var module = new LirModule("test_module", List.of(clazz));
@@ -303,13 +525,13 @@ class CConstructInsnGenTest {
 
         var prepare = func.getBasicBlock("__prepare__");
         assertNotNull(prepare);
-        var hasPackedArrayInsn = prepare.instructions().stream()
+        var hasPackedArrayInsn = prepare.getInstructions().stream()
                 .filter(ConstructArrayInsn.class::isInstance)
                 .map(ConstructArrayInsn.class::cast)
                 .anyMatch(insn -> "packed".equals(insn.resultId()) && insn.className() == null);
         assertTrue(hasPackedArrayInsn);
 
-        var hasPackedBuiltinInsn = prepare.instructions().stream()
+        var hasPackedBuiltinInsn = prepare.getInstructions().stream()
                 .filter(ConstructBuiltinInsn.class::isInstance)
                 .map(ConstructBuiltinInsn.class::cast)
                 .anyMatch(insn -> "packed".equals(insn.resultId()));
@@ -323,7 +545,7 @@ class CConstructInsnGenTest {
         var func = newFunction("prepare_emit_typed_ctor_calls");
         func.createAndAddVariable("arr", new GdArrayType(GdStringNameType.STRING_NAME));
         func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
-        entry(func).instructions().add(new ReturnInsn(null));
+        entry(func).appendInstruction(new ReturnInsn(null));
         clazz.addFunction(func);
 
         var module = new LirModule("test_module", List.of(clazz));
@@ -334,6 +556,14 @@ class CConstructInsnGenTest {
         assertTrue(body.contains("__prepare__: // __prepare__"));
         assertTrue(body.contains("godot_new_Array_with_Array_int_StringName_Variant"));
         assertTrue(body.contains("godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant"));
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_array_script_"), body);
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_dict_key_script_"), body);
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_dict_value_script_"), body);
+        assertTrue(body.contains("godot_new_Variant_nil();"), body);
+        var arrayCtorCall = extractCall(body, "godot_new_Array_with_Array_int_StringName_Variant");
+        assertFalse(arrayCtorCall.contains("NULL"), arrayCtorCall);
+        var dictCtorCall = extractCall(body, "godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant");
+        assertFalse(dictCtorCall.contains("NULL"), dictCtorCall);
     }
 
     @Test
@@ -342,7 +572,7 @@ class CConstructInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("prepare_emit_packed_ctor_call");
         func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
-        entry(func).instructions().add(new ReturnInsn(null));
+        entry(func).appendInstruction(new ReturnInsn(null));
         clazz.addFunction(func);
 
         var module = new LirModule("test_module", List.of(clazz));
@@ -361,7 +591,7 @@ class CConstructInsnGenTest {
             var clazz = newTestClass();
             var func = newFunction("construct_" + packedCase.label() + "_array");
             func.createAndAddVariable("packed", packedCase.type());
-            entry(func).instructions().add(new ConstructArrayInsn("packed", null));
+            entry(func).appendInstruction(new ConstructArrayInsn("packed", null));
             clazz.addFunction(func);
 
             var body = generateBody(clazz, func);
@@ -379,7 +609,7 @@ class CConstructInsnGenTest {
             var clazz = newTestClass();
             var func = newFunction("prepare_inject_" + packedCase.label());
             func.createAndAddVariable("packed", packedCase.type());
-            entry(func).instructions().add(new ReturnInsn(null));
+            entry(func).appendInstruction(new ReturnInsn(null));
             clazz.addFunction(func);
 
             var module = new LirModule("test_module", List.of(clazz));
@@ -388,13 +618,13 @@ class CConstructInsnGenTest {
 
             var prepare = func.getBasicBlock("__prepare__");
             assertNotNull(prepare);
-            var hasPackedArrayInsn = prepare.instructions().stream()
+            var hasPackedArrayInsn = prepare.getInstructions().stream()
                     .filter(ConstructArrayInsn.class::isInstance)
                     .map(ConstructArrayInsn.class::cast)
                     .anyMatch(insn -> "packed".equals(insn.resultId()) && insn.className() == null);
             assertTrue(hasPackedArrayInsn, () -> "Missing construct_array injection for " + packedCase.typeName());
 
-            var hasPackedBuiltinInsn = prepare.instructions().stream()
+            var hasPackedBuiltinInsn = prepare.getInstructions().stream()
                     .filter(ConstructBuiltinInsn.class::isInstance)
                     .map(ConstructBuiltinInsn.class::cast)
                     .anyMatch(insn -> "packed".equals(insn.resultId()));
@@ -409,7 +639,7 @@ class CConstructInsnGenTest {
             var clazz = newTestClass();
             var func = newFunction("prepare_emit_" + packedCase.label());
             func.createAndAddVariable("packed", packedCase.type());
-            entry(func).instructions().add(new ReturnInsn(null));
+            entry(func).appendInstruction(new ReturnInsn(null));
             clazz.addFunction(func);
 
             var module = new LirModule("test_module", List.of(clazz));
@@ -449,7 +679,7 @@ class CConstructInsnGenTest {
             var entryBlock = initFunc.getBasicBlock(initFunc.getEntryBlockId());
             assertNotNull(entryBlock, () -> "Missing entry block in " + initFuncName);
 
-            var hasConstructArrayInsn = entryBlock.instructions().stream()
+            var hasConstructArrayInsn = entryBlock.getInstructions().stream()
                     .filter(ConstructArrayInsn.class::isInstance)
                     .map(ConstructArrayInsn.class::cast)
                     .anyMatch(insn -> insn.className() == null);
@@ -458,7 +688,7 @@ class CConstructInsnGenTest {
                     () -> "Field init function should use construct_array for " + propertyCase.packedCase().typeName()
             );
 
-            var hasConstructBuiltinInsn = entryBlock.instructions().stream()
+            var hasConstructBuiltinInsn = entryBlock.getInstructions().stream()
                     .anyMatch(ConstructBuiltinInsn.class::isInstance);
             assertFalse(
                     hasConstructBuiltinInsn,
@@ -482,7 +712,7 @@ class CConstructInsnGenTest {
         func.createAndAddVariable("arr", new GdArrayType(GdStringNameType.STRING_NAME));
 
         var prepare = new LirBasicBlock("__prepare__");
-        prepare.instructions().add(new ConstructArrayInsn("arr", "String"));
+        prepare.appendInstruction(new ConstructArrayInsn("arr", "String"));
         func.addBasicBlock(prepare);
         func.setEntryBlockId("__prepare__");
         clazz.addFunction(func);
@@ -502,7 +732,7 @@ class CConstructInsnGenTest {
         func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
 
         var prepare = new LirBasicBlock("__prepare__");
-        prepare.instructions().add(new ConstructDictionaryInsn("dict", "String", "Variant"));
+        prepare.appendInstruction(new ConstructDictionaryInsn("dict", "String", "Variant"));
         func.addBasicBlock(prepare);
         func.setEntryBlockId("__prepare__");
         clazz.addFunction(func);
@@ -511,6 +741,28 @@ class CConstructInsnGenTest {
         var codegen = newCodegen(module, List.of(clazz));
         var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(clazz, func));
         assertTrue(ex.getMessage().contains("construct_dictionary key type mismatch"));
+    }
+
+    @Test
+    @DisplayName("generate should emit typed array constructor with nil script carrier in default field init helpers")
+    void generateShouldEmitTypedArrayCtorInDefaultFieldInitHelper() {
+        var clazz = newTestClass();
+        clazz.addProperty(new LirPropertyDef("payloads", new GdArrayType(GdStringNameType.STRING_NAME)));
+
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        codegen.generate();
+
+        var initFunc = findFunctionByName(clazz, "_field_init_payloads");
+        assertNotNull(initFunc);
+        assertEquals("__prepare__", initFunc.getEntryBlockId());
+        var body = codegen.generateFuncBody(clazz, initFunc);
+
+        assertTrue(body.contains("godot_new_Array_with_Array_int_StringName_Variant"), body);
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_array_script_"), body);
+        assertTrue(body.contains("godot_new_Variant_nil();"), body);
+        var arrayCtorCall = extractCall(body, "godot_new_Array_with_Array_int_StringName_Variant");
+        assertFalse(arrayCtorCall.contains("NULL"), arrayCtorCall);
     }
 
     private LirClassDef newTestClass() {
@@ -542,11 +794,19 @@ class CConstructInsnGenTest {
         return codegen.generateFuncBody(clazz, func);
     }
 
+    private String extractCall(String body, String callName) {
+        var callStart = body.indexOf(callName);
+        assertTrue(callStart >= 0, body);
+        var callEnd = body.indexOf(");", callStart);
+        assertTrue(callEnd >= 0, body);
+        return body.substring(callStart, callEnd + 2);
+    }
+
     private void assertPackedArrayClassNameRejected(String className) {
         var clazz = newTestClass();
         var func = newFunction("construct_packed_array_with_blank_class_name");
         func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
-        entry(func).instructions().add(new ConstructArrayInsn("packed", className));
+        entry(func).appendInstruction(new ConstructArrayInsn("packed", className));
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
@@ -557,7 +817,7 @@ class CConstructInsnGenTest {
         var clazz = newTestClass();
         var func = newFunction("construct_array_invalid_hint_" + hintText);
         func.createAndAddVariable("arr", new GdArrayType(GdVariantType.VARIANT));
-        entry(func).instructions().add(new ConstructArrayInsn("arr", hintText));
+        entry(func).appendInstruction(new ConstructArrayInsn("arr", hintText));
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func, api));
@@ -617,6 +877,25 @@ class CConstructInsnGenTest {
                 List.of(),
                 packedBuiltins,
                 List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionAPI apiWithConstructibleObjectClasses() {
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(
+                        new ExtensionGdClass("Object", false, true, "", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
+                        new ExtensionGdClass("Node", false, true, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
+                        new ExtensionGdClass("RefCounted", true, true, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
+                        new ExtensionGdClass("EditorOnlyThing", false, false, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of())
+                ),
                 List.of(),
                 List.of()
         );

@@ -5,9 +5,12 @@ import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
+import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
 import dev.superice.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
+import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
@@ -18,6 +21,8 @@ import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
+import dev.superice.gdcc.scope.ScopeOwnerKind;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
@@ -65,6 +70,9 @@ import java.util.Objects;
 ///
 /// The phase rebuilds `expressionTypes()` in place so nested chain reduction can immediately consume
 /// freshly published inner expression facts without introducing a second temporary table.
+/// `expressionTypes()` is not expression-only: besides ordinary expression roots, this phase also
+/// publishes attribute property/call/subscript steps when downstream compile/lowering needs the step
+/// itself as the stable fact anchor.
 public class FrontendExprTypeAnalyzer {
     private static final @NotNull String EXPRESSION_RESOLUTION_CATEGORY = "sema.expression_resolution";
     private static final @NotNull String DEFERRED_EXPRESSION_RESOLUTION_CATEGORY =
@@ -72,6 +80,7 @@ public class FrontendExprTypeAnalyzer {
     private static final @NotNull String UNSUPPORTED_EXPRESSION_ROUTE_CATEGORY =
             "sema.unsupported_expression_route";
     private static final @NotNull String DISCARDED_EXPRESSION_CATEGORY = "sema.discarded_expression";
+    private static final @NotNull String UNSAFE_CALL_ARGUMENT_CATEGORY = "sema.unsafe_call_argument";
 
     public void analyze(
             @NotNull ClassRegistry classRegistry,
@@ -119,7 +128,7 @@ public class FrontendExprTypeAnalyzer {
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
         private final @NotNull FrontendChainReductionFacade chainReduction;
-        private final @NotNull FrontendAssignmentSemanticSupport assignmentSemanticSupport;
+        private final @NotNull FrontendAssignmentSemanticSupport.Context assignmentSemanticContext;
         private final @NotNull FrontendExpressionSemanticSupport expressionSemanticSupport;
         private final @NotNull IdentityHashMap<Node, Node> parentByNode = new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<Node, Boolean> reportedExpressionRoots = new IdentityHashMap<>();
@@ -155,9 +164,10 @@ public class FrontendExprTypeAnalyzer {
                     classRegistry,
                     this::resolveExpressionDependency
             );
-            assignmentSemanticSupport = new FrontendAssignmentSemanticSupport(
+            assignmentSemanticContext = FrontendAssignmentSemanticSupport.createContext(
                     analysisData.symbolBindings(),
                     scopesByAst,
+                    analysisData.moduleSkeleton(),
                     () -> currentRestriction,
                     classRegistry,
                     chainReduction
@@ -541,7 +551,8 @@ public class FrontendExprTypeAnalyzer {
                 case AttributeExpression attributeExpression -> resolveAttributeExpressionType(attributeExpression);
                 case AssignmentExpression assignmentExpression -> finishSemanticResolution(
                         assignmentExpression,
-                        assignmentSemanticSupport.resolveAssignmentExpressionType(
+                        FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                                assignmentSemanticContext,
                                 assignmentExpression,
                                 allowStatementResult
                                         ? FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT
@@ -550,15 +561,16 @@ public class FrontendExprTypeAnalyzer {
                                 false
                         )
                 );
-                case CallExpression callExpression -> finishSemanticResolution(
-                        callExpression,
-                        expressionSemanticSupport.resolveCallExpressionType(
-                                callExpression,
-                                this::resolveExpressionDependencyType,
-                                true,
-                                false
-                        )
-                );
+                case CallExpression callExpression -> {
+                    var resolution = expressionSemanticSupport.resolveCallExpressionType(
+                            callExpression,
+                            this::resolveExpressionDependencyType,
+                            true,
+                            false
+                    );
+                    publishBareResolvedCall(callExpression, resolution.publishedCallOrNull());
+                    yield finishSemanticResolution(callExpression, resolution);
+                }
                 case SubscriptExpression subscriptExpression -> finishSemanticResolution(
                         subscriptExpression,
                         expressionSemanticSupport.resolveSubscriptExpressionType(
@@ -626,6 +638,9 @@ public class FrontendExprTypeAnalyzer {
                 }
             }
 
+            var reduced = reduceAttributeExpression(attributeExpression);
+            publishAttributeStepExpressionTypes(reduced);
+
             var finalStep = attributeExpression.steps().getLast();
             if (finalStep instanceof AttributePropertyStep) {
                 var publishedMember = analysisData.resolvedMembers().get(finalStep);
@@ -640,7 +655,6 @@ public class FrontendExprTypeAnalyzer {
                 }
             }
 
-            var reduced = reduceAttributeExpression(attributeExpression);
             if (reduced == null) {
                 return FrontendExpressionType.failed(
                         "No receiver fact is available for attribute expression rooted at "
@@ -648,6 +662,50 @@ public class FrontendExprTypeAnalyzer {
                 );
             }
             return FrontendChainStatusBridge.toPublishedExpressionType(reduced);
+        }
+
+        /// Attribute chain steps are first-class lowering anchors. Publish each step itself into
+        /// `expressionTypes()` so downstream consumers can read the same semantic outcome without
+        /// replaying chain reduction or guessing the type of `AttributeSubscriptStep`.
+        private void publishAttributeStepExpressionTypes(
+                @Nullable FrontendChainReductionHelper.ReductionResult reduced
+        ) {
+            if (reduced == null) {
+                return;
+            }
+            for (var trace : reduced.stepTraces()) {
+                var publishedType = resolvePublishedAttributeStepType(trace);
+                var existingType = expressionTypes.putIfAbsent(trace.step(), publishedType);
+                if (existingType != null) {
+                    throw new IllegalStateException(
+                            "Duplicate expression type published for attribute step "
+                                    + trace.step().getClass().getSimpleName()
+                                    + ": existing="
+                                    + existingType
+                                    + ", attempted="
+                                    + publishedType
+                    );
+                }
+            }
+        }
+
+        private @NotNull FrontendExpressionType resolvePublishedAttributeStepType(
+                @NotNull FrontendChainReductionHelper.StepTrace trace
+        ) {
+            if (trace.suggestedMember() != null) {
+                return FrontendChainStatusBridge.toPublishedExpressionType(trace.suggestedMember());
+            }
+            if (trace.suggestedCall() != null) {
+                return FrontendChainStatusBridge.toPublishedExpressionType(trace.suggestedCall());
+            }
+            if (trace.status() == FrontendChainReductionHelper.Status.BLOCKED
+                    && trace.routeKind() == FrontendChainReductionHelper.RouteKind.UPSTREAM_BLOCKED) {
+                return FrontendExpressionType.blocked(
+                        null,
+                        Objects.requireNonNull(trace.detailReason(), "detailReason must not be null")
+                );
+            }
+            return FrontendChainStatusBridge.toPublishedExpressionType(trace.outgoingReceiver());
         }
 
         private @Nullable FrontendChainReductionHelper.ReductionResult reduceAttributeExpression(
@@ -664,6 +722,62 @@ public class FrontendExprTypeAnalyzer {
                     publishExpressionType(expression),
                     "publishExpressionType must not return null for non-null expressions"
             );
+        }
+
+        /// Bare `CallExpression` facts are now first-class published call results, so later compile
+        /// checks, inspection, and lowering can consume the same `resolvedCalls()` surface that
+        /// attribute calls already use. Duplicate publication on the same AST identity still fails
+        /// fast because it would indicate two semantic owners racing to define one call route.
+        private void publishBareResolvedCall(
+                @NotNull CallExpression callExpression,
+                @Nullable FrontendResolvedCall publishedCall
+        ) {
+            if (publishedCall == null) {
+                return;
+            }
+            var resolvedCalls = analysisData.resolvedCalls();
+            if (resolvedCalls.containsKey(callExpression)) {
+                throw new IllegalStateException(
+                        "resolvedCalls() already contains a published fact for bare CallExpression at "
+                                + callExpression.range()
+                );
+            }
+            resolvedCalls.put(callExpression, publishedCall);
+            reportUnsafeCallArgumentWarning(callExpression, publishedCall);
+        }
+
+        /// The builtin unary-`Variant` constructor shortcut intentionally keeps the call route
+        /// `RESOLVED`, but it is still runtime-open at the argument boundary. Emit the warning at
+        /// bare-call publication time so diagnostics stay aligned with the published semantic fact.
+        private void reportUnsafeCallArgumentWarning(
+                @NotNull CallExpression callExpression,
+                @NotNull FrontendResolvedCall publishedCall
+        ) {
+            if (!isUnsafeBuiltinVariantConstructorRoute(publishedCall)) {
+                return;
+            }
+            var sourceType = publishedCall.argumentTypes().getFirst();
+            var targetType = Objects.requireNonNull(publishedCall.returnType(), "returnType must not be null");
+            diagnosticManager.warning(
+                    UNSAFE_CALL_ARGUMENT_CATEGORY,
+                    "Unsafe call argument for builtin constructor '" + publishedCall.callableName()
+                            + "(...)': static argument type '" + sourceType.getTypeName()
+                            + "' requires runtime conversion to '" + targetType.getTypeName() + "'",
+                    sourcePath,
+                    FrontendRange.fromAstRange(callExpression.range())
+            );
+        }
+
+        private static boolean isUnsafeBuiltinVariantConstructorRoute(@NotNull FrontendResolvedCall publishedCall) {
+            return publishedCall.status() == dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus.RESOLVED
+                    && publishedCall.callKind() == FrontendCallResolutionKind.CONSTRUCTOR
+                    && publishedCall.receiverKind() == FrontendReceiverKind.TYPE_META
+                    && publishedCall.ownerKind() == ScopeOwnerKind.BUILTIN
+                    && publishedCall.argumentTypes().size() == 1
+                    && publishedCall.argumentTypes().getFirst() instanceof GdVariantType
+                    // The dedicated route is owner-anchored instead of pretending one exact builtin
+                    // constructor metadata entry won overload selection.
+                    && publishedCall.declarationSite() instanceof dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
         }
 
         private @NotNull FrontendExpressionType finishSemanticResolution(

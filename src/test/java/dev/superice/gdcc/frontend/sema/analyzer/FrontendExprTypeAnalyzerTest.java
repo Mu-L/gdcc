@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
@@ -12,7 +13,10 @@ import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -32,6 +36,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -102,6 +107,35 @@ class FrontendExprTypeAnalyzerTest {
         assertNotNull(buildType);
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, buildType.status());
         assertEquals("String", buildType.publishedType().getTypeName());
+    }
+
+    @Test
+    void analyzePublishesMappedTopLevelStaticRouteTypesViaCallerSideRemap() throws Exception {
+        var analyzed = analyze(
+                "expr_type_mapped_static_route.gd",
+                """
+                        class_name MappedWorker
+                        extends RefCounted
+                        
+                        static func build(seed) -> String:
+                            return ""
+                        
+                        func ping(seed):
+                            MappedWorker.build(seed)
+                        """,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                Map.of("MappedWorker", "RuntimeWorker")
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var buildStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var buildExpression = assertInstanceOf(AttributeExpression.class, buildStatement.expression());
+        var buildType = analyzed.analysisData().expressionTypes().get(buildExpression);
+
+        assertNotNull(buildType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, buildType.status());
+        assertEquals("String", buildType.publishedType().getTypeName());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
     }
 
     @Test
@@ -680,6 +714,104 @@ class FrontendExprTypeAnalyzerTest {
         assertNotNull(engineLoadType);
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, engineLoadType.status());
         assertEquals("int", engineLoadType.publishedType().getTypeName());
+    }
+
+    @Test
+    void analyzePublishesBuiltinInstancePropertyTypesAndKeepsMissingMemberAsFailure() throws Exception {
+        var analyzed = analyze(
+                "expr_type_builtin_instance_properties.gd",
+                """
+                        class_name ExprTypeBuiltinInstanceProperties
+                        extends RefCounted
+                        
+                        func ping(vector: Vector3):
+                            vector.x
+                            Color(1.0, 0.5, 0.25, 1.0).r
+                            Basis.IDENTITY.x
+                            vector.missing
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var vectorStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var colorStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1));
+        var basisStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2));
+        var missingStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3));
+
+        var vectorExpression = assertInstanceOf(AttributeExpression.class, vectorStatement.expression());
+        var colorExpression = assertInstanceOf(AttributeExpression.class, colorStatement.expression());
+        var basisExpression = assertInstanceOf(AttributeExpression.class, basisStatement.expression());
+        var missingExpression = assertInstanceOf(AttributeExpression.class, missingStatement.expression());
+
+        var vectorType = analyzed.analysisData().expressionTypes().get(vectorExpression);
+        assertNotNull(vectorType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, vectorType.status());
+        assertNotNull(vectorType.publishedType());
+        assertEquals("float", vectorType.publishedType().getTypeName());
+
+        var colorType = analyzed.analysisData().expressionTypes().get(colorExpression);
+        assertNotNull(colorType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, colorType.status());
+        assertNotNull(colorType.publishedType());
+        assertEquals("float", colorType.publishedType().getTypeName());
+
+        var basisType = analyzed.analysisData().expressionTypes().get(basisExpression);
+        assertNotNull(basisType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, basisType.status());
+        assertNotNull(basisType.publishedType());
+        assertEquals("Vector3", basisType.publishedType().getTypeName());
+
+        var missingType = analyzed.analysisData().expressionTypes().get(missingExpression);
+        assertNotNull(missingType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, missingType.status());
+        assertTrue(missingType.detailReason().contains("missing"));
+        assertTrue(missingType.detailReason().contains("Vector3"));
+
+        assertEquals(1, diagnosticsByCategory(analyzed, "sema.member_resolution").size());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_chain_route").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzePublishesBuiltinMemberPropertyAssignmentTypesAndKeepsFailuresStrict() throws Exception {
+        var analyzed = analyze(
+                "expr_type_builtin_member_property_assignment.gd",
+                """
+                        class_name ExprTypeBuiltinMemberPropertyAssignment
+                        extends RefCounted
+                        
+                        func ping(vector: Vector3, color: Color):
+                            vector.x = 1.0
+                            color.a = 0.5
+                            vector.x = ""
+                            vector.missing = 1.0
+                        """
+        );
+
+        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+        for (var successIndex : List.of(0, 1)) {
+            var assignmentType = analyzed.analysisData().expressionTypes().get(assignments.get(successIndex));
+            assertNotNull(assignmentType);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, assignmentType.status());
+            assertEquals(GdVoidType.VOID, assignmentType.publishedType());
+        }
+
+        var typeMismatch = analyzed.analysisData().expressionTypes().get(assignments.get(2));
+        assertNotNull(typeMismatch);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, typeMismatch.status());
+        assertTrue(typeMismatch.detailReason().contains("not assignable"));
+        assertTrue(typeMismatch.detailReason().contains("float"));
+
+        var missingMember = analyzed.analysisData().expressionTypes().get(assignments.get(3));
+        assertNotNull(missingMember);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, missingMember.status());
+        assertTrue(missingMember.detailReason().contains("missing"));
+        assertTrue(missingMember.detailReason().contains("Vector3"));
+
+        assertEquals(1, diagnosticsByCategory(analyzed, "sema.expression_resolution").size());
+        assertEquals(1, diagnosticsByCategory(analyzed, "sema.member_resolution").size());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
     }
 
     @Test
@@ -1356,7 +1488,8 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
-    void analyzeReportsUnsupportedForCompoundAssignmentStatementsWithoutDiscardedWarnings() throws Exception {
+    void analyzePublishesResolvedVoidForSupportedCompoundAssignmentStatementsWithoutDiscardedWarnings()
+            throws Exception {
         var analyzed = analyze(
                 "expr_type_assignment_compound.gd",
                 """
@@ -1364,9 +1497,39 @@ class FrontendExprTypeAnalyzerTest {
                         extends RefCounted
                         
                         var hp: int = 0
+                        var payload
                         
                         func ping():
                             hp += 1
+                            payload += 1
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var assignments = findNodes(pingFunction, AssignmentExpression.class, _ -> true);
+        for (var compoundAssignment : assignments) {
+            var compoundAssignmentType = analyzed.analysisData().expressionTypes().get(compoundAssignment);
+            assertNotNull(compoundAssignmentType);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, compoundAssignmentType.status());
+            assertEquals(GdVoidType.VOID, compoundAssignmentType.publishedType());
+        }
+
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
+    }
+
+    @Test
+    void analyzeReportsExpressionResolutionForCompoundAssignmentWritebackMismatch() throws Exception {
+        var analyzed = analyze(
+                "expr_type_assignment_compound_writeback_mismatch.gd",
+                """
+                        class_name ExprTypeAssignmentCompoundWritebackMismatch
+                        extends RefCounted
+                        
+                        func ping(values: Array[int], raw_array: Array):
+                            values += raw_array
                         """
         );
 
@@ -1378,16 +1541,112 @@ class FrontendExprTypeAnalyzerTest {
 
         var compoundAssignmentType = analyzed.analysisData().expressionTypes().get(compoundAssignment);
         assertNotNull(compoundAssignmentType);
-        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, compoundAssignmentType.status());
-        assertTrue(compoundAssignmentType.detailReason().contains("Compound assignment operator"));
+        assertEquals(FrontendExpressionTypeStatus.FAILED, compoundAssignmentType.status());
+        assertTrue(compoundAssignmentType.detailReason().contains("not assignable"));
+        assertTrue(compoundAssignmentType.detailReason().contains("Array[int]"));
 
-        var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
-        assertEquals(1, unsupportedDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.ERROR, unsupportedDiagnostics.getFirst().severity());
-        assertTrue(unsupportedDiagnostics.getFirst().message().contains("Compound assignment operator"));
-        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
+        assertEquals(1, expressionDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, expressionDiagnostics.getFirst().severity());
+        assertTrue(expressionDiagnostics.getFirst().message().contains("not assignable"));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
+    }
+
+    @Test
+    void analyzePublishesAttributeStepTypesForCallPropertyAndSubscriptChains() throws Exception {
+        var analyzed = analyze(
+                "expr_type_attribute_step_publication.gd",
+                """
+                        class_name ExprTypeAttributeStepPublication
+                        extends RefCounted
+                        
+                        var payloads: Dictionary[int, ExprTypeAttributeStepPublication]
+                        var text: String
+                        var value: int
+                        
+                        func fetch(seed: int) -> ExprTypeAttributeStepPublication:
+                            return self
+                        
+                        func ping(seed: int, dynamic_host):
+                            self.fetch(seed).value
+                            self.payloads[seed].value
+                            dynamic_host.payloads[seed]
+                            self.payloads["bad"]
+                            self.text[0]
+                        """,
+                registryWithKeyedStringBuiltin()
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var statements = pingFunction.body().statements();
+        var callChain = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(0)).expression()
+        );
+        var resolvedSubscriptChain = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(1)).expression()
+        );
+        var dynamicSubscriptChain = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(2)).expression()
+        );
+        var failedSubscriptChain = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(3)).expression()
+        );
+        var unsupportedSubscriptChain = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(4)).expression()
+        );
+
+        var fetchStep = assertInstanceOf(AttributeCallStep.class, callChain.steps().getFirst());
+        var fetchedValueStep = assertInstanceOf(AttributePropertyStep.class, callChain.steps().get(1));
+        var resolvedSubscriptStep = assertInstanceOf(AttributeSubscriptStep.class, resolvedSubscriptChain.steps().getFirst());
+        var resolvedValueStep = assertInstanceOf(AttributePropertyStep.class, resolvedSubscriptChain.steps().get(1));
+        var dynamicSubscriptStep = assertInstanceOf(AttributeSubscriptStep.class, dynamicSubscriptChain.steps().getFirst());
+        var failedSubscriptStep = assertInstanceOf(AttributeSubscriptStep.class, failedSubscriptChain.steps().getFirst());
+        var unsupportedSubscriptStep = assertInstanceOf(
+                AttributeSubscriptStep.class,
+                unsupportedSubscriptChain.steps().getFirst()
+        );
+
+        var fetchStepType = analyzed.analysisData().expressionTypes().get(fetchStep);
+        assertNotNull(fetchStepType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, fetchStepType.status());
+        assertEquals("ExprTypeAttributeStepPublication", fetchStepType.publishedType().getTypeName());
+
+        var fetchedValueStepType = analyzed.analysisData().expressionTypes().get(fetchedValueStep);
+        assertNotNull(fetchedValueStepType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, fetchedValueStepType.status());
+        assertEquals("int", fetchedValueStepType.publishedType().getTypeName());
+
+        var resolvedSubscriptStepType = analyzed.analysisData().expressionTypes().get(resolvedSubscriptStep);
+        assertNotNull(resolvedSubscriptStepType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, resolvedSubscriptStepType.status());
+        assertEquals("ExprTypeAttributeStepPublication", resolvedSubscriptStepType.publishedType().getTypeName());
+
+        var resolvedValueStepType = analyzed.analysisData().expressionTypes().get(resolvedValueStep);
+        assertNotNull(resolvedValueStepType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, resolvedValueStepType.status());
+        assertEquals("int", resolvedValueStepType.publishedType().getTypeName());
+
+        var dynamicSubscriptStepType = analyzed.analysisData().expressionTypes().get(dynamicSubscriptStep);
+        assertNotNull(dynamicSubscriptStepType);
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, dynamicSubscriptStepType.status());
+        assertEquals(GdVariantType.VARIANT, dynamicSubscriptStepType.publishedType());
+
+        var failedSubscriptStepType = analyzed.analysisData().expressionTypes().get(failedSubscriptStep);
+        assertNotNull(failedSubscriptStepType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, failedSubscriptStepType.status());
+        assertTrue(failedSubscriptStepType.detailReason().contains("not assignable"));
+
+        var unsupportedSubscriptStepType = analyzed.analysisData().expressionTypes().get(unsupportedSubscriptStep);
+        assertNotNull(unsupportedSubscriptStepType);
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, unsupportedSubscriptStepType.status());
+        assertTrue(unsupportedSubscriptStepType.detailReason().contains("keyed access metadata"));
     }
 
     @Test
@@ -2000,12 +2259,20 @@ class FrontendExprTypeAnalyzerTest {
             @NotNull String source,
             @NotNull ClassRegistry registry
     ) throws Exception {
+        return analyze(fileName, source, registry, Map.of());
+    }
+
+    private static @NotNull AnalyzedScript analyze(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull ClassRegistry registry,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) throws Exception {
         var diagnostics = new DiagnosticManager();
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
         var analysisData = new FrontendSemanticAnalyzer().analyze(
-                "test_module",
-                List.of(unit),
+                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
                 registry,
                 diagnostics
         );
@@ -2069,7 +2336,7 @@ class FrontendExprTypeAnalyzerTest {
                 builtinClass.methods(),
                 builtinClass.enums(),
                 builtinClass.constructors(),
-                builtinClass.properties(),
+                builtinClass.members(),
                 builtinClass.constants()
         );
     }

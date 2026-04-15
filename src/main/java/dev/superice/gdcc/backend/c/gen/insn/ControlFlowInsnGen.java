@@ -60,6 +60,9 @@ public final class ControlFlowInsnGen implements CInsnGen<ControlFlowInstruction
                         throw bodyBuilder.invalidInsn("Return instruction missing return value for non-void function");
                     }
                     if (RETURN_SLOT_ID.equals(returnValueId)) {
+                        // `_return_val` is a backend sentinel, not a user variable. Validation keeps it
+                        // confined to the non-void `__finally__` terminator so object returns always
+                        // publish through the same slot boundary.
                         if (bodyBuilder.checkInFinallyBlock()) {
                             bodyBuilder.returnTerminal();
                             return;

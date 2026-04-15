@@ -43,16 +43,23 @@ static void gdcc_destruct_property(const GDExtensionPropertyInfo* info) {
     godot_mem_free(info->class_name);
 }
 
-static void gdcc_bind_property(
-    const godot_StringName* class_name,
+// Property registration now has a full metadata entry so Variant outward ABI can
+// publish NIL + PROPERTY_USAGE_NIL_IS_VARIANT without hard-coding another helper shape.
+// The property-class slot is still explicit because non-Variant property metadata has not
+// been fully normalized yet.
+static void gdcc_bind_property_full(
+    const godot_StringName* owner_class_name,
     const godot_StringName* name,
     const GDExtensionVariantType type,
+    const uint32_t hint,
+    const godot_String* hint_string,
+    const godot_StringName* property_class_name,
     const godot_PropertyUsageFlags usage_flags,
     const godot_StringName* getter,
     const godot_StringName* setter) {
-    godot_StringName class_string_name = godot_new_StringName_with_StringName(class_name);
-    const GDExtensionPropertyInfo info = gdcc_make_property_full(type, name, godot_PROPERTY_HINT_NONE,
-        GD_STATIC_S(u8""), class_name, usage_flags);
+    godot_StringName class_string_name = godot_new_StringName_with_StringName(owner_class_name);
+    const GDExtensionPropertyInfo info = gdcc_make_property_full(type, name, hint,
+        hint_string, property_class_name, usage_flags);
     godot_StringName getter_name = godot_new_StringName_with_StringName(getter);
     godot_StringName setter_name = godot_new_StringName_with_StringName(setter);
 
@@ -63,6 +70,17 @@ static void gdcc_bind_property(
     gdcc_destruct_property(&info);
     godot_StringName_destroy(&getter_name);
     godot_StringName_destroy(&setter_name);
+}
+
+static void gdcc_bind_property(
+    const godot_StringName* class_name,
+    const godot_StringName* name,
+    const GDExtensionVariantType type,
+    const godot_PropertyUsageFlags usage_flags,
+    const godot_StringName* getter,
+    const godot_StringName* setter) {
+    gdcc_bind_property_full(class_name, name, type, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8""),
+        class_name, usage_flags, getter, setter);
 }
 
 #endif //GDCC_BIND_METHOD_H

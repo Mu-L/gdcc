@@ -159,6 +159,11 @@ public final class ScopePropertyResolver {
     }
 
     /// Resolve builtin property metadata.
+    ///
+    /// The resolver intentionally consumes the normalized property-like surface exposed by
+    /// `ExtensionBuiltinClass#getProperties()`. Raw builtin JSON `members` such as `Vector3.x` or
+    /// `Color.a` must already have been folded into that shared surface upstream; callers must not
+    /// add a second schema-specific fallback here.
     public static @NotNull BuiltinResult resolveBuiltinProperty(@NotNull ClassRegistry registry,
                                                                 @NotNull GdType receiverType,
                                                                 @NotNull String propertyName) {

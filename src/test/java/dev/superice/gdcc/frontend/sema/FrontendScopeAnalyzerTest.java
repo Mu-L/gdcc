@@ -2,8 +2,10 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
+import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.frontend.scope.BlockScopeKind;
 import dev.superice.gdcc.frontend.scope.CallableScope;
@@ -24,12 +26,14 @@ import org.junit.jupiter.api.Test;
 import java.util.Arrays;
 import java.lang.reflect.Modifier;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -55,7 +59,7 @@ class FrontendScopeAnalyzerTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = FrontendAnalysisData.bootstrap();
         var diagnostics = new DiagnosticManager();
-        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), diagnostics.snapshot()));
+        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), Map.of(), diagnostics.snapshot()));
 
         assertThrows(IllegalStateException.class, () -> analyzer.analyze(registry, analysisData, diagnostics));
     }
@@ -199,7 +203,11 @@ class FrontendScopeAnalyzerTest {
         assertEquals(2, constructor.parameters().size());
 
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var analysisData = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+        var analysisData = new FrontendSemanticAnalyzer().analyze(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics
+        );
         var scopesByAst = analysisData.scopesByAst();
 
         var sourceScope = assertInstanceOf(ClassScope.class, scopesByAst.get(unit.ast()));
@@ -433,10 +441,12 @@ class FrontendScopeAnalyzerTest {
                         List.of(new FrontendSourceClassRelation(
                                 unit,
                                 "SyntheticBlockScope",
+                                "SyntheticBlockScope",
                                 new FrontendSuperClassRef("Node", "Node"),
                                 new dev.superice.gdcc.lir.LirClassDef("SyntheticBlockScope", "Node"),
                                 List.of()
                         )),
+                        Map.of(),
                         boundaryDiagnostics
                 )
         );
@@ -742,10 +752,12 @@ class FrontendScopeAnalyzerTest {
                         List.of(new FrontendSourceClassRelation(
                                 unit,
                                 "SyntheticMissingInner",
+                                "SyntheticMissingInner",
                                 new FrontendSuperClassRef("Node", "Node"),
                                 new dev.superice.gdcc.lir.LirClassDef("SyntheticMissingInner", "Node"),
                                 List.of()
                         )),
+                        Map.of(),
                         boundaryDiagnostics
                 )
         );
@@ -892,6 +904,7 @@ class FrontendScopeAnalyzerTest {
                                 new FrontendSourceClassRelation(
                                         firstUnit,
                                         "MultiUnitNestedA",
+                                        "MultiUnitNestedA",
                                         new FrontendSuperClassRef("Node", "Node"),
                                         new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedA", "Node"),
                                         List.of(new FrontendInnerClassRelation(
@@ -906,6 +919,7 @@ class FrontendScopeAnalyzerTest {
                                 new FrontendSourceClassRelation(
                                         secondUnit,
                                         "MultiUnitNestedB",
+                                        "MultiUnitNestedB",
                                         new FrontendSuperClassRef("Node", "Node"),
                                         new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedB", "Node"),
                                         List.of(new FrontendInnerClassRelation(
@@ -918,6 +932,7 @@ class FrontendScopeAnalyzerTest {
                                         ))
                                 )
                         ),
+                        Map.of(),
                         boundaryDiagnostics
                 )
         );
@@ -1013,7 +1028,7 @@ class FrontendScopeAnalyzerTest {
         var probeScopeAnalyzer = new RecordingScopeAnalyzer();
         var analyzer = new FrontendSemanticAnalyzer(new FrontendClassSkeletonBuilder(), probeScopeAnalyzer);
 
-        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzer.analyze(new FrontendModule("test_module", List.of(unit)), registry, diagnostics);
 
         assertTrue(probeScopeAnalyzer.invoked);
         assertTrue(probeScopeAnalyzer.moduleSkeletonPublished);
@@ -1031,22 +1046,40 @@ class FrontendScopeAnalyzerTest {
     private FrontendAnalysisData publishedAnalysisData() {
         var analysisData = FrontendAnalysisData.bootstrap();
         var boundaryDiagnostics = new DiagnosticSnapshot(List.of());
-        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), boundaryDiagnostics));
+        analysisData.updateModuleSkeleton(new FrontendModuleSkeleton("test_module", List.of(), Map.of(), boundaryDiagnostics));
         analysisData.updateDiagnostics(boundaryDiagnostics);
         return analysisData;
     }
 
     private AnalyzedUnit analyze(@NotNull String source) throws Exception {
+        return analyze(source, Map.of());
+    }
+
+    private AnalyzedUnit analyze(
+            @NotNull String source,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(java.nio.file.Path.of("tmp", "frontend_scope_analyzer_test.gd"), source, diagnostics);
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
-        var analysisData = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var analysisData = analyzer.analyze(
+                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
+                registry,
+                diagnostics
+        );
         return new AnalyzedUnit(unit, analysisData);
     }
 
     private AnalyzedUnit analyzeScopeOnly(@NotNull String source) throws Exception {
+        return analyzeScopeOnly(source, Map.of());
+    }
+
+    private AnalyzedUnit analyzeScopeOnly(
+            @NotNull String source,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(
@@ -1058,8 +1091,7 @@ class FrontendScopeAnalyzerTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = FrontendAnalysisData.bootstrap();
         var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
-                "test_module",
-                List.of(unit),
+                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
                 registry,
                 diagnostics,
                 analysisData
@@ -1084,6 +1116,12 @@ class FrontendScopeAnalyzerTest {
                 .orElseThrow(() -> new AssertionError("Statement not found: " + statementType.getSimpleName()));
     }
 
+    private List<LirClassDef> topLevelClassDefs(@NotNull FrontendModuleSkeleton result) {
+        return result.sourceClassRelations().stream()
+                .map(FrontendSourceClassRelation::topLevelClassDef)
+                .toList();
+    }
+
     private AnalyzedModule analyzeModule(@NotNull List<ModuleSource> sources) throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
@@ -1098,7 +1136,7 @@ class FrontendScopeAnalyzerTest {
         assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
-        var analysisData = analyzer.analyze("test_module", units, registry, diagnostics);
+        var analysisData = analyzer.analyze(new FrontendModule("test_module", units), registry, diagnostics);
         return new AnalyzedModule(List.copyOf(units), analysisData);
     }
 
@@ -1120,8 +1158,7 @@ class FrontendScopeAnalyzerTest {
                 @NotNull DiagnosticManager diagnosticManager
         ) {
             invoked = true;
-            moduleSkeletonPublished = analysisData.moduleSkeleton().sourceClassRelations().size() == 1
-                    && analysisData.moduleSkeleton().classDefs().size() == 1;
+            moduleSkeletonPublished = analysisData.moduleSkeleton().sourceClassRelations().size() == 1;
             preScopeDiagnostics = analysisData.diagnostics();
             preScopeDiagnosticsMatchedManager = preScopeDiagnostics.equals(diagnosticManager.snapshot());
             diagnosticManager.warning(

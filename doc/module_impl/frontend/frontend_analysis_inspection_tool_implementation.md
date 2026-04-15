@@ -118,23 +118,36 @@ public final class FrontendAnalysisInspectionTool {
 
 ### 3.2 `expressionTypes()` 不是表达式全集
 
-`FrontendAnalysisData.expressionTypes()` 只承载已发布的表达式类型事实，不覆盖所有 AST `Expression` 节点。当前至少存在以下缺席来源：
+`FrontendAnalysisData.expressionTypes()` 只承载已发布的表达式类型事实。
+
+它当前同时具备两个稳定特征：
+
+- 不覆盖所有 AST `Expression` 节点
+- key-space 也不再是 `Expression`-only；attribute property/call/subscript step 也可能直接作为 key
+
+当前至少存在以下 “表达式缺席但 table 仍合法” 的来源：
 
 - unsupported / deferred subtree
 - route-head `TYPE_META`
 - 当前 phase 明确不发布结果的中间表达式
 
-因此 inspection tool 必须遍历 AST 中的全部 `Expression`，而不是只遍历 `expressionTypes().entrySet()`。
+因此 inspection tool 必须遍历 AST 中的全部 `Expression`，而不是只遍历
+`expressionTypes().entrySet()`；同时也不能把 `entrySet()` 中的每个 key 都强制当作 `Expression`。
 
 ### 3.3 `resolvedCalls()` 的 published 面
 
-当前 `resolvedCalls()` 的主要 published surface 是 `AttributeCallStep`。因此调用展示必须区分：
+当前 `resolvedCalls()` 的正式 published surface 已包含两类 AST key：
 
-1. `published`：直接来自 `resolvedCalls().get(attributeCallStep)`
-2. `derived`：针对 bare `CallExpression` 的展示层派生说明
-3. `display`：对链式 `AttributeCallStep` 缺少 published 条目时的 `UNPUBLISHED_CALL_FACT`
+1. `AttributeCallStep`
+2. bare `CallExpression`
 
-展示层不得把 bare call 或未发布 attribute-step 的 display-only 说明伪装成 analyzer 已发布事实。
+因此调用展示必须区分：
+
+1. `published`：直接来自 `resolvedCalls()` 的真实 analyzer 发布事实
+2. `derived`：仅作为兼容兜底路径，用于仍没有 published call fact 的 `CallExpression`
+3. `display`：对未发布的 `AttributeCallStep` 显示 `UNPUBLISHED_CALL_FACT`
+
+展示层不得把 derived/display 说明伪装成 analyzer 已发布事实；bare `CallExpression` 一旦已有 published call fact，也不得再退回 derived 展示。
 
 ### 3.4 diagnostics 真源
 
@@ -186,7 +199,7 @@ FORMAT frontend-analysis-text-v1
 - 有 published expression fact 的表达式数
 - call site 总数
 - 有 published call fact 的调用数
-- derived bare call 数
+- derived call 数（兼容兜底路径）
 
 ### 4.3 全局诊断区
 
@@ -286,9 +299,9 @@ statement anchor 只服务阅读辅助，不是语义事实。当前规则：
 其中：
 
 - `call.source = published` 只用于 `resolvedCalls()` 中真实存在的结果
-- `call.source = derived` 只用于 bare `CallExpression`
+- `call.source = derived` 只用于仍未发布 call fact 的 `CallExpression`
 - `call.source = display` 当前只用于未发布的 `AttributeCallStep`
-- `callKind = BARE_CALL_DERIVED` 只属于展示格式，不写回生产模型
+- `callKind = BARE_CALL_DERIVED` / `CALL_DERIVED` 只属于展示格式，不写回生产模型
 - `callKind = UNPUBLISHED_CALL_FACT` 只属于 display-only 未发布链式调用块
 
 ### 4.8 诊断引用
@@ -381,7 +394,7 @@ diagnostics = [D0003, D0004]
 
 - `inspectSingleScript(...)` 与 `renderSingleUnitReport(...)` 的一致性
 - published chain call 展示
-- bare `CallExpression` 的 `derived` 展示
+- bare `CallExpression` 的 published / derived 分流展示
 - route-head `TYPE_META` 的 `UNPUBLISHED` 展示
 - const initializer 中未发布 `AttributeCallStep` 的 `UNPUBLISHED_CALL_FACT`
 - diagnostics 的全局区与内联回挂
@@ -396,7 +409,8 @@ powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -T
 后续若调整该工具，至少要继续锚定：
 
 - 全量表达式枚举不会退化成只看 `expressionTypes()`
-- bare call 不会被误渲染成 published call fact
+- bare call 的 published fact 不会退化成 derived 展示
+- direct callable invocation 仍只允许走 derived 兼容路径
 - 未发布 expression/call fact 不会被 silent omission
 - diagnostics 全局区和主附着点保持稳定
 - UTF-8 / 多行 snippet 渲染不发生切片错误
@@ -408,10 +422,10 @@ powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -T
 后续若继续演进 inspection tool，必须遵守以下边界：
 
 1. 不把 inspection tool 发展成新的语义真源
-2. bare call 的派生说明必须保持保守；宁可 `UNPUBLISHED/UNKNOWN`，也不要猜测不存在的 route
+2. `CallExpression` 的派生说明必须保持保守；宁可 `UNPUBLISHED/UNKNOWN`，也不要猜测不存在的 route
 3. `UNPUBLISHED` 只表示“当前没有 published fact”，不自动等价于语义失败
 4. 调整报告格式时必须显式版本化，例如未来升级到 `frontend-analysis-text-v2`
-5. 若将来 bare `CallExpression` 获得正式 published call table，inspection tool 可以把 `derived` 降级为兼容兜底路径，但不得在过渡期混淆 `published` 与 `derived`
+5. 现在 bare `CallExpression` 已获得正式 published call table；`derived` 只允许继续承担仍未发布 `CallExpression` 的兼容兜底路径，不得与 `published` 混淆
 
 当前实现结论：
 

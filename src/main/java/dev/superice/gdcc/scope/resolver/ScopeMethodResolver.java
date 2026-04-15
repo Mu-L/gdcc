@@ -24,6 +24,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.StringJoiner;
+import java.util.function.BiPredicate;
 
 /// Shared method metadata resolver for frontend/backend.
 ///
@@ -119,10 +120,22 @@ public final class ScopeMethodResolver {
                                                         @NotNull GdType receiverType,
                                                         @NotNull String methodName,
                                                         @NotNull List<GdType> argTypes) {
+        return resolveInstanceMethod(registry, receiverType, methodName, argTypes, registry::checkAssignable);
+    }
+
+    /// Frontend may relax only the fixed-parameter applicability check by supplying a dedicated
+    /// source/target compatibility predicate. Resolver ranking, fallback rules, and backend callers
+    /// still stay on the shared strict path unless they opt into this overload explicitly.
+    public static @NotNull Result resolveInstanceMethod(@NotNull ClassRegistry registry,
+                                                        @NotNull GdType receiverType,
+                                                        @NotNull String methodName,
+                                                        @NotNull List<GdType> argTypes,
+                                                        @NotNull BiPredicate<GdType, GdType> parameterCompatibility) {
         Objects.requireNonNull(registry, "registry");
         Objects.requireNonNull(receiverType, "receiverType");
         Objects.requireNonNull(methodName, "methodName");
         Objects.requireNonNull(argTypes, "argTypes");
+        Objects.requireNonNull(parameterCompatibility, "parameterCompatibility");
 
         try {
             if (methodName.equals("_init")) {
@@ -132,12 +145,18 @@ public final class ScopeMethodResolver {
                 );
             }
             if (receiverType instanceof GdObjectType objectType) {
-                return resolveKnownObjectInstanceMethod(registry, objectType, methodName, argTypes);
+                return resolveKnownObjectInstanceMethod(
+                        registry,
+                        objectType,
+                        methodName,
+                        argTypes,
+                        parameterCompatibility
+                );
             }
             if (receiverType instanceof GdVariantType) {
                 return new DynamicFallback(DynamicKind.VARIANT_DYNAMIC, DynamicFallbackReason.VARIANT_RECEIVER);
             }
-            return resolveBuiltinInstanceMethod(registry, receiverType, methodName, argTypes);
+            return resolveBuiltinInstanceMethod(registry, receiverType, methodName, argTypes, parameterCompatibility);
         } catch (ScopeMethodResolutionException ex) {
             return new Failed(ex.kind(), ex.getMessage());
         }
@@ -151,16 +170,27 @@ public final class ScopeMethodResolver {
                                                       @NotNull ScopeTypeMeta receiverTypeMeta,
                                                       @NotNull String methodName,
                                                       @NotNull List<GdType> argTypes) {
+        return resolveStaticMethod(registry, receiverTypeMeta, methodName, argTypes, registry::checkAssignable);
+    }
+
+    /// Shared static lookup keeps strict routing by default, but frontend chain analysis may supply
+    /// a wider fixed-parameter compatibility rule for `Variant` boundaries only.
+    public static @NotNull Result resolveStaticMethod(@NotNull ClassRegistry registry,
+                                                      @NotNull ScopeTypeMeta receiverTypeMeta,
+                                                      @NotNull String methodName,
+                                                      @NotNull List<GdType> argTypes,
+                                                      @NotNull BiPredicate<GdType, GdType> parameterCompatibility) {
         Objects.requireNonNull(registry, "registry");
         Objects.requireNonNull(receiverTypeMeta, "receiverTypeMeta");
         Objects.requireNonNull(methodName, "methodName");
         Objects.requireNonNull(argTypes, "argTypes");
+        Objects.requireNonNull(parameterCompatibility, "parameterCompatibility");
 
         try {
             if (methodName.equals("new")) {
                 throw new ScopeMethodResolutionException(
                         FailureKind.CONSTRUCTOR_ROUTE_UNSUPPORTED,
-                        "Constructor lookup for type '" + receiverTypeMeta.sourceName() +
+                        "Constructor lookup for type '" + receiverTypeMeta.displayName() +
                                 "' must use constructor resolution instead of static method lookup"
                 );
             }
@@ -171,23 +201,23 @@ public final class ScopeMethodResolver {
             if (candidates.isEmpty()) {
                 throw new ScopeMethodResolutionException(
                         FailureKind.METHOD_NOT_FOUND,
-                        "Static method '" + methodName + "' not found on type '" + receiverTypeMeta.sourceName() + "'"
+                        "Static method '" + methodName + "' not found on type '" + receiverTypeMeta.displayName() + "'"
                 );
             }
             var selection = chooseBestCandidate(
-                    registry,
                     methodName,
-                    receiverTypeMeta.sourceName(),
+                    receiverTypeMeta.displayName(),
                     candidates,
                     argTypes,
-                    false
+                    false,
+                    parameterCompatibility
             );
             return switch (selection) {
                 case CandidateSelected selected -> new Resolved(selected.candidate().resolved());
                 case CandidateAmbiguous ambiguous -> new Failed(
                         FailureKind.AMBIGUOUS_OVERLOAD,
                         "Ambiguous overload for method '" + methodName + "' on type '" +
-                                receiverTypeMeta.sourceName() + "': " + renderCandidates(ambiguous.pool())
+                                receiverTypeMeta.displayName() + "': " + renderCandidates(ambiguous.pool())
                 );
                 case CandidateRejected rejected -> new Failed(FailureKind.NO_APPLICABLE_OVERLOAD, rejected.message());
             };
@@ -199,7 +229,8 @@ public final class ScopeMethodResolver {
     private static @NotNull Result resolveKnownObjectInstanceMethod(@NotNull ClassRegistry registry,
                                                                     @NotNull GdObjectType receiverType,
                                                                     @NotNull String methodName,
-                                                                    @NotNull List<GdType> argTypes) {
+                                                                    @NotNull List<GdType> argTypes,
+                                                                    @NotNull BiPredicate<GdType, GdType> parameterCompatibility) {
         var classDef = registry.getClassDef(receiverType);
         if (classDef == null) {
             return new DynamicFallback(DynamicKind.OBJECT_DYNAMIC, DynamicFallbackReason.RECEIVER_METADATA_UNKNOWN);
@@ -210,7 +241,14 @@ public final class ScopeMethodResolver {
             return new DynamicFallback(DynamicKind.OBJECT_DYNAMIC, DynamicFallbackReason.METHOD_MISSING);
         }
 
-        var selection = chooseBestCandidate(registry, methodName, receiverType.getTypeName(), candidates, argTypes, true);
+        var selection = chooseBestCandidate(
+                methodName,
+                receiverType.getTypeName(),
+                candidates,
+                argTypes,
+                true,
+                parameterCompatibility
+        );
         return switch (selection) {
             case CandidateSelected selected -> new Resolved(selected.candidate().resolved());
             case CandidateAmbiguous _ ->
@@ -222,7 +260,8 @@ public final class ScopeMethodResolver {
     private static @NotNull Result resolveBuiltinInstanceMethod(@NotNull ClassRegistry registry,
                                                                 @NotNull GdType receiverType,
                                                                 @NotNull String methodName,
-                                                                @NotNull List<GdType> argTypes) {
+                                                                @NotNull List<GdType> argTypes,
+                                                                @NotNull BiPredicate<GdType, GdType> parameterCompatibility) {
         var lookupName = normalizeBuiltinReceiverLookupName(receiverType);
         var builtinClass = registry.findBuiltinClass(lookupName);
         if (builtinClass == null) {
@@ -239,7 +278,14 @@ public final class ScopeMethodResolver {
                     "Method '" + methodName + "' not found in builtin class '" + receiverType.getTypeName() + "'"
             );
         }
-        var selection = chooseBestCandidate(registry, methodName, receiverType.getTypeName(), candidates, argTypes, false);
+        var selection = chooseBestCandidate(
+                methodName,
+                receiverType.getTypeName(),
+                candidates,
+                argTypes,
+                false,
+                parameterCompatibility
+        );
         return switch (selection) {
             case CandidateSelected selected -> new Resolved(selected.candidate().resolved());
             case CandidateAmbiguous ambiguous -> new Failed(
@@ -285,21 +331,21 @@ public final class ScopeMethodResolver {
     /// - instance methods win over static ones for instance calls
     /// - non-vararg wins over vararg
     /// - if several equally-best object candidates remain, the caller may choose dynamic fallback
-    private static @NotNull CandidateSelection chooseBestCandidate(@NotNull ClassRegistry registry,
-                                                                   @NotNull String methodName,
+    private static @NotNull CandidateSelection chooseBestCandidate(@NotNull String methodName,
                                                                    @NotNull String receiverDisplayName,
                                                                    @NotNull List<MethodCandidate> candidates,
                                                                    @NotNull List<GdType> argTypes,
-                                                                   boolean preferInstanceOverStatic) {
+                                                                   boolean preferInstanceOverStatic,
+                                                                   @NotNull BiPredicate<GdType, GdType> parameterCompatibility) {
         var applicable = new ArrayList<MethodCandidate>();
         for (var candidate : candidates) {
-            if (matchesArguments(registry, candidate.resolved(), argTypes)) {
+            if (matchesArguments(candidate.resolved(), argTypes, parameterCompatibility)) {
                 applicable.add(candidate);
             }
         }
         if (applicable.isEmpty()) {
             var preferred = choosePreferredCandidate(candidates, preferInstanceOverStatic);
-            var mismatchReason = buildMismatchReason(registry, preferred.resolved(), argTypes);
+            var mismatchReason = buildMismatchReason(preferred.resolved(), argTypes, parameterCompatibility);
             return new CandidateRejected(
                     "No applicable overload for method '" + methodName + "' on type '" +
                             receiverDisplayName + "': " + mismatchReason + ". candidates: " +
@@ -345,9 +391,9 @@ public final class ScopeMethodResolver {
         return pool.getFirst();
     }
 
-    private static @NotNull String buildMismatchReason(@NotNull ClassRegistry registry,
-                                                       @NotNull ScopeResolvedMethod candidate,
-                                                       @NotNull List<GdType> argTypes) {
+    private static @NotNull String buildMismatchReason(@NotNull ScopeResolvedMethod candidate,
+                                                       @NotNull List<GdType> argTypes,
+                                                       @NotNull BiPredicate<GdType, GdType> parameterCompatibility) {
         var fixedCount = candidate.parameters().size();
         var providedCount = argTypes.size();
         if (providedCount < fixedCount && !canOmitTrailingParameters(candidate.parameters(), providedCount)) {
@@ -364,7 +410,7 @@ public final class ScopeMethodResolver {
         for (var i = 0; i < providedFixedCount; i++) {
             var argType = argTypes.get(i);
             var param = candidate.parameters().get(i);
-            if (!registry.checkAssignable(argType, param.type())) {
+            if (!parameterCompatibility.test(argType, param.type())) {
                 return "Cannot assign value of type '" + argType.getTypeName() +
                         "' to method parameter #" + (i + 1) + " ('" + param.name() +
                         "') of type '" + param.type().getTypeName() + "'";
@@ -394,9 +440,9 @@ public final class ScopeMethodResolver {
         return staticPrefix + resolved.ownerClass().getName() + "." + resolved.methodName() + "(" + argsJoiner + ")";
     }
 
-    private static boolean matchesArguments(@NotNull ClassRegistry registry,
-                                            @NotNull ScopeResolvedMethod candidate,
-                                            @NotNull List<GdType> argTypes) {
+    private static boolean matchesArguments(@NotNull ScopeResolvedMethod candidate,
+                                            @NotNull List<GdType> argTypes,
+                                            @NotNull BiPredicate<GdType, GdType> parameterCompatibility) {
         var fixedCount = candidate.parameters().size();
         var provided = argTypes.size();
         if (provided < fixedCount && !canOmitTrailingParameters(candidate.parameters(), provided)) {
@@ -409,7 +455,7 @@ public final class ScopeMethodResolver {
         for (var i = 0; i < providedFixedCount; i++) {
             var argType = argTypes.get(i);
             var paramType = candidate.parameters().get(i).type();
-            if (!registry.checkAssignable(argType, paramType)) {
+            if (!parameterCompatibility.test(argType, paramType)) {
                 return false;
             }
         }
@@ -624,7 +670,7 @@ public final class ScopeMethodResolver {
         if (receiverTypeMeta.pseudoType() || receiverTypeMeta.kind() == ScopeTypeMetaKind.GLOBAL_ENUM) {
             throw new ScopeMethodResolutionException(
                     FailureKind.UNSUPPORTED_STATIC_RECEIVER,
-                    "Type meta '" + receiverTypeMeta.sourceName() + "' does not support static method lookup"
+                    "Type meta '" + receiverTypeMeta.displayName() + "' does not support static method lookup"
             );
         }
         if (receiverTypeMeta.declaration() instanceof ClassDef classDef) {
@@ -637,7 +683,7 @@ public final class ScopeMethodResolver {
                 if (builtinClass == null) {
                     throw new ScopeMethodResolutionException(
                             FailureKind.BUILTIN_CLASS_NOT_FOUND,
-                            "Builtin class '" + receiverTypeMeta.sourceName() +
+                            "Builtin class '" + receiverTypeMeta.displayName() +
                                     "' not found for static method receiver (lookup key: '" + lookupName + "')"
                     );
                 }
@@ -652,12 +698,12 @@ public final class ScopeMethodResolver {
                 }
                 throw new ScopeMethodResolutionException(
                         FailureKind.UNSUPPORTED_STATIC_RECEIVER,
-                        "Class metadata for static receiver '" + receiverTypeMeta.sourceName() + "' is unavailable"
+                        "Class metadata for static receiver '" + receiverTypeMeta.displayName() + "' is unavailable"
                 );
             }
             case GLOBAL_ENUM -> throw new ScopeMethodResolutionException(
                     FailureKind.UNSUPPORTED_STATIC_RECEIVER,
-                    "Type meta '" + receiverTypeMeta.sourceName() + "' does not support static method lookup"
+                    "Type meta '" + receiverTypeMeta.displayName() + "' does not support static method lookup"
             );
         };
     }

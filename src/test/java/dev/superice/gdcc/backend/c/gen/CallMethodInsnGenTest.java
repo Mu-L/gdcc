@@ -55,7 +55,7 @@ class CallMethodInsnGenTest {
         func.createAndAddVariable("angle", GdFloatType.FLOAT);
         func.createAndAddVariable("ret", GdFloatVectorType.VECTOR3);
 
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "ret",
                 "rotated",
                 "vector",
@@ -77,7 +77,7 @@ class CallMethodInsnGenTest {
         var func = newFunction("call_queue_free");
         func.createAndAddVariable("node", new GdObjectType("Node"));
 
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 null,
                 "queue_free",
                 "node",
@@ -96,7 +96,7 @@ class CallMethodInsnGenTest {
         var func = newFunction("dispose_self");
         func.addParameter(new LirParameterDef("self", new GdObjectType("GDMyNode"), null, func));
 
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 null,
                 "queue_free",
                 "self",
@@ -115,13 +115,13 @@ class CallMethodInsnGenTest {
         var workerClass = newClass("Worker");
         var pingFunc = newFunction("ping");
         pingFunc.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, pingFunc));
-        entry(pingFunc).instructions().add(new dev.superice.gdcc.lir.insn.ReturnInsn(null));
+        entry(pingFunc).appendInstruction(new dev.superice.gdcc.lir.insn.ReturnInsn(null));
         workerClass.addFunction(pingFunc);
 
         var hostClass = newClass("Host");
         var caller = newFunction("run");
         caller.createAndAddVariable("worker", new GdObjectType("Worker"));
-        entry(caller).instructions().add(new CallMethodInsn(
+        entry(caller).appendInstruction(new CallMethodInsn(
                 null,
                 "ping",
                 "worker",
@@ -141,19 +141,19 @@ class CallMethodInsnGenTest {
         var baseClass = newClass("BaseWorker");
         var basePing = newFunction("base_ping");
         basePing.addParameter(new LirParameterDef("self", new GdObjectType("BaseWorker"), null, basePing));
-        entry(basePing).instructions().add(new ReturnInsn(null));
+        entry(basePing).appendInstruction(new ReturnInsn(null));
         baseClass.addFunction(basePing);
 
         var childClass = newClass("ChildWorker", "BaseWorker");
         var childOnly = newFunction("child_only");
         childOnly.addParameter(new LirParameterDef("self", new GdObjectType("ChildWorker"), null, childOnly));
-        entry(childOnly).instructions().add(new ReturnInsn(null));
+        entry(childOnly).appendInstruction(new ReturnInsn(null));
         childClass.addFunction(childOnly);
 
         var hostClass = newClass("Host");
         var caller = newFunction("run");
         caller.createAndAddVariable("child", new GdObjectType("ChildWorker"));
-        entry(caller).instructions().add(new CallMethodInsn(
+        entry(caller).appendInstruction(new CallMethodInsn(
                 null,
                 "base_ping",
                 "child",
@@ -173,7 +173,7 @@ class CallMethodInsnGenTest {
         var clazz = newClass("Worker");
         var func = newFunction("call_unknown");
         func.createAndAddVariable("node", new GdObjectType("Node"));
-        entry(func).instructions().add(new CallMethodInsn(null, "missing_method", "node", List.of()));
+        entry(func).appendInstruction(new CallMethodInsn(null, "missing_method", "node", List.of()));
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree())), List.of(clazz));
@@ -187,13 +187,13 @@ class CallMethodInsnGenTest {
         var workerClass = newClass("Worker");
         var pingFunc = newFunction("ping");
         pingFunc.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, pingFunc));
-        entry(pingFunc).instructions().add(new ReturnInsn(null));
+        entry(pingFunc).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(pingFunc);
 
         var hostClass = newClass("Host");
         var caller = newFunction("run");
         caller.createAndAddVariable("worker", new GdObjectType("Worker"));
-        entry(caller).instructions().add(new CallMethodInsn(
+        entry(caller).appendInstruction(new CallMethodInsn(
                 null,
                 "missing_method",
                 "worker",
@@ -212,7 +212,7 @@ class CallMethodInsnGenTest {
         var baseClass = newClass("BaseWorker");
         var basePing = newFunction("ping");
         basePing.addParameter(new LirParameterDef("self", new GdObjectType("BaseWorker"), null, basePing));
-        entry(basePing).instructions().add(new ReturnInsn(null));
+        entry(basePing).appendInstruction(new ReturnInsn(null));
         baseClass.addFunction(basePing);
 
         var childClass = newClass("ChildWorker", "BaseWorker");
@@ -220,7 +220,7 @@ class CallMethodInsnGenTest {
         childOnly.setReturnType(GdIntType.INT);
         childOnly.addParameter(new LirParameterDef("self", new GdObjectType("ChildWorker"), null, childOnly));
         childOnly.addParameter(new LirParameterDef("value", GdIntType.INT, null, childOnly));
-        entry(childOnly).instructions().add(new ReturnInsn("value"));
+        entry(childOnly).appendInstruction(new ReturnInsn("value"));
         childClass.addFunction(childOnly);
 
         var hostClass = newClass("Host");
@@ -228,7 +228,7 @@ class CallMethodInsnGenTest {
         caller.createAndAddVariable("baseRef", new GdObjectType("BaseWorker"));
         caller.createAndAddVariable("value", GdIntType.INT);
         caller.createAndAddVariable("ret", GdIntType.INT);
-        entry(caller).instructions().add(new CallMethodInsn(
+        entry(caller).appendInstruction(new CallMethodInsn(
                 "ret",
                 "child_only_echo",
                 "baseRef",
@@ -248,27 +248,27 @@ class CallMethodInsnGenTest {
         var baseClass = newClass("BaseWorker");
         var basePing = newFunction("ping");
         basePing.addParameter(new LirParameterDef("self", new GdObjectType("BaseWorker"), null, basePing));
-        entry(basePing).instructions().add(new ReturnInsn(null));
+        entry(basePing).appendInstruction(new ReturnInsn(null));
         baseClass.addFunction(basePing);
 
         var childClass = newClass("ChildWorker", "BaseWorker");
         var childOnly = newFunction("child_only_consume_peer");
         childOnly.addParameter(new LirParameterDef("self", new GdObjectType("ChildWorker"), null, childOnly));
         childOnly.addParameter(new LirParameterDef("peer", new GdObjectType("PeerWorker"), null, childOnly));
-        entry(childOnly).instructions().add(new ReturnInsn(null));
+        entry(childOnly).appendInstruction(new ReturnInsn(null));
         childClass.addFunction(childOnly);
 
         var peerClass = newClass("PeerWorker");
         var peerPing = newFunction("ping");
         peerPing.addParameter(new LirParameterDef("self", new GdObjectType("PeerWorker"), null, peerPing));
-        entry(peerPing).instructions().add(new ReturnInsn(null));
+        entry(peerPing).appendInstruction(new ReturnInsn(null));
         peerClass.addFunction(peerPing);
 
         var hostClass = newClass("Host");
         var caller = newFunction("run");
         caller.createAndAddVariable("baseRef", new GdObjectType("BaseWorker"));
         caller.createAndAddVariable("peer", new GdObjectType("PeerWorker"));
-        entry(caller).instructions().add(new CallMethodInsn(
+        entry(caller).appendInstruction(new CallMethodInsn(
                 null,
                 "child_only_consume_peer",
                 "baseRef",
@@ -295,7 +295,7 @@ class CallMethodInsnGenTest {
         var func = newFunction("call_static");
         func.createAndAddVariable("node", new GdObjectType("Node"));
         func.createAndAddVariable("ret", new GdObjectType("Node"));
-        entry(func).instructions().add(new CallMethodInsn("ret", "make", "node", List.of()));
+        entry(func).appendInstruction(new CallMethodInsn("ret", "make", "node", List.of()));
         clazz.addFunction(func);
 
         var outputBuffer = new ByteArrayOutputStream();
@@ -322,19 +322,19 @@ class CallMethodInsnGenTest {
         var baseClass = newClass("Base", "RefCounted");
         var basePing = newFunction("ping");
         basePing.addParameter(new LirParameterDef("self", new GdObjectType("Base"), null, basePing));
-        entry(basePing).instructions().add(new ReturnInsn(null));
+        entry(basePing).appendInstruction(new ReturnInsn(null));
         baseClass.addFunction(basePing);
 
         var subClass = newClass("Sub", "Base");
         var subPing = newFunction("ping");
         subPing.addParameter(new LirParameterDef("self", new GdObjectType("Sub"), null, subPing));
-        entry(subPing).instructions().add(new ReturnInsn(null));
+        entry(subPing).appendInstruction(new ReturnInsn(null));
         subClass.addFunction(subPing);
 
         var hostClass = newClass("Host");
         var caller = newFunction("run");
         caller.createAndAddVariable("target", new GdObjectType("Sub"));
-        entry(caller).instructions().add(new CallMethodInsn(
+        entry(caller).appendInstruction(new CallMethodInsn(
                 null,
                 "ping",
                 "target",
@@ -356,14 +356,14 @@ class CallMethodInsnGenTest {
         fixed.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, fixed));
         fixed.addParameter(new LirParameterDef("text", GdStringType.STRING, null, fixed));
         fixed.addParameter(new LirParameterDef("count", GdIntType.INT, null, fixed));
-        entry(fixed).instructions().add(new ReturnInsn(null));
+        entry(fixed).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(fixed);
 
         var vararg = newFunction("echo");
         vararg.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, vararg));
         vararg.addParameter(new LirParameterDef("text", GdStringType.STRING, null, vararg));
         vararg.setVararg(true);
-        entry(vararg).instructions().add(new ReturnInsn(null));
+        entry(vararg).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(vararg);
 
         var hostClass = newClass("Host");
@@ -371,7 +371,7 @@ class CallMethodInsnGenTest {
         caller.createAndAddVariable("worker", new GdObjectType("Worker"));
         caller.createAndAddVariable("text", GdStringType.STRING);
         caller.createAndAddVariable("count", GdIntType.INT);
-        entry(caller).instructions().add(new CallMethodInsn(
+        entry(caller).appendInstruction(new CallMethodInsn(
                 null,
                 "echo",
                 "worker",
@@ -393,7 +393,7 @@ class CallMethodInsnGenTest {
         var func = newFunction("call_ambiguous");
         func.createAndAddVariable("node", new GdObjectType("Node"));
         func.createAndAddVariable("arg", new GdObjectType("Node"));
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 null,
                 "mix",
                 "node",
@@ -413,7 +413,7 @@ class CallMethodInsnGenTest {
         var func = newFunction("call_typed_array_size");
         func.createAndAddVariable("values", new GdArrayType(GdStringType.STRING));
         func.createAndAddVariable("ret", GdIntType.INT);
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "ret",
                 "size",
                 "values",
@@ -434,7 +434,7 @@ class CallMethodInsnGenTest {
         func.createAndAddVariable("axis", GdFloatVectorType.VECTOR3);
         func.createAndAddVariable("angle", GdStringType.STRING);
         func.createAndAddVariable("ret", GdFloatVectorType.VECTOR3);
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "ret",
                 "rotated",
                 "vector",
@@ -460,7 +460,7 @@ class CallMethodInsnGenTest {
         var func = newFunction("call_queue_free_with_result");
         func.createAndAddVariable("node", new GdObjectType("Node"));
         func.createAndAddVariable("ret", GdVariantType.VARIANT);
-        entry(func).instructions().add(new CallMethodInsn("ret", "queue_free", "node", List.of()));
+        entry(func).appendInstruction(new CallMethodInsn("ret", "queue_free", "node", List.of()));
         clazz.addFunction(func);
 
         var ex = assertThrows(
@@ -478,7 +478,7 @@ class CallMethodInsnGenTest {
         var func = newFunction("call_rotated_missing_arg");
         func.createAndAddVariable("vector", GdFloatVectorType.VECTOR3);
         func.createAndAddVariable("ret", GdFloatVectorType.VECTOR3);
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "ret",
                 "rotated",
                 "vector",
@@ -505,7 +505,7 @@ class CallMethodInsnGenTest {
         func.createAndAddVariable("text", GdStringType.STRING);
         func.createAndAddVariable("from", GdIntType.INT);
         func.createAndAddVariable("ret", GdStringType.STRING);
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "ret",
                 "substr",
                 "text",
@@ -531,13 +531,13 @@ class CallMethodInsnGenTest {
         ping.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, ping));
         ping.addParameter(new LirParameterDef("count", GdIntType.INT, "default_count", ping));
         ping.setReturnType(GdVoidType.VOID);
-        entry(ping).instructions().add(new ReturnInsn(null));
+        entry(ping).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(ping);
 
         var hostClass = newClass("Host");
         var caller = newFunction("run");
         caller.createAndAddVariable("worker", new GdObjectType("Worker"));
-        entry(caller).instructions().add(new CallMethodInsn(
+        entry(caller).appendInstruction(new CallMethodInsn(
                 null,
                 "ping",
                 "worker",
@@ -563,13 +563,13 @@ class CallMethodInsnGenTest {
         ping.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, ping));
         ping.addParameter(new LirParameterDef("count", GdIntType.INT, "default_count_static", ping));
         ping.setReturnType(GdVoidType.VOID);
-        entry(ping).instructions().add(new ReturnInsn(null));
+        entry(ping).appendInstruction(new ReturnInsn(null));
         workerClass.addFunction(ping);
 
         var hostClass = newClass("Host");
         var caller = newFunction("run");
         caller.createAndAddVariable("worker", new GdObjectType("Worker"));
-        entry(caller).instructions().add(new CallMethodInsn(
+        entry(caller).appendInstruction(new CallMethodInsn(
                 null,
                 "ping",
                 "worker",
@@ -591,7 +591,7 @@ class CallMethodInsnGenTest {
         func.createAndAddVariable("node", new GdObjectType("Node"));
         func.createAndAddVariable("name", GdStringNameType.STRING_NAME);
         func.createAndAddVariable("extra", GdIntType.INT);
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 null,
                 "spread",
                 "node",
@@ -619,7 +619,7 @@ class CallMethodInsnGenTest {
         func.createAndAddVariable("array", new GdArrayType(GdStringType.STRING));
         func.createAndAddVariable("bytes", GdPackedNumericArrayType.PACKED_BYTE_ARRAY);
         func.createAndAddVariable("ret", GdIntType.INT);
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "ret",
                 "accept_packed",
                 "array",
@@ -639,7 +639,7 @@ class CallMethodInsnGenTest {
         func.createAndAddVariable("array", new GdArrayType(GdStringType.STRING));
         func.createAndAddVariable("names", new GdArrayType(GdStringNameType.STRING_NAME));
         func.createAndAddVariable("ret", GdIntType.INT);
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "ret",
                 "accept_names",
                 "array",
@@ -658,7 +658,7 @@ class CallMethodInsnGenTest {
         var func = newFunction("call_typedarray_packed_return");
         func.createAndAddVariable("array", new GdArrayType(GdStringType.STRING));
         func.createAndAddVariable("ret", GdPackedVectorArrayType.PACKED_VECTOR3_ARRAY);
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "ret",
                 "fetch_packed_vectors",
                 "array",
@@ -678,7 +678,7 @@ class CallMethodInsnGenTest {
         func.createAndAddVariable("obj", new GdObjectType("MysteryObject"));
         func.createAndAddVariable("value", GdIntType.INT);
         func.createAndAddVariable("ret", GdIntType.INT);
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "ret",
                 "compute",
                 "obj",
@@ -702,15 +702,15 @@ class CallMethodInsnGenTest {
         func.createAndAddVariable("recv", GdVariantType.VARIANT);
         func.createAndAddVariable("arg", GdIntType.INT);
         func.createAndAddVariable("ret", GdVariantType.VARIANT);
-        entry(func).instructions().add(new LineNumberInsn(11));
-        entry(func).instructions().add(new LineNumberInsn(22));
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new LineNumberInsn(11));
+        entry(func).appendInstruction(new LineNumberInsn(22));
+        entry(func).appendInstruction(new CallMethodInsn(
                 "ret",
                 "mystery",
                 "recv",
                 List.of(new LirInstruction.VariableOperand("arg"))
         ));
-        entry(func).instructions().add(new LineNumberInsn(99));
+        entry(func).appendInstruction(new LineNumberInsn(99));
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of()), List.of(clazz));
@@ -732,7 +732,7 @@ class CallMethodInsnGenTest {
         func.createAndAddVariable("recv", GdVariantType.VARIANT);
         func.createAndAddVariable("arg", GdIntType.INT);
         func.createAndAddVariable("ret", GdIntType.INT);
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "ret",
                 "mystery",
                 "recv",
@@ -755,7 +755,7 @@ class CallMethodInsnGenTest {
         func.createAndAddVariable("recv", GdVariantType.VARIANT);
         func.createAndAddVariable("arg", GdIntType.INT);
         func.createAndAddVariable("ret", GdVariantType.VARIANT);
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "ret",
                 "mystery",
                 "recv",
@@ -775,7 +775,7 @@ class CallMethodInsnGenTest {
         var func = newFunction("call_object_dynamic_ref_result");
         func.createAndAddVariable("obj", new GdObjectType("MysteryObject"));
         func.createAndAddRefVariable("ret", GdVariantType.VARIANT);
-        entry(func).instructions().add(new CallMethodInsn(
+        entry(func).appendInstruction(new CallMethodInsn(
                 "ret",
                 "compute",
                 "obj",

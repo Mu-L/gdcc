@@ -124,7 +124,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         if (block == null) {
             return -1;
         }
-        var instructions = block.instructions();
+        var instructions = block.getInstructions();
         var upperBoundExclusive = Math.min(bodyBuilder.currentInsnIndex(), instructions.size());
         var nearestLine = -1;
         for (var i = 0; i < upperBoundExclusive; i++) {

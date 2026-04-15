@@ -128,6 +128,8 @@ static void try_destroy_object(const GDExtensionObjectPtr obj) {
     }
 }
 
+/// Converts a Godot raw object pointer back to the bound GDCC native instance.
+/// This helper is representation-only and must not be treated as a retain/release boundary.
 static GDExtensionClassInstancePtr gdcc_object_from_godot_object_ptr(GDExtensionObjectPtr ptr) {
     const GDExtensionInstanceBindingCallbacks callbacks = {
         .create_callback = NULL,
@@ -139,6 +141,7 @@ static GDExtensionClassInstancePtr gdcc_object_from_godot_object_ptr(GDExtension
 
 /// Preferred conversion entry for GDCC -> Godot object pointers.
 /// `object_ptr_helper` must be a generated per-class helper like `MyClass_object_ptr`.
+/// This macro is representation-only and must not be treated as a retain/release boundary.
 #define gdcc_object_to_godot_object_ptr(obj, object_ptr_helper) ({ __typeof__(obj) _o = (obj); _o ? object_ptr_helper(_o) : NULL; })
 
 static GDExtensionClassInstancePtr godot_new_gdcc_Object_with_Variant(const godot_Variant* value) {
@@ -251,6 +254,64 @@ static godot_bool gdcc_check_variant_type_object(const godot_Variant *value,
     return subclass_match;
 }
 
+/// Returns whether the current Variant carrier still needs outer-owner writeback.
+/// Positive polarity is intentional and must stay aligned with the frontend writable-target facts:
+/// - false for statically shared/reference families (`Array`, `Dictionary`, `Object`) and
+///   primitive-like scalars that do not carry value-style owner writeback
+/// - true for value-semantic builtin families such as `String`, `Vector*`, `Color`,
+///   `Transform*`, `Callable`, `Signal`, `RID`, and `Packed*Array`
+/// - default true for unlisted future Variant kinds so newly introduced value-semantic carriers do
+///   not silently tunnel through runtime-gated writeback as a false negative
+static godot_bool gdcc_variant_requires_writeback(const godot_Variant *value) {
+    if (value == NULL) {
+        return false;
+    }
+    switch (godot_variant_get_type(value)) {
+    case GDEXTENSION_VARIANT_TYPE_NIL:
+    case GDEXTENSION_VARIANT_TYPE_BOOL:
+    case GDEXTENSION_VARIANT_TYPE_INT:
+    case GDEXTENSION_VARIANT_TYPE_FLOAT:
+    case GDEXTENSION_VARIANT_TYPE_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_DICTIONARY:
+    case GDEXTENSION_VARIANT_TYPE_OBJECT:
+        return false;
+    case GDEXTENSION_VARIANT_TYPE_STRING:
+    case GDEXTENSION_VARIANT_TYPE_VECTOR2:
+    case GDEXTENSION_VARIANT_TYPE_VECTOR2I:
+    case GDEXTENSION_VARIANT_TYPE_RECT2:
+    case GDEXTENSION_VARIANT_TYPE_RECT2I:
+    case GDEXTENSION_VARIANT_TYPE_VECTOR3:
+    case GDEXTENSION_VARIANT_TYPE_VECTOR3I:
+    case GDEXTENSION_VARIANT_TYPE_TRANSFORM2D:
+    case GDEXTENSION_VARIANT_TYPE_VECTOR4:
+    case GDEXTENSION_VARIANT_TYPE_VECTOR4I:
+    case GDEXTENSION_VARIANT_TYPE_PLANE:
+    case GDEXTENSION_VARIANT_TYPE_QUATERNION:
+    case GDEXTENSION_VARIANT_TYPE_AABB:
+    case GDEXTENSION_VARIANT_TYPE_BASIS:
+    case GDEXTENSION_VARIANT_TYPE_TRANSFORM3D:
+    case GDEXTENSION_VARIANT_TYPE_PROJECTION:
+    case GDEXTENSION_VARIANT_TYPE_COLOR:
+    case GDEXTENSION_VARIANT_TYPE_STRING_NAME:
+    case GDEXTENSION_VARIANT_TYPE_NODE_PATH:
+    case GDEXTENSION_VARIANT_TYPE_RID:
+    case GDEXTENSION_VARIANT_TYPE_CALLABLE:
+    case GDEXTENSION_VARIANT_TYPE_SIGNAL:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY:
+        return true;
+    default:
+        return true;
+    }
+}
+
 /// @param self
 /// @param method
 /// @param file_name The name of the source file where the call is made, used for error reporting. If NULL, it will be treated as "<unknown>".
@@ -310,6 +371,20 @@ static godot_Variant godot_Variant_call(
         return godot_new_Variant_nil();
     }
     return ret;
+}
+
+// External explicit GDCC RefCounted construction may need to delay POSTINITIALIZE until after
+// the raw reference count has been established.
+static GDExtensionObjectPtr gdcc_ref_counted_init_raw(GDExtensionObjectPtr obj, bool initialize) {
+    if (obj == NULL) {
+        return NULL;
+    }
+    godot_RefCounted* rc = obj;
+    godot_RefCounted_init_ref(rc);
+    if (initialize) {
+        godot_Object_notification(obj, godot_Object_NOTIFICATION_POSTINITIALIZE(), false);
+    }
+    return obj;
 }
 
 #endif //GDCC_HELPER_H

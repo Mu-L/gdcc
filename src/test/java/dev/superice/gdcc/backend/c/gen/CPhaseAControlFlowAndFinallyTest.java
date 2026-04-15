@@ -4,6 +4,7 @@ import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.ProjectInfo;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.enums.LifecycleProvenance;
+import dev.superice.gdcc.exception.InvalidControlFlowGraphException;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.lir.LirBasicBlock;
@@ -18,6 +19,7 @@ import dev.superice.gdcc.lir.insn.NopInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
@@ -41,11 +43,11 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.setReturnType(GdVoidType.VOID);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
 
         var finallyBlock = new LirBasicBlock("__finally__");
-        finallyBlock.instructions().add(new ReturnInsn(null));
+        finallyBlock.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(finallyBlock);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -67,11 +69,11 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.createAndAddVariable("result", GdIntType.INT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn("result"));
+        entry.appendInstruction(new ReturnInsn("result"));
         func.addBasicBlock(entry);
 
         var finallyBlock = new LirBasicBlock("__finally__");
-        finallyBlock.instructions().add(new ReturnInsn("_return_val"));
+        finallyBlock.appendInstruction(new ReturnInsn("_return_val"));
         func.addBasicBlock(finallyBlock);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -92,11 +94,11 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.setReturnType(GdIntType.INT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new GotoInsn("__finally__"));
+        entry.appendInstruction(new GotoInsn("__finally__"));
         func.addBasicBlock(entry);
 
         var finallyBlock = new LirBasicBlock("__finally__");
-        finallyBlock.instructions().add(new ReturnInsn("_return_val"));
+        finallyBlock.appendInstruction(new ReturnInsn("_return_val"));
         func.addBasicBlock(finallyBlock);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -109,6 +111,61 @@ public class CPhaseAControlFlowAndFinallyTest {
     }
 
     @Test
+    @DisplayName("non-void __finally__ must return _return_val sentinel")
+    void nonVoidFinallyMustReturnReturnSlotSentinel() {
+        var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("int_func");
+        func.setReturnType(GdIntType.INT);
+        func.createAndAddVariable("result", GdIntType.INT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new GotoInsn("__finally__"));
+        func.addBasicBlock(entry);
+
+        var finallyBlock = new LirBasicBlock("__finally__");
+        finallyBlock.appendInstruction(new ReturnInsn("result"));
+        func.addBasicBlock(finallyBlock);
+        func.setEntryBlockId("entry");
+        clazz.addFunction(func);
+
+        var codegen = newCodegen(new LirModule("test_module", List.of(clazz)), List.of(clazz));
+        var ex = assertThrows(InvalidControlFlowGraphException.class, () -> codegen.generateFuncBody(clazz, func));
+
+        assertTrue(ex.getMessage().contains("_return_val"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("moved local object return should clear source before finally cleanup and never release _return_val")
+    void movedLocalObjectReturnShouldClearSourceBeforeFinallyCleanup() {
+        var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("resource_func");
+        func.setReturnType(new GdObjectType("RefCounted"));
+        func.createAndAddVariable("obj", new GdObjectType("RefCounted"));
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new ReturnInsn("obj"));
+        func.addBasicBlock(entry);
+
+        var finallyBlock = new LirBasicBlock("__finally__");
+        finallyBlock.appendInstruction(new DestructInsn("obj", LifecycleProvenance.AUTO_GENERATED));
+        finallyBlock.appendInstruction(new ReturnInsn("_return_val"));
+        func.addBasicBlock(finallyBlock);
+        func.setEntryBlockId("entry");
+        clazz.addFunction(func);
+
+        var codegen = newCodegen(new LirModule("test_module", List.of(clazz)), List.of(clazz));
+        var body = codegen.generateFuncBody(clazz, func);
+
+        assertTrue(body.contains("_return_val = $obj;"), body);
+        assertTrue(body.contains("$obj = NULL;"), body);
+        assertTrue(body.contains("release_object($obj);"), body);
+        assertFalse(body.contains("release_object(_return_val);"), body);
+        assertTrue(body.contains("return _return_val;"), body);
+        assertTrue(body.indexOf("$obj = NULL;") < body.indexOf("release_object($obj);"),
+                "Move-return source must be cleared before auto cleanup. Actual:\n" + body);
+    }
+
+    @Test
     @DisplayName("void function returning value should throw InvalidInsnException")
     void voidFunctionReturningValueShouldThrow() {
         var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
@@ -117,7 +174,7 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.createAndAddVariable("v", GdIntType.INT);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn("v"));
+        entry.appendInstruction(new ReturnInsn("v"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -139,7 +196,7 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.createAndAddRefVariable("refStr", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn("i"));
+        entry.appendInstruction(new ReturnInsn("i"));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -150,7 +207,7 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         var finallyBlock = func.getBasicBlock("__finally__");
         assertNotNull(finallyBlock);
-        var instructions = finallyBlock.instructions();
+        var instructions = finallyBlock.getInstructions();
         assertEquals(2, instructions.size());
 
         var destructInsn = assertInstanceOf(DestructInsn.class, instructions.getFirst());
@@ -162,6 +219,78 @@ public class CPhaseAControlFlowAndFinallyTest {
     }
 
     @Test
+    @DisplayName("generate should skip AUTO_GENERATED destruct for non-RefCounted object locals")
+    void generateShouldSkipAutoGeneratedDestructForNonRefCountedObjectLocals() {
+        var countedWorker = new LirClassDef("CountedWorker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var plainWorker = new LirClassDef("PlainWorker", "Node", false, false, Map.of(), List.of(), List.of(), List.of());
+        var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("mixed_cleanup");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("label", GdStringType.STRING);
+        func.createAndAddVariable("counted", new GdObjectType("CountedWorker"));
+        func.createAndAddVariable("plain", new GdObjectType("PlainWorker"));
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        clazz.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(clazz, countedWorker, plainWorker));
+        var codegen = newCodegen(module, List.of(clazz, countedWorker, plainWorker));
+        codegen.generate();
+
+        var finallyBlock = func.getBasicBlock("__finally__");
+        assertNotNull(finallyBlock);
+        var destructIds = finallyBlock.getInstructions().stream()
+                .filter(DestructInsn.class::isInstance)
+                .map(DestructInsn.class::cast)
+                .map(DestructInsn::variableId)
+                .toList();
+        assertTrue(destructIds.contains("label"), "Destroyable value-semantic locals should still be auto-destructed.");
+        assertTrue(destructIds.contains("counted"), "RefCounted object locals should still be auto-released.");
+        assertFalse(destructIds.contains("plain"), "Non-RefCounted object locals must not be auto-destroyed.");
+        assertInstanceOf(ReturnInsn.class, finallyBlock.getInstructions().getLast());
+    }
+
+    @Test
+    @DisplayName("generate should auto-cleanup unknown object locals but never inject cleanup for _return_val")
+    void generateShouldAutoCleanupUnknownObjectLocalsButExcludeReturnSlot() {
+        var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("object_func");
+        var unknownObjectType = new GdObjectType("UnknownObject");
+        func.setReturnType(unknownObjectType);
+        func.addParameter(new LirParameterDef("param", unknownObjectType, null, func));
+        func.createAndAddVariable("mysteryLocal", unknownObjectType);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new ReturnInsn("param"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        clazz.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        codegen.generate();
+
+        var finallyBlock = func.getBasicBlock("__finally__");
+        assertNotNull(finallyBlock);
+        var destructIds = finallyBlock.getInstructions().stream()
+                .filter(DestructInsn.class::isInstance)
+                .map(DestructInsn.class::cast)
+                .map(DestructInsn::variableId)
+                .toList();
+        assertTrue(destructIds.contains("mysteryLocal"), "Unknown object locals should stay in managed auto-cleanup set.");
+        assertFalse(destructIds.contains("_return_val"), "The hidden return-publish slot must never be auto-cleaned as a local variable.");
+        assertEquals("_return_val", assertInstanceOf(ReturnInsn.class, finallyBlock.getInstructions().getLast()).returnValueId());
+
+        var body = codegen.generateFuncBody(clazz, func);
+        assertTrue(body.contains("try_release_object($mysteryLocal);"), body);
+        assertFalse(body.contains("try_release_object(_return_val);"), body);
+        assertFalse(body.contains("release_object(_return_val);"), body);
+    }
+
+    @Test
     @DisplayName("generate should keep existing __finally__ instructions and append missing ones")
     void generateShouldKeepExistingFinallyForVoidFunction() {
         var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
@@ -170,11 +299,11 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.createAndAddVariable("str", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
 
         var existingFinally = new LirBasicBlock("__finally__");
-        existingFinally.instructions().add(new NopInsn());
+        existingFinally.appendInstruction(new NopInsn());
         func.addBasicBlock(existingFinally);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -185,15 +314,15 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         var finallyBlock = func.getBasicBlock("__finally__");
         assertNotNull(finallyBlock);
-        assertEquals(3, finallyBlock.instructions().size());
+        assertEquals(3, finallyBlock.getInstructionCount());
 
-        assertInstanceOf(NopInsn.class, finallyBlock.instructions().getFirst());
+        assertInstanceOf(NopInsn.class, finallyBlock.getInstructions().getFirst());
 
-        var destructInsn = assertInstanceOf(DestructInsn.class, finallyBlock.instructions().get(1));
+        var destructInsn = assertInstanceOf(DestructInsn.class, finallyBlock.getInstruction(1));
         assertEquals("str", destructInsn.variableId());
         assertEquals(LifecycleProvenance.AUTO_GENERATED, destructInsn.getProvenance());
 
-        var returnInsn = assertInstanceOf(ReturnInsn.class, finallyBlock.instructions().getLast());
+        var returnInsn = assertInstanceOf(ReturnInsn.class, finallyBlock.getInstructions().getLast());
         assertNull(returnInsn.returnValueId());
     }
 
@@ -207,7 +336,7 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.createAndAddRefVariable("refStr", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -218,16 +347,49 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         var prepareBlock = func.getBasicBlock("__prepare__");
         assertNotNull(prepareBlock);
-        var hasPlainStrInit = prepareBlock.instructions().stream()
+        var hasPlainStrInit = prepareBlock.getInstructions().stream()
                 .filter(LiteralStringInsn.class::isInstance)
                 .map(LiteralStringInsn.class::cast)
-                .anyMatch(insn -> insn.resultId().equals("plainStr"));
-        var hasRefStrInit = prepareBlock.instructions().stream()
+                .anyMatch(insn -> "plainStr".equals(insn.resultId()));
+        var hasRefStrInit = prepareBlock.getInstructions().stream()
                 .filter(LiteralStringInsn.class::isInstance)
                 .map(LiteralStringInsn.class::cast)
-                .anyMatch(insn -> insn.resultId().equals("refStr"));
+                .anyMatch(insn -> "refStr".equals(insn.resultId()));
         assertTrue(hasPlainStrInit);
         assertFalse(hasRefStrInit);
+    }
+
+    @Test
+    @DisplayName("__prepare__ should skip void variables but keep neighboring non-void initialization")
+    void prepareShouldSkipVoidVariablesButKeepOtherInitializers() {
+        var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("void_slot_func");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("plainStr", GdStringType.STRING);
+        func.createAndAddVariable("voidTmp", GdVoidType.VOID);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        clazz.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        codegen.generate();
+
+        var prepareBlock = func.getBasicBlock("__prepare__");
+        assertNotNull(prepareBlock);
+        var hasPlainStrInit = prepareBlock.getInstructions().stream()
+                .filter(LiteralStringInsn.class::isInstance)
+                .map(LiteralStringInsn.class::cast)
+                .anyMatch(insn -> "plainStr".equals(insn.resultId()));
+        var hasVoidInit = prepareBlock.getInstructions().stream()
+                .anyMatch(insn -> "voidTmp".equals(insn.resultId()));
+        assertTrue(hasPlainStrInit);
+        assertFalse(hasVoidInit);
+        assertEquals(2, prepareBlock.getInstructionCount());
+        assertInstanceOf(GotoInsn.class, prepareBlock.getInstructions().getLast());
     }
 
     @Test
@@ -239,12 +401,12 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.createAndAddVariable("plainStr", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
 
         var existingPrepare = new LirBasicBlock("__prepare__");
-        existingPrepare.instructions().add(new LiteralStringInsn("plainStr", ""));
-        existingPrepare.instructions().add(new GotoInsn("entry"));
+        existingPrepare.appendInstruction(new LiteralStringInsn("plainStr", ""));
+        existingPrepare.appendInstruction(new GotoInsn("entry"));
         func.addBasicBlock(existingPrepare);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -264,7 +426,7 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         var prepareBlock = func.getBasicBlock("__prepare__");
         assertNotNull(prepareBlock);
-        assertEquals(2, prepareBlock.instructions().size());
+        assertEquals(2, prepareBlock.getInstructionCount());
         assertTrue(outputBuffer.toString(StandardCharsets.UTF_8).contains("already contains instruction"));
     }
 
@@ -277,12 +439,12 @@ public class CPhaseAControlFlowAndFinallyTest {
         func.createAndAddVariable("str", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new ReturnInsn(null));
+        entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
 
         var existingFinally = new LirBasicBlock("__finally__");
-        existingFinally.instructions().add(new DestructInsn("str"));
-        existingFinally.instructions().add(new ReturnInsn(null));
+        existingFinally.appendInstruction(new DestructInsn("str"));
+        existingFinally.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(existingFinally);
         func.setEntryBlockId("entry");
         clazz.addFunction(func);
@@ -302,9 +464,9 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         var finallyBlock = func.getBasicBlock("__finally__");
         assertNotNull(finallyBlock);
-        assertEquals(2, finallyBlock.instructions().size());
-        assertInstanceOf(DestructInsn.class, finallyBlock.instructions().getFirst());
-        var returnInsn = assertInstanceOf(ReturnInsn.class, finallyBlock.instructions().getLast());
+        assertEquals(2, finallyBlock.getInstructionCount());
+        assertInstanceOf(DestructInsn.class, finallyBlock.getInstructions().getFirst());
+        var returnInsn = assertInstanceOf(ReturnInsn.class, finallyBlock.getInstructions().getLast());
         assertNull(returnInsn.returnValueId());
         assertTrue(outputBuffer.toString(StandardCharsets.UTF_8).contains("already contains instruction"));
     }

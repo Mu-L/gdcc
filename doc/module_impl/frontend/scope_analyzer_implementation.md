@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 性质：长期事实源
-- 最后校对：2026-03-14
+- 最后校对：2026-03-25
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/scope/**`
@@ -16,6 +16,7 @@
   - `doc/module_impl/common_rules.md`
   - `doc/module_impl/frontend/frontend_rules.md`
   - `doc/module_impl/frontend/diagnostic_manager.md`
+  - `doc/module_impl/frontend/runtime_name_mapping_implementation.md`
   - `doc/module_impl/frontend/scope_architecture_refactor_plan.md`
   - `doc/module_impl/frontend/scope_type_resolver_implementation.md`
   - `doc/analysis/frontend_semantic_analyzer_research_report.md`
@@ -230,6 +231,8 @@ inner class boundary 当前必须建立在 `FrontendModuleSkeleton.sourceClassRe
 - `FrontendInnerClassRelation` 持有 inner class 的 `lexicalOwner`、`sourceName`、`canonicalName`、`FrontendSuperClassRef` 与 canonical `classDef`
 - scope analyzer 与 skeleton builder 共用这套 relation 事实
 
+若后续 scope 相关诊断或 inspection 需要统一展示类名，应消费由 `canonicalName` 派生的展示视图，而不是把持久化 `runtimeName` 再引回 scope graph。
+
 ### 5.2 immediate inner type-meta 发布规则
 
 当前顶层 `ClassScope` 和每个 inner `ClassScope` 都只发布 direct inner classes 的 type-meta，不平铺全部后代。
@@ -240,12 +243,20 @@ inner class boundary 当前必须建立在 `FrontendModuleSkeleton.sourceClassRe
 - 它要求 skeleton 的最小 type-scope 与真实 scope graph 保持一致
 - 它避免后续 resolver 因“扁平化所有 inner classes”而偏离 lexical 可见性
 
+mapped top-level gdcc class 当前已同时满足：
+
+- lexical type namespace 继续按 `sourceName` 发布顶层 type-meta
+- 命中后的 `canonicalName` / `displayName()` 已反映映射后的 canonical 发布名
+- global root 仍不额外暴露顶层 `sourceName` alias
+- mapped top-level 自身与跨文件 top-level 的 source-facing `TYPE_META` / declared type 恢复，统一由调用方通过 `FrontendModuleSkeleton` 执行“先 lexical，miss 后 remap”的 helper 完成，而不是靠 `ClassScope` 额外发布自身 alias
+
 ### 5.3 reject / skip 规则
 
 当前行为已经冻结为：
 
 - 如果 top-level source unit 在 header/skeleton phase 就未进入 `moduleSkeleton.sourceClassRelations()`，scope phase 不会再为该 `SourceFile` 物化顶层 `ClassScope`
 - 如果某个 inner class subtree 没有已发布 relation/classDef，scope analyzer 只跳过该 subtree，不扩大成整条 source 的失败
+- 如果 skeleton phase 明确把某个 member subtree 标记进 `FrontendAnalysisData.skippedSubtreeRoots()`，scope phase 同样必须跳过该 root，并且不为其任意后代发布 `scopesByAst()` 条目
 - 已接受的 sibling subtree 仍应继续分析
 
 ### 5.4 outer class 可见性
@@ -318,6 +329,7 @@ inner class boundary 当前必须建立在 `FrontendModuleSkeleton.sourceClassRe
 - `ScopeChainTest`
 - `ScopeCaptureShapeTest`
 - `ScopeTypeMetaChainTest`
+- `ClassRegistryTypeMetaTest`
 - `ClassScopeResolutionTest`
 - `ClassScopeSignalResolutionTest`
 - `FrontendInnerClassScopeIsolationTest`
@@ -333,3 +345,4 @@ inner class boundary 当前必须建立在 `FrontendModuleSkeleton.sourceClassRe
 - inner class relation / immediate-inner type-meta 发布规则
 - deferred binding 边界
 - outer type-meta 与 outer value/function 的可见性差异
+- frontend 统一展示名若进入 scope/debug 路径，必须继续建立在 `sourceName + canonicalName` 双名合同之上

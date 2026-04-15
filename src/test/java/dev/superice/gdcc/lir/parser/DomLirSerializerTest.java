@@ -76,4 +76,18 @@ public class DomLirSerializerTest {
         assertTrue(xml.contains("name=\"Outer$Leaf\""), xml);
         assertTrue(xml.contains("super=\"Outer$Shared\""), xml);
     }
+
+    @Test
+    public void serialize_module_preservesMappedTopLevelCanonicalClassIdentity() throws Exception {
+        var cls = new LirClassDef("RuntimeOuter", "RuntimeBase", false, false, Map.of(), List.of(), List.of(), List.of());
+        var module = new LirModule("m", List.of(cls));
+        var serializer = new DomLirSerializer();
+
+        var xml = serializer.serializeToString(module);
+
+        assertTrue(xml.contains("name=\"RuntimeOuter\""), xml);
+        assertTrue(xml.contains("super=\"RuntimeBase\""), xml);
+        assertFalse(xml.contains("MappedOuter"), xml);
+        assertFalse(xml.contains("BaseBySource"), xml);
+    }
 }
