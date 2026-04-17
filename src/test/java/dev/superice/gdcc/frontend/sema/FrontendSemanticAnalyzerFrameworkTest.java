@@ -47,7 +47,12 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.scope.ScopeValueKind;
+import dev.superice.gdcc.scope.resolver.ScopeResolvedMethod;
+import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.scope.resolver.ScopeTypeResolver;
+import dev.superice.gdcc.type.GdBoolType;
+import dev.superice.gdcc.type.GdDictionaryType;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdVariantType;
 import org.junit.jupiter.api.Test;
@@ -59,6 +64,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.function.Predicate;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -236,6 +242,133 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertEquals(diagnostics.snapshot(), result.diagnostics());
         assertEquals(List.of("warning_ignore"), annotationNames(result.annotationsByAst().get(innerVariable)));
         assertNull(result.annotationsByAst().get(regionIgnoredVariable));
+    }
+
+    @Test
+    void analyzeKeepsPlainVarDynamicFallbackSeparateFromTypedNodeExactRoute() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "exact_call_route_split.gd"), """
+                class_name ExactCallRouteSplit
+                extends Node
+                
+                func dynamic_route():
+                    var holder = Node.new()
+                    holder.add_child(Node.new())
+                
+                func exact_route():
+                    var holder: Node = Node.new()
+                    holder.add_child(Node.new())
+                """, diagnostics);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
+        var dynamicFunction = findFunction(unit.ast().statements(), "dynamic_route");
+        var exactFunction = findFunction(unit.ast().statements(), "exact_route");
+        var dynamicStep = findNode(dynamicFunction, AttributeCallStep.class, step -> step.name().equals("add_child"));
+        var exactStep = findNode(exactFunction, AttributeCallStep.class, step -> step.name().equals("add_child"));
+        var dynamicCall = Objects.requireNonNull(result.resolvedCalls().get(dynamicStep));
+        var exactCall = Objects.requireNonNull(result.resolvedCalls().get(exactStep));
+        var exactBoundary = exactCall.exactCallableBoundary();
+
+        assertAll(
+                () -> assertEquals(FrontendCallResolutionStatus.DYNAMIC, dynamicCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.DYNAMIC_FALLBACK, dynamicCall.callKind()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, dynamicCall.receiverKind()),
+                () -> assertNull(dynamicCall.exactCallableBoundary()),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, exactCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, exactCall.callKind()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, exactCall.receiverKind()),
+                () -> assertEquals(new GdObjectType("Node"), exactCall.receiverType()),
+                // `argumentTypes()` stays a call-site snapshot, not the selected callable signature.
+                () -> assertEquals(List.of(new GdObjectType("Node")), exactCall.argumentTypes()),
+                () -> assertNotNull(exactBoundary),
+                () -> assertEquals(
+                        List.of(new GdObjectType("Node"), GdBoolType.BOOL, GdIntType.INT),
+                        exactBoundary.fixedParameterTypes()
+                ),
+                () -> assertFalse(exactBoundary.isVararg()),
+                () -> assertFalse(exactCall.declarationSite() instanceof ScopeResolvedMethod),
+                () -> assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.call_resolution").isEmpty())
+        );
+    }
+
+    @Test
+    void analyzePublishesExactCallableBoundaryForExtensionMetadataFamilies() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "exact_call_metadata_families.gd"), """
+                class_name ExactCallMetadataFamilies
+                extends RefCounted
+                
+                func enum_case(holder: Node, child: Node):
+                    holder.add_child(child)
+                
+                func bitfield_case(holder: Node):
+                    holder.set_process_thread_messages(0)
+                
+                func typedarray_case(mesh: ArrayMesh, arrays: Array):
+                    mesh.add_surface_from_arrays(0, arrays)
+                """, diagnostics);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
+        var enumFunction = findFunction(unit.ast().statements(), "enum_case");
+        var bitfieldFunction = findFunction(unit.ast().statements(), "bitfield_case");
+        var typedarrayFunction = findFunction(unit.ast().statements(), "typedarray_case");
+        var enumStep = findNode(enumFunction, AttributeCallStep.class, step -> step.name().equals("add_child"));
+        var bitfieldStep = findNode(
+                bitfieldFunction,
+                AttributeCallStep.class,
+                step -> step.name().equals("set_process_thread_messages")
+        );
+        var typedarrayStep = findNode(
+                typedarrayFunction,
+                AttributeCallStep.class,
+                step -> step.name().equals("add_surface_from_arrays")
+        );
+        var enumCall = Objects.requireNonNull(result.resolvedCalls().get(enumStep));
+        var bitfieldCall = Objects.requireNonNull(result.resolvedCalls().get(bitfieldStep));
+        var typedarrayCall = Objects.requireNonNull(result.resolvedCalls().get(typedarrayStep));
+        var variantArray = new GdArrayType(GdVariantType.VARIANT);
+        var variantDictionary = new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT);
+
+        assertAll(
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, enumCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, enumCall.callKind()),
+                () -> assertEquals(new GdObjectType("Node"), enumCall.receiverType()),
+                () -> assertEquals(List.of(new GdObjectType("Node")), enumCall.argumentTypes()),
+                () -> assertEquals(
+                        List.of(new GdObjectType("Node"), GdBoolType.BOOL, GdIntType.INT),
+                        Objects.requireNonNull(enumCall.exactCallableBoundary()).fixedParameterTypes()
+                ),
+                () -> assertFalse(Objects.requireNonNull(enumCall.exactCallableBoundary()).isVararg()),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, bitfieldCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, bitfieldCall.callKind()),
+                () -> assertEquals(new GdObjectType("Node"), bitfieldCall.receiverType()),
+                () -> assertEquals(List.of(GdIntType.INT), bitfieldCall.argumentTypes()),
+                () -> assertEquals(
+                        List.of(GdIntType.INT),
+                        Objects.requireNonNull(bitfieldCall.exactCallableBoundary()).fixedParameterTypes()
+                ),
+                () -> assertFalse(Objects.requireNonNull(bitfieldCall.exactCallableBoundary()).isVararg()),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, typedarrayCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, typedarrayCall.callKind()),
+                () -> assertEquals(new GdObjectType("ArrayMesh"), typedarrayCall.receiverType()),
+                // The call site only passes two arguments, but the published exact boundary still
+                // carries the full fixed signature selected from extension metadata.
+                () -> assertEquals(List.of(GdIntType.INT, variantArray), typedarrayCall.argumentTypes()),
+                () -> assertEquals(
+                        List.of(
+                                GdIntType.INT,
+                                variantArray,
+                                new GdArrayType(variantArray),
+                                variantDictionary,
+                                GdIntType.INT
+                        ),
+                        Objects.requireNonNull(typedarrayCall.exactCallableBoundary()).fixedParameterTypes()
+                ),
+                () -> assertFalse(Objects.requireNonNull(typedarrayCall.exactCallableBoundary()).isVararg()),
+                () -> assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.call_resolution").isEmpty())
+        );
     }
 
     @Test
