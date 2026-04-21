@@ -17,6 +17,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "abi/array/plain_surface_roundtrip.gd",
             "abi/typed_array/array_leaf_return_roundtrip.gd",
             "abi/typed_array/builtin_method_wrong_typed_guard.gd",
+            "abi/typed_array/gdcc_inner_object_roundtrip.gd",
             "abi/typed_array/method_exact_roundtrip.gd",
             "abi/typed_array/method_plain_guard.gd",
             "abi/typed_array/method_wrong_typed_guard.gd",
@@ -24,6 +25,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "abi/typed_array/property_roundtrip.gd",
             "abi/typed_array/property_wrong_typed_guard.gd",
             "abi/typed_array/return_roundtrip.gd",
+            "abi/typed_dictionary/gdcc_inner_object_roundtrip.gd",
             "abi/typed_dictionary/method_exact_roundtrip.gd",
             "abi/typed_dictionary/method_plain_guard.gd",
             "abi/typed_dictionary/method_wrong_typed_guard.gd",
@@ -68,6 +70,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/string_literal_escape_unicode_surface.gd",
             "runtime/string_literal_internal_surface.gd",
             "runtime/string_literal_utf8_offset_surface.gd",
+            "scene/nested_node_refcounted_scene.gd",
             "smoke/basic_arithmetic.gd",
             "subscript/array_roundtrip.gd",
             "subscript/packed_array_mutation_roundtrip.gd"
@@ -80,6 +83,7 @@ public class GdScriptUnitTestCompileRunnerTest {
     private static final List<String> INITIALIZER_SCRIPT_PATHS = scriptPathsWithPrefix("initializer/");
     private static final List<String> MEMBER_SCRIPT_PATHS = scriptPathsWithPrefix("member/");
     private static final List<String> RUNTIME_SCRIPT_PATHS = scriptPathsWithPrefix("runtime/");
+    private static final List<String> SCENE_SCRIPT_PATHS = scriptPathsWithPrefix("scene/");
     private static final List<String> SMOKE_SCRIPT_PATHS = scriptPathsWithPrefix("smoke/");
     private static final List<String> SUBSCRIPT_SCRIPT_PATHS = scriptPathsWithPrefix("subscript/");
 
@@ -156,6 +160,14 @@ public class GdScriptUnitTestCompileRunnerTest {
         return compileAndValidateBundledUnitScripts(
                 RUNTIME_SCRIPT_PATHS,
                 "Zig not found; skipping runtime GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesSceneScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                SCENE_SCRIPT_PATHS,
+                "Zig not found; skipping scene GDScript compile-run tests"
         );
     }
 

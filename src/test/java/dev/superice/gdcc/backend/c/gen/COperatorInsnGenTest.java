@@ -444,9 +444,28 @@ class COperatorInsnGenTest {
 
         assertTrue(body.contains("gdcc_check_variant_type_object(&__gdcc_tmp_op_eval_result_"), body);
         assertTrue(body.contains("GD_STATIC_SN(u8\"Node\")"), body);
-        assertTrue(body.contains(", false) || gdcc_check_variant_type_object("), body);
-        assertTrue(body.contains(", true))"), body);
+        assertTrue(body.contains(", true)"), body);
+        assertFalse(body.contains(", false) || gdcc_check_variant_type_object("), body);
         assertTrue(body.contains("$result = (godot_Node*)godot_new_Object_with_Variant(&__gdcc_tmp_op_eval_result_"), body);
+    }
+
+    @Test
+    @DisplayName("variant_evaluate path should allow GDCC object subclass check while keeping canonical expected name")
+    void variantEvaluatePathSupportsGdccObjectSubtypeCheck() {
+        var body = generateBody(
+                emptyApi(),
+                new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdVariantType.VARIANT, false),
+                        new VariableSpec("right", GdVariantType.VARIANT, false),
+                        new VariableSpec("result", new GdObjectType("RuntimeOuter__sub__Shared"), false)
+                )
+        );
+
+        assertTrue(body.contains("gdcc_check_variant_type_object(&__gdcc_tmp_op_eval_result_"), body);
+        assertTrue(body.contains("GD_STATIC_SN(u8\"RuntimeOuter__sub__Shared\")"), body);
+        assertTrue(body.contains(", true)"), body);
+        assertFalse(body.contains(", false) || gdcc_check_variant_type_object("), body);
     }
 
     @Test
@@ -464,6 +483,24 @@ class COperatorInsnGenTest {
 
         assertTrue(body.contains("godot_variant_evaluate(GDEXTENSION_VARIANT_OP_IN"), body);
         assertFalse(body.contains("gdcc_eval_binary_in_int_int_to_bool"), body);
+    }
+
+    @Test
+    @DisplayName("variant == Nil should materialize Nil with dedicated nil ctor")
+    void variantEqualNilUsesDedicatedNilVariantCtor() {
+        var body = generateBody(
+                emptyApi(),
+                new BinaryOpInsn("result", GodotOperator.EQUAL, "left", "right_nil"),
+                List.of(
+                        new VariableSpec("left", GdVariantType.VARIANT, false),
+                        new VariableSpec("right_nil", GdNilType.NIL, false),
+                        new VariableSpec("result", GdVariantType.VARIANT, false)
+                )
+        );
+
+        assertTrue(body.contains("godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL"), body);
+        assertTrue(body.contains("godot_new_Variant_nil()"), body);
+        assertFalse(body.contains("godot_new_Variant_with_Nil"), body);
     }
 
     @Test

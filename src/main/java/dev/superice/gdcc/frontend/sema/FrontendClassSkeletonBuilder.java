@@ -1,5 +1,6 @@
 package dev.superice.gdcc.frontend.sema;
 
+import dev.superice.gdcc.frontend.FrontendClassNameContract;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendAnnotationCollector;
 import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdparser.frontend.ast.*;
@@ -628,8 +629,8 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull DiagnosticManager diagnosticManager
     ) {
         Objects.requireNonNull(module, "module must not be null");
-        // Header discovery now receives the frozen module carrier directly so later canonical-name
-        // identity work can read module-level mapping without reopening another parallel API.
+        // Header discovery receives the frozen module carrier directly so the same module-level
+        // mapping remains available while deriving canonical identities and validating headers.
         var units = module.units();
         var sourceUnitHeaders = new ArrayList<MutableSourceUnitHeaders>(units.size());
         var discoveredHeadersInOrder = new ArrayList<MutableClassHeader>();
@@ -727,6 +728,18 @@ public final class FrontendClassSkeletonBuilder {
                 true
         );
         discoveredHeadersInOrder.add(topLevelHeader);
+        // Reject the reserved canonical separator at the source boundary so source-space names
+        // stay disjoint from canonical inner identities like `Outer__sub__Inner`.
+        if (FrontendClassNameContract.containsReservedSequence(topLevelSourceName)) {
+            diagnosticManager.error(
+                    "sema.class_skeleton",
+                    reservedClassNameDiagnostic("Top-level", topLevelSourceName),
+                    unit.path(),
+                    topLevelHeader.range()
+            );
+            rejectDiscoveredSubtree(topLevelHeader, rejectedCandidates, rejectedSubtreeRoots);
+            return topLevelHeader;
+        }
         discoverInnerClassHeaders(
                 unit,
                 unit.ast().statements(),
@@ -780,6 +793,25 @@ public final class FrontendClassSkeletonBuilder {
                 rejectedSubtreeRoots.add(classDeclaration);
                 continue;
             }
+            if (FrontendClassNameContract.containsReservedSequence(innerClassName)) {
+                diagnosticManager.error(
+                        "sema.class_skeleton",
+                        reservedClassNameDiagnostic("Inner", innerClassName),
+                        unit.path(),
+                        FrontendRange.fromAstRange(classDeclaration.range())
+                );
+                rejectedCandidates.add(new RejectedClassHeader(
+                        unit,
+                        lexicalOwner,
+                        classDeclaration,
+                        innerClassName,
+                        null,
+                        StringUtil.trimToNull(classDeclaration.extendsTarget()),
+                        FrontendRange.fromAstRange(classDeclaration.range())
+                ));
+                rejectedSubtreeRoots.add(classDeclaration);
+                continue;
+            }
 
             var innerHeader = new MutableClassHeader(
                     unit,
@@ -787,7 +819,12 @@ public final class FrontendClassSkeletonBuilder {
                     lexicalOwner,
                     classDeclaration,
                     innerClassName,
-                    parentCanonicalName + "$" + innerClassName,
+                    // Inner canonical names remain a pure frontend-derived identity: once the top-level
+                    // canonical is frozen, every nested layer appends the reserved separator and the
+                    // source-facing local name exactly once at header discovery time.
+                    parentCanonicalName
+                            + FrontendClassNameContract.INNER_CLASS_CANONICAL_SEPARATOR
+                            + innerClassName,
                     StringUtil.trimToNull(classDeclaration.extendsTarget()),
                     FrontendRange.fromAstRange(classDeclaration.range()),
                     false
@@ -1388,7 +1425,7 @@ public final class FrontendClassSkeletonBuilder {
                     "autoload/singleton superclasses are not supported in frontend superclass binding"
             );
         }
-        if (rawExtendsText.contains("$")) {
+        if (rawExtendsText.contains(FrontendClassNameContract.INNER_CLASS_CANONICAL_SEPARATOR)) {
             var canonicalHit = validationIndex.firstByCanonicalName().get(rawExtendsText);
             if (canonicalHit != null) {
                 return HeaderSuperBindingDecision.rejected(
@@ -1396,7 +1433,9 @@ public final class FrontendClassSkeletonBuilder {
                         rawExtendsText,
                         canonicalHit,
                         null,
-                        "canonical '$' spelling is not part of supported frontend extends syntax; use source-facing name '"
+                        "canonical '"
+                                + FrontendClassNameContract.INNER_CLASS_CANONICAL_SEPARATOR
+                                + "' spelling is not part of supported frontend extends syntax; use source-facing name '"
                                 + canonicalHit.sourceName() + "' instead"
                 );
             }
@@ -1405,7 +1444,8 @@ public final class FrontendClassSkeletonBuilder {
                     rawExtendsText,
                     null,
                     null,
-                    "canonical '$' spelling is not part of frontend extends syntax"
+                    "canonical '" + FrontendClassNameContract.INNER_CLASS_CANONICAL_SEPARATOR
+                            + "' spelling is not part of frontend extends syntax"
             );
         }
 
@@ -1472,6 +1512,12 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull Map<String, String> topLevelCanonicalNameMap
     ) {
         return topLevelCanonicalNameMap.getOrDefault(sourceName, sourceName);
+    }
+
+    private @NotNull String reservedClassNameDiagnostic(@NotNull String classKind, @NotNull String className) {
+        return classKind + " class name '" + className + "' contains reserved gdcc class-name sequence '"
+                + FrontendClassNameContract.INNER_CLASS_CANONICAL_SEPARATOR
+                + "'; this spelling is reserved for canonical inner-class names, so the skeleton subtree will be skipped";
     }
 
     private @NotNull String describeLexicalOwner(@NotNull MutableClassHeader discoveredHeader) {

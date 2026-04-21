@@ -578,7 +578,12 @@ public final class CGenHelper {
         }
     }
 
+    /// Ordinary pack helpers are the unary `godot_new_Variant_with_<Type>` family.
+    /// `Nil` is excluded because it uses the dedicated nullary `godot_new_Variant_nil()`.
     public @NotNull String renderPackFunctionName(@NotNull GdType type) {
+        if (type instanceof GdNilType) {
+            throw new IllegalArgumentException("Nil uses dedicated godot_new_Variant_nil() materialization");
+        }
         if (type instanceof GdObjectType objectType) {
             if (objectType.checkGdccType(context.classRegistry())) {
                 return "gdcc_new_Variant_with_gdcc_Object";
@@ -691,6 +696,8 @@ public final class CGenHelper {
     ///   hint string whenever either side is stricter than `Variant`
     /// - `class_name` stays on the existing empty default here; typed dictionary leaf identity lives in
     ///   `hint_string`, not in the top-level property info class slot
+    /// - GDCC inner classes keep flowing through these metadata surfaces as their canonical
+    ///   `Outer__sub__Inner` names; backend does not introduce a separate Godot-facing alias
     public @NotNull BoundMetadata renderBoundMetadata(@NotNull GdType type,
                                                       @NotNull String baseUsageExpr) {
         return renderBoundMetadata(type, baseUsageExpr, "bound slot");
@@ -844,6 +851,8 @@ public final class CGenHelper {
 
     /// Typed array and typed dictionary share the same runtime leaf triple shape even though
     /// their outward hint grammars and template blocks stay intentionally separate.
+    /// Object leaves keep using the exact engine/GDCC class name that registration published,
+    /// including canonical GDCC inner names like `Outer__sub__Inner`.
     private @NotNull TypedContainerRuntimeLeaf renderTypedContainerRuntimeLeaf(@NotNull GdType type,
                                                                                @NotNull String useSite,
                                                                                @NotNull String containerKind,
