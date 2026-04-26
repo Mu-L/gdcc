@@ -7,10 +7,10 @@
 - 状态：事实源维护中（单脚本 inspection tool、UTF-8 安全切片、表达式/调用/诊断文本报告与定向测试已落地）
 - 更新时间：2026-03-19
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/parse/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/debug/**`
-  - `src/test/java/dev/superice/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/parse/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/debug/**`
+  - `src/test/java/gd/script/gdcc/frontend/sema/**`
 - 关联文档：
   - `doc/module_impl/common_rules.md`
   - `doc/module_impl/frontend/frontend_rules.md`
@@ -59,7 +59,7 @@
 
 当前公共入口固定为：
 
-- 包：`dev.superice.gdcc.frontend.sema.debug`
+- 包：`gd.script.gdcc.frontend.sema.debug`
 - 类：`FrontendAnalysisInspectionTool`
 
 其定位是 frontend semantic data 的只读 inspection/debug helper，不应混入 analyzer 核心实现。
@@ -388,7 +388,7 @@ diagnostics = [D0003, D0004]
 
 当前定向测试文件为：
 
-- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendAnalysisInspectionToolTest.java`
+- `src/test/java/gd/script/gdcc/frontend/sema/FrontendAnalysisInspectionToolTest.java`
 
 当前已锚定的行为包括：
 

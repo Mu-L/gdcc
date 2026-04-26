@@ -7,11 +7,11 @@
 - 性质：长期事实源
 - 最后校对：2026-03-25
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/main/java/dev/superice/gdcc/frontend/scope/**`
-  - `src/main/java/dev/superice/gdcc/frontend/diagnostic/**`
-  - `src/test/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/test/java/dev/superice/gdcc/frontend/scope/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/scope/**`
+  - `src/main/java/gd/script/gdcc/frontend/diagnostic/**`
+  - `src/test/java/gd/script/gdcc/frontend/sema/**`
+  - `src/test/java/gd/script/gdcc/frontend/scope/**`
 - 关联文档：
   - `doc/module_impl/common_rules.md`
   - `doc/module_impl/frontend/frontend_rules.md`

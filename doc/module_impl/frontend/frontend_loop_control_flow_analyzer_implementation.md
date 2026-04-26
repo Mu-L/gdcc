@@ -7,9 +7,9 @@
 - 状态：已完成，事实源维护中
 - 最后更新：2026-04-01
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
-  - `src/test/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
+  - `src/test/java/gd/script/gdcc/frontend/sema/**`
+  - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/**`
   - `doc/module_impl/frontend/**`
 - 关联文档：
   - `doc/module_impl/common_rules.md`

@@ -18,9 +18,9 @@
 
 ### 覆盖范围
 
-- 指令生成入口：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/CallMethodInsnGen.java`
-- 分派与签名解析：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
-- 调用发射与生命周期托管：`src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
+- 指令生成入口：`src/main/java/gd/script/gdcc/backend/c/gen/insn/CallMethodInsnGen.java`
+- 分派与签名解析：`src/main/java/gd/script/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
+- 调用发射与生命周期托管：`src/main/java/gd/script/gdcc/backend/c/gen/CBodyBuilder.java`
 - 模板/运行时辅助：
   - `src/main/c/codegen/template_451/engine_method_binds.h.ftl`
   - `src/main/c/codegen/template_451/entry.c.ftl`
@@ -127,23 +127,23 @@
 
 ## 回归测试基线
 
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CallMethodInsnGenTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CallMethodInsnGenTest.java`
   - 静态分派（GDCC/ENGINE/BUILTIN）
   - 默认参数补全（literal + `default_value_func`）
   - 动态分派（OBJECT/VARIANT）及 pack/unpack
   - 重载决议与边界失败路径
   - GDCC receiver -> ENGINE owner 指针转换回归
-- `src/test/java/dev/superice/gdcc/backend/c/build/FrontendArrayVoidReturnCallRegressionTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/build/FrontendArrayVoidReturnCallRegressionTest.java`
   - former array-constructor/void-call drift 的 fake build 回归
   - `push_back + size()` / `push_back + dynamic helper` 成功路径
   - frontend 已不再发布 void result slot，backend 旧 guard rail 仅用于坏 IR fail-fast
-- `src/test/java/dev/superice/gdcc/backend/c/build/FrontendVoidReturnCallIntegrationTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/build/FrontendVoidReturnCallIntegrationTest.java`
   - broader end-to-end void-return call contract
   - discarded global `print(...)`、non-bare attribute void call、property-backed writable-route writeback、`Node.new()` constructor boundary
   - static type-meta head `Node.print_orphan_nodes()` 继续以 negative build 方式锚定当前 `CALL_STATIC_METHOD` backend gap
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CallMethodInsnGenEngineTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CallMethodInsnGenEngineTest.java`
   - 真实运行覆盖与生成文本断言（含 vararg、跨 GDCC 调用、父类类型变量触发动态回退）
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CBodyBuilderPhaseCTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CBodyBuilderPhaseCTest.java`
   - cast / renderArgument 防御语义与 fail-fast 约束
 
 建议命令：

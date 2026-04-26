@@ -1,3 +1,5 @@
+import gd.script.gdcc.logger.GdccSlf4jServiceProvider;
+
 open module gdcc {
     requires com.google.gson;
     requires freemarker;
@@ -8,5 +10,5 @@ open module gdcc {
     requires jAstyle;
     requires gdparser;
 
-    provides org.slf4j.spi.SLF4JServiceProvider with dev.superice.gdcc.logger.GdccSlf4jServiceProvider;
+    provides org.slf4j.spi.SLF4JServiceProvider with GdccSlf4jServiceProvider;
 }

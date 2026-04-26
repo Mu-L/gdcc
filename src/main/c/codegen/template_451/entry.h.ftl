@@ -1,6 +1,6 @@
-<#-- @ftlvariable name="module" type="dev.superice.gdcc.lir.LirModule" -->
-<#-- @ftlvariable name="helper" type="dev.superice.gdcc.backend.c.gen.CGenHelper" -->
-<#-- @ftlvariable name="gen" type="dev.superice.gdcc.backend.c.gen.CCodegen" -->
+<#-- @ftlvariable name="module" type="gd.script.gdcc.lir.LirModule" -->
+<#-- @ftlvariable name="helper" type="gd.script.gdcc.backend.c.gen.CGenHelper" -->
+<#-- @ftlvariable name="gen" type="gd.script.gdcc.backend.c.gen.CCodegen" -->
 <#include "trim.ftl">
 <#include "func.ftl">
 #ifndef GDEXTENSION_${module.moduleName?upper_case}_ENTRY_H

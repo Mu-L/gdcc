@@ -3,8 +3,8 @@ plugins {
     id("org.gradlex.extra-java-module-info") version "1.9"
 }
 
-group = "dev.superice"
-version = "1.0-SNAPSHOT"
+group = "gd.script"
+version = "0.0.1"
 
 val generatedVersionResources = layout.buildDirectory.dir("generated/resources/gdccVersion")
 val runtimeLibDir = layout.buildDirectory.dir("libs/lib")
@@ -85,7 +85,7 @@ tasks.jar {
     dependsOn(syncRuntimeLibs)
     manifest {
         attributes(
-            "Main-Class" to "dev.superice.gdcc.Main",
+            "Main-Class" to "gd.script.gdcc.Main",
             "Class-Path" to configurations.runtimeClasspath.get()
                 .files
                 .sortedBy { it.name }

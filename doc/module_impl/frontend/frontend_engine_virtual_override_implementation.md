@@ -5,16 +5,16 @@
 - 状态：事实源维护中
 - 更新时间：2026-04-22
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendVirtualOverrideAnalyzer.java`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendSemanticAnalyzer.java`
-  - `src/main/java/dev/superice/gdcc/scope/ClassRegistry.java`
-  - `src/main/java/dev/superice/gdcc/scope/VirtualMethodInfo.java`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
+  - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendVirtualOverrideAnalyzer.java`
+  - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendSemanticAnalyzer.java`
+  - `src/main/java/gd/script/gdcc/scope/ClassRegistry.java`
+  - `src/main/java/gd/script/gdcc/scope/VirtualMethodInfo.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java`
   - `src/main/c/codegen/template_451/entry.c.ftl`
-  - `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendVirtualOverrideAnalyzerTest.java`
-  - `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzerTest.java`
-  - `src/test/java/dev/superice/gdcc/test_suite/GdScriptEngineVirtualOverrideRuntimeTest.java`
-  - `src/test/java/dev/superice/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`
+  - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendVirtualOverrideAnalyzerTest.java`
+  - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzerTest.java`
+  - `src/test/java/gd/script/gdcc/test_suite/GdScriptEngineVirtualOverrideRuntimeTest.java`
+  - `src/test/java/gd/script/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`
 - 关联文档：
   - `doc/module_impl/frontend/frontend_rules.md`
   - `doc/module_impl/frontend/diagnostic_manager.md`

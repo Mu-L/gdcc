@@ -7,10 +7,10 @@
 - 状态：事实源维护中（executable-body CFG build / body lowering、property-initializer CFG/body lowering、constructor materialization、compound assignment、explicit self assignment-target prefix consumption、dynamic receiver runtime-gated writeback、`StopNode.kind` 空-return 图修复均已落地；parameter default 仍未接通）
 - 更新时间：2026-04-26
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
-  - `src/main/java/dev/superice/gdcc/frontend/lowering/cfg/**`
-  - `src/main/java/dev/superice/gdcc/frontend/lowering/pass/**`
-  - `src/test/java/dev/superice/gdcc/frontend/lowering/**`
+  - `src/main/java/gd/script/gdcc/frontend/lowering/**`
+  - `src/main/java/gd/script/gdcc/frontend/lowering/cfg/**`
+  - `src/main/java/gd/script/gdcc/frontend/lowering/pass/**`
+  - `src/test/java/gd/script/gdcc/frontend/lowering/**`
 - 关联文档：
   - `doc/module_impl/common_rules.md`
   - `frontend_rules.md`

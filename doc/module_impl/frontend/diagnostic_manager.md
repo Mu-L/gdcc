@@ -1,6 +1,6 @@
 # Frontend DiagnosticManager 设计与约定
 
-> 本文档作为 `dev.superice.gdcc.frontend` 诊断基础设施的长期事实源，定义当前已冻结的 frontend 诊断流、阶段边界、共享分析数据形态，以及后续
+> 本文档作为 `gd.script.gdcc.frontend` 诊断基础设施的长期事实源，定义当前已冻结的 frontend 诊断流、阶段边界、共享分析数据形态，以及后续
 > binder/body phase 必须遵守的约束。
 
 ## 文档状态
@@ -8,10 +8,10 @@
 - 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / expr-typing / type-check / loop-control / compile-check / exception 诊断链路已落地）
 - 更新时间：2026-04-01
 - 适用范围：
-    - `src/main/java/dev/superice/gdcc/frontend/diagnostic/**`
-    - `src/main/java/dev/superice/gdcc/frontend/parse/**`
-    - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-    - `src/main/java/dev/superice/gdcc/exception/FrontendSemanticException.java`
+    - `src/main/java/gd/script/gdcc/frontend/diagnostic/**`
+    - `src/main/java/gd/script/gdcc/frontend/parse/**`
+    - `src/main/java/gd/script/gdcc/frontend/sema/**`
+    - `src/main/java/gd/script/gdcc/exception/FrontendSemanticException.java`
 - 关联文档：
     - `doc/module_impl/common_rules.md`
     - `doc/module_impl/frontend/scope_architecture_refactor_plan.md`

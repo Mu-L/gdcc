@@ -4,7 +4,7 @@
 
 The `test_suite` package provides a resource-driven end-to-end test harness for GDScript frontend and native build validation.
 
-Its current entry point is `dev.superice.gdcc.test_suite.GdScriptUnitTestCompileRunner`, which:
+Its current entry point is `gd.script.gdcc.test_suite.GdScriptUnitTestCompileRunner`, which:
 
 1. Recursively scans bundled test-case scripts under `unit_test/script`.
 2. Parses and lowers each script through the frontend.
@@ -145,7 +145,7 @@ If these prerequisites are not available, the JUnit wrapper test will be skipped
 
 The current JUnit entry is:
 
-- `dev.superice.gdcc.test_suite.GdScriptUnitTestCompileRunnerTest`
+- `gd.script.gdcc.test_suite.GdScriptUnitTestCompileRunnerTest`
 
 That test uses a JUnit `@TestFactory` to generate one dynamic test per discovered
 `unit_test/script` resource path, so each Java-side test execution covers exactly one

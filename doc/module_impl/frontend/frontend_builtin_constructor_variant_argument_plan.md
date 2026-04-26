@@ -8,11 +8,11 @@
  - 状态：Phase A-E 已完成
  - 更新时间：2026-04-14
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/**`
-  - `src/test/java/dev/superice/gdcc/frontend/**`
-  - `src/test/java/dev/superice/gdcc/backend/c/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/lowering/**`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/**`
+  - `src/test/java/gd/script/gdcc/frontend/**`
+  - `src/test/java/gd/script/gdcc/backend/c/**`
 - 当前相关事实源：
   - `doc/module_impl/frontend/frontend_rules.md`
   - `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`

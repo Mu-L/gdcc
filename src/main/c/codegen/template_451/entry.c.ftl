@@ -1,6 +1,6 @@
-<#-- @ftlvariable name="module" type="dev.superice.gdcc.lir.LirModule" -->
-<#-- @ftlvariable name="helper" type="dev.superice.gdcc.backend.c.gen.CGenHelper" -->
-<#-- @ftlvariable name="bodyRender" type="dev.superice.gdcc.backend.c.gen.binding.GenerateRenderFacade" -->
+<#-- @ftlvariable name="module" type="gd.script.gdcc.lir.LirModule" -->
+<#-- @ftlvariable name="helper" type="gd.script.gdcc.backend.c.gen.CGenHelper" -->
+<#-- @ftlvariable name="bodyRender" type="gd.script.gdcc.backend.c.gen.binding.GenerateRenderFacade" -->
 <#include "func.ftl">
 <#include "trim.ftl">
 

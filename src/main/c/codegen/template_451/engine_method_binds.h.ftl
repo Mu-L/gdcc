@@ -1,6 +1,6 @@
-<#-- @ftlvariable name="module" type="dev.superice.gdcc.lir.LirModule" -->
-<#-- @ftlvariable name="helper" type="dev.superice.gdcc.backend.c.gen.CGenHelper" -->
-<#-- @ftlvariable name="usedEngineMethods" type="java.util.List<dev.superice.gdcc.backend.c.gen.insn.BackendMethodCallResolver.ResolvedMethodCall>" -->
+<#-- @ftlvariable name="module" type="gd.script.gdcc.lir.LirModule" -->
+<#-- @ftlvariable name="helper" type="gd.script.gdcc.backend.c.gen.CGenHelper" -->
+<#-- @ftlvariable name="usedEngineMethods" type="java.util.List<gd.script.gdcc.backend.c.gen.insn.BackendMethodCallResolver.ResolvedMethodCall>" -->
 #ifndef GDEXTENSION_${module.moduleName?upper_case}_ENGINE_METHOD_BINDS_H
 #define GDEXTENSION_${module.moduleName?upper_case}_ENGINE_METHOD_BINDS_H
 

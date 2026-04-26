@@ -7,12 +7,12 @@
 - 状态：事实源维护中（exact callable boundary 单次发布、lowering 复用已发布边界、shared extension metadata parser 收口已冻结）
 - 更新时间：2026-04-17
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
-  - `src/main/java/dev/superice/gdcc/frontend/scope/**`
-  - `src/main/java/dev/superice/gdcc/scope/resolver/**`
-  - `src/test/java/dev/superice/gdcc/frontend/**`
-  - `src/test/java/dev/superice/gdcc/scope/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/lowering/**`
+  - `src/main/java/gd/script/gdcc/frontend/scope/**`
+  - `src/main/java/gd/script/gdcc/scope/resolver/**`
+  - `src/test/java/gd/script/gdcc/frontend/**`
+  - `src/test/java/gd/script/gdcc/scope/**`
 - 关联文档：
   - `frontend_rules.md`
   - `scope_type_resolver_implementation.md`

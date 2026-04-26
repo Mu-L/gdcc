@@ -7,11 +7,11 @@
 - 状态：事实源维护中（compile-only final gate、显式 AST 封口、generic published-fact blocker、explicit self assignment-target prefix 去重、shared/compile 分流边界、unary/binary 非 blocker 合同已落地）
 - 更新时间：2026-04-26
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/support/**`
-  - `src/test/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/support/**`
+  - `src/test/java/gd/script/gdcc/frontend/sema/**`
+  - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/**`
   - `doc/module_impl/frontend/**`
 - 关联文档：
   - `doc/module_impl/common_rules.md`

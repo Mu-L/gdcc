@@ -68,9 +68,9 @@
 当前回归锚点包括：
 
 - `src/test/test_suite/unit_test/script/collection/dictionary_mutation_and_lookup.gd`
-- `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/support/FrontendSubscriptSemanticSupportTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/lowering/FrontendLoweringBodyInsnPassTest.java`
-- `src/test/java/dev/superice/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java` 的 collection category
+- `src/test/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendSubscriptSemanticSupportTest.java`
+- `src/test/java/gd/script/gdcc/frontend/lowering/FrontendLoweringBodyInsnPassTest.java`
+- `src/test/java/gd/script/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java` 的 collection category
 
 ## 5. 已修复：GDScript 可执行 body 中的 `CommentStatement` 不再阻断 CFG builder
 
@@ -108,15 +108,15 @@
 
 - `test_suite` 目前仍缺少稳定、真实、可长期维护的 stock exact engine static route resource。
   - backend 侧 static exact route 继续主要依赖：
-    - `src/test/java/dev/superice/gdcc/backend/c/gen/CallMethodInsnGenEngineTest.java`
-    - `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenEngineMethodBindHeaderTest.java`
+    - `src/test/java/gd/script/gdcc/backend/c/gen/CallMethodInsnGenEngineTest.java`
+    - `src/test/java/gd/script/gdcc/backend/c/gen/CCodegenEngineMethodBindHeaderTest.java`
 - stock runtime API 目前仍缺少稳定、非 editor-only 的“object 位于 fixed prefix 的 vararg method”样本。
   - 这类 helper surface 继续由 focused regression 锚定：
-    - `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenEngineMethodBindHeaderTest.java`
+    - `src/test/java/gd/script/gdcc/backend/c/gen/CCodegenEngineMethodBindHeaderTest.java`
 - bare utility default 在当前 stock `test_suite` 中仍无真实 Godot 锚点。
   - `extension_api_451.json` 当前没有带 `default_value` 的 stock utility function
   - 这条 coverage 继续由 focused tests 锚定，例如：
-    - `src/test/java/dev/superice/gdcc/backend/c/gen/CallGlobalInsnGenTest.java`
+    - `src/test/java/gd/script/gdcc/backend/c/gen/CallGlobalInsnGenTest.java`
 
 ## 9. 已修复：engine virtual runtime anchors 已补齐
 
@@ -128,11 +128,11 @@
 - `_process` / `_physics_process` validation 当前通过等待少量 `process_frame` / `physics_frame` 完成验证。
 - 本轮实测中，`GodotGdextensionTestRunner.DEFAULT_QUIT_AFTER_FRAMES = 10` 已足够稳定覆盖这三条用例，因此没有新增 `quit_after_frames` runner 指令。
 - 错误签名 negative path 继续留在 frontend focused tests，而不是回塞进 `test_suite` resource：
-  - `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendVirtualOverrideAnalyzerTest.java`
-  - `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzerTest.java`
+  - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendVirtualOverrideAnalyzerTest.java`
+  - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzerTest.java`
 - 当前回归锚点包括：
-  - `src/test/java/dev/superice/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`
-  - `src/test/java/dev/superice/gdcc/test_suite/GdScriptEngineVirtualOverrideRuntimeTest.java`
+  - `src/test/java/gd/script/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`
+  - `src/test/java/gd/script/gdcc/test_suite/GdScriptEngineVirtualOverrideRuntimeTest.java`
 
 ## 2. `test_suite` 当前只能把 `Node` 根脚本挂进场景树
 
@@ -167,5 +167,5 @@
 - 当前回归锚点包括：
   - `src/test/test_suite/unit_test/script/runtime/string_literal_internal_surface.gd`
   - `src/test/test_suite/unit_test/validation/runtime/string_literal_internal_surface.gd`
-  - `src/test/java/dev/superice/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java` 中的 runtime category `@TestFactory`
-  - `src/test/java/dev/superice/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`
+  - `src/test/java/gd/script/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java` 中的 runtime category `@TestFactory`
+  - `src/test/java/gd/script/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`

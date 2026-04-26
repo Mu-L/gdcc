@@ -7,13 +7,13 @@
 - 状态：事实源维护中（inner class 双名模型、mapped top-level canonical header/shell、module header discovery、两阶段 shell publish、strict declared type 接入、scope/type-meta 发布规则已落地）
 - 更新时间：2026-03-25
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/main/java/dev/superice/gdcc/frontend/scope/**`
-  - `src/main/java/dev/superice/gdcc/scope/**`
-  - `src/main/java/dev/superice/gdcc/scope/resolver/**`
-  - `src/main/java/dev/superice/gdcc/lir/**`
-  - `src/test/java/dev/superice/gdcc/frontend/**`
-  - `src/test/java/dev/superice/gdcc/scope/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/scope/**`
+  - `src/main/java/gd/script/gdcc/scope/**`
+  - `src/main/java/gd/script/gdcc/scope/resolver/**`
+  - `src/main/java/gd/script/gdcc/lir/**`
+  - `src/test/java/gd/script/gdcc/frontend/**`
+  - `src/test/java/gd/script/gdcc/scope/**`
 - 关联文档：
   - `frontend_rules.md`
   - `diagnostic_manager.md`

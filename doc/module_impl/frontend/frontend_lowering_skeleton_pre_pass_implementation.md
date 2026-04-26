@@ -7,12 +7,12 @@
 - 状态：事实源维护中（pre-pass lowering 已落地；当前稳定产物为 `FrontendModule -> analyzeForCompile -> skeleton/shell-only LirModule + function lowering context scaffold`）
 - 更新时间：2026-03-28
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
-  - `src/main/java/dev/superice/gdcc/lir/**`
-  - `src/test/java/dev/superice/gdcc/frontend/**`
-  - `src/test/java/dev/superice/gdcc/lir/**`
+  - `src/main/java/gd/script/gdcc/frontend/lowering/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
+  - `src/main/java/gd/script/gdcc/lir/**`
+  - `src/test/java/gd/script/gdcc/frontend/**`
+  - `src/test/java/gd/script/gdcc/lir/**`
 - 关联文档：
   - `doc/module_impl/common_rules.md`
   - `frontend_rules.md`

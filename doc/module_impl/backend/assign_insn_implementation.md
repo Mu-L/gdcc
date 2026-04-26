@@ -39,10 +39,10 @@ $<result_id> = assign $<source_id>
 基于当前代码库（2026-03-05）检索结果：
 
 1. `assign` 链路已完整落地：
-   - `src/main/java/dev/superice/gdcc/enums/GdInstruction.java` 已包含 `ASSIGN` opcode。
-   - `src/main/java/dev/superice/gdcc/lir/insn/AssignInsn.java` 已实现。
-   - `src/main/java/dev/superice/gdcc/lir/parser/ParsedLirInstruction.java` 已包含 `case ASSIGN` concrete 映射。
-   - C 后端 `src/main/java/dev/superice/gdcc/backend/c/gen/insn/AssignInsnGen.java` 已实现并注册到 `CCodegen`。
+   - `src/main/java/gd/script/gdcc/enums/GdInstruction.java` 已包含 `ASSIGN` opcode。
+   - `src/main/java/gd/script/gdcc/lir/insn/AssignInsn.java` 已实现。
+   - `src/main/java/gd/script/gdcc/lir/parser/ParsedLirInstruction.java` 已包含 `case ASSIGN` concrete 映射。
+   - C 后端 `src/main/java/gd/script/gdcc/backend/c/gen/insn/AssignInsnGen.java` 已实现并注册到 `CCodegen`。
 2. 赋值语义继续收敛到 `CBodyBuilder#assignVar(...)`：
    - 对象/非对象写槽、生命周期、ptr 转换由 Builder 单点管理。
    - `assign` 生成器保持薄封装，不重复实现生命周期细节。
@@ -83,7 +83,7 @@ $<result_id> = assign $<source_id>
 
 **A1. 新增 opcode**
 
-- 修改：`src/main/java/dev/superice/gdcc/enums/GdInstruction.java`
+- 修改：`src/main/java/gd/script/gdcc/enums/GdInstruction.java`
 - 新增：
   - `ASSIGN("assign", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE), 1, 1)`
 - 验收：
@@ -92,7 +92,7 @@ $<result_id> = assign $<source_id>
 
 **A2. 新增 LIR 指令 record**
 
-- 新增：`src/main/java/dev/superice/gdcc/lir/insn/AssignInsn.java`
+- 新增：`src/main/java/gd/script/gdcc/lir/insn/AssignInsn.java`
 - 建议形态：
   - `public record AssignInsn(@NotNull String resultId, @NotNull String sourceId) implements LirInstruction { ... }`
   - `operands()` 返回 `List.of(new VariableOperand(sourceId))`
@@ -103,7 +103,7 @@ $<result_id> = assign $<source_id>
 
 **A3. 解析器 concrete 映射**
 
-- 修改：`src/main/java/dev/superice/gdcc/lir/parser/ParsedLirInstruction.java`
+- 修改：`src/main/java/gd/script/gdcc/lir/parser/ParsedLirInstruction.java`
 - 在 `toConcrete()` 的 switch 增加：
   - `case ASSIGN -> new AssignInsn(Objects.requireNonNull(resultId), ((VariableOperand) operands.getFirst()).id());`
 - 验收：
@@ -113,8 +113,8 @@ $<result_id> = assign $<source_id>
 **A4. Parser/Serializer 单测补齐**
 
 - 修改/新增：
-  - `src/test/java/dev/superice/gdcc/lir/parser/SimpleLirBlockInsnParserTest.java`
-  - `src/test/java/dev/superice/gdcc/lir/parser/SimpleLirBlockInsnSerializerTest.java`
+  - `src/test/java/gd/script/gdcc/lir/parser/SimpleLirBlockInsnParserTest.java`
+  - `src/test/java/gd/script/gdcc/lir/parser/SimpleLirBlockInsnSerializerTest.java`
 - 建议新增用例：
   - parse：`$a = assign $b;` -> `AssignInsn`，字段正确。
   - serialize：`new AssignInsn("a","b")` -> 包含 `$a = assign $b;`
@@ -128,7 +128,7 @@ $<result_id> = assign $<source_id>
 
 **B1. 新增生成器类**
 
-- 新增：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/AssignInsnGen.java`
+- 新增：`src/main/java/gd/script/gdcc/backend/c/gen/insn/AssignInsnGen.java`
 - 实现要点：
   - `getInsnOpcodes()` 返回 `EnumSet.of(GdInstruction.ASSIGN)`
   - `generateCCode(CBodyBuilder bodyBuilder)`：
@@ -143,14 +143,14 @@ $<result_id> = assign $<source_id>
 
 **B2. 注册到 CCodegen**
 
-- 修改：`src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`
+- 修改：`src/main/java/gd/script/gdcc/backend/c/gen/CCodegen.java`
 - 在 static 注册区增加 `registerInsnGen(new AssignInsnGen());`（建议放在 `NewDataInsnGen()` 之后、property/store 之前，保持分类清晰）
 - 验收：
   - `CCodegen.generateFuncBody(...)` 遇到 `ASSIGN` 不再抛 `Unsupported instruction opcode: assign`
 
 **B3. 生成器单测（核心验收）**
 
-- 新增：`src/test/java/dev/superice/gdcc/backend/c/gen/CAssignInsnGenTest.java`
+- 新增：`src/test/java/gd/script/gdcc/backend/c/gen/CAssignInsnGenTest.java`
 - 覆盖建议（最小但要“抓语义”）：
   1. `int`：`$a = assign $b` 生成 `$a = $b;`
   2. destroyable builtin（如 `String`）：
@@ -208,12 +208,12 @@ $<result_id> = assign $<source_id>
 
 | 用途 | 文件路径 |
 |---|---|
-| opcode 枚举 | `src/main/java/dev/superice/gdcc/enums/GdInstruction.java` |
-| LIR 基类 | `src/main/java/dev/superice/gdcc/lir/LirInstruction.java` |
-| 文本解析入口 | `src/main/java/dev/superice/gdcc/lir/parser/SimpleLirBlockInsnParser.java` |
-| concrete 映射 | `src/main/java/dev/superice/gdcc/lir/parser/ParsedLirInstruction.java` |
-| 文本序列化 | `src/main/java/dev/superice/gdcc/lir/parser/SimpleLirBlockInsnSerializer.java` |
-| CCodegen opcode 分发 | `src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java` |
-| CBodyBuilder 赋值管道 | `src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java` |
-| 参考生成器（Pack/Unpack） | `src/main/java/dev/superice/gdcc/backend/c/gen/insn/PackUnpackVariantInsnGen.java` |
-| 参考生成器（NewData） | `src/main/java/dev/superice/gdcc/backend/c/gen/insn/NewDataInsnGen.java` |
+| opcode 枚举 | `src/main/java/gd/script/gdcc/enums/GdInstruction.java` |
+| LIR 基类 | `src/main/java/gd/script/gdcc/lir/LirInstruction.java` |
+| 文本解析入口 | `src/main/java/gd/script/gdcc/lir/parser/SimpleLirBlockInsnParser.java` |
+| concrete 映射 | `src/main/java/gd/script/gdcc/lir/parser/ParsedLirInstruction.java` |
+| 文本序列化 | `src/main/java/gd/script/gdcc/lir/parser/SimpleLirBlockInsnSerializer.java` |
+| CCodegen opcode 分发 | `src/main/java/gd/script/gdcc/backend/c/gen/CCodegen.java` |
+| CBodyBuilder 赋值管道 | `src/main/java/gd/script/gdcc/backend/c/gen/CBodyBuilder.java` |
+| 参考生成器（Pack/Unpack） | `src/main/java/gd/script/gdcc/backend/c/gen/insn/PackUnpackVariantInsnGen.java` |
+| 参考生成器（NewData） | `src/main/java/gd/script/gdcc/backend/c/gen/insn/NewDataInsnGen.java` |

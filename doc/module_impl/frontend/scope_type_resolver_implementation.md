@@ -7,12 +7,12 @@
 - 状态：事实源维护中（shared resolver、skeleton 接入、真实 scope graph 接入、compatibility mapper 与 caller-side remap 接入已落地）
 - 更新时间：2026-03-25
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/main/java/dev/superice/gdcc/frontend/scope/**`
-  - `src/main/java/dev/superice/gdcc/scope/**`
-  - `src/main/java/dev/superice/gdcc/scope/resolver/**`
-  - `src/test/java/dev/superice/gdcc/frontend/**`
-  - `src/test/java/dev/superice/gdcc/scope/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/scope/**`
+  - `src/main/java/gd/script/gdcc/scope/**`
+  - `src/main/java/gd/script/gdcc/scope/resolver/**`
+  - `src/test/java/gd/script/gdcc/frontend/**`
+  - `src/test/java/gd/script/gdcc/scope/**`
 - 关联文档：
   - `runtime_name_mapping_implementation.md`
   - `scope_architecture_refactor_plan.md`

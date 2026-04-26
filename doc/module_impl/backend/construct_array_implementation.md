@@ -19,11 +19,11 @@
 
 ### 覆盖范围
 
-- 指令生成入口：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/ConstructInsnGen.java`
-- Builtin 构造分发：`src/main/java/dev/superice/gdcc/backend/c/gen/CBuiltinBuilder.java`
-- 自动注入路径：`src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`
-- 共享类型解析：`src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
-- LIR 指令定义：`src/main/java/dev/superice/gdcc/lir/insn/ConstructArrayInsn.java`
+- 指令生成入口：`src/main/java/gd/script/gdcc/backend/c/gen/insn/ConstructInsnGen.java`
+- Builtin 构造分发：`src/main/java/gd/script/gdcc/backend/c/gen/CBuiltinBuilder.java`
+- 自动注入路径：`src/main/java/gd/script/gdcc/backend/c/gen/CCodegen.java`
+- 共享类型解析：`src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java`
+- LIR 指令定义：`src/main/java/gd/script/gdcc/lir/insn/ConstructArrayInsn.java`
 
 ### 已实现语义
 
@@ -97,19 +97,19 @@
 
 ## 回归测试基线
 
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CConstructInsnGenTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CConstructInsnGenTest.java`
   - `construct_array` 构造 `Packed*Array` 成功用例（无 `class_name`）
   - `Packed*Array` 场景传入 `class_name` 报错用例
   - unknown object leaf container hint 兼容用例
   - singleton / global enum / utility function hint 拒绝用例
   - `__prepare__` 注入 `Packed*Array` 时生成 `ConstructArrayInsn(..., null)` 的断言
   - `generateFuncBody` 输出 packed 构造调用的断言（如 `godot_new_PackedInt32Array()`）
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CConstructInsnGenEngineTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CConstructInsnGenEngineTest.java`
   - 显式 packed 构造函数与 prepare packed 构造函数的引擎集成测试
   - 覆盖 `PackedInt32Array` 等类型的 explicit/prepare 路径
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CallMethodInsnGenTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CallMethodInsnGenTest.java`
   - `typedarray::Packed*Array` 与 `typedarray::T` 解析语义回归
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CGenHelperTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CGenHelperTest.java`
   - `parseExtensionType` 正反向测试，覆盖 malformed/unsupported 输入
 
 建议命令：

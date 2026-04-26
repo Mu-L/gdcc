@@ -8,9 +8,9 @@
 - 状态：`Active / 单一事实来源`
 - 更新时间：`2026-03-04`
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/IndexLoadInsnGen.java`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/IndexStoreInsnGen.java`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/insn/IndexLoadInsnGen.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/insn/IndexStoreInsnGen.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/CCodegen.java`
 - 关联文档：
   - `doc/gdcc_c_backend.md`
   - `doc/gdcc_type_system.md`
@@ -211,13 +211,13 @@ LIR 侧统一标记接口：`IndexingInstruction extends LirInstruction`。
 
 ### 7.1 单元测试事实源
 
-1. `src/test/java/dev/superice/gdcc/backend/c/gen/IndexLoadInsnGenTest.java`
-2. `src/test/java/dev/superice/gdcc/backend/c/gen/IndexStoreInsnGenTest.java`
-3. `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenTest.java`（opcode 注册分发）
+1. `src/test/java/gd/script/gdcc/backend/c/gen/IndexLoadInsnGenTest.java`
+2. `src/test/java/gd/script/gdcc/backend/c/gen/IndexStoreInsnGenTest.java`
+3. `src/test/java/gd/script/gdcc/backend/c/gen/CCodegenTest.java`（opcode 注册分发）
 
 ### 7.2 引擎集成测试事实源
 
-`src/test/java/dev/superice/gdcc/backend/c/gen/IndexStoreInsnGenEngineTest.java` 覆盖以下运行时锚点：
+`src/test/java/gd/script/gdcc/backend/c/gen/IndexStoreInsnGenEngineTest.java` 覆盖以下运行时锚点：
 
 1. ref self：`Array` / `Dictionary` set 后无需回写可读回。
 2. `PackedInt32Array`：局部写回路径正确读回。
@@ -232,16 +232,16 @@ LIR 侧统一标记接口：`IndexingInstruction extends LirInstruction`。
 
 | 用途 | 文件路径 |
 |---|---|
-| CInsnGen 接口 | `src/main/java/dev/superice/gdcc/backend/c/gen/CInsnGen.java` |
-| CBodyBuilder | `src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java` |
-| CGenHelper | `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java` |
-| CCodegen 注册入口 | `src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java` |
-| GET 生成器 | `src/main/java/dev/superice/gdcc/backend/c/gen/insn/IndexLoadInsnGen.java` |
-| SET 生成器 | `src/main/java/dev/superice/gdcc/backend/c/gen/insn/IndexStoreInsnGen.java` |
-| IndexingInstruction | `src/main/java/dev/superice/gdcc/lir/insn/IndexingInstruction.java` |
-| GdInstruction | `src/main/java/dev/superice/gdcc/enums/GdInstruction.java` |
-| 参考实现（Operator） | `src/main/java/dev/superice/gdcc/backend/c/gen/insn/OperatorInsnGen.java` |
-| 参考实现（Construct） | `src/main/java/dev/superice/gdcc/backend/c/gen/insn/ConstructInsnGen.java` |
+| CInsnGen 接口 | `src/main/java/gd/script/gdcc/backend/c/gen/CInsnGen.java` |
+| CBodyBuilder | `src/main/java/gd/script/gdcc/backend/c/gen/CBodyBuilder.java` |
+| CGenHelper | `src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java` |
+| CCodegen 注册入口 | `src/main/java/gd/script/gdcc/backend/c/gen/CCodegen.java` |
+| GET 生成器 | `src/main/java/gd/script/gdcc/backend/c/gen/insn/IndexLoadInsnGen.java` |
+| SET 生成器 | `src/main/java/gd/script/gdcc/backend/c/gen/insn/IndexStoreInsnGen.java` |
+| IndexingInstruction | `src/main/java/gd/script/gdcc/lir/insn/IndexingInstruction.java` |
+| GdInstruction | `src/main/java/gd/script/gdcc/enums/GdInstruction.java` |
+| 参考实现（Operator） | `src/main/java/gd/script/gdcc/backend/c/gen/insn/OperatorInsnGen.java` |
+| 参考实现（Construct） | `src/main/java/gd/script/gdcc/backend/c/gen/insn/ConstructInsnGen.java` |
 | C Helper 头文件 | `src/main/c/codegen/include_451/gdcc/gdcc_helper.h` |
 | GDExtension 声明 | `tmp/inspect_gdlite/generated/extension_interface.h` |
 

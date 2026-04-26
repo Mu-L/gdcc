@@ -12,10 +12,10 @@
 ### 覆盖范围
 
 - 当前仅支持 global **utility function** 路径（含 `foo` / `godot_foo` 统一解析）
-- 指令入口：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/CallGlobalInsnGen.java`
-- 名称解析与 utility 元数据适配：`src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
-- 通用调用发射与生命周期语义：`src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
-- default literal 物化与 builtin 构造策略：`src/main/java/dev/superice/gdcc/backend/c/gen/CBuiltinBuilder.java`
+- 指令入口：`src/main/java/gd/script/gdcc/backend/c/gen/insn/CallGlobalInsnGen.java`
+- 名称解析与 utility 元数据适配：`src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java`
+- 通用调用发射与生命周期语义：`src/main/java/gd/script/gdcc/backend/c/gen/CBodyBuilder.java`
+- default literal 物化与 builtin 构造策略：`src/main/java/gd/script/gdcc/backend/c/gen/CBuiltinBuilder.java`
 
 ### 已实现语义
 
@@ -98,15 +98,15 @@
 
 ## 测试基线（当前有效）
 
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CallGlobalInsnGenTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CallGlobalInsnGenTest.java`
   - utility 调用成功/失败主路径
   - vararg 发射契约
   - default 补齐（含 typed Array/Dictionary）
   - default 临时变量生命周期（含 destroy）
-- `src/test/java/dev/superice/gdcc/backend/c/gen/UtilityDefaultLiteralMaterializationTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/UtilityDefaultLiteralMaterializationTest.java`
   - 覆盖 `doc/gdcc_c_backend.md` 中默认值清单的逐项物化验证
   - 优先使用真实 API 类型上下文，不足时使用语法推导兜底
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CBodyBuilderPhaseCTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CBodyBuilderPhaseCTest.java`
   - `callVoid` vararg 尾参数契约验证
 
 ## 非目标（仍不做）

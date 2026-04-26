@@ -8,9 +8,9 @@
 - 状态：Implemented / Maintained
 - 更新时间：2026-04-11
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/LoadPropertyInsnGen.java`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/StorePropertyInsnGen.java`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/PropertyAccessResolver.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/insn/LoadPropertyInsnGen.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/insn/StorePropertyInsnGen.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/insn/PropertyAccessResolver.java`
 - 关联文档：
   - `doc/gdcc_low_ir.md`
   - `doc/gdcc_c_backend.md`
@@ -176,23 +176,23 @@
 
 ### 5.1 单元生成测试
 
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CLoadPropertyInsnGenTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CLoadPropertyInsnGenTest.java`
   - 继承链 owner 解析（GDCC/ENGINE/跨类别）
   - 可读性校验（含 engine unreadable）
   - fallback 与 fail-fast 路径
   - getter-self backing-field copy 直接取 `&self->field`
   - value-semantic getter-self 不残留 shallow temp materialization
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CStorePropertyInsnGenTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CStorePropertyInsnGenTest.java`
   - 继承链 owner 解析（GDCC/ENGINE/跨类别）
   - 可写性与类型方向校验
   - setter-self owner 保护与生命周期顺序断言
   - value-semantic setter-self 不残留 temp lifetime leakage
-- `src/test/java/dev/superice/gdcc/backend/c/gen/insn/PropertyAccessResolverTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/insn/PropertyAccessResolverTest.java`
   - 命中即停止、遮蔽、unknown/fail-fast、环检测
 
 ### 5.2 引擎运行时集成测试
 
-- `src/test/java/dev/superice/gdcc/backend/c/gen/LoadStorePropertyInsnGenEngineInheritanceTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/LoadStorePropertyInsnGenEngineInheritanceTest.java`
   - ENGINE child -> ENGINE owner（LOAD/STORE）
   - GDCC receiver -> ENGINE owner（LOAD/STORE）
   - getter-self / setter-self 引擎继承专项（功能 + 生命周期顺序）

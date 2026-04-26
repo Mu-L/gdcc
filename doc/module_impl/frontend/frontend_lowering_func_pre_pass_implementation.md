@@ -7,10 +7,10 @@
 - 状态：事实源维护中（function pre-pass 已落地；当前稳定产物为 compile-ready executable/property initializer context scaffold）
 - 更新时间：2026-03-28
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
-  - `src/main/java/dev/superice/gdcc/frontend/lowering/pass/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/test/java/dev/superice/gdcc/frontend/lowering/**`
+  - `src/main/java/gd/script/gdcc/frontend/lowering/**`
+  - `src/main/java/gd/script/gdcc/frontend/lowering/pass/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/test/java/gd/script/gdcc/frontend/lowering/**`
 - 关联文档：
   - `frontend_lowering_plan.md`
   - `frontend_lowering_skeleton_pre_pass_implementation.md`

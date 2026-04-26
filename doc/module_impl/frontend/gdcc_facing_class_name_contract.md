@@ -7,12 +7,12 @@
 - 状态：事实源维护中（`__sub__` 保留序列、top-level mapping 输入边界、source-facing `extends` 边界、Godot-facing surface 分层合同与 backend symbol carry-through 已冻结）
 - 更新时间：2026-04-21
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/**`
-  - `src/main/java/dev/superice/gdcc/scope/**`
-  - `src/main/java/dev/superice/gdcc/lir/**`
-  - `src/main/java/dev/superice/gdcc/backend/c/**`
+  - `src/main/java/gd/script/gdcc/frontend/**`
+  - `src/main/java/gd/script/gdcc/scope/**`
+  - `src/main/java/gd/script/gdcc/lir/**`
+  - `src/main/java/gd/script/gdcc/backend/c/**`
   - `src/main/c/codegen/**`
-  - `src/test/java/dev/superice/gdcc/**`
+  - `src/test/java/gd/script/gdcc/**`
   - `src/test/test_suite/**`
   - `doc/module_impl/frontend/**`
 - 关联文档：

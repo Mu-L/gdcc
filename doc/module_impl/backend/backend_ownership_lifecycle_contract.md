@@ -7,7 +7,7 @@
 
 - 状态：Implemented / Maintained
 - 范围：
-  - `src/main/java/dev/superice/gdcc/backend/c/**`
+  - `src/main/java/gd/script/gdcc/backend/c/**`
   - `src/main/c/codegen/**`
 - 更新时间：2026-04-10
 - 上游对齐基线：Godot `755fa449c4aa94fdf2c58e2b726fd62efde07e09`
@@ -20,12 +20,12 @@
 
 ### 核心实现落点
 
-- 对象槽位写入：`src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
-- 返回发布：`src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
-- `__finally__` 自动清理选择：`src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`
-- 生命周期指令生成：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/DestructInsnGen.java`
+- 对象槽位写入：`src/main/java/gd/script/gdcc/backend/c/gen/CBodyBuilder.java`
+- 返回发布：`src/main/java/gd/script/gdcc/backend/c/gen/CBodyBuilder.java`
+- `__finally__` 自动清理选择：`src/main/java/gd/script/gdcc/backend/c/gen/CCodegen.java`
+- 生命周期指令生成：`src/main/java/gd/script/gdcc/backend/c/gen/insn/DestructInsnGen.java`
 - GDCC/Godot 对象指针表示转换 helper：
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/CBodyBuilder.java`
   - `src/main/c/codegen/include_451/gdcc/gdcc_helper.h`
 
 ### 当前已锁定的实现结论
@@ -165,17 +165,17 @@ Godot 不会因为 local variable 离开作用域就自动 `free()` / `queue_fre
 
 ## 回归测试基线
 
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CBodyBuilderPhaseCTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CBodyBuilderPhaseCTest.java`
   - producer / consumer matrix
   - `_return_val` publish
   - move-return
   - pointer conversion neutrality
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CDestructInsnGenTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CDestructInsnGenTest.java`
   - `YES` / `UNKNOWN` / `NO` cleanup behavior
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CPhaseAControlFlowAndFinallyTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CPhaseAControlFlowAndFinallyTest.java`
   - `__finally__` auto-cleanup selection
   - `_return_val` exclusion
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CGenHelperTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CGenHelperTest.java`
   - helper-level pointer conversion rendering
 
 建议命令：

@@ -7,9 +7,9 @@
 
 - 状态：Implemented / Maintained
 - 范围：
-  - `src/main/java/dev/superice/gdcc/backend/c/**`
+  - `src/main/java/gd/script/gdcc/backend/c/**`
   - `src/main/c/codegen/**`
-  - `src/test/java/dev/superice/gdcc/backend/c/**`
+  - `src/test/java/gd/script/gdcc/backend/c/**`
 - 更新时间：2026-04-11
 - 上游对齐基线：
   - Godot 4.x 对 source-level `Variant` outward slot 的合同：
@@ -27,11 +27,11 @@
 ### 核心实现落点
 
 - outward metadata helper：
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java`
     - `renderBoundMetadata(...)`
     - `renderPropertyMetadata(...)`
 - `call_func` wrapper cleanup helper：
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java`
     - `renderCallWrapperDestroyStmt(...)`
 - method binding metadata / runtime gate / wrapper cleanup：
   - `src/main/c/codegen/template_451/entry.h.ftl`
@@ -188,18 +188,18 @@ Godot 对 source-level `Variant` outward slot 的约定是：
 ## 回归测试基线
 
 - helper-level：
-  - `src/test/java/dev/superice/gdcc/backend/c/gen/CGenHelperTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/gen/CGenHelperTest.java`
     - `renderBoundMetadata(...)`
     - `renderPropertyMetadata(...)`
     - `renderCallWrapperDestroyStmt(...)`
 - codegen-level：
-  - `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/gen/CCodegenTest.java`
     - method metadata
     - property metadata
     - non-`Variant` runtime gate 保留
     - `call_func` wrapper cleanup contract
 - integration-level：
-  - `src/test/java/dev/superice/gdcc/backend/c/build/FrontendLoweringToCProjectBuilderIntegrationTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/build/FrontendLoweringToCProjectBuilderIntegrationTest.java`
     - `target.call(...)` 对 `Variant` 参数的可达性
     - direct method return 的 `Variant` surface
     - property get/set 的 `Variant` surface

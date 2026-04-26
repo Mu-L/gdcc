@@ -13,8 +13,8 @@
 ## 1. 范围与对齐关系
 
 - 代码范围：
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/insn/`
   - `src/main/c/codegen/include_451/gdcc/gdcc_helper.h`
   - `src/main/c/codegen/template_451/entry.c.ftl`
 - 规范关系：

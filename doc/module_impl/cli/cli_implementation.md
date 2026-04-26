@@ -1,7 +1,7 @@
 # GDCC CLI 实现说明
 
 > 本文档作为本地 `gdcc` 命令行适配层的长期事实源。CLI 是
-> `dev.superice.gdcc.api.API` 之上的薄适配层：它从宿主机 `.gd` 文件准备一个
+> `gd.script.gdcc.api.API` 之上的薄适配层：它从宿主机 `.gd` 文件准备一个
 > API module，配置 compile options 与顶层 canonical name 映射，启动一个
 > compile task，drain task events，并把最终结果渲染给终端用户。本文档替代旧的
 > `cli_implementation_plan.md`，不再保留实施步骤、进度记录或验收流水账。
@@ -11,12 +11,12 @@
 - 状态：事实源维护中
 - 更新时间：2026-04-26
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/Main.java`
-  - `src/main/java/dev/superice/gdcc/cli/**`
-  - `src/main/java/dev/superice/gdcc/util/ConsoleOutputUtil.java`
-  - `src/main/java/dev/superice/gdcc/util/GdccVersion.java`
+  - `src/main/java/gd/script/gdcc/Main.java`
+  - `src/main/java/gd/script/gdcc/cli/**`
+  - `src/main/java/gd/script/gdcc/util/ConsoleOutputUtil.java`
+  - `src/main/java/gd/script/gdcc/util/GdccVersion.java`
   - `build.gradle.kts`
-  - `src/test/java/dev/superice/gdcc/cli/**`
+  - `src/test/java/gd/script/gdcc/cli/**`
   - CLI 行为依赖的聚焦 API / frontend / backend 测试
 - 直接事实源：
   - `doc/module_impl/api/rpc_api_implementation.md`
@@ -24,19 +24,19 @@
   - `doc/module_impl/frontend/frontend_rules.md`
   - `doc/module_impl/frontend/runtime_name_mapping_implementation.md`
   - `doc/module_impl/frontend/gdcc_facing_class_name_contract.md`
-  - `src/main/java/dev/superice/gdcc/api/API.java`
-  - `src/main/java/dev/superice/gdcc/api/CompileOptions.java`
-  - `src/main/java/dev/superice/gdcc/api/CompileResult.java`
-  - `src/main/java/dev/superice/gdcc/api/CompileTaskSnapshot.java`
-  - `src/main/java/dev/superice/gdcc/api/CompileTaskEvent.java`
-  - `src/main/java/dev/superice/gdcc/frontend/FrontendClassNameContract.java`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendClassSkeletonBuilder.java`
-  - `src/main/java/dev/superice/gdcc/util/GdccVersion.java`
+  - `src/main/java/gd/script/gdcc/api/API.java`
+  - `src/main/java/gd/script/gdcc/api/CompileOptions.java`
+  - `src/main/java/gd/script/gdcc/api/CompileResult.java`
+  - `src/main/java/gd/script/gdcc/api/CompileTaskSnapshot.java`
+  - `src/main/java/gd/script/gdcc/api/CompileTaskEvent.java`
+  - `src/main/java/gd/script/gdcc/frontend/FrontendClassNameContract.java`
+  - `src/main/java/gd/script/gdcc/frontend/sema/FrontendClassSkeletonBuilder.java`
+  - `src/main/java/gd/script/gdcc/util/GdccVersion.java`
   - `build.gradle.kts`
 - 关联事实源：
-  - `src/main/java/dev/superice/gdcc/backend/c/build/CProjectBuilder.java`
-  - `src/test/java/dev/superice/gdcc/api/**`
-  - `src/test/java/dev/superice/gdcc/backend/c/build/**`
+  - `src/main/java/gd/script/gdcc/backend/c/build/CProjectBuilder.java`
+  - `src/test/java/gd/script/gdcc/api/**`
+  - `src/test/java/gd/script/gdcc/backend/c/build/**`
 - 明确非目标：
   - 不实现网络或 RPC transport。
   - 不在 CLI 代码中实现第二套编译管线。
@@ -49,7 +49,7 @@
 ## 1. 职责与分层
 
 `Main` 只负责委托 `GdccCommand.execute(args)`。命令行解析、host input 准备、API 调用和终端渲染都收敛在
-`dev.superice.gdcc.cli` 包内；公共 API、frontend、backend 和根包不承载 CLI helper。
+`gd.script.gdcc.cli` 包内；公共 API、frontend、backend 和根包不承载 CLI helper。
 
 CLI 的合法职责是：
 
@@ -123,7 +123,7 @@ gdcc-version.properties
 Gradle 的 `jar` task 生成可通过 `java -jar` 启动的主 jar。manifest 固定包含：
 
 ```text
-Main-Class: dev.superice.gdcc.Main
+Main-Class: gd.script.gdcc.Main
 Class-Path: lib/<runtime-dependency>.jar ...
 ```
 

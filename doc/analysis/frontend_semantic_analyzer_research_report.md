@@ -27,30 +27,30 @@
 ### 2.1 代码事实源
 
 - `build.gradle.kts`
-- `src/main/java/dev/superice/gdcc/frontend/parse/GdScriptParserService.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendAnalysisData.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendClassSkeletonBuilder.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendBindingKind.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendModuleSkeleton.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendSourceClassRelation.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendSemanticAnalyzer.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendScopeAnalyzer.java`
-- `src/main/java/dev/superice/gdcc/frontend/scope/AbstractFrontendScope.java`
-- `src/main/java/dev/superice/gdcc/frontend/scope/ClassScope.java`
-- `src/main/java/dev/superice/gdcc/frontend/scope/CallableScope.java`
-- `src/main/java/dev/superice/gdcc/frontend/scope/BlockScope.java`
-- `src/main/java/dev/superice/gdcc/scope/ClassRegistry.java`
-- `src/main/java/dev/superice/gdcc/scope/ResolveRestriction.java`
-- `src/main/java/dev/superice/gdcc/scope/Scope.java`
-- `src/main/java/dev/superice/gdcc/scope/ScopeLookupResult.java`
-- `src/main/java/dev/superice/gdcc/scope/ScopeLookupStatus.java`
-- `src/main/java/dev/superice/gdcc/scope/ScopeValueKind.java`
-- `src/main/java/dev/superice/gdcc/scope/ScopeTypeMetaKind.java`
-- `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
-- `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendPropertyAccessResolver.java`
-- `src/main/java/dev/superice/gdcc/scope/resolver/ScopeMethodResolver.java`
-- `src/main/java/dev/superice/gdcc/scope/resolver/ScopePropertyResolver.java`
-- 当前工作区新增文件：`src/main/java/dev/superice/gdcc/scope/resolver/ScopeSignalResolver.java`、`src/main/java/dev/superice/gdcc/scope/resolver/ScopeResolvedSignal.java`
+- `src/main/java/gd/script/gdcc/frontend/parse/GdScriptParserService.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/FrontendAnalysisData.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/FrontendClassSkeletonBuilder.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/FrontendBindingKind.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/FrontendModuleSkeleton.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/FrontendSourceClassRelation.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendSemanticAnalyzer.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendScopeAnalyzer.java`
+- `src/main/java/gd/script/gdcc/frontend/scope/AbstractFrontendScope.java`
+- `src/main/java/gd/script/gdcc/frontend/scope/ClassScope.java`
+- `src/main/java/gd/script/gdcc/frontend/scope/CallableScope.java`
+- `src/main/java/gd/script/gdcc/frontend/scope/BlockScope.java`
+- `src/main/java/gd/script/gdcc/scope/ClassRegistry.java`
+- `src/main/java/gd/script/gdcc/scope/ResolveRestriction.java`
+- `src/main/java/gd/script/gdcc/scope/Scope.java`
+- `src/main/java/gd/script/gdcc/scope/ScopeLookupResult.java`
+- `src/main/java/gd/script/gdcc/scope/ScopeLookupStatus.java`
+- `src/main/java/gd/script/gdcc/scope/ScopeValueKind.java`
+- `src/main/java/gd/script/gdcc/scope/ScopeTypeMetaKind.java`
+- `src/main/java/gd/script/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
+- `src/main/java/gd/script/gdcc/backend/c/gen/insn/BackendPropertyAccessResolver.java`
+- `src/main/java/gd/script/gdcc/scope/resolver/ScopeMethodResolver.java`
+- `src/main/java/gd/script/gdcc/scope/resolver/ScopePropertyResolver.java`
+- 当前工作区新增文件：`src/main/java/gd/script/gdcc/scope/resolver/ScopeSignalResolver.java`、`src/main/java/gd/script/gdcc/scope/resolver/ScopeResolvedSignal.java`
 
 ### 2.2 文档事实源
 
@@ -64,36 +64,36 @@
 
 ### 2.3 测试事实源
 
-- `src/test/java/dev/superice/gdcc/frontend/parse/FrontendParseSmokeTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendAnalysisDataTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendAstSideTableTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendClassSkeletonTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendInheritanceCycleTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendScopeAnalyzerTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendSemanticAnalyzerFrameworkTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendTopBindingAnalyzerTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendChainBindingAnalyzerTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzerTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendExprTypeAnalyzerTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/scope/ClassScopeResolutionTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/scope/ClassScopeSignalResolutionTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/scope/FrontendStaticContextValueRestrictionTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/scope/FrontendStaticContextFunctionRestrictionTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/scope/FrontendStaticContextShadowingTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/scope/FrontendInnerClassScopeIsolationTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/scope/FrontendNestedInnerClassScopeIsolationTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/scope/ScopeCaptureShapeTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/scope/ScopeChainTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/scope/ScopeTypeMetaChainTest.java`
-- `src/test/java/dev/superice/gdcc/scope/ScopeProtocolTest.java`
-- `src/test/java/dev/superice/gdcc/scope/ClassRegistryTypeMetaTest.java`
-- `src/test/java/dev/superice/gdcc/scope/ClassRegistryGdccTest.java`
-- `src/test/java/dev/superice/gdcc/scope/resolver/ScopeMethodResolverTest.java`
-- `src/test/java/dev/superice/gdcc/scope/resolver/ScopePropertyResolverTest.java`
-- `src/test/java/dev/superice/gdcc/lir/parser/DomLirSerializerTest.java`
-- `src/test/java/dev/superice/gdcc/lir/parser/DomLirParserTest.java`
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenTest.java`
-- 当前工作区测试：`src/test/java/dev/superice/gdcc/scope/resolver/ScopeSignalResolverTest.java`
+- `src/test/java/gd/script/gdcc/frontend/parse/FrontendParseSmokeTest.java`
+- `src/test/java/gd/script/gdcc/frontend/sema/FrontendAnalysisDataTest.java`
+- `src/test/java/gd/script/gdcc/frontend/sema/FrontendAstSideTableTest.java`
+- `src/test/java/gd/script/gdcc/frontend/sema/FrontendClassSkeletonTest.java`
+- `src/test/java/gd/script/gdcc/frontend/sema/FrontendInheritanceCycleTest.java`
+- `src/test/java/gd/script/gdcc/frontend/sema/FrontendScopeAnalyzerTest.java`
+- `src/test/java/gd/script/gdcc/frontend/sema/FrontendSemanticAnalyzerFrameworkTest.java`
+- `src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendTopBindingAnalyzerTest.java`
+- `src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendChainBindingAnalyzerTest.java`
+- `src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzerTest.java`
+- `src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendExprTypeAnalyzerTest.java`
+- `src/test/java/gd/script/gdcc/frontend/scope/ClassScopeResolutionTest.java`
+- `src/test/java/gd/script/gdcc/frontend/scope/ClassScopeSignalResolutionTest.java`
+- `src/test/java/gd/script/gdcc/frontend/scope/FrontendStaticContextValueRestrictionTest.java`
+- `src/test/java/gd/script/gdcc/frontend/scope/FrontendStaticContextFunctionRestrictionTest.java`
+- `src/test/java/gd/script/gdcc/frontend/scope/FrontendStaticContextShadowingTest.java`
+- `src/test/java/gd/script/gdcc/frontend/scope/FrontendInnerClassScopeIsolationTest.java`
+- `src/test/java/gd/script/gdcc/frontend/scope/FrontendNestedInnerClassScopeIsolationTest.java`
+- `src/test/java/gd/script/gdcc/frontend/scope/ScopeCaptureShapeTest.java`
+- `src/test/java/gd/script/gdcc/frontend/scope/ScopeChainTest.java`
+- `src/test/java/gd/script/gdcc/frontend/scope/ScopeTypeMetaChainTest.java`
+- `src/test/java/gd/script/gdcc/scope/ScopeProtocolTest.java`
+- `src/test/java/gd/script/gdcc/scope/ClassRegistryTypeMetaTest.java`
+- `src/test/java/gd/script/gdcc/scope/ClassRegistryGdccTest.java`
+- `src/test/java/gd/script/gdcc/scope/resolver/ScopeMethodResolverTest.java`
+- `src/test/java/gd/script/gdcc/scope/resolver/ScopePropertyResolverTest.java`
+- `src/test/java/gd/script/gdcc/lir/parser/DomLirSerializerTest.java`
+- `src/test/java/gd/script/gdcc/lir/parser/DomLirParserTest.java`
+- `src/test/java/gd/script/gdcc/backend/c/gen/CCodegenTest.java`
+- 当前工作区测试：`src/test/java/gd/script/gdcc/scope/resolver/ScopeSignalResolverTest.java`
 
 ### 2.4 明确移除的旧依据
 
@@ -505,30 +505,30 @@ signal 相关模型和 scope 语义已经有明显进展，因此下一步重点
 ### 8.2 当前仓库中的实现
 
 - `build.gradle.kts`
-- `src/main/java/dev/superice/gdcc/frontend/parse/GdScriptParserService.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendClassSkeletonBuilder.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendBindingKind.java`
-- `src/main/java/dev/superice/gdcc/frontend/scope/ClassScope.java`
-- `src/main/java/dev/superice/gdcc/frontend/scope/CallableScope.java`
-- `src/main/java/dev/superice/gdcc/frontend/scope/BlockScope.java`
-- `src/main/java/dev/superice/gdcc/scope/ClassRegistry.java`
-- `src/main/java/dev/superice/gdcc/scope/ResolveRestriction.java`
-- `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
-- `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendPropertyAccessResolver.java`
-- `src/main/java/dev/superice/gdcc/scope/resolver/ScopeMethodResolver.java`
-- `src/main/java/dev/superice/gdcc/scope/resolver/ScopePropertyResolver.java`
-- 当前工作区新增实现：`src/main/java/dev/superice/gdcc/scope/resolver/ScopeSignalResolver.java`、`src/main/java/dev/superice/gdcc/scope/resolver/ScopeResolvedSignal.java`
+- `src/main/java/gd/script/gdcc/frontend/parse/GdScriptParserService.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/FrontendClassSkeletonBuilder.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/FrontendBindingKind.java`
+- `src/main/java/gd/script/gdcc/frontend/scope/ClassScope.java`
+- `src/main/java/gd/script/gdcc/frontend/scope/CallableScope.java`
+- `src/main/java/gd/script/gdcc/frontend/scope/BlockScope.java`
+- `src/main/java/gd/script/gdcc/scope/ClassRegistry.java`
+- `src/main/java/gd/script/gdcc/scope/ResolveRestriction.java`
+- `src/main/java/gd/script/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
+- `src/main/java/gd/script/gdcc/backend/c/gen/insn/BackendPropertyAccessResolver.java`
+- `src/main/java/gd/script/gdcc/scope/resolver/ScopeMethodResolver.java`
+- `src/main/java/gd/script/gdcc/scope/resolver/ScopePropertyResolver.java`
+- 当前工作区新增实现：`src/main/java/gd/script/gdcc/scope/resolver/ScopeSignalResolver.java`、`src/main/java/gd/script/gdcc/scope/resolver/ScopeResolvedSignal.java`
 
 ### 8.3 当前仓库中的测试
 
-- `src/test/java/dev/superice/gdcc/frontend/parse/FrontendParseSmokeTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendClassSkeletonTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendInheritanceCycleTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/scope/ClassScopeSignalResolutionTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/scope/FrontendStaticContextShadowingTest.java`
-- `src/test/java/dev/superice/gdcc/frontend/scope/ScopeCaptureShapeTest.java`
-- `src/test/java/dev/superice/gdcc/scope/ScopeProtocolTest.java`
-- `src/test/java/dev/superice/gdcc/scope/ClassRegistryTypeMetaTest.java`
-- `src/test/java/dev/superice/gdcc/scope/resolver/ScopeMethodResolverTest.java`
-- `src/test/java/dev/superice/gdcc/scope/resolver/ScopePropertyResolverTest.java`
-- 当前工作区测试：`src/test/java/dev/superice/gdcc/scope/resolver/ScopeSignalResolverTest.java`
+- `src/test/java/gd/script/gdcc/frontend/parse/FrontendParseSmokeTest.java`
+- `src/test/java/gd/script/gdcc/frontend/sema/FrontendClassSkeletonTest.java`
+- `src/test/java/gd/script/gdcc/frontend/sema/FrontendInheritanceCycleTest.java`
+- `src/test/java/gd/script/gdcc/frontend/scope/ClassScopeSignalResolutionTest.java`
+- `src/test/java/gd/script/gdcc/frontend/scope/FrontendStaticContextShadowingTest.java`
+- `src/test/java/gd/script/gdcc/frontend/scope/ScopeCaptureShapeTest.java`
+- `src/test/java/gd/script/gdcc/scope/ScopeProtocolTest.java`
+- `src/test/java/gd/script/gdcc/scope/ClassRegistryTypeMetaTest.java`
+- `src/test/java/gd/script/gdcc/scope/resolver/ScopeMethodResolverTest.java`
+- `src/test/java/gd/script/gdcc/scope/resolver/ScopePropertyResolverTest.java`
+- 当前工作区测试：`src/test/java/gd/script/gdcc/scope/resolver/ScopeSignalResolverTest.java`

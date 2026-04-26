@@ -7,14 +7,14 @@
 - 状态：事实源维护中（unary/binary shared semantic、analyzer 集成、type-check / compile-gate 消费路径已落地）
 - 更新时间：2026-03-20
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/support/**`
-  - `src/main/java/dev/superice/gdcc/enums/GodotOperator.java`
-  - `src/main/java/dev/superice/gdcc/gdextension/ExtensionBuiltinClass.java`
-  - `src/test/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/**`
-  - `src/test/java/dev/superice/gdcc/enums/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/support/**`
+  - `src/main/java/gd/script/gdcc/enums/GodotOperator.java`
+  - `src/main/java/gd/script/gdcc/gdextension/ExtensionBuiltinClass.java`
+  - `src/test/java/gd/script/gdcc/frontend/sema/**`
+  - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/**`
+  - `src/test/java/gd/script/gdcc/enums/**`
 - 关联文档：
   - `doc/module_impl/common_rules.md`
   - `doc/module_impl/frontend/frontend_rules.md`

@@ -1,9 +1,0 @@
-package dev.superice.gdcc.gdextension;
-
-import java.util.List;
-
-public record ExtensionGlobalEnum(
-        String name,
-        boolean isBitfield,
-        List<ExtensionEnumValue> values
-) { }

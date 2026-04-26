@@ -7,9 +7,9 @@
 
 - 状态：Implemented / Maintained
 - 范围：
-  - `src/main/java/dev/superice/gdcc/backend/c/**`
+  - `src/main/java/gd/script/gdcc/backend/c/**`
   - `src/main/c/codegen/**`
-  - `src/test/java/dev/superice/gdcc/backend/c/**`
+  - `src/test/java/gd/script/gdcc/backend/c/**`
 - 更新时间：2026-04-13
 - 上游对齐基线：
   - Godot 4.x 对 source-level `Array[T]` outward slot 的合同：
@@ -30,11 +30,11 @@
 ### 核心实现落点
 
 - outward metadata helper：
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java`
     - `renderBoundMetadata(...)`
     - `renderPropertyMetadata(...)`
 - typed-array wrapper preflight helper：
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java`
     - `needsTypedArrayCallGuard(...)`
     - `renderTypedArrayGuardBuiltinTypeLiteral(...)`
     - `isTypedArrayGuardObjectLeaf(...)`
@@ -44,7 +44,7 @@
 - property registration metadata：
   - `src/main/c/codegen/template_451/entry.c.ftl`
 - typed-array reconstruction path：
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/CBuiltinBuilder.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/CBuiltinBuilder.java`
     - `constructArray(...)`
 
 ### 当前已锁定的实现结论
@@ -227,31 +227,31 @@ Godot 的 typed-array constructor 合同要求 script carrier 是 `Variant*`。
 ## 回归测试基线
 
 - helper-level：
-  - `src/test/java/dev/superice/gdcc/backend/c/gen/CGenHelperTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/gen/CGenHelperTest.java`
     - typed-array metadata 正例
     - generic array 不误走 typed hint / typed guard
     - object leaf 不做 backend registry 重验
     - nested typed leaf / 缺失 metadata leaf fail-fast
 - codegen-level：
-  - `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/gen/CCodegenTest.java`
     - method arg / return / property metadata
     - typed-array wrapper preflight 结构
     - preflight 位于 unpack 之前
     - 不生成 `godot_Array_is_same_typed(...)`
-  - `src/test/java/dev/superice/gdcc/backend/c/gen/CConstructInsnGenTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/gen/CConstructInsnGenTest.java`
     - typed-array constructor codegen
     - nil `Variant` script carrier
-  - `src/test/java/dev/superice/gdcc/backend/c/gen/UtilityDefaultLiteralMaterializationTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/gen/UtilityDefaultLiteralMaterializationTest.java`
     - registry-backed typed-array default literal
     - `Array[Array]([])` 默认值路径
 - integration-level：
-  - `src/test/java/dev/superice/gdcc/backend/c/build/FrontendLoweringToCTypedArrayAbiIntegrationTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/build/FrontendLoweringToCTypedArrayAbiIntegrationTest.java`
     - method parameter positive / plain negative / wrong-typed negative
     - method return outward fidelity
     - property direct get/set positive
     - property plain / wrong-typed negative
 - 调查基线：
-  - `src/test/java/dev/superice/gdcc/backend/c/build/FrontendLoweringToCTypedArrayAbiInvestigationTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/build/FrontendLoweringToCTypedArrayAbiInvestigationTest.java`
     - 仅保留轻量 post-fix probe 角色
     - 不再承担主回归职责
 
@@ -259,7 +259,7 @@ Godot 的 typed-array constructor 合同要求 script carrier 是 `Variant*`。
 
 ```powershell
 rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests CGenHelperTest,CCodegenTest,CConstructInsnGenTest,UtilityDefaultLiteralMaterializationTest
-rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedArrayAbiIntegrationTest" --no-daemon --info --console=plain
+rtk .\gradlew.bat test --tests "gd.script.gdcc.backend.c.build.FrontendLoweringToCTypedArrayAbiIntegrationTest" --no-daemon --info --console=plain
 ```
 
 ## 长期风险与维护提醒

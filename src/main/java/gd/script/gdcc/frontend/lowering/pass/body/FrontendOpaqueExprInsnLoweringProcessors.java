@@ -1,0 +1,249 @@
+package gd.script.gdcc.frontend.lowering.pass.body;
+
+import gd.script.gdcc.enums.GodotOperator;
+import gd.script.gdcc.lir.LirBasicBlock;
+import gd.script.gdcc.lir.insn.AssignInsn;
+import gd.script.gdcc.lir.insn.BinaryOpInsn;
+import gd.script.gdcc.lir.insn.LiteralBoolInsn;
+import gd.script.gdcc.lir.insn.LiteralFloatInsn;
+import gd.script.gdcc.lir.insn.LiteralIntInsn;
+import gd.script.gdcc.lir.insn.LiteralNilInsn;
+import gd.script.gdcc.lir.insn.LiteralStringInsn;
+import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
+import gd.script.gdcc.lir.insn.LoadPropertyInsn;
+import gd.script.gdcc.lir.insn.LoadStaticInsn;
+import gd.script.gdcc.lir.insn.UnaryOpInsn;
+import gd.script.gdcc.util.StringUtil;
+import dev.superice.gdparser.frontend.ast.BinaryExpression;
+import dev.superice.gdparser.frontend.ast.Expression;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.SelfExpression;
+import dev.superice.gdparser.frontend.ast.UnaryExpression;
+import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import java.util.Objects;
+
+final class FrontendOpaqueExprInsnLoweringProcessors {
+    private FrontendOpaqueExprInsnLoweringProcessors() {
+    }
+
+    static @NotNull FrontendInsnLoweringProcessorRegistry<Expression, FrontendBodyLoweringSession.OpaqueExprLoweringContext>
+    createRegistry() {
+        return FrontendInsnLoweringProcessorRegistry.of(
+                "opaque expression",
+                new FrontendIdentifierOpaqueExprInsnLoweringProcessor(),
+                new FrontendLiteralOpaqueExprInsnLoweringProcessor(),
+                new FrontendSelfOpaqueExprInsnLoweringProcessor(),
+                new FrontendUnaryOpaqueExprInsnLoweringProcessor(),
+                new FrontendBinaryOpaqueExprInsnLoweringProcessor()
+        );
+    }
+
+    /// Resolves a bare identifier leaf through the already-published binding table.
+    ///
+    /// This processor is allowed to choose only among binding-backed runtime load routes
+    /// (local/parameter/capture/property/self); it must not re-run any scope lookup or member
+    /// inference.
+    ///
+    /// `FrontendTopBindingAnalyzer` publishes `FrontendBindingKind.SELF` only for explicit
+    /// `SelfExpression`. If an `IdentifierExpression` arrives here with binding kind `SELF`, some
+    /// earlier publication step violated that contract and body lowering must fail fast instead of
+    /// silently recovering to `"self"`.
+    private static final class FrontendIdentifierOpaqueExprInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<IdentifierExpression, FrontendBodyLoweringSession.OpaqueExprLoweringContext> {
+        @Override
+        public @NotNull Class<IdentifierExpression> nodeType() {
+            return IdentifierExpression.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull IdentifierExpression node,
+                @Nullable FrontendBodyLoweringSession.OpaqueExprLoweringContext context
+        ) {
+            var item = requireContext(context);
+            var binding = session.requireBinding(node);
+            var resultSlotId = session.resultSlotId(item);
+            switch (binding.kind()) {
+                case SELF -> throw session.identifierSelfBindingContractViolation(node, "Identifier value lowering");
+                case LOCAL_VAR, PARAMETER, CAPTURE ->
+                        block.appendNonTerminatorInstruction(new AssignInsn(resultSlotId, binding.symbolName()));
+                case PROPERTY -> {
+                    if (session.isStaticPropertyBinding(binding)) {
+                        block.appendNonTerminatorInstruction(new LoadStaticInsn(
+                                resultSlotId,
+                                session.currentClassName(),
+                                binding.symbolName()
+                        ));
+                        return block;
+                    }
+                    session.requireSelfSlot();
+                    block.appendNonTerminatorInstruction(new LoadPropertyInsn(resultSlotId, binding.symbolName(), "self"));
+                }
+                default -> throw session.unsupportedSequenceItem(
+                        item,
+                        "identifier binding kind is not supported by frontend body lowering: " + binding.kind()
+                );
+            }
+            return block;
+        }
+    }
+
+    /// Emits literal materialization instructions from the parser literal kind while preserving the
+    /// LIR contract that string-like payloads are already runtime-normalized.
+    ///
+    /// The processor stays intentionally dumb: all type acceptance already happened upstream, so it
+    /// only translates the published literal surface into the matching concrete LIR instruction.
+    private static final class FrontendLiteralOpaqueExprInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<LiteralExpression, FrontendBodyLoweringSession.OpaqueExprLoweringContext> {
+        @Override
+        public @NotNull Class<LiteralExpression> nodeType() {
+            return LiteralExpression.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull LiteralExpression node,
+                @Nullable FrontendBodyLoweringSession.OpaqueExprLoweringContext context
+        ) {
+            var item = requireContext(context);
+            var resultSlotId = session.resultSlotId(item);
+            var sourceText = node.sourceText();
+            switch (node.kind()) {
+                case "integer" -> block.appendNonTerminatorInstruction(new LiteralIntInsn(
+                        resultSlotId,
+                        Integer.parseInt(sourceText)
+                ));
+                case "number" -> {
+                    if (sourceText.contains(".")) {
+                        block.appendNonTerminatorInstruction(new LiteralFloatInsn(
+                                resultSlotId,
+                                Double.parseDouble(sourceText)
+                        ));
+                        return block;
+                    }
+                    block.appendNonTerminatorInstruction(new LiteralIntInsn(
+                            resultSlotId,
+                            Integer.parseInt(sourceText)
+                    ));
+                }
+                case "float" -> block.appendNonTerminatorInstruction(new LiteralFloatInsn(
+                        resultSlotId,
+                        Double.parseDouble(sourceText)
+                ));
+                case "string" -> block.appendNonTerminatorInstruction(new LiteralStringInsn(
+                        resultSlotId,
+                        StringUtil.decodeGdStringLexeme(sourceText)
+                ));
+                case "string_name" -> block.appendNonTerminatorInstruction(new LiteralStringNameInsn(
+                        resultSlotId,
+                        StringUtil.decodeGdStringLexeme(sourceText)
+                ));
+                case "true" -> block.appendNonTerminatorInstruction(new LiteralBoolInsn(resultSlotId, true));
+                case "false" -> block.appendNonTerminatorInstruction(new LiteralBoolInsn(resultSlotId, false));
+                case "null" -> block.appendNonTerminatorInstruction(new LiteralNilInsn(resultSlotId));
+                default -> throw session.unsupportedSequenceItem(
+                        item,
+                        "literal kind is not supported by frontend body lowering: " + node.kind()
+                );
+            }
+            return block;
+        }
+    }
+
+    /// Reuses the implicit `self` slot instead of allocating any extra receiver reconstruction path.
+    ///
+    /// `SelfExpression` has no child operands and no semantic branching once compile gate has
+    /// accepted the function shape, so the processor only copies the canonical slot id.
+    private static final class FrontendSelfOpaqueExprInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<SelfExpression, FrontendBodyLoweringSession.OpaqueExprLoweringContext> {
+        @Override
+        public @NotNull Class<SelfExpression> nodeType() {
+            return SelfExpression.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull SelfExpression node,
+                @Nullable FrontendBodyLoweringSession.OpaqueExprLoweringContext context
+        ) {
+            var item = requireContext(context);
+            block.appendNonTerminatorInstruction(new AssignInsn(session.resultSlotId(item), "self"));
+            return block;
+        }
+    }
+
+    /// Finalizes unary opaque expressions from their already-materialized operand slot.
+    ///
+    /// Child evaluation order is frozen by CFG build, so the processor only validates the operand
+    /// count and chooses the unary opcode mapped from the source operator lexeme.
+    private static final class FrontendUnaryOpaqueExprInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<UnaryExpression, FrontendBodyLoweringSession.OpaqueExprLoweringContext> {
+        @Override
+        public @NotNull Class<UnaryExpression> nodeType() {
+            return UnaryExpression.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull UnaryExpression node,
+                @Nullable FrontendBodyLoweringSession.OpaqueExprLoweringContext context
+        ) {
+            var item = requireContext(context);
+            session.requireOpaqueOperandCount(item, 1);
+            block.appendNonTerminatorInstruction(new UnaryOpInsn(
+                    session.resultSlotId(item),
+                    GodotOperator.fromSourceLexeme(node.operator(), GodotOperator.OperatorArity.UNARY),
+                    session.slotIdForValue(item.operandValueIds().getFirst())
+            ));
+            return block;
+        }
+    }
+
+    /// Finalizes eager binary expressions from the two operand slots already published by CFG build.
+    ///
+    /// Short-circuit `and/or` never reaches this processor; if they do, that means the opaque-item
+    /// classifier or compile gate has been bypassed.
+    private static final class FrontendBinaryOpaqueExprInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<BinaryExpression, FrontendBodyLoweringSession.OpaqueExprLoweringContext> {
+        @Override
+        public @NotNull Class<BinaryExpression> nodeType() {
+            return BinaryExpression.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull BinaryExpression node,
+                @Nullable FrontendBodyLoweringSession.OpaqueExprLoweringContext context
+        ) {
+            var item = requireContext(context);
+            session.requireOpaqueOperandCount(item, 2);
+            block.appendNonTerminatorInstruction(new BinaryOpInsn(
+                    session.resultSlotId(item),
+                    GodotOperator.fromSourceLexeme(node.operator(), GodotOperator.OperatorArity.BINARY),
+                    session.slotIdForValue(item.operandValueIds().getFirst()),
+                    session.slotIdForValue(item.operandValueIds().getLast())
+            ));
+            return block;
+        }
+    }
+
+    private static @NotNull OpaqueExprValueItem requireContext(
+            @Nullable FrontendBodyLoweringSession.OpaqueExprLoweringContext context
+    ) {
+        return Objects.requireNonNull(context, "context must not be null").item();
+    }
+}

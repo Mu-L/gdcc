@@ -1,18 +1,18 @@
 # Scope 架构与共享 Resolver 约定
 
-> 本文档作为 `dev.superice.gdcc.scope` 与 `dev.superice.gdcc.frontend.scope` 的长期事实源，定义当前已冻结的协议、shared resolver 边界、Godot 对齐结论，以及 frontend 后续接入时必须遵守的约束。
+> 本文档作为 `gd.script.gdcc.scope` 与 `gd.script.gdcc.frontend.scope` 的长期事实源，定义当前已冻结的协议、shared resolver 边界、Godot 对齐结论，以及 frontend 后续接入时必须遵守的约束。
 
 ## 文档状态
 
 - 状态：事实源维护中（`Scope` / frontend scope chain / `ScopeTypeResolver` / `ScopeSignalResolver` / `FrontendScopeAnalyzer` / variable / top binding / chain binding / expr type / type check / compile-only gate 已落地）
 - 更新时间：2026-03-23
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/scope/**`
-  - `src/main/java/dev/superice/gdcc/scope/resolver/**`
-  - `src/main/java/dev/superice/gdcc/frontend/scope/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendPropertyAccessResolver.java`
+  - `src/main/java/gd/script/gdcc/scope/**`
+  - `src/main/java/gd/script/gdcc/scope/resolver/**`
+  - `src/main/java/gd/script/gdcc/frontend/scope/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/insn/BackendPropertyAccessResolver.java`
 - 关联文档：
   - `doc/module_impl/common_rules.md`
   - `doc/module_impl/frontend/scope_analyzer_implementation.md`
@@ -37,12 +37,12 @@
 
 ## 1. 背景与目标
 
-当前仓库已经有 `dev.superice.gdcc.scope` 包，但后续工程真正需要的不是“若干 metadata 接口 + `ClassRegistry` 注册表”的松散集合，而是一套可以被 frontend binder 与 backend adapter 同时依赖的稳定协议。
+当前仓库已经有 `gd.script.gdcc.scope` 包，但后续工程真正需要的不是“若干 metadata 接口 + `ClassRegistry` 注册表”的松散集合，而是一套可以被 frontend binder 与 backend adapter 同时依赖的稳定协议。
 
 当前架构已经冻结的目标有两件：
 
 1. 把原先埋在 backend `BackendMethodCallResolver` / `BackendPropertyAccessResolver` 中、未来前后端都要复用的成员 metadata 查找逻辑抽到 `scope` 包。
-2. 基于 `dev.superice.gdcc.scope.Scope` 协议，在 `dev.superice.gdcc.frontend.scope` 包内建立 frontend 真正会实例化的 lexical scope chain，使 AST 语义分析可以按“class -> callable -> block”的层级显式建 scope，并通过 parent 链完成无 base 标识符解析。
+2. 基于 `gd.script.gdcc.scope.Scope` 协议，在 `gd.script.gdcc.frontend.scope` 包内建立 frontend 真正会实例化的 lexical scope chain，使 AST 语义分析可以按“class -> callable -> block”的层级显式建 scope，并通过 parent 链完成无 base 标识符解析。
 
 从 Godot 当前 analyzer 可提炼出的总体形态仍然成立：
 
@@ -135,7 +135,7 @@
 
 ### 2.5 Frontend lexical scope chain 已落地
 
-`dev.superice.gdcc.frontend.scope` 当前已经落地以下实现：
+`gd.script.gdcc.frontend.scope` 当前已经落地以下实现：
 
 - `AbstractFrontendScope`
 - `ClassScope`
@@ -579,26 +579,26 @@ frontend binder 侧的 declaration-order 可见性修正层，详见：
 
 ### 7.1 本仓库
 
-- `src/main/java/dev/superice/gdcc/scope/Scope.java`
-- `src/main/java/dev/superice/gdcc/scope/ResolveRestriction.java`
-- `src/main/java/dev/superice/gdcc/scope/ScopeLookupStatus.java`
-- `src/main/java/dev/superice/gdcc/scope/ScopeLookupResult.java`
-- `src/main/java/dev/superice/gdcc/scope/ClassRegistry.java`
-- `src/main/java/dev/superice/gdcc/scope/ScopeTypeMeta.java`
-- `src/main/java/dev/superice/gdcc/scope/ScopeTypeMetaKind.java`
-- `src/main/java/dev/superice/gdcc/scope/resolver/ScopeTypeResolver.java`
-- `src/main/java/dev/superice/gdcc/scope/resolver/ScopePropertyResolver.java`
-- `src/main/java/dev/superice/gdcc/scope/resolver/ScopeMethodResolver.java`
-- `src/main/java/dev/superice/gdcc/scope/resolver/ScopeSignalResolver.java`
-- `src/main/java/dev/superice/gdcc/frontend/scope/AbstractFrontendScope.java`
-- `src/main/java/dev/superice/gdcc/frontend/scope/ClassScope.java`
-- `src/main/java/dev/superice/gdcc/frontend/scope/CallableScope.java`
-- `src/main/java/dev/superice/gdcc/frontend/scope/BlockScope.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendAnalysisData.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendSemanticAnalyzer.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendScopeAnalyzer.java`
-- `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendPropertyAccessResolver.java`
-- `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
+- `src/main/java/gd/script/gdcc/scope/Scope.java`
+- `src/main/java/gd/script/gdcc/scope/ResolveRestriction.java`
+- `src/main/java/gd/script/gdcc/scope/ScopeLookupStatus.java`
+- `src/main/java/gd/script/gdcc/scope/ScopeLookupResult.java`
+- `src/main/java/gd/script/gdcc/scope/ClassRegistry.java`
+- `src/main/java/gd/script/gdcc/scope/ScopeTypeMeta.java`
+- `src/main/java/gd/script/gdcc/scope/ScopeTypeMetaKind.java`
+- `src/main/java/gd/script/gdcc/scope/resolver/ScopeTypeResolver.java`
+- `src/main/java/gd/script/gdcc/scope/resolver/ScopePropertyResolver.java`
+- `src/main/java/gd/script/gdcc/scope/resolver/ScopeMethodResolver.java`
+- `src/main/java/gd/script/gdcc/scope/resolver/ScopeSignalResolver.java`
+- `src/main/java/gd/script/gdcc/frontend/scope/AbstractFrontendScope.java`
+- `src/main/java/gd/script/gdcc/frontend/scope/ClassScope.java`
+- `src/main/java/gd/script/gdcc/frontend/scope/CallableScope.java`
+- `src/main/java/gd/script/gdcc/frontend/scope/BlockScope.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/FrontendAnalysisData.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendSemanticAnalyzer.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendScopeAnalyzer.java`
+- `src/main/java/gd/script/gdcc/backend/c/gen/insn/BackendPropertyAccessResolver.java`
+- `src/main/java/gd/script/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
 - `doc/module_impl/frontend/scope_analyzer_implementation.md`
 - `doc/module_impl/frontend/scope_type_resolver_implementation.md`
 - `doc/module_impl/frontend/diagnostic_manager.md`

@@ -7,11 +7,11 @@
 - 状态：事实源维护中（`symbolBindings()` 重建、builtin / global enum / class-like top-level `TYPE_META` 规则、value-position bare callable / bare `TYPE_META` ordinary-value misuse 合同、class property initializer support island、root-level skipped-subtree 恢复合同、usage-agnostic binding 模型与核心单元测试已落地）
 - 更新时间：2026-03-19
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
-  - `src/main/java/dev/superice/gdcc/frontend/scope/**`
-  - `src/main/java/dev/superice/gdcc/scope/**`
-  - `src/test/java/dev/superice/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
+  - `src/main/java/gd/script/gdcc/frontend/scope/**`
+  - `src/main/java/gd/script/gdcc/scope/**`
+  - `src/test/java/gd/script/gdcc/frontend/sema/**`
 - 关联文档：
   - `doc/module_impl/common_rules.md`
   - `frontend_rules.md`

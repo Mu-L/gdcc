@@ -40,21 +40,21 @@ They must be provenance-aware and validated before backend code generation.
 ## 3. Enforcement Map in Code
 
 - Provenance model
-  - `src/main/java/dev/superice/gdcc/enums/LifecycleProvenance.java`
-  - `src/main/java/dev/superice/gdcc/lir/insn/LifecycleInstruction.java`
-  - `src/main/java/dev/superice/gdcc/lir/insn/DestructInsn.java`
-  - `src/main/java/dev/superice/gdcc/lir/insn/TryOwnObjectInsn.java`
-  - `src/main/java/dev/superice/gdcc/lir/insn/TryReleaseObjectInsn.java`
+  - `src/main/java/gd/script/gdcc/enums/LifecycleProvenance.java`
+  - `src/main/java/gd/script/gdcc/lir/insn/LifecycleInstruction.java`
+  - `src/main/java/gd/script/gdcc/lir/insn/DestructInsn.java`
+  - `src/main/java/gd/script/gdcc/lir/insn/TryOwnObjectInsn.java`
+  - `src/main/java/gd/script/gdcc/lir/insn/TryReleaseObjectInsn.java`
 - Parser/serializer compatibility
-  - `src/main/java/dev/superice/gdcc/lir/parser/ParsedLirInstruction.java`
-  - `src/main/java/dev/superice/gdcc/lir/parser/SimpleLirBlockInsnSerializer.java`
+  - `src/main/java/gd/script/gdcc/lir/parser/ParsedLirInstruction.java`
+  - `src/main/java/gd/script/gdcc/lir/parser/SimpleLirBlockInsnSerializer.java`
 - Validation and fail-fast path
-  - `src/main/java/dev/superice/gdcc/lir/validation/LifecycleInstructionRestrictionValidator.java`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/DestructInsnGen.java`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/OwnReleaseObjectInsnGen.java`
+  - `src/main/java/gd/script/gdcc/lir/validation/LifecycleInstructionRestrictionValidator.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/CCodegen.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/insn/DestructInsnGen.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/insn/OwnReleaseObjectInsnGen.java`
 - Strict-mode switch
-  - `src/main/java/dev/superice/gdcc/backend/CodegenContext.java`
+  - `src/main/java/gd/script/gdcc/backend/CodegenContext.java`
 
 ## 4. Regression Baseline (Targeted)
 

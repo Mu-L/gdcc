@@ -1,7 +1,7 @@
 # Compiler RPC API Implementation
 
 > This document is the long-term fact source for the RPC-friendly compiler control API in
-> `dev.superice.gdcc.api`. It describes the in-process facade, state model, virtual filesystem,
+> `gd.script.gdcc.api`. It describes the in-process facade, state model, virtual filesystem,
 > compile task lifecycle, and output publication contract used by external RPC adapters.
 
 ## Document Status
@@ -9,9 +9,9 @@
 - Status: fact source maintained
 - Updated: 2026-04-25
 - Scope:
-  - `src/main/java/dev/superice/gdcc/api/**`
-  - `src/test/java/dev/superice/gdcc/api/**`
-  - RPC adapters that call `dev.superice.gdcc.api.API`
+  - `src/main/java/gd/script/gdcc/api/**`
+  - `src/test/java/gd/script/gdcc/api/**`
+  - RPC adapters that call `gd.script.gdcc.api.API`
 - Direct fact sources:
   - `doc/module_impl/common_rules.md`
   - `doc/module_impl/frontend/frontend_rules.md`
@@ -20,13 +20,13 @@
   - `doc/gdcc_low_ir.md`
   - `doc/gdcc_type_system.md`
   - `doc/gdcc_c_backend.md`
-  - `src/main/java/dev/superice/gdcc/api/API.java`
-  - `src/main/java/dev/superice/gdcc/api/ModuleState.java`
-  - `src/main/java/dev/superice/gdcc/api/CompileOptions.java`
-  - `src/main/java/dev/superice/gdcc/api/CompileResult.java`
-  - `src/main/java/dev/superice/gdcc/api/CompileTaskSnapshot.java`
-  - `src/main/java/dev/superice/gdcc/api/VfsEntrySnapshot.java`
-  - `src/main/java/dev/superice/gdcc/api/task/CompileTaskRunner.java`
+  - `src/main/java/gd/script/gdcc/api/API.java`
+  - `src/main/java/gd/script/gdcc/api/ModuleState.java`
+  - `src/main/java/gd/script/gdcc/api/CompileOptions.java`
+  - `src/main/java/gd/script/gdcc/api/CompileResult.java`
+  - `src/main/java/gd/script/gdcc/api/CompileTaskSnapshot.java`
+  - `src/main/java/gd/script/gdcc/api/VfsEntrySnapshot.java`
+  - `src/main/java/gd/script/gdcc/api/task/CompileTaskRunner.java`
 - Explicit non-goals:
   - This API is **not** Godot's GDScript `@rpc` / `Node.rpc(...)` / `Node.rpc_config(...)` feature.
   - This API does not implement a network protocol by itself. HTTP, JSON-RPC, gRPC, authorization,
@@ -48,14 +48,14 @@ The facade deliberately remains transport-neutral:
 
 - public methods use Java records, enums, strings, lists, maps, and paths rather than HTTP or JSON
   framework types
-- API exceptions are project exceptions under `dev.superice.gdcc.exception`
+- API exceptions are project exceptions under `gd.script.gdcc.exception`
 - adapters are responsible for mapping method calls, records, exceptions, and artifacts to their
   chosen protocol
 
 The intended layering is:
 
 1. RPC/network adapter validates user/session permissions and decodes protocol payloads.
-2. Adapter calls `dev.superice.gdcc.api.API`.
+2. Adapter calls `gd.script.gdcc.api.API`.
 3. `API` serializes same-module state changes, freezes compile inputs, and runs compiler phases.
 4. Adapter polls task/result surfaces and exposes diagnostics, logs, and artifact handles to clients.
 

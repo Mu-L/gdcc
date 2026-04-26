@@ -1,0 +1,138 @@
+package gd.script.gdcc.frontend.lowering;
+
+import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
+import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
+import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
+import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
+import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
+import gd.script.gdcc.gdextension.ExtensionGdClass;
+import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdObjectType;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class FrontendCallMutabilitySupportTest {
+    @Test
+    void mayMutateReceiverTrustsGdextensionConstnessAndStaysConservativeOtherwise() {
+        var receiverType = new GdObjectType("Receiver");
+        var builtinConstCall = resolvedInstanceCall(
+                ScopeOwnerKind.BUILTIN,
+                new ExtensionBuiltinClass.ClassMethod(
+                        "length",
+                        "int",
+                        false,
+                        true,
+                        false,
+                        false,
+                        0L,
+                        List.of(),
+                        List.of(),
+                        new ExtensionBuiltinClass.ClassMethod.ReturnValue("int")
+                ),
+                receiverType
+        );
+        var builtinMutatingCall = resolvedInstanceCall(
+                ScopeOwnerKind.BUILTIN,
+                new ExtensionBuiltinClass.ClassMethod(
+                        "push_back",
+                        "Nil",
+                        false,
+                        false,
+                        false,
+                        false,
+                        0L,
+                        List.of(),
+                        List.of(),
+                        new ExtensionBuiltinClass.ClassMethod.ReturnValue("Nil")
+                ),
+                receiverType
+        );
+        var engineConstCall = resolvedInstanceCall(
+                ScopeOwnerKind.ENGINE,
+                new ExtensionGdClass.ClassMethod(
+                        "get_name",
+                        true,
+                        false,
+                        false,
+                        false,
+                        0L,
+                        List.of(),
+                        new ExtensionGdClass.ClassMethod.ClassMethodReturn("String"),
+                        List.of()
+                ),
+                receiverType
+        );
+        var engineMutatingCall = resolvedInstanceCall(
+                ScopeOwnerKind.ENGINE,
+                new ExtensionGdClass.ClassMethod(
+                        "add_child",
+                        false,
+                        false,
+                        false,
+                        false,
+                        0L,
+                        List.of(),
+                        new ExtensionGdClass.ClassMethod.ClassMethodReturn("Nil"),
+                        List.of()
+                ),
+                receiverType
+        );
+        var gdccCall = resolvedInstanceCall(ScopeOwnerKind.GDCC, new LirFunctionDef("ping"), receiverType);
+        var dynamicCall = FrontendResolvedCall.dynamic(
+                "ping",
+                FrontendReceiverKind.INSTANCE,
+                null,
+                receiverType,
+                List.of(),
+                null,
+                "runtime-open route"
+        );
+        var staticCall = FrontendResolvedCall.resolved(
+                "make",
+                FrontendCallResolutionKind.STATIC_METHOD,
+                FrontendReceiverKind.TYPE_META,
+                ScopeOwnerKind.BUILTIN,
+                receiverType,
+                GdIntType.INT,
+                List.of(),
+                builtinMutatingCall.declarationSite()
+        );
+
+        assertAll(
+                () -> assertFalse(FrontendCallMutabilitySupport.mayMutateReceiver(builtinConstCall)),
+                () -> assertTrue(FrontendCallMutabilitySupport.mayMutateReceiver(builtinMutatingCall)),
+                () -> assertFalse(FrontendCallMutabilitySupport.mayMutateReceiver(engineConstCall)),
+                () -> assertTrue(FrontendCallMutabilitySupport.mayMutateReceiver(engineMutatingCall)),
+                () -> assertTrue(FrontendCallMutabilitySupport.mayMutateReceiver(gdccCall)),
+                () -> assertTrue(FrontendCallMutabilitySupport.mayMutateReceiver(dynamicCall)),
+                () -> assertFalse(FrontendCallMutabilitySupport.mayMutateReceiver(staticCall))
+        );
+    }
+
+    private static FrontendResolvedCall resolvedInstanceCall(
+            ScopeOwnerKind ownerKind,
+            Object declarationSite,
+            GdObjectType receiverType
+    ) {
+        return new FrontendResolvedCall(
+                "ping",
+                FrontendCallResolutionKind.INSTANCE_METHOD,
+                FrontendCallResolutionStatus.RESOLVED,
+                FrontendReceiverKind.INSTANCE,
+                ownerKind,
+                receiverType,
+                GdIntType.INT,
+                List.of(),
+                null,
+                declarationSite,
+                null
+        );
+    }
+}

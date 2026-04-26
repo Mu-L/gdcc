@@ -22,14 +22,14 @@
 
 ### 1.1 关键实现锚点
 
-1. `src/main/java/dev/superice/gdcc/backend/c/gen/insn/OperatorInsnGen.java`
-2. `src/main/java/dev/superice/gdcc/backend/c/gen/insn/OperatorResolver.java`
-3. `src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
+1. `src/main/java/gd/script/gdcc/backend/c/gen/insn/OperatorInsnGen.java`
+2. `src/main/java/gd/script/gdcc/backend/c/gen/insn/OperatorResolver.java`
+3. `src/main/java/gd/script/gdcc/backend/c/gen/CBodyBuilder.java`
 4. `src/main/c/codegen/include_451/gdcc/gdcc_operator.h`
 5. `src/main/c/codegen/template_451/entry.c.ftl`
-6. `src/test/java/dev/superice/gdcc/backend/c/gen/COperatorInsnGenTest.java`
-7. `src/test/java/dev/superice/gdcc/backend/c/gen/COperatorInsnGenEngineTest.java`
-8. `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenTest.java`
+6. `src/test/java/gd/script/gdcc/backend/c/gen/COperatorInsnGenTest.java`
+7. `src/test/java/gd/script/gdcc/backend/c/gen/COperatorInsnGenEngineTest.java`
+8. `src/test/java/gd/script/gdcc/backend/c/gen/CCodegenTest.java`
 
 ---
 

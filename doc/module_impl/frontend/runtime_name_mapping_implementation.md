@@ -7,18 +7,18 @@
 - 状态：事实源维护中（双名模型、派生 `displayName()`、module-level frozen mapping、caller-side remap、canonical-only downstream contract 已落地）
 - 更新时间：2026-03-25
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/parse/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
-  - `src/main/java/dev/superice/gdcc/frontend/scope/**`
-  - `src/main/java/dev/superice/gdcc/scope/**`
-  - `src/main/java/dev/superice/gdcc/scope/resolver/**`
-  - `src/main/java/dev/superice/gdcc/lir/**`
-  - `src/main/java/dev/superice/gdcc/backend/c/**`
-  - `src/test/java/dev/superice/gdcc/frontend/**`
-  - `src/test/java/dev/superice/gdcc/scope/**`
-  - `src/test/java/dev/superice/gdcc/lir/**`
-  - `src/test/java/dev/superice/gdcc/backend/**`
+  - `src/main/java/gd/script/gdcc/frontend/parse/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
+  - `src/main/java/gd/script/gdcc/frontend/scope/**`
+  - `src/main/java/gd/script/gdcc/scope/**`
+  - `src/main/java/gd/script/gdcc/scope/resolver/**`
+  - `src/main/java/gd/script/gdcc/lir/**`
+  - `src/main/java/gd/script/gdcc/backend/c/**`
+  - `src/test/java/gd/script/gdcc/frontend/**`
+  - `src/test/java/gd/script/gdcc/scope/**`
+  - `src/test/java/gd/script/gdcc/lir/**`
+  - `src/test/java/gd/script/gdcc/backend/**`
 - 关联文档：
   - `frontend_rules.md`
   - `inner_class_implementation.md`

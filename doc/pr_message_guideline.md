@@ -89,10 +89,10 @@ For backend/codegen PRs, prefer explicitly documenting:
 - <design rationale>
 
 ## Affected packages/files
-- `dev.superice.gdcc.backend.c.gen`
-- `dev.superice.gdcc.backend.c.gen.insn`
+- `gd.script.gdcc.backend.c.gen`
+- `gd.script.gdcc.backend.c.gen.insn`
 - `src/main/c/codegen/template_451/...`
-- `src/test/java/dev/superice/gdcc/backend/c/gen/...`
+- `src/test/java/gd/script/gdcc/backend/c/gen/...`
 - `doc/module_impl/...`
 
 ## Validation

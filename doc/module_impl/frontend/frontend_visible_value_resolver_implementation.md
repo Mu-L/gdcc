@@ -7,10 +7,10 @@
 - 状态：事实源维护中（request/result 合同、declaration-order 过滤、initializer 自引用过滤、deferred boundary 封口、current-scope fail-closed hardening、shared support matrix 与核心单元测试已落地）
 - 更新时间：2026-03-16
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
-  - `src/main/java/dev/superice/gdcc/frontend/scope/**`
-  - `src/test/java/dev/superice/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
+  - `src/main/java/gd/script/gdcc/frontend/scope/**`
+  - `src/test/java/gd/script/gdcc/frontend/sema/**`
 - 关联文档：
   - `frontend_rules.md`
   - `frontend_variable_analyzer_implementation.md`

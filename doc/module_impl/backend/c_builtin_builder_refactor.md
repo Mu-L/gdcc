@@ -19,7 +19,7 @@
 
 ### 1) 新增 `CBuiltinBuilder`
 
-路径：`src/main/java/dev/superice/gdcc/backend/c/gen/CBuiltinBuilder.java`
+路径：`src/main/java/gd/script/gdcc/backend/c/gen/CBuiltinBuilder.java`
 
 核心 API：
 
@@ -64,7 +64,7 @@ typed array 的 `set_typed` 语句渲染，整体委托给 `helper.builtinBuilde
 
 ### 4) 测试更新
 
-`src/test/java/dev/superice/gdcc/backend/c/gen/CGenHelperUtilityResolutionTest.java`
+`src/test/java/gd/script/gdcc/backend/c/gen/CGenHelperUtilityResolutionTest.java`
 
 - 构造器命名与元数据校验测试统一使用 `helper.builtinBuilder()` 入口
 - 移除 `resolveConstructBuiltinCall(...)` 相关测试（职责已移出 `CBuiltinBuilder`）

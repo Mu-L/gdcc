@@ -1,7 +1,7 @@
 # GDCC C Backend Lifecycle and Ownership Specification (Unified)
 
 > Status: Active baseline (Step 1 synced on 2026-04-09)  
-> Scope: Code generation semantics under `src/main/java/dev/superice/gdcc/backend/c/**` and `src/main/c/codegen/**`
+> Scope: Code generation semantics under `src/main/java/gd/script/gdcc/backend/c/**` and `src/main/c/codegen/**`
 
 ## 1. Background and Goals
 

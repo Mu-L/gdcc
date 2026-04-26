@@ -7,11 +7,11 @@
 - 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、shared expression semantic support、unary/binary expression semantics、class property initializer support island、subscript / assignment typed contract、explicit self assignment-target prefix publication、`:=` 最小回填与 expr-owned diagnostics 已落地）
 - 更新时间：2026-04-26
 - 适用范围：
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/support/**`
-  - `src/main/java/dev/superice/gdcc/scope/**`
-  - `src/test/java/dev/superice/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/support/**`
+  - `src/main/java/gd/script/gdcc/scope/**`
+  - `src/test/java/gd/script/gdcc/frontend/sema/**`
 - 关联文档：
   - `doc/module_impl/common_rules.md`
   - `frontend_rules.md`

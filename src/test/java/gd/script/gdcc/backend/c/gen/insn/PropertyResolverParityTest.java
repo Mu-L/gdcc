@@ -1,0 +1,249 @@
+package gd.script.gdcc.backend.c.gen.insn;
+
+import gd.script.gdcc.backend.CodegenContext;
+import gd.script.gdcc.backend.ProjectInfo;
+import gd.script.gdcc.backend.c.gen.CBodyBuilder;
+import gd.script.gdcc.backend.c.gen.CGenHelper;
+import gd.script.gdcc.enums.GodotVersion;
+import gd.script.gdcc.exception.InvalidInsnException;
+import gd.script.gdcc.gdextension.ExtensionAPI;
+import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
+import gd.script.gdcc.gdextension.ExtensionGdClass;
+import gd.script.gdcc.lir.LirClassDef;
+import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.lir.LirPropertyDef;
+import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.scope.resolver.ScopePropertyResolver;
+import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdStringNameType;
+import gd.script.gdcc.type.GdStringType;
+import gd.script.gdcc.type.GdVoidType;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class PropertyResolverParityTest {
+    @Test
+    @DisplayName("backend object-property adapter should match shared resolved owner/property")
+    void objectPropertyAdapterShouldMatchSharedResolvedLookup() {
+        var parentClass = new LirClassDef("ParentClass", "", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING));
+
+        var childClass = new LirClassDef("ChildClass", "ParentClass", false, false, Map.of(), List.of(), List.of(), List.of());
+        childClass.addProperty(new LirPropertyDef("value", GdStringNameType.STRING_NAME));
+
+        var bodyBuilder = newBodyBuilder(emptyApi(), List.of(parentClass, childClass));
+        var shared = ScopePropertyResolver.resolveObjectProperty(
+                bodyBuilder.classRegistry(),
+                new GdObjectType("ChildClass"),
+                "value"
+        );
+        var sharedResolved = assertInstanceOf(ScopePropertyResolver.Resolved.class, shared);
+
+        var backendLookup = BackendPropertyAccessResolver.resolveObjectProperty(
+                bodyBuilder,
+                new GdObjectType("ChildClass"),
+                "value",
+                "LOAD_PROPERTY"
+        );
+
+        assertNotNull(backendLookup);
+        assertEquals(ScopeOwnerKind.GDCC, sharedResolved.property().ownerKind());
+        assertEquals(sharedResolved.property().ownerClass().getName(), backendLookup.ownerClass().getName());
+        assertEquals(sharedResolved.property().property().getName(), backendLookup.property().getName());
+        assertEquals(BackendPropertyAccessResolver.PropertyOwnerDispatchMode.GDCC, backendLookup.ownerDispatchMode());
+    }
+
+    @Test
+    @DisplayName("backend object-property adapter should keep metadata-unknown fallback behavior")
+    void objectPropertyAdapterShouldKeepMetadataUnknownFallback() {
+        var bodyBuilder = newBodyBuilder(emptyApi(), List.of());
+        var shared = ScopePropertyResolver.resolveObjectProperty(
+                bodyBuilder.classRegistry(),
+                new GdObjectType("UnknownType"),
+                "name"
+        );
+
+        assertInstanceOf(ScopePropertyResolver.MetadataUnknown.class, shared);
+        assertNull(BackendPropertyAccessResolver.resolveObjectProperty(
+                bodyBuilder,
+                new GdObjectType("UnknownType"),
+                "name",
+                "LOAD_PROPERTY"
+        ));
+    }
+
+    @Test
+    @DisplayName("backend builtin-property adapter should match shared builtin lookup")
+    void builtinPropertyAdapterShouldMatchSharedLookup() {
+        var stringBuiltin = new ExtensionBuiltinClass(
+                "String",
+                false,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
+                List.of()
+        );
+        var bodyBuilder = newBodyBuilder(apiWith(List.of(stringBuiltin), List.of()), List.of());
+
+        var shared = ScopePropertyResolver.resolveBuiltinProperty(
+                bodyBuilder.classRegistry(),
+                bodyBuilder.classRegistry().resolveTypeMeta("String").instanceType(),
+                "length"
+        );
+        var sharedResolved = assertInstanceOf(ScopePropertyResolver.Resolved.class, shared);
+
+        var backendLookup = BackendPropertyAccessResolver.resolveBuiltinProperty(
+                bodyBuilder,
+                bodyBuilder.classRegistry().resolveTypeMeta("String").instanceType(),
+                "length"
+        );
+
+        assertEquals(sharedResolved.property().ownerClass().getName(), backendLookup.builtinClass().getName());
+        assertEquals(sharedResolved.property().property().getName(), backendLookup.property().getName());
+    }
+
+    @Test
+    @DisplayName("backend object-property adapter should fail when shared resolver reports missing property")
+    void objectPropertyAdapterShouldFailWhenSharedResolverReportsMissingProperty() {
+        var parentClass = new LirClassDef("ParentClass", "", false, false, Map.of(), List.of(), List.of(), List.of());
+        var childClass = new LirClassDef("ChildClass", "ParentClass", false, false, Map.of(), List.of(), List.of(), List.of());
+        var bodyBuilder = newBodyBuilder(emptyApi(), List.of(parentClass, childClass));
+
+        var shared = ScopePropertyResolver.resolveObjectProperty(
+                bodyBuilder.classRegistry(),
+                new GdObjectType("ChildClass"),
+                "missing_prop"
+        );
+        var failed = assertInstanceOf(ScopePropertyResolver.Failed.class, shared);
+        assertEquals(ScopePropertyResolver.FailureKind.PROPERTY_MISSING, failed.kind());
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> BackendPropertyAccessResolver.resolveObjectProperty(
+                        bodyBuilder,
+                        new GdObjectType("ChildClass"),
+                        "missing_prop",
+                        "STORE_PROPERTY"
+                )
+        );
+        assertTrue(ex.getMessage().contains("missing_prop"));
+        assertTrue(ex.getMessage().contains("ChildClass"));
+    }
+
+    @Test
+    @DisplayName("backend object-property adapter should preserve mapped canonical GDCC owner names")
+    void objectPropertyAdapterShouldPreserveMappedCanonicalGdccOwnerNames() {
+        var parentClass = new LirClassDef("RuntimeOuter__sub__Shared", "", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING));
+
+        var childClass = new LirClassDef("RuntimeOuter__sub__Leaf", "RuntimeOuter__sub__Shared", false, false, Map.of(), List.of(), List.of(), List.of());
+        var bodyBuilder = newBodyBuilder(
+                emptyApi(),
+                List.of(parentClass, childClass),
+                // The registry can retain source-facing local names, but backend owner dispatch must stay canonical-only.
+                Map.of(
+                        "RuntimeOuter__sub__Shared", "Shared",
+                        "RuntimeOuter__sub__Leaf", "Leaf"
+                )
+        );
+        var shared = ScopePropertyResolver.resolveObjectProperty(
+                bodyBuilder.classRegistry(),
+                new GdObjectType("RuntimeOuter__sub__Leaf"),
+                "value"
+        );
+        var sharedResolved = assertInstanceOf(ScopePropertyResolver.Resolved.class, shared);
+
+        var backendLookup = BackendPropertyAccessResolver.resolveObjectProperty(
+                bodyBuilder,
+                new GdObjectType("RuntimeOuter__sub__Leaf"),
+                "value",
+                "LOAD_PROPERTY"
+        );
+
+        assertNotNull(backendLookup);
+        assertEquals("RuntimeOuter__sub__Shared", sharedResolved.property().ownerClass().getName());
+        assertEquals(sharedResolved.property().ownerClass().getName(), backendLookup.ownerClass().getName());
+        assertEquals(BackendPropertyAccessResolver.PropertyOwnerDispatchMode.GDCC, backendLookup.ownerDispatchMode());
+    }
+
+    @Test
+    @DisplayName("backend object-property adapter should not treat source-facing inner name as global alias")
+    void objectPropertyAdapterShouldNotTreatSourceFacingInnerNameAsGlobalAlias() {
+        var parentClass = new LirClassDef("RuntimeOuter__sub__Shared", "", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING));
+
+        var childClass = new LirClassDef("RuntimeOuter__sub__Leaf", "RuntimeOuter__sub__Shared", false, false, Map.of(), List.of(), List.of(), List.of());
+        var bodyBuilder = newBodyBuilder(
+                emptyApi(),
+                List.of(parentClass, childClass),
+                Map.of(
+                        "RuntimeOuter__sub__Shared", "Shared",
+                        "RuntimeOuter__sub__Leaf", "Leaf"
+                )
+        );
+        var shared = ScopePropertyResolver.resolveObjectProperty(
+                bodyBuilder.classRegistry(),
+                new GdObjectType("Leaf"),
+                "value"
+        );
+
+        assertInstanceOf(ScopePropertyResolver.MetadataUnknown.class, shared);
+        assertNull(BackendPropertyAccessResolver.resolveObjectProperty(
+                bodyBuilder,
+                new GdObjectType("Leaf"),
+                "value",
+                "LOAD_PROPERTY"
+        ));
+    }
+
+    private static CBodyBuilder newBodyBuilder(ExtensionAPI api, List<LirClassDef> gdccClasses) {
+        return newBodyBuilder(api, gdccClasses, Map.of());
+    }
+
+    private static CBodyBuilder newBodyBuilder(
+            ExtensionAPI api,
+            List<LirClassDef> gdccClasses,
+            Map<String, String> sourceNameOverrides
+    ) {
+        var classRegistry = new ClassRegistry(api);
+        for (var gdccClass : gdccClasses) {
+            classRegistry.addGdccClass(gdccClass, sourceNameOverrides.get(gdccClass.getName()));
+        }
+
+        ProjectInfo projectInfo = new ProjectInfo("TestProject", GodotVersion.V451, Path.of(".")) {
+        };
+        var context = new CodegenContext(projectInfo, classRegistry);
+        var helper = new CGenHelper(context, gdccClasses);
+
+        var ownerClass = gdccClasses.isEmpty()
+                ? new LirClassDef("HostClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of())
+                : gdccClasses.getFirst();
+
+        var func = new LirFunctionDef("test_func");
+        func.setReturnType(GdVoidType.VOID);
+        return new CBodyBuilder(helper, ownerClass, func);
+    }
+
+    private static ExtensionAPI apiWith(List<ExtensionBuiltinClass> builtinClasses,
+                                        List<ExtensionGdClass> gdClasses) {
+        return new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), builtinClasses, gdClasses, List.of(), List.of());
+    }
+
+    private static ExtensionAPI emptyApi() {
+        return apiWith(List.of(), List.of());
+    }
+}

@@ -8,9 +8,9 @@
 - 更新时间：2026-04-21
 - 适用范围：
   - `doc/module_impl/frontend/**`
-  - `src/main/java/dev/superice/gdcc/frontend/**`
-  - `src/main/java/dev/superice/gdcc/scope/**`
-  - `src/main/java/dev/superice/gdcc/type/**`
+  - `src/main/java/gd/script/gdcc/frontend/**`
+  - `src/main/java/gd/script/gdcc/scope/**`
+  - `src/main/java/gd/script/gdcc/type/**`
 - 关联文档：
   - `doc/module_impl/common_rules.md`
   - `frontend_rules.md`

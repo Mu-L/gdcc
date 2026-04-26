@@ -7,11 +7,11 @@
 
 - 状态：Implemented / Maintained
 - 范围：
-  - `src/main/java/dev/superice/gdcc/frontend/lowering/cfg/**`
-  - `src/main/java/dev/superice/gdcc/frontend/lowering/pass/body/**`
-  - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
-  - `src/main/java/dev/superice/gdcc/frontend/sema/**`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/**`
+  - `src/main/java/gd/script/gdcc/frontend/lowering/cfg/**`
+  - `src/main/java/gd/script/gdcc/frontend/lowering/pass/body/**`
+  - `src/main/java/gd/script/gdcc/frontend/lowering/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/**`
   - `src/main/c/codegen/include_451/gdcc/gdcc_helper.h`
 - 更新时间：2026-04-26
 - 关联事实源：

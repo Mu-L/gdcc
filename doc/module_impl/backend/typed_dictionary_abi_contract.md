@@ -7,9 +7,9 @@
 
 - 状态：Implemented / Maintained
 - 范围：
-  - `src/main/java/dev/superice/gdcc/backend/c/**`
+  - `src/main/java/gd/script/gdcc/backend/c/**`
   - `src/main/c/codegen/**`
-  - `src/test/java/dev/superice/gdcc/backend/c/**`
+  - `src/test/java/gd/script/gdcc/backend/c/**`
 - 更新时间：2026-04-12
 - 上游对齐基线：
   - Godot 4.x 对 source-level `Dictionary[K, V]` outward slot 的合同：
@@ -30,11 +30,11 @@
 ### 核心实现落点
 
 - outward metadata helper：
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java`
     - `renderBoundMetadata(...)`
     - `renderPropertyMetadata(...)`
 - typed-dictionary wrapper preflight helper：
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java`
     - `needsTypedDictionaryCallGuard(...)`
     - `renderTypedDictionaryGuardBuiltinTypeLiteral(...)`
     - `isTypedDictionaryGuardObjectLeaf(...)`
@@ -44,7 +44,7 @@
 - property registration metadata：
   - `src/main/c/codegen/template_451/entry.c.ftl`
 - typed-dictionary reconstruction path：
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/CBuiltinBuilder.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/CBuiltinBuilder.java`
     - `constructDictionary(...)`
 
 ### 当前已锁定的实现结论
@@ -204,20 +204,20 @@ Godot 的 typed-dictionary constructor 合同要求 script carriers 是 `Variant
 ## 回归测试基线
 
 - helper-level：
-  - `src/test/java/dev/superice/gdcc/backend/c/gen/CGenHelperTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/gen/CGenHelperTest.java`
     - typed-dictionary metadata 正例
     - generic dictionary 不误走 typed guard
     - helper misuse fail-fast
 - codegen-level：
-  - `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/gen/CCodegenTest.java`
     - method arg / return / property metadata
     - typed-dictionary wrapper guard 结构
     - generic dictionary 不误生成 preflight
-  - `src/test/java/dev/superice/gdcc/backend/c/gen/CConstructInsnGenTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/gen/CConstructInsnGenTest.java`
     - typed-dictionary constructor codegen
     - nil `Variant` script carrier
 - integration-level：
-  - `src/test/java/dev/superice/gdcc/backend/c/build/FrontendLoweringToCTypedDictionaryAbiIntegrationTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/build/FrontendLoweringToCTypedDictionaryAbiIntegrationTest.java`
     - method parameter positive / plain negative / wrong-typed negative
     - method return outward fidelity
     - property direct get/set positive
@@ -229,7 +229,7 @@ Godot 的 typed-dictionary constructor 合同要求 script carriers 是 `Variant
 
 ```powershell
 rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests CGenHelperTest,CCodegenTest,CConstructInsnGenTest
-rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryMethodAbiAcceptsExactAndRejectsPlainDictionaryAtRuntime" --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryMethodAbiRejectsWrongTypedDictionaryAtRuntime" --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryReturnAbiBuildNativeLibraryAndRunInGodot" --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryPropertyAbiBuildNativeLibraryAndRunInGodot" --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryPropertyAbiRejectsPlainDictionarySetAtRuntime" --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryPropertyAbiRejectsWrongTypedDictionarySetAtRuntime" --no-daemon --info --console=plain
+rtk .\gradlew.bat test --tests "gd.script.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryMethodAbiAcceptsExactAndRejectsPlainDictionaryAtRuntime" --tests "gd.script.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryMethodAbiRejectsWrongTypedDictionaryAtRuntime" --tests "gd.script.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryReturnAbiBuildNativeLibraryAndRunInGodot" --tests "gd.script.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryPropertyAbiBuildNativeLibraryAndRunInGodot" --tests "gd.script.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryPropertyAbiRejectsPlainDictionarySetAtRuntime" --tests "gd.script.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryPropertyAbiRejectsWrongTypedDictionarySetAtRuntime" --no-daemon --info --console=plain
 ```
 
 ## 长期风险与维护提醒
