@@ -4,18 +4,23 @@ import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendBinding;
+import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
+import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.type.GdCallableType;
+import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdStringType;
@@ -60,6 +65,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendExpressionSemanticSupportTest {
@@ -457,6 +463,66 @@ class FrontendExpressionSemanticSupportTest {
         assertEquals(List.of(GdVariantType.VARIANT), exactVariantCall.publishedCallOrNull().argumentTypes());
         assertEquals(List.of(GdVariantType.VARIANT), dynamicVariantCall.publishedCallOrNull().argumentTypes());
         assertEquals(List.of(GdIntType.INT), packToVariantCall.publishedCallOrNull().argumentTypes());
+    }
+
+    @Test
+    void resolveCallExpressionTypeUsesPrimitiveCastBoundaryWithoutWeakeningOverloadSpecificity()
+            throws Exception {
+        var analyzed = analyze(
+                "expression_semantic_support_primitive_cast_calls.gd",
+                """
+                        class_name ExpressionSemanticSupportPrimitiveCastCalls
+                        extends RefCounted
+
+                        func ping() -> void:
+                            take_float(1)
+                            pick_exact(1)
+                            pick_float(1)
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var calls = findNodes(pingFunction, CallExpression.class, _ -> true);
+        publishSyntheticIntBareCallOverloads(
+                analyzed,
+                calls.get(0),
+                newCallable("take_float", GdFloatType.FLOAT, GdFloatType.FLOAT)
+        );
+        publishSyntheticIntBareCallOverloads(
+                analyzed,
+                calls.get(1),
+                newCallable("pick_exact", GdIntType.INT, GdIntType.INT),
+                newCallable("pick_exact", GdFloatType.FLOAT, GdFloatType.FLOAT)
+        );
+        publishSyntheticIntBareCallOverloads(
+                analyzed,
+                calls.get(2),
+                newCallable("pick_float", GdFloatType.FLOAT, GdFloatType.FLOAT),
+                newCallable("pick_float", GdVariantType.VARIANT, GdVariantType.VARIANT)
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var primitiveCastCall = support.resolveCallExpressionType(calls.get(0), publishedResolver, true, false);
+        var exactPreferredCall = support.resolveCallExpressionType(calls.get(1), publishedResolver, true, false);
+        var primitivePreferredCall = support.resolveCallExpressionType(calls.get(2), publishedResolver, true, false);
+
+        assertAll(
+                () -> assertTrue(primitiveCastCall.rootOwnsOutcome()),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, primitiveCastCall.expressionType().status()),
+                () -> assertEquals(GdFloatType.FLOAT, primitiveCastCall.expressionType().publishedType()),
+                () -> assertNotNull(primitiveCastCall.publishedCallOrNull()),
+                () -> assertEquals(GdFloatType.FLOAT, primitiveCastCall.publishedCallOrNull().returnType()),
+                () -> assertEquals(List.of(GdIntType.INT), primitiveCastCall.publishedCallOrNull().argumentTypes()),
+                () -> assertTrue(exactPreferredCall.rootOwnsOutcome()),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, exactPreferredCall.expressionType().status()),
+                () -> assertEquals(GdIntType.INT, exactPreferredCall.publishedCallOrNull().returnType()),
+                () -> assertEquals(List.of(GdIntType.INT), exactPreferredCall.publishedCallOrNull().argumentTypes()),
+                () -> assertTrue(primitivePreferredCall.rootOwnsOutcome()),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, primitivePreferredCall.expressionType().status()),
+                () -> assertEquals(GdFloatType.FLOAT, primitivePreferredCall.publishedCallOrNull().returnType()),
+                () -> assertEquals(List.of(GdIntType.INT), primitivePreferredCall.publishedCallOrNull().argumentTypes())
+        );
     }
 
     @Test
@@ -990,16 +1056,25 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
-    void selectCallableOverloadReportsAmbiguousAndEmptyOverloadSets() throws Exception {
+    void selectCallableOverloadRanksFrontendBoundarySpecificityBeforeReportingAmbiguity() throws Exception {
         var support = newBareSupport();
-        var ambiguous = List.of(
-                newCallable("helper", GdIntType.INT, GdIntType.INT),
-                newCallable("helper", GdStringType.STRING, GdIntType.INT)
-        );
+        var directInt = newCallable("helper", GdIntType.INT, GdIntType.INT);
+        var primitiveFloat = newCallable("helper", GdFloatType.FLOAT, GdFloatType.FLOAT);
+        var variantPack = newCallable("helper", GdVariantType.VARIANT, GdVariantType.VARIANT);
 
-        var ambiguousSelection = support.selectCallableOverload(ambiguous, List.of(GdIntType.INT));
-        assertTrue(ambiguousSelection.selected() == null);
-        assertTrue(ambiguousSelection.detailReason().contains("Ambiguous bare call overload"));
+        var directSelection = support.selectCallableOverload(
+                List.of(directInt, primitiveFloat),
+                List.of(GdIntType.INT)
+        );
+        assertSame(directInt, directSelection.selected());
+        assertNull(directSelection.detailReason());
+
+        var primitiveSelection = support.selectCallableOverload(
+                List.of(primitiveFloat, variantPack),
+                List.of(GdIntType.INT)
+        );
+        assertSame(primitiveFloat, primitiveSelection.selected());
+        assertNull(primitiveSelection.detailReason());
 
         var variantAmbiguous = List.of(
                 newCallable("helper", GdIntType.INT, GdIntType.INT),
@@ -1120,6 +1195,28 @@ class FrontendExpressionSemanticSupportTest {
             function.addParameter(new LirParameterDef("arg" + index, parameterTypes[index], null, function));
         }
         return function;
+    }
+
+    private static void publishSyntheticIntBareCallOverloads(
+            @NotNull AnalyzedScript analyzed,
+            @NotNull CallExpression call,
+            @NotNull LirFunctionDef... overloads
+    ) {
+        var bareCallee = assertInstanceOf(IdentifierExpression.class, call.callee());
+        var owner = new LirClassDef("Synthetic" + bareCallee.name(), "RefCounted");
+        var scope = new ClassScope(analyzed.classRegistry(), analyzed.classRegistry(), owner);
+        for (var overload : overloads) {
+            scope.defineFunction(overload);
+        }
+        analyzed.analysisData().scopesByAst().put(bareCallee, scope);
+        analyzed.analysisData().symbolBindings().put(
+                bareCallee,
+                new FrontendBinding(bareCallee.name(), FrontendBindingKind.METHOD, overloads[0])
+        );
+        analyzed.analysisData().expressionTypes().put(bareCallee, FrontendExpressionType.resolved(new GdCallableType()));
+        for (var argument : call.arguments()) {
+            analyzed.analysisData().expressionTypes().put(argument, FrontendExpressionType.resolved(GdIntType.INT));
+        }
     }
 
     private static @NotNull FunctionDeclaration findFunction(@NotNull Node root, @NotNull String name) {

@@ -7,8 +7,6 @@ import gd.script.gdcc.backend.c.gen.binding.EngineMethodHelperParam;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodSymbolKey;
 import gd.script.gdcc.backend.c.gen.insn.BackendMethodCallResolver;
 import gd.script.gdcc.backend.c.gen.insn.OperatorResolver;
-import gd.script.gdcc.exception.InvalidInsnException;
-import gd.script.gdcc.exception.NotImplementedException;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirModule;
@@ -40,12 +38,14 @@ public final class CGenHelper {
 
     private final @NotNull CodegenContext context;
     private final @NotNull CBuiltinBuilder builtinBuilder;
+    private final @NotNull CIntrinsicManager intrinsicManager;
     private final @NotNull OperatorResolver operatorResolver = new OperatorResolver();
     private final @NotNull Set<BindingData> bindingDataSet = new HashSet<>();
 
     public CGenHelper(@NotNull CodegenContext context, @NotNull List<? extends ClassDef> classDefs) {
         this.context = context;
         this.builtinBuilder = new CBuiltinBuilder(this);
+        this.intrinsicManager = new CIntrinsicManager();
         this.collectBindingData(classDefs);
     }
 
@@ -89,6 +89,10 @@ public final class CGenHelper {
 
     public @NotNull List<BindingData> getBindingDataList() {
         return List.copyOf(bindingDataSet);
+    }
+
+    public @NotNull CIntrinsicManager intrinsicManager() {
+        return intrinsicManager;
     }
 
     public @NotNull List<OperatorEvaluatorHelperSpec> collectOperatorEvaluatorHelperSpecs(@NotNull LirModule module) {
@@ -431,25 +435,6 @@ public final class CGenHelper {
                 escapeStringLiteral(resolved.ownerClassName() + "." + resolved.methodName());
     }
 
-    public @NotNull String renderEngineMethodCallErrorDescription(
-            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
-    ) {
-        return "engine method call failed: " +
-                escapeStringLiteral(resolved.ownerClassName() + "." + resolved.methodName());
-    }
-
-    public @NotNull String renderVarRef(@NotNull LirFunctionDef func, @NotNull String varName) {
-        var varDef = func.getVariableById(varName);
-        if (varDef == null) {
-            throw new IllegalArgumentException("Variable " + varName + " not found in function " + func.getName());
-        }
-        if (varDef.ref()) {
-            return "$" + varName;
-        } else {
-            return renderValueRef(varDef.type(), "$" + varName);
-        }
-    }
-
     public @NotNull String renderFuncBindName(@NotNull BindingData bindingData) {
         return renderFuncBindName(
                 bindingData.returnType(),
@@ -485,14 +470,6 @@ public final class CGenHelper {
             }
         }
         return renderFuncBindName(functionDef.getReturnType(), paramTypes, defaultVarTypes, functionDef.isStatic());
-    }
-
-    public @NotNull String renderGetterBindName(@NotNull PropertyDef propertyDef) {
-        return renderFuncBindName(propertyDef.getType(), List.of(), List.of(), false);
-    }
-
-    public @NotNull String renderSetterBindName(@NotNull PropertyDef propertyDef) {
-        return renderFuncBindName(GdVoidType.VOID, List.of(propertyDef.getType()), List.of(), false);
     }
 
     public @NotNull String renderGdTypeName(@NotNull GdType gdType) {
@@ -557,6 +534,39 @@ public final class CGenHelper {
         }
     }
 
+    /// Render the inbound `call_func` runtime gate for one non-Variant wrapper argument.
+    ///
+    /// The wrapper keeps exact runtime checks by default. The only widened inbound rule is
+    /// `Variant(INT) -> float parameter`, matching the frontend matrix without importing
+    /// Godot's full `can_convert_strict(...)` table into this ABI surface.
+    public @NotNull String renderCallWrapperVariantTypeGate(@NotNull GdType paramType,
+                                                            @NotNull String typeExpr) {
+        if (paramType instanceof GdFloatType) {
+            return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_FLOAT || "
+                    + typeExpr + " == GDEXTENSION_VARIANT_TYPE_INT)";
+        }
+        return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + requireBoundMetadataType(paramType).name() + ")";
+    }
+
+    /// Render the inbound `call_func` local materialization expression for one wrapper argument.
+    ///
+    /// This is deliberately separate from `renderUnpackFunctionName(...)` because only
+    /// Godot-to-GDExtension method calls get the narrow `INT` payload widening for float params.
+    ///
+    /// @param typeExpr cached runtime type expression from the preceding wrapper gate. When this is null, the
+    ///                 generated expression repeats `godot_variant_get_type(...)` against `variantPtrExpr`.
+    public @NotNull String renderCallWrapperUnpackExpr(@NotNull GdType paramType,
+                                                       @NotNull String variantPtrExpr,
+                                                       @Nullable String typeExpr) {
+        if (paramType instanceof GdFloatType) {
+            var actualTypeExpr = typeExpr != null ? typeExpr : "godot_variant_get_type(" + variantPtrExpr + ")";
+            return actualTypeExpr + " == GDEXTENSION_VARIANT_TYPE_INT"
+                    + " ? (godot_float)godot_new_int_with_Variant(" + variantPtrExpr + ")"
+                    + " : godot_new_float_with_Variant(" + variantPtrExpr + ")";
+        }
+        return renderUnpackFunctionName(paramType) + "(" + variantPtrExpr + ")";
+    }
+
     /// Ordinary pack helpers are the unary `godot_new_Variant_with_<Type>` family.
     /// `Nil` is excluded because it uses the dedicated nullary `godot_new_Variant_nil()`.
     public @NotNull String renderPackFunctionName(@NotNull GdType type) {
@@ -583,16 +593,6 @@ public final class CGenHelper {
                 yield "godot_new_" + symbolTypeName + "_with_" + symbolTypeName;
             }
         };
-    }
-
-    public @NotNull String renderDefaultValueFunctionName(@NotNull ParameterDef def) {
-        if (def.getDefaultValueFunc() == null) {
-            throw new IllegalArgumentException("ParameterDef does not have a default value function");
-        }
-        if (def.getDefaultValueFunc().startsWith("(")) {
-            throw new NotImplementedException("ParameterDef default value function for GdExtension literal is not supported");
-        }
-        return def.getDefaultValueFunc();
     }
 
     public @NotNull String renderDestroyFunctionName(@NotNull GdType type) {
@@ -711,10 +711,6 @@ public final class CGenHelper {
     /// while reusing the same outward Variant encoding as method args/returns.
     public @NotNull BoundMetadata renderPropertyMetadata(@NotNull PropertyDef propertyDef) {
         return renderBoundMetadata(propertyDef.getType(), renderPropertyBaseUsageEnum(propertyDef), "property");
-    }
-
-    public @NotNull String renderPropertyUsageEnum(@NotNull PropertyDef propertyDef) {
-        return renderPropertyMetadata(propertyDef).usageExpr();
     }
 
     private @NotNull String renderPropertyBaseUsageEnum(@NotNull PropertyDef propertyDef) {
@@ -937,53 +933,6 @@ public final class CGenHelper {
         };
     }
 
-    /// Renders a variable assignment statement in C, handling Godot object return types properly.
-    /// Mainly used for preventing direct assignment of Godot object ptr to GDCC object ptr.
-    ///
-    /// @param sourceExpr This expr is in C which is a GDExtension function call. It never returns direct GDCC type ptr, but the underlying proxy Godot object ptr.
-    public @NotNull String renderVarAssignWithGodotReturn(@NotNull LirFunctionDef func,
-                                                          @NotNull String targetVarName,
-                                                          @NotNull GdType sourceType,
-                                                          @NotNull String sourceExpr) {
-        var targetVar = func.getVariableById(targetVarName);
-        if (targetVar == null) {
-            throw new InvalidInsnException("Variable " + targetVarName + " not found in function " + func.getName());
-        }
-        if (targetVar.ref()) {
-            throw new InvalidInsnException("Variable " + targetVarName + " is a readonly ref in function " + func.getName());
-        }
-        var registry = context.classRegistry();
-        if (!registry.checkAssignable(sourceType, targetVar.type())) {
-            throw new InvalidInsnException("Cannot assign value of type " + sourceType.getTypeName() + " to variable " +
-                    targetVarName + " of type " + targetVar.type().getTypeName() + " in function " + func.getName());
-        }
-        if (targetVar.type() instanceof GdObjectType targetType && sourceType instanceof GdObjectType sourceObjectType) {
-            var assignExpr = renderObjectAssignExprWithSafeConversion(sourceExpr, sourceObjectType, targetType);
-            return "$" + targetVarName + " = " + assignExpr + ";";
-        }
-        return "$" + targetVarName + " = " + sourceExpr + ";";
-    }
-
-    private @NotNull String renderObjectAssignExprWithSafeConversion(@NotNull String sourceExpr,
-                                                                     @NotNull GdObjectType sourceType,
-                                                                     @NotNull GdObjectType targetType) {
-        if (targetType.checkGdccType(context.classRegistry())) {
-            var castType = renderGdTypeInC(targetType);
-            return "(" + castType + ")gdcc_object_from_godot_object_ptr(" + sourceExpr + ")";
-        }
-
-        var convertedSourceExpr = sourceExpr;
-        if (sourceType.checkGdccType(context.classRegistry())) {
-            convertedSourceExpr = "gdcc_object_to_godot_object_ptr(" + sourceExpr + ", " +
-                    renderGdccObjectPtrHelperName(sourceType) + ")";
-        }
-        if (!targetType.getTypeName().equals(sourceType.getTypeName())) {
-            var castType = renderGdTypeInC(targetType);
-            return "(" + castType + ")(" + convertedSourceExpr + ")";
-        }
-        return convertedSourceExpr;
-    }
-
     public boolean checkVirtualMethod(@NotNull ClassDef classDef, @NotNull FunctionDef functionDef) {
         var engineVirtual = context.classRegistry().findEngineVirtualMethod(classDef.getName(), functionDef.getName());
         if (engineVirtual == null) {
@@ -1063,15 +1012,6 @@ public final class CGenHelper {
         return functionName.substring(GODOT_UTILITY_PREFIX.length());
     }
 
-    /// Render the canonical C symbol name for a utility function.
-    /// Accepts both prefixed and unprefixed inputs.
-    public @NotNull String toUtilityCFunctionName(@NotNull String functionName) {
-        if (functionName.startsWith(GODOT_UTILITY_PREFIX)) {
-            return functionName;
-        }
-        return GODOT_UTILITY_PREFIX + functionName;
-    }
-
     /// Resolve utility/helper call metadata from either `foo` or `godot_foo`.
     public @Nullable UtilityCallResolution resolveUtilityCall(@NotNull String functionName) {
         if (functionName.equals(VARIANT_WRITEBACK_HELPER_NAME)) {
@@ -1086,7 +1026,7 @@ public final class CGenHelper {
         if (signature == null) {
             return null;
         }
-        return new UtilityCallResolution(lookupName, toUtilityCFunctionName(lookupName), signature);
+        return new UtilityCallResolution(lookupName, GODOT_UTILITY_PREFIX + lookupName, signature);
     }
 
     public record UtilityCallResolution(@NotNull String lookupName,

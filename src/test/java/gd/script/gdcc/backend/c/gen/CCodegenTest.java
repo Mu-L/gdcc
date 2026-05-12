@@ -456,7 +456,7 @@ public class CCodegenTest {
         var sessionBodyCalled = new boolean[]{false};
         var codegen = new CCodegen() {
             @Override
-            public String generateFuncBody(@NotNull LirClassDef clazz, @NotNull LirFunctionDef func) {
+            public @NotNull String generateFuncBody(@NotNull LirClassDef clazz, @NotNull LirFunctionDef func) {
                 publicBodyCalled[0] = true;
                 return super.generateFuncBody(clazz, func);
             }
@@ -589,6 +589,75 @@ public class CCodegenTest {
         );
         assertFalse(acceptVariantCallBody.contains("expected = GDEXTENSION_VARIANT_TYPE_NIL;"), acceptVariantCallBody);
         assertContainsAll(acceptIntCallBody, "expected = GDEXTENSION_VARIANT_TYPE_INT;");
+    }
+
+    @Test
+    public void generatesCallWrapperInboundIntToFloatCompatibilityWithoutWeakeningOtherParams() throws Exception {
+        var workerClass = new LirClassDef("InboundPrimitiveCallWorker", "Node");
+
+        var takeFloat = new LirFunctionDef("take_float");
+        takeFloat.setReturnType(GdFloatType.FLOAT);
+        takeFloat.addParameter(new LirParameterDef("self", new GdObjectType("InboundPrimitiveCallWorker"), null, takeFloat));
+        takeFloat.addParameter(new LirParameterDef("value", GdFloatType.FLOAT, null, takeFloat));
+        var takeFloatEntry = new LirBasicBlock("entry");
+        takeFloatEntry.setTerminator(new ReturnInsn("value"));
+        takeFloat.addBasicBlock(takeFloatEntry);
+        takeFloat.setEntryBlockId("entry");
+        workerClass.addFunction(takeFloat);
+
+        var takeInt = new LirFunctionDef("take_int");
+        takeInt.setReturnType(GdIntType.INT);
+        takeInt.addParameter(new LirParameterDef("self", new GdObjectType("InboundPrimitiveCallWorker"), null, takeInt));
+        takeInt.addParameter(new LirParameterDef("value", GdIntType.INT, null, takeInt));
+        var takeIntEntry = new LirBasicBlock("entry");
+        takeIntEntry.setTerminator(new ReturnInsn("value"));
+        takeInt.addBasicBlock(takeIntEntry);
+        takeInt.setEntryBlockId("entry");
+        workerClass.addFunction(takeInt);
+
+        var echoVariant = new LirFunctionDef("echo_variant");
+        echoVariant.setReturnType(GdVariantType.VARIANT);
+        echoVariant.addParameter(new LirParameterDef("self", new GdObjectType("InboundPrimitiveCallWorker"), null, echoVariant));
+        echoVariant.addParameter(new LirParameterDef("value", GdVariantType.VARIANT, null, echoVariant));
+        var echoVariantEntry = new LirBasicBlock("entry");
+        echoVariantEntry.setTerminator(new ReturnInsn("value"));
+        echoVariant.addBasicBlock(echoVariantEntry);
+        echoVariant.setEntryBlockId("entry");
+        workerClass.addFunction(echoVariant);
+
+        var module = new LirModule("inbound_primitive_call_module", List.of(workerClass));
+        var hCode = generateHeader(module);
+
+        var takeFloatCallBody = resolveCallWrapperBody(hCode, "_1_arg_float_ret_float");
+        var takeIntCallBody = resolveCallWrapperBody(hCode, "_1_arg_int_ret_int");
+        var echoVariantCallBody = resolveCallWrapperBody(hCode, "_1_arg_Variant_ret_Variant");
+
+        assertContainsAll(
+                takeFloatCallBody,
+                "const GDExtensionVariantType arg0_type = godot_variant_get_type(p_args[0]);",
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_FLOAT || arg0_type == GDEXTENSION_VARIANT_TYPE_INT))",
+                "expected = GDEXTENSION_VARIANT_TYPE_FLOAT;",
+                "const godot_float arg0 = arg0_type == GDEXTENSION_VARIANT_TYPE_INT ? (godot_float)godot_new_int_with_Variant((GDExtensionVariantPtr)p_args[0]) : godot_new_float_with_Variant((GDExtensionVariantPtr)p_args[0]);"
+        );
+        assertFalse(takeFloatCallBody.contains("GDEXTENSION_VARIANT_TYPE_BOOL"), takeFloatCallBody);
+        assertFalse(
+                takeFloatCallBody.contains("godot_variant_get_type((GDExtensionVariantPtr)p_args[0])"),
+                takeFloatCallBody
+        );
+        assertEquals(1, countOccurrences(takeFloatCallBody, "godot_variant_get_type(p_args[0])"), takeFloatCallBody);
+
+        assertContainsAll(
+                takeIntCallBody,
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_INT))",
+                "expected = GDEXTENSION_VARIANT_TYPE_INT;",
+                "const godot_int arg0 = godot_new_int_with_Variant((GDExtensionVariantPtr)p_args[0]);"
+        );
+        assertFalse(takeIntCallBody.contains("GDEXTENSION_VARIANT_TYPE_FLOAT ||"), takeIntCallBody);
+        assertFalse(takeIntCallBody.contains("godot_new_float_with_Variant"), takeIntCallBody);
+
+        assertFalse(echoVariantCallBody.contains("expected = GDEXTENSION_VARIANT_TYPE_NIL;"), echoVariantCallBody);
+        assertTrue(echoVariantCallBody.contains("godot_Variant arg0 = godot_new_Variant_with_Variant((GDExtensionVariantPtr)p_args[0]);"), echoVariantCallBody);
+        assertTrue(echoVariantCallBody.contains("godot_Variant_destroy(&arg0);"), echoVariantCallBody);
     }
 
     @Test
@@ -1058,7 +1127,7 @@ public class CCodegenTest {
 
         assertContainsAll(
                 typedCallBody,
-                "if (type != GDEXTENSION_VARIANT_TYPE_ARRAY)",
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_ARRAY))",
                 "godot_Array probe0 = godot_new_Array_with_Variant((GDExtensionVariantPtr)p_args[0]);",
                 "godot_bool typed_mismatch = godot_Array_get_typed_builtin(&probe0) != (godot_int)GDEXTENSION_VARIANT_TYPE_OBJECT;",
                 "godot_StringName probe0_class_name = godot_Array_get_typed_class_name(&probe0);",
@@ -1093,7 +1162,7 @@ public class CCodegenTest {
 
         assertContainsAll(
                 genericCallBody,
-                "if (type != GDEXTENSION_VARIANT_TYPE_ARRAY)",
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_ARRAY))",
                 "godot_Array arg0 = godot_new_Array_with_Variant((GDExtensionVariantPtr)p_args[0]);"
         );
         assertEquals(
@@ -1180,7 +1249,7 @@ public class CCodegenTest {
 
         assertContainsAll(
                 typedCallBody,
-                "if (type != GDEXTENSION_VARIANT_TYPE_DICTIONARY)",
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_DICTIONARY))",
                 "godot_Dictionary probe0 = godot_new_Dictionary_with_Variant((GDExtensionVariantPtr)p_args[0]);",
                 "godot_bool typed_mismatch = false;",
                 "typed_mismatch = godot_Dictionary_get_typed_key_builtin(&probe0) != (godot_int)GDEXTENSION_VARIANT_TYPE_STRING_NAME;",
@@ -1219,7 +1288,7 @@ public class CCodegenTest {
 
         assertContainsAll(
                 genericCallBody,
-                "if (type != GDEXTENSION_VARIANT_TYPE_DICTIONARY)",
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_DICTIONARY))",
                 "godot_Dictionary arg0 = godot_new_Dictionary_with_Variant((GDExtensionVariantPtr)p_args[0]);"
         );
         assertEquals(

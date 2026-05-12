@@ -20,6 +20,8 @@ import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
@@ -69,6 +71,13 @@ public final class FrontendExpressionSemanticSupport {
     @FunctionalInterface
     public interface NestedExpressionResolver {
         @NotNull FrontendExpressionType resolve(@NotNull Expression expression, boolean finalizeWindow);
+    }
+
+    private enum MatchPreference {
+        BETTER,
+        WORSE,
+        EQUAL,
+        INCOMPARABLE
     }
 
     public record ExpressionSemanticResult(
@@ -481,6 +490,16 @@ public final class FrontendExpressionSemanticSupport {
             );
         }
 
+        // Godot metadata exposes mixed int/float operator entries, but this frontend boundary
+        // intentionally does not turn ordinary typed-boundary widening into operator promotion.
+        if (isMixedIntFloatScalarPair(publishedLeftType, publishedRightType)) {
+            return FrontendExpressionType.failed(
+                    "Binary operator '" + actualOperatorText
+                            + "' is not defined for operand types '" + publishedLeftType.getTypeName()
+                            + "' and '" + publishedRightType.getTypeName() + "'"
+            );
+        }
+
         var exactReturnType = resolveBinaryExactReturnType(
                 classRegistry,
                 operator,
@@ -737,6 +756,13 @@ public final class FrontendExpressionSemanticSupport {
             return new CallableOverloadSelection(applicable.getFirst(), null);
         }
         if (applicable.size() > 1) {
+            var mostSpecific = FrontendCallableOverloadRankingSupport.selectMostSpecificApplicable(
+                    applicable,
+                    (candidate, baseline) -> isStrictlyMoreSpecific(candidate, baseline, argumentTypes)
+            );
+            if (mostSpecific != null) {
+                return new CallableOverloadSelection(mostSpecific, null);
+            }
             return new CallableOverloadSelection(
                     null,
                     "Ambiguous bare call overload: " + renderCallableSignatures(applicable)
@@ -748,6 +774,84 @@ public final class FrontendExpressionSemanticSupport {
                   + buildCallableMismatchReason(overloadSet.getFirst(), argumentTypes)
                   + ". candidates: " + renderCallableSignatures(overloadSet);
         return new CallableOverloadSelection(null, detailReason);
+    }
+
+    private boolean isStrictlyMoreSpecific(
+            @NotNull FunctionDef candidate,
+            @NotNull FunctionDef baseline,
+            @NotNull List<GdType> argumentTypes
+    ) {
+        var strictlyBetter = false;
+        for (var index = 0; index < argumentTypes.size(); index++) {
+            var preference = compareArgumentSpecificity(
+                    argumentTypes.get(index),
+                    parameterTypeAt(candidate, index),
+                    candidate.isVararg(),
+                    parameterTypeAt(baseline, index),
+                    baseline.isVararg()
+            );
+            switch (preference) {
+                case WORSE, INCOMPARABLE -> {
+                    return false;
+                }
+                case BETTER -> strictlyBetter = true;
+                case EQUAL -> {
+                }
+            }
+        }
+
+        var omittedByCandidate = omittedTrailingParameterCount(candidate, argumentTypes.size());
+        var omittedByBaseline = omittedTrailingParameterCount(baseline, argumentTypes.size());
+        if (omittedByCandidate > omittedByBaseline) {
+            return false;
+        }
+        if (omittedByCandidate < omittedByBaseline) {
+            strictlyBetter = true;
+        }
+
+        if (candidate.isVararg() && !baseline.isVararg()) {
+            return false;
+        }
+        if (!candidate.isVararg() && baseline.isVararg()) {
+            strictlyBetter = true;
+        }
+        return strictlyBetter;
+    }
+
+    private @NotNull MatchPreference compareArgumentSpecificity(
+            @NotNull GdType sourceType,
+            @Nullable GdType candidateTarget,
+            boolean candidateVararg,
+            @Nullable GdType baselineTarget,
+            boolean baselineVararg
+    ) {
+        if (candidateTarget == null && baselineTarget == null) {
+            return MatchPreference.EQUAL;
+        }
+        if (candidateTarget == null) {
+            return candidateVararg ? MatchPreference.WORSE : MatchPreference.INCOMPARABLE;
+        }
+        if (baselineTarget == null) {
+            return baselineVararg ? MatchPreference.BETTER : MatchPreference.INCOMPARABLE;
+        }
+
+        var candidateRank = FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
+                classRegistry,
+                sourceType,
+                candidateTarget
+        );
+        var baselineRank = FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
+                classRegistry,
+                sourceType,
+                baselineTarget
+        );
+        if (candidateRank > baselineRank) {
+            return MatchPreference.BETTER;
+        }
+        if (candidateRank < baselineRank) {
+            return MatchPreference.WORSE;
+        }
+        return MatchPreference.EQUAL;
     }
 
     private @NotNull BareCallRoute bareCallRoute(@NotNull IdentifierExpression bareCallee) {
@@ -1034,6 +1138,11 @@ public final class FrontendExpressionSemanticSupport {
                 || publishedOperandType instanceof GdVariantType;
     }
 
+    private static boolean isMixedIntFloatScalarPair(@NotNull GdType leftType, @NotNull GdType rightType) {
+        return leftType instanceof GdIntType && rightType instanceof GdFloatType
+                || leftType instanceof GdFloatType && rightType instanceof GdIntType;
+    }
+
     private static @Nullable GdType resolveBinaryExactReturnType(
             @NotNull ClassRegistry classRegistry,
             @NotNull GodotOperator operator,
@@ -1101,6 +1210,19 @@ public final class FrontendExpressionSemanticSupport {
             }
         }
         return true;
+    }
+
+    private @Nullable GdType parameterTypeAt(@NotNull FunctionDef callable, int index) {
+        var parameters = callable.getParameters();
+        if (index < parameters.size()) {
+            return parameters.get(index).getType();
+        }
+        return null;
+    }
+
+    private int omittedTrailingParameterCount(@NotNull FunctionDef callable, int providedCount) {
+        var fixedCount = callable.getParameters().size();
+        return Math.max(0, fixedCount - Math.min(providedCount, fixedCount));
     }
 
     private int firstMissingRequiredParameter(
