@@ -149,6 +149,10 @@ The Java-side success contract has three layers:
 2. Combined Godot output must contain the injected `UNIT_TEST_PASS::<resource path>` marker.
 3. Any `# gdcc-test:` output directives are checked after the pass marker contract; directives do not replace the marker.
 
+After `Test stop.` is observed, the Java runner returns without waiting for full Godot
+process exit. A background virtual thread still gives the process the configured
+force-kill delay, one second by default, before forcing termination.
+
 `GdScriptUnitTestCompileRunner` uses the default runner options unless a test passes explicit `GodotGdextensionTestRunner.RunOptions`: headless mode, `--quit-after 10`, and no resource-level quit-frame directive. Tests that need a larger runtime budget should call `GodotGdextensionTestRunner.defaultRunOptions(...).withQuitAfterFrames(...)` from Java instead of adding fixture-side directives.
 
 ## Runtime and Build Prerequisites
@@ -161,6 +165,11 @@ Required:
 - `GODOT_BIN` must point to a runnable Godot binary.
 
 If these prerequisites are not available, the JUnit wrapper test will be skipped by assumption rather than fail the whole suite.
+
+Native builds can share Zig compiler caches across the per-case `tmp/test` project directories by
+setting `GDCC_SHARED_C_COMPILER_CACHE`, for example `tmp/test/shared-compiler-cache`. The compiler
+creates that directory when it is missing. If the variable is blank, invalid, points to a file, or
+cannot be created, the backend falls back to its default project-local cache selection.
 
 ## Running the Suite
 
@@ -180,6 +189,9 @@ rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps
 
 During normal development, prefer targeted execution instead of running the full test suite.
 When one generated case fails, JUnit reports the failing resource path directly.
+
+Timing output is disabled by default so CI logs stay focused. Set `GDCC_TEST_TIMING=1`
+when profiling the suite; accepted enabled values are `1`, `true`, `yes`, and `on`.
 
 ## Adding a New Test Case
 

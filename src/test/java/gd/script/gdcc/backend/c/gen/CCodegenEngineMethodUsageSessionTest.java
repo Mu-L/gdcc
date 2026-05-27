@@ -3,8 +3,9 @@ package gd.script.gdcc.backend.c.gen;
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodSymbolKey;
-import gd.script.gdcc.backend.c.gen.binding.EngineMethodUsageSession;
+import gd.script.gdcc.backend.c.gen.binding.usage.GodotBindingUsageSession;
 import gd.script.gdcc.enums.GodotVersion;
+import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
@@ -16,7 +17,11 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
+import gd.script.gdcc.lir.insn.BinaryOpInsn;
+import gd.script.gdcc.lir.insn.ConstructObjectInsn;
+import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
+import gd.script.gdcc.lir.insn.StorePropertyInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdIntType;
@@ -104,7 +109,7 @@ class CCodegenEngineMethodUsageSessionTest {
 
         var module = new LirModule("engine_usage_module", List.of(hostClass));
         var codegen = newCodegen(module, apiWith(List.of(arrayBuiltinWithSize()), List.of(probeClassWithOverloadedTouch())), List.of(hostClass));
-        var session = new EngineMethodUsageSession();
+        var session = GodotBindingUsageSession.forRegistry(codegen.ctx.classRegistry());
 
         codegen.generateFuncBody(hostClass, instanceTwice, session);
         assertSnapshot(session, List.of(spec("Probe", "touch", false, "P_RV")));
@@ -120,6 +125,38 @@ class CCodegenEngineMethodUsageSessionTest {
                 spec("Probe", "touch", false, "P_RV"),
                 spec("Probe", "touch", true, "PT_RV"),
                 spec("Probe", "touch", false, "PI_RV_Xv")
+        ));
+    }
+
+    @Test
+    @DisplayName("module session should record exact engine property accessors once")
+    void moduleSessionShouldRecordExactEnginePropertyAccessorsOnce() {
+        var hostClass = newClass("Worker", "RefCounted");
+
+        var propertyAccess = newVoidFunction("access_property");
+        propertyAccess.createAndAddVariable("window", new GdObjectType("Window"));
+        propertyAccess.createAndAddVariable("tmp", GdStringType.STRING);
+        propertyAccess.createAndAddVariable("value", GdStringType.STRING);
+        entry(propertyAccess).appendInstruction(new LoadPropertyInsn("tmp", "window_title", "window"));
+        entry(propertyAccess).appendInstruction(new LoadPropertyInsn("tmp", "window_title", "window"));
+        entry(propertyAccess).appendInstruction(new StorePropertyInsn("window_title", "window", "value"));
+        entry(propertyAccess).appendInstruction(new StorePropertyInsn("window_title", "window", "value"));
+        entry(propertyAccess).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(propertyAccess);
+
+        var module = new LirModule("engine_property_usage_module", List.of(hostClass));
+        var codegen = newCodegen(
+                module,
+                apiWith(List.of(), List.of(windowClassWithRawPropertyAccessors())),
+                List.of(hostClass)
+        );
+        var session = GodotBindingUsageSession.forRegistry(codegen.ctx.classRegistry());
+
+        codegen.generateFuncBody(hostClass, propertyAccess, session);
+
+        assertSnapshot(session, List.of(
+                spec("Window", "get_title_override", false, "P_RT"),
+                spec("Window", "set_title_override", false, "PT_RV")
         ));
     }
 
@@ -163,19 +200,58 @@ class CCodegenEngineMethodUsageSessionTest {
 
         var module = new LirModule("engine_usage_failure_module", List.of(hostClass));
         var codegen = newCodegen(module, apiWith(List.of(), List.of(probeClassWithFailureAnchors())), List.of(hostClass));
-        var session = new EngineMethodUsageSession();
+        var session = GodotBindingUsageSession.forRegistry(codegen.ctx.classRegistry());
 
         assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(hostClass, failVoidWithResult, session));
-        assertTrue(session.snapshot().isEmpty());
+        assertTrue(session.engineMethods().isEmpty());
 
         assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(hostClass, failResultTarget, session));
-        assertTrue(session.snapshot().isEmpty());
+        assertTrue(session.engineMethods().isEmpty());
 
         assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(hostClass, failArgType, session));
-        assertTrue(session.snapshot().isEmpty());
+        assertTrue(session.engineMethods().isEmpty());
 
         codegen.generateFuncBody(hostClass, valid, session);
         assertSnapshot(session, List.of(spec("Probe", "count", false, "P_RI")));
+    }
+
+    @Test
+    @DisplayName("failed render should not leak engine constructor usage into later successful renders")
+    void failedRenderShouldNotLeakEngineConstructorUsageIntoLaterSuccessfulRenders() {
+        var hostClass = newClass("Worker", "RefCounted");
+
+        var invalid = newVoidFunction("construct_then_fail");
+        invalid.createAndAddVariable("node", new GdObjectType("Node"));
+        invalid.createAndAddVariable("left", GdIntType.INT);
+        invalid.createAndAddVariable("right", GdIntType.INT);
+        invalid.createAndAddVariable("sum", GdIntType.INT);
+        entry(invalid).appendInstruction(new ConstructObjectInsn("node", "Node"));
+        entry(invalid).appendInstruction(new BinaryOpInsn("sum", GodotOperator.ADD, "left", "right"));
+        entry(invalid).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(invalid);
+
+        var valid = newVoidFunction("construct_node");
+        valid.createAndAddVariable("node", new GdObjectType("Node"));
+        entry(valid).appendInstruction(new ConstructObjectInsn("node", "Node"));
+        entry(valid).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(valid);
+
+        var module = new LirModule("engine_constructor_usage_failure_module", List.of(hostClass));
+        var codegen = newCodegen(module, apiWith(List.of(), List.of(nodeClass())), List.of(hostClass));
+        var session = GodotBindingUsageSession.forRegistry(codegen.ctx.classRegistry());
+
+        assertThrows(
+                InvalidInsnException.class,
+                () -> codegen.generateFuncBody(hostClass, invalid, session)
+        );
+        assertTrue(session.engineMethods().isEmpty());
+        assertTrue(session.engineConstructors().isEmpty(), "Failed function renders must not commit constructor usage.");
+
+        var validBody = codegen.generateFuncBody(hostClass, valid, session);
+        assertTrue(validBody.contains("godot_new_Node()"), validBody);
+        assertTrue(session.engineMethods().isEmpty());
+        assertEquals(1, session.engineConstructors().size(), session.engineConstructors().toString());
+        assertEquals("Node", session.engineConstructors().getFirst().className());
     }
 
     @Test
@@ -208,7 +284,7 @@ class CCodegenEngineMethodUsageSessionTest {
         var secondBody = codegen.generateFuncBody(hostClass, publicRender);
         assertEquals(firstBody, secondBody);
 
-        var session = new EngineMethodUsageSession();
+        var session = GodotBindingUsageSession.forRegistry(codegen.ctx.classRegistry());
         codegen.generateFuncBody(hostClass, sessionRender, session);
         assertSnapshot(session, List.of(spec("Probe", "touch", true, "PT_RV")));
     }
@@ -231,10 +307,10 @@ class CCodegenEngineMethodUsageSessionTest {
     }
 
     private static void assertSnapshot(
-            @NotNull EngineMethodUsageSession session,
+            @NotNull GodotBindingUsageSession session,
             @NotNull List<SnapshotSpec> expected
     ) {
-        var actual = session.snapshot().stream()
+        var actual = session.engineMethods().stream()
                 .map(resolved -> {
                     var key = EngineMethodSymbolKey.from(resolved);
                     assertNotNull(key, "session snapshot should only contain exact engine methods");
@@ -369,6 +445,67 @@ class CCodegenEngineMethodUsageSessionTest {
                 List.of(instanceTouch, staticTouch, varargTouch),
                 List.of(),
                 List.of(),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionGdClass nodeClass() {
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionGdClass windowClassWithRawPropertyAccessors() {
+        var getTitle = new ExtensionGdClass.ClassMethod(
+                "get_title_override",
+                false,
+                false,
+                false,
+                false,
+                81L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("String"),
+                List.of()
+        );
+        var setTitle = new ExtensionGdClass.ClassMethod(
+                "set_title_override",
+                false,
+                false,
+                false,
+                false,
+                82L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("title", "String", null, null))
+        );
+        return new ExtensionGdClass(
+                "Window",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(getTitle, setTitle),
+                List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo(
+                        "window_title",
+                        "String",
+                        true,
+                        true,
+                        "",
+                        "get_title_override",
+                        "set_title_override",
+                        null
+                )),
                 List.of()
         );
     }

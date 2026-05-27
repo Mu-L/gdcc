@@ -3,8 +3,9 @@ package gd.script.gdcc.backend.c.gen;
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.GeneratedFile;
 import gd.script.gdcc.backend.ProjectInfo;
-import gd.script.gdcc.backend.c.gen.binding.EngineMethodUsageBuffer;
-import gd.script.gdcc.backend.c.gen.binding.EngineMethodUsageSession;
+import gd.script.gdcc.backend.c.gen.binding.ModuleLocalGodotBinding;
+import gd.script.gdcc.backend.c.gen.binding.usage.GodotBindingUsageBuffer;
+import gd.script.gdcc.backend.c.gen.binding.usage.GodotBindingUsageSession;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.exception.InvalidInsnException;
@@ -22,6 +23,7 @@ import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
+import gd.script.gdcc.lir.insn.ConstructObjectInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralFloatInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
@@ -51,6 +53,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -199,10 +202,9 @@ public class CCodegenTest {
         var cCode = generatedFileText(files, "entry.c");
         var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
         var hCode = generatedFileText(files, "entry.h");
-        System.out.println(hCode);
-        System.out.println(cCode);
         assertTrue(cCode.contains("Loading my_module"));
         assertTrue(bindHeaderCode.contains("GDEXTENSION_MY_MODULE_ENGINE_METHOD_BINDS_H"));
+        assertTrue(bindHeaderCode.contains("No module-local Godot wrappers were collected for this module."), bindHeaderCode);
         assertTrue(hCode.contains("GDEXTENSION_MY_MODULE_ENTRY_H"));
         assertTrue(hCode.contains("#include \"engine_method_binds.h\""));
     }
@@ -221,15 +223,24 @@ public class CCodegenTest {
         codegen.prepare(ctx, module);
         var files = codegen.generate();
         var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
 
         var entryBody = resolveFunctionBodyByPrefix(cCode, "GDE_EXPORT GDExtensionBool gdextension_entry(");
         assertContainsAll(
                 entryBody,
+                "if (!godot_initialize_interface(p_get_proc_address)) {",
+                "return false;",
                 "r_initialization->minimum_initialization_level = GDEXTENSION_INITIALIZATION_SCENE;",
                 "r_initialization->userdata = NULL;",
                 "r_initialization->initialize = &initialize;",
                 "r_initialization->deinitialize = &deinitialize;"
         );
+        assertTrue(
+                entryBody.indexOf("godot_initialize_interface(p_get_proc_address)") <
+                        entryBody.indexOf("class_library = p_library;"),
+                entryBody
+        );
+        assertTrue(hCode.contains("#include <godot_binding.h>"), hCode);
 
         var initializeBody = resolveFunctionBodyByPrefix(cCode, "void initialize(void* userdata");
         assertContainsAll(
@@ -358,7 +369,7 @@ public class CCodegenTest {
         assertFalse(bindHeaderCode.contains("gdcc_engine_method_bind_variant_callv_"), bindHeaderCode);
         assertEquals(
                 1,
-                countOccurrences(bindHeaderCode, "static inline GDExtensionMethodBindPtr gdcc_engine_method_bind_node_queue_free_P_RV("),
+                countOccurrences(bindHeaderCode, "gdcc_engine_method_bind_node_queue_free_P_RV,"),
                 bindHeaderCode
         );
         assertEquals(
@@ -368,9 +379,51 @@ public class CCodegenTest {
         );
         assertEquals(
                 1,
-                countOccurrences(bindHeaderCode, "static inline GDExtensionMethodBindPtr gdcc_engine_method_bind_object_call_PS_RR_Xv("),
+                countOccurrences(bindHeaderCode, "gdcc_engine_method_bind_object_call_PS_RR_Xv,"),
                 bindHeaderCode
         );
+        assertTrue(bindHeaderCode.contains("GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR("), bindHeaderCode);
+    }
+
+    @Test
+    public void generateShouldEmitOnDemandEngineConstructorWrappersInBindHeader() throws Exception {
+        var workerClass = new LirClassDef("ConstructorUsageWorker", "RefCounted");
+        var constructNode = newFunction("construct_node", GdVoidType.VOID);
+        constructNode.createAndAddVariable("node", new GdObjectType("Node"));
+        entry(constructNode).appendInstruction(new ConstructObjectInsn("node", "Node"));
+        entry(constructNode).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(constructNode);
+
+        var module = new LirModule("engine_constructor_usage_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var files = codegen.generate();
+        var entrySource = generatedFileText(files, "entry.c");
+        var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
+
+        assertEquals(List.of("entry.c", "engine_method_binds.h", "entry.h"), files.stream().map(GeneratedFile::filePath).toList());
+        assertTrue(entrySource.contains("$node = godot_new_Node();"), entrySource);
+        assertContainsAll(
+                bindHeaderCode,
+                "static inline godot_Node *godot_new_Node(void)",
+                "godot_classdb_construct_object(GD_STATIC_SN(u8\"Node\"))",
+                "gdcc_binding_lookup_context context = { 0 };",
+                "context.kind = \"engine_constructor\";",
+                "context.function_name = \"godot_new_Node\";",
+                "return (godot_Node *)object;",
+                "No exact engine method binds were collected for this module."
+        );
+        assertFalse(bindHeaderCode.contains("gdcc_binding_lookup_fail(&(gdcc_binding_lookup_context){"), bindHeaderCode);
+        assertFalse(bindHeaderCode.contains("\n                .kind = \"engine_constructor\""), bindHeaderCode);
+        assertFalse(bindHeaderCode.contains("godot_new_RefCounted(void)"), bindHeaderCode);
+        assertFalse(bindHeaderCode.contains("godot_classdb_construct_object2"), bindHeaderCode);
+        assertFalse(bindHeaderCode.contains("godot_new_StringName_with_latin1_chars"), bindHeaderCode);
+        assertFalse(bindHeaderCode.contains("godot_StringName_destroy"), bindHeaderCode);
     }
 
     @Test
@@ -467,7 +520,7 @@ public class CCodegenTest {
             @Override
             @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
                                              @NotNull LirFunctionDef func,
-                                             @NotNull EngineMethodUsageBuffer usageBuffer) {
+                                             @NotNull GodotBindingUsageBuffer usageBuffer) {
                 sessionBodyCalled[0] = true;
                 return super.generateFuncBody(clazz, func, usageBuffer);
             }
@@ -480,6 +533,97 @@ public class CCodegenTest {
         assertTrue(sessionBodyCalled[0], "generate() should render bodies through the session-bound helper path.");
         assertFalse(publicBodyCalled[0], "generate() should not route through the public no-op usage renderer.");
         assertTrue(bindHeaderCode.contains("gdcc_engine_method_bind_node_queue_free_P_RV("), bindHeaderCode);
+    }
+
+    @Test
+    public void generateShouldKeepCoreFilesWhenModuleLocalGodotWrappersAreCollected() throws Exception {
+        var workerClass = new LirClassDef("ModuleLocalWrapperWorker", "RefCounted");
+        var useWrapper = newFunction("use_module_local_wrapper", GdVoidType.VOID);
+        entry(useWrapper).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(useWrapper);
+
+        var module = new LirModule("module_local_wrapper_generation_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen() {
+            @Override
+            @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
+                                             @NotNull LirFunctionDef func,
+                                             @NotNull GodotBindingUsageBuffer usageBuffer) {
+                if (!func.getName().equals("use_module_local_wrapper")) {
+                    return super.generateFuncBody(clazz, func, usageBuffer);
+                }
+                usageBuffer.recordModuleLocalGodotBinding(moduleLocalConstantBinding());
+                return """
+                        goto entry;
+                        entry: // entry
+                        godot_Probe_READY();
+                        goto __finally__;
+                        __finally__: // __finally__
+                        return;
+                        """;
+            }
+        };
+        codegen.prepare(ctx, module);
+
+        var files = codegen.generate();
+        var entrySource = generatedFileText(files, "entry.c");
+        var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
+
+        assertEquals(List.of("entry.c", "engine_method_binds.h", "entry.h"), files.stream().map(GeneratedFile::filePath).toList());
+        assertTrue(entrySource.contains("godot_Probe_READY();"), entrySource);
+        assertTrue(bindHeaderCode.contains("static inline godot_int godot_Probe_READY(void)"), bindHeaderCode);
+        assertTrue(bindHeaderCode.contains("return (godot_int)13;"), bindHeaderCode);
+    }
+
+    @Test
+    public void failedSessionBodyRenderShouldNotLeakModuleLocalGodotBindingUsageIntoTheModuleSession() throws Exception {
+        var workerClass = new LirClassDef("ModuleLocalWrapperWorker", "RefCounted");
+        var invalid = newFunction("record_module_local_then_fail", GdVoidType.VOID);
+        entry(invalid).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(invalid);
+        var valid = newFunction("record_module_local_valid", GdVoidType.VOID);
+        entry(valid).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(valid);
+
+        var module = new LirModule("module_local_wrapper_failed_render_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen() {
+            @Override
+            @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
+                                             @NotNull LirFunctionDef func,
+                                             @NotNull GodotBindingUsageBuffer usageBuffer) {
+                usageBuffer.recordModuleLocalGodotBinding(moduleLocalConstantBinding());
+                if (func.getName().equals("record_module_local_then_fail")) {
+                    throw new InvalidInsnException("forced module-local render failure");
+                }
+                return """
+                        goto entry;
+                        entry: // entry
+                        godot_Probe_READY();
+                        goto __finally__;
+                        __finally__: // __finally__
+                        return;
+                        """;
+            }
+        };
+        codegen.prepare(ctx, module);
+
+        var usageSession = new GodotBindingUsageSession(Set.of());
+        assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, invalid, usageSession));
+        assertTrue(usageSession.moduleLocalBindings().isEmpty(), "Failed function renders must not commit module-local usage.");
+
+        var validBody = codegen.generateFuncBody(workerClass, valid, usageSession);
+        var snapshot = usageSession.moduleLocalBindings();
+
+        assertTrue(validBody.contains("godot_Probe_READY();"), validBody);
+        assertEquals(1, snapshot.size(), snapshot.toString());
+        assertEquals("godot_Probe_READY", snapshot.getFirst().symbol().cFunctionName());
     }
 
     @Test
@@ -511,13 +655,13 @@ public class CCodegenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
 
-        var usageSession = new EngineMethodUsageSession();
+        var usageSession = new GodotBindingUsageSession(Set.of());
         var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, invalid, usageSession));
         assertInstanceOf(InvalidInsnException.class, ex);
-        assertTrue(usageSession.snapshot().isEmpty(), "Failed function renders must not commit helper usage.");
+        assertTrue(usageSession.engineMethods().isEmpty(), "Failed function renders must not commit helper usage.");
 
         var validBody = codegen.generateFuncBody(workerClass, valid, usageSession);
-        var snapshot = usageSession.snapshot();
+        var snapshot = usageSession.engineMethods();
 
         assertTrue(validBody.contains("gdcc_engine_call_node_queue_free_P_RV"), validBody);
         assertEquals(1, snapshot.size(), snapshot.toString());
@@ -1193,9 +1337,11 @@ public class CCodegenTest {
                 "godot_bool typed_mismatch = godot_Array_get_typed_builtin(&probe0) != (godot_int)GDEXTENSION_VARIANT_TYPE_OBJECT;",
                 "godot_StringName probe0_class_name = godot_Array_get_typed_class_name(&probe0);",
                 "godot_Variant probe0_script = godot_Array_get_typed_script(&probe0);",
-                "godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &probe0_script, &probe0_script_nil, &probe0_script_is_null_result, &probe0_script_is_null_valid);",
+                "godot_Variant probe0_script_is_null_result;",
+                "godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &probe0_script, &probe0_script_nil, (GDExtensionUninitializedVariantPtr)&probe0_script_is_null_result, &probe0_script_is_null_valid);",
                 "const godot_bool probe0_script_is_null = probe0_script_is_null_valid && godot_new_bool_with_Variant(&probe0_script_is_null_result);",
                 "typed_mismatch = !godot_StringName_op_equal_StringName(&probe0_class_name, GD_STATIC_SN(u8\"Node\")) || !probe0_script_is_null;",
+                "if (probe0_script_is_null_valid) {",
                 "godot_Variant_destroy(&probe0_script_is_null_result);",
                 "godot_Variant_destroy(&probe0_script_nil);",
                 "godot_Variant_destroy(&probe0_script);",
@@ -1208,6 +1354,7 @@ public class CCodegenTest {
         var typedArgIndex = typedCallBody.indexOf("arg0 = godot_new_Array_with_Variant((GDExtensionVariantPtr)p_args[0]);");
         assertTrue(typedProbeIndex >= 0, typedCallBody);
         assertTrue(typedArgIndex > typedProbeIndex, typedCallBody);
+        assertFalse(typedCallBody.contains("probe0_script_is_null_result = godot_new_Variant_nil();"), typedCallBody);
         assertFalse(typedCallBody.contains("godot_Array_is_same_typed"), typedCallBody);
 
         assertContainsAll(
@@ -1318,9 +1465,11 @@ public class CCodegenTest {
                 "godot_StringName probe0_value_class_name = godot_Dictionary_get_typed_value_class_name(&probe0);",
                 "godot_Variant probe0_value_script = godot_Dictionary_get_typed_value_script(&probe0);",
                 "godot_Variant probe0_value_script_nil = godot_new_Variant_nil();",
-                "godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &probe0_value_script, &probe0_value_script_nil, &probe0_value_script_is_null_result, &probe0_value_script_is_null_valid);",
+                "godot_Variant probe0_value_script_is_null_result;",
+                "godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &probe0_value_script, &probe0_value_script_nil, (GDExtensionUninitializedVariantPtr)&probe0_value_script_is_null_result, &probe0_value_script_is_null_valid);",
                 "const godot_bool probe0_value_script_is_null = probe0_value_script_is_null_valid && godot_new_bool_with_Variant(&probe0_value_script_is_null_result);",
                 "typed_mismatch = !godot_StringName_op_equal_StringName(&probe0_value_class_name, GD_STATIC_SN(u8\"Node\")) || !probe0_value_script_is_null;",
+                "if (probe0_value_script_is_null_valid) {",
                 "godot_Variant_destroy(&probe0_value_script_is_null_result);",
                 "godot_Variant_destroy(&probe0_value_script_nil);",
                 "godot_Variant_destroy(&probe0_value_script);",
@@ -1333,6 +1482,7 @@ public class CCodegenTest {
         var typedArgIndex = typedCallBody.indexOf("arg0 = godot_new_Dictionary_with_Variant((GDExtensionVariantPtr)p_args[0]);");
         assertTrue(typedProbeIndex >= 0, typedCallBody);
         assertTrue(typedArgIndex > typedProbeIndex, typedCallBody);
+        assertFalse(typedCallBody.contains("probe0_value_script_is_null_result = godot_new_Variant_nil();"), typedCallBody);
         assertFalse(typedCallBody.contains("goto "), typedCallBody);
 
         assertContainsAll(
@@ -1843,12 +1993,12 @@ public class CCodegenTest {
 
         var sharedRegisterPattern = Pattern.compile(
                 "godot_classdb_register_extension_class5\\(class_library,\\s*" +
-                        "GD_STATIC_SN\\(u8\\\"RuntimeOuter__sub__Shared\\\"\\), GD_STATIC_SN\\(u8\\\"RefCounted\\\"\\),\\s*&creation_info\\);",
+                        "GD_STATIC_SN\\(u8\"RuntimeOuter__sub__Shared\"\\), GD_STATIC_SN\\(u8\"RefCounted\"\\),\\s*&creation_info\\);",
                 Pattern.DOTALL
         );
         var leafRegisterPattern = Pattern.compile(
                 "godot_classdb_register_extension_class5\\(class_library,\\s*" +
-                        "GD_STATIC_SN\\(u8\\\"RuntimeOuter__sub__Leaf\\\"\\), GD_STATIC_SN\\(u8\\\"RuntimeOuter__sub__Shared\\\"\\),\\s*&creation_info\\);",
+                        "GD_STATIC_SN\\(u8\"RuntimeOuter__sub__Leaf\"\\), GD_STATIC_SN\\(u8\"RuntimeOuter__sub__Shared\"\\),\\s*&creation_info\\);",
                 Pattern.DOTALL
         );
         assertTrue(sharedRegisterPattern.matcher(cCode).find(), cCode);
@@ -1890,10 +2040,14 @@ public class CCodegenTest {
         func.createAndAddVariable("right", GdIntType.INT);
         func.createAndAddVariable("tmp", GdBoolType.BOOL);
         func.createAndAddVariable("result", GdBoolType.BOOL);
+        func.createAndAddVariable("left_string", GdStringType.STRING);
+        func.createAndAddVariable("right_string", GdStringType.STRING);
+        func.createAndAddVariable("string_result", GdStringType.STRING);
 
         var entry = new LirBasicBlock("entry");
         entry.appendInstruction(new BinaryOpInsn("tmp", GodotOperator.IN, "left", "right"));
         entry.appendInstruction(new UnaryOpInsn("result", GodotOperator.NOT, "tmp"));
+        entry.appendInstruction(new BinaryOpInsn("string_result", GodotOperator.ADD, "left_string", "right_string"));
         entry.appendInstruction(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
@@ -1914,12 +2068,26 @@ public class CCodegenTest {
 
         assertTrue(hCode.contains("static inline godot_bool gdcc_eval_binary_in_int_int_to_bool("), hCode);
         assertTrue(hCode.contains("static inline godot_bool gdcc_eval_unary_not_bool_to_bool("), hCode);
+        assertTrue(hCode.contains("static inline godot_String gdcc_eval_binary_add_string_string_to_string("), hCode);
         assertTrue(hCode.contains("GDEXTENSION_VARIANT_OP_IN"), hCode);
         assertTrue(hCode.contains("GDEXTENSION_VARIANT_OP_NOT"), hCode);
+        assertTrue(hCode.contains("GDEXTENSION_VARIANT_OP_ADD"), hCode);
         assertTrue(hCode.contains("GDCC_PRINT_RUNTIME_ERROR(\"operator evaluator is unavailable"), hCode);
         assertTrue(hCode.contains("return false;"), hCode);
+        var stringHelperBody = resolveFunctionBodyByPrefix(
+                hCode,
+                "static inline godot_String gdcc_eval_binary_add_string_string_to_string("
+        );
+        assertContainsAll(
+                stringHelperBody,
+                "// Operator evaluators assign into an existing carrier; destroyable returns must start initialized.",
+                "godot_String result = { 0 };",
+                "return result;"
+        );
+        assertFalse(stringHelperBody.contains("godot_String result;\n"), stringHelperBody);
         assertTrue(cCode.contains("$tmp = gdcc_eval_binary_in_int_int_to_bool($left, $right);"), cCode);
         assertTrue(cCode.contains("$result = gdcc_eval_unary_not_bool_to_bool($tmp);"), cCode);
+        assertTrue(cCode.contains("$string_result = gdcc_eval_binary_add_string_string_to_string("), cCode);
     }
 
     @Test
@@ -2284,13 +2452,25 @@ public class CCodegenTest {
                 List.of(),
                 List.of()
         );
+        var stringBuiltin = new ExtensionBuiltinClass(
+                "String",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("+", "String", "String")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
         return new ExtensionAPI(
                 null,
                 List.of(),
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of(intBuiltin, boolBuiltin),
+                List.of(intBuiltin, boolBuiltin, stringBuiltin),
                 List.of(),
                 List.of(),
                 List.of()
@@ -2337,6 +2517,10 @@ public class CCodegenTest {
 
     private static LirInstruction.VariableOperand varOperand(String id) {
         return new LirInstruction.VariableOperand(id);
+    }
+
+    private static ModuleLocalGodotBinding moduleLocalConstantBinding() {
+        return ModuleLocalGodotBinding.classConstant("Probe", "READY", "13");
     }
 
     private static ExtensionAPI engineHelperApi() {

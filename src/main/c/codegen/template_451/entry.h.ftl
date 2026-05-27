@@ -6,9 +6,8 @@
 #ifndef GDEXTENSION_${module.moduleName?upper_case}_ENTRY_H
 #define GDEXTENSION_${module.moduleName?upper_case}_ENTRY_H
 
-#include <gdextension/gdextension_interface.h>
+#include <godot_binding.h>
 static GDExtensionClassLibraryPtr class_library = NULL;
-#include <gdextension-lite.h>
 #include <gdcc_helper.h>
 #include "engine_method_binds.h"
 
@@ -45,9 +44,9 @@ static inline GDExtensionObjectPtr ${classDef.name}_object_ptr(${classDef.name}*
 static inline void ${classDef.name}_set_object_ptr(${classDef.name}* self, GDExtensionObjectPtr obj);
 
 const GDExtensionInstanceBindingCallbacks ${classDef.name}_class_binding_callbacks = {
-    .create_callback = NULL,
-    .free_callback = NULL,
-    .reference_callback = NULL,
+    NULL,
+    NULL,
+    NULL,
 };
 
 static void ${classDef.name}_class_bind_methods();
@@ -107,7 +106,8 @@ static inline ${helper.renderOperatorEvaluatorHelperReturnTypeInC(spec.returnTyp
             return ${helper.renderDefaultValueExprInC(spec.returnType)};
         }
     }
-    ${helper.renderOperatorEvaluatorHelperReturnTypeInC(spec.returnType)} result;
+    // Operator evaluators assign into an existing carrier; destroyable returns must start initialized.
+    ${helper.renderOperatorEvaluatorHelperReturnTypeInC(spec.returnType)} result = { 0 };
     evaluator(
         ${helper.renderOperatorEvaluatorArgExpr(spec.leftType, "left")},
         <#if spec.unary>NULL<#else>${helper.renderOperatorEvaluatorArgExpr(spec.rightType, "right")}</#if>,
@@ -169,13 +169,15 @@ static void call${helper.renderFuncBindName(bindingData)}(
                 godot_StringName ${probeVarName}_class_name = godot_Array_get_typed_class_name(&${probeVarName});
                 godot_Variant ${probeVarName}_script = godot_Array_get_typed_script(&${probeVarName});
                 godot_Variant ${probeVarName}_script_nil = godot_new_Variant_nil();
-                godot_Variant ${probeVarName}_script_is_null_result = godot_new_Variant_nil();
+                godot_Variant ${probeVarName}_script_is_null_result;
                 godot_bool ${probeVarName}_script_is_null_valid = false;
-                // Godot reports absent script leaf metadata as OBJECT/null; use Variant equality for the null check.
-                godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &${probeVarName}_script, &${probeVarName}_script_nil, &${probeVarName}_script_is_null_result, &${probeVarName}_script_is_null_valid);
+                // Godot reports absent script leaf metadata as OBJECT/null; evaluate constructs into raw result storage.
+                godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &${probeVarName}_script, &${probeVarName}_script_nil, (GDExtensionUninitializedVariantPtr)&${probeVarName}_script_is_null_result, &${probeVarName}_script_is_null_valid);
                 const godot_bool ${probeVarName}_script_is_null = ${probeVarName}_script_is_null_valid && godot_new_bool_with_Variant(&${probeVarName}_script_is_null_result);
                 typed_mismatch = !godot_StringName_op_equal_StringName(&${probeVarName}_class_name, ${expectedClassNameExpr}) || !${probeVarName}_script_is_null;
-                godot_Variant_destroy(&${probeVarName}_script_is_null_result);
+                if (${probeVarName}_script_is_null_valid) {
+                    godot_Variant_destroy(&${probeVarName}_script_is_null_result);
+                }
                 godot_Variant_destroy(&${probeVarName}_script_nil);
                 godot_Variant_destroy(&${probeVarName}_script);
                 godot_StringName_destroy(&${probeVarName}_class_name);
@@ -210,13 +212,15 @@ static void call${helper.renderFuncBindName(bindingData)}(
                 godot_StringName ${probeVarName}_${typedSide}_class_name = godot_Dictionary_get_typed_${typedSide}_class_name(&${probeVarName});
                 godot_Variant ${probeVarName}_${typedSide}_script = godot_Dictionary_get_typed_${typedSide}_script(&${probeVarName});
                 godot_Variant ${probeVarName}_${typedSide}_script_nil = godot_new_Variant_nil();
-                godot_Variant ${probeVarName}_${typedSide}_script_is_null_result = godot_new_Variant_nil();
+                godot_Variant ${probeVarName}_${typedSide}_script_is_null_result;
                 godot_bool ${probeVarName}_${typedSide}_script_is_null_valid = false;
-                // Godot reports absent script leaf metadata as OBJECT/null; use Variant equality for the null check.
-                godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &${probeVarName}_${typedSide}_script, &${probeVarName}_${typedSide}_script_nil, &${probeVarName}_${typedSide}_script_is_null_result, &${probeVarName}_${typedSide}_script_is_null_valid);
+                // Godot reports absent script leaf metadata as OBJECT/null; evaluate constructs into raw result storage.
+                godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &${probeVarName}_${typedSide}_script, &${probeVarName}_${typedSide}_script_nil, (GDExtensionUninitializedVariantPtr)&${probeVarName}_${typedSide}_script_is_null_result, &${probeVarName}_${typedSide}_script_is_null_valid);
                 const godot_bool ${probeVarName}_${typedSide}_script_is_null = ${probeVarName}_${typedSide}_script_is_null_valid && godot_new_bool_with_Variant(&${probeVarName}_${typedSide}_script_is_null_result);
                 typed_mismatch = !godot_StringName_op_equal_StringName(&${probeVarName}_${typedSide}_class_name, ${expectedClassNameExpr}) || !${probeVarName}_${typedSide}_script_is_null;
-                godot_Variant_destroy(&${probeVarName}_${typedSide}_script_is_null_result);
+                if (${probeVarName}_${typedSide}_script_is_null_valid) {
+                    godot_Variant_destroy(&${probeVarName}_${typedSide}_script_is_null_result);
+                }
                 godot_Variant_destroy(&${probeVarName}_${typedSide}_script_nil);
                 godot_Variant_destroy(&${probeVarName}_${typedSide}_script);
                 godot_StringName_destroy(&${probeVarName}_${typedSide}_class_name);
@@ -330,27 +334,26 @@ static void gdcc_bind_method${helper.renderFuncBindName(bindingData)}(
         <#assign returnMetadata = helper.renderBoundMetadata(bindingData.returnType, "godot_PROPERTY_USAGE_DEFAULT", "method return")>
         GDExtensionPropertyInfo return_info = gdcc_make_property_full(${returnMetadata.typeEnumLiteral}, GD_STATIC_SN(u8""), ${returnMetadata.hintEnumLiteral}, ${returnMetadata.hintStringExpr}, ${returnMetadata.classNameExpr}, ${returnMetadata.usageExpr});
     </#if>
-    GDExtensionClassMethodInfo method_info = {
-        .name = method_name,
-        .method_userdata = function,
-        .call_func = call_func,
-        .ptrcall_func = ptrcall_func,
-        .method_flags = GDEXTENSION_METHOD_FLAGS_DEFAULT<#if bindingData.staticMethod> | GDEXTENSION_METHOD_FLAG_STATIC</#if>,
-        <#if bindingData.returnType.typeName != "void">
-            .has_return_value = true,
-            .return_value_info = &return_info,
-            .return_value_metadata = GDEXTENSION_METHOD_ARGUMENT_METADATA_NONE,
-        <#else>
-            .has_return_value = false,
-        </#if>
-        .argument_count = ${bindingData.paramTypes?size},
-        .arguments_info = args_info,
-        .arguments_metadata = args_metadata,
-        <#if bindingData.defaultVariables?size gt 0>
-            .default_argument_count = ${bindingData.defaultVariables?size},
-            .default_arguments = default_args_ptrs,
-        </#if>
-    };
+    GDExtensionClassMethodInfo method_info = { 0 };
+    method_info.name = method_name;
+    method_info.method_userdata = function;
+    method_info.call_func = call_func;
+    method_info.ptrcall_func = ptrcall_func;
+    method_info.method_flags = GDEXTENSION_METHOD_FLAGS_DEFAULT<#if bindingData.staticMethod> | GDEXTENSION_METHOD_FLAG_STATIC</#if>;
+    <#if bindingData.returnType.typeName != "void">
+        method_info.has_return_value = true;
+        method_info.return_value_info = &return_info;
+        method_info.return_value_metadata = GDEXTENSION_METHOD_ARGUMENT_METADATA_NONE;
+    <#else>
+        method_info.has_return_value = false;
+    </#if>
+    method_info.argument_count = ${bindingData.paramTypes?size};
+    method_info.arguments_info = args_info;
+    method_info.arguments_metadata = args_metadata;
+    <#if bindingData.defaultVariables?size gt 0>
+        method_info.default_argument_count = ${bindingData.defaultVariables?size};
+        method_info.default_arguments = default_args_ptrs;
+    </#if>
     godot_classdb_register_extension_class_method(class_library, class_name, &method_info);
     // Clean up
     <#list bindingData.paramTypes as paramType>

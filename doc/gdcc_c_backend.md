@@ -1,5 +1,17 @@
 # C Backend
 
+Runtime helper layout, binding generator behavior, public C wrapper naming and fixed-binding
+registration rules are maintained in [gdcc_runtime_lib.md](gdcc_runtime_lib.md).
+
+## Native Compiler Cache
+
+`ZigCcCompiler` stores Zig local and global compiler caches under a shared cache root when one is
+available. If `GDCC_SHARED_C_COMPILER_CACHE` is set to a usable directory path, the compiler creates
+that directory when necessary and uses it as the root for `ZIG_CACHE_DIR` and `ZIG_GLOBAL_CACHE_DIR`.
+Blank values, invalid paths, files, or paths that cannot be created fall back to the existing
+project-location behavior: use the project parent's `shared-compiler-cache` directory when it
+already exists, otherwise use the project's own `compiler-cache` directory.
+
 ## Reminders
 
 ### Use GDCC Class Types
@@ -15,6 +27,8 @@
     - `gdcc_new_Variant_with_gdcc_Object(obj)` receives a raw GDCC wrapper pointer, selects the generated `<Class>_object_ptr` helper with `_Generic`, and performs the GDCC -> Godot pointer conversion internally.
     - Do not pre-convert the argument with `gdcc_object_to_godot_object_ptr(...)` before passing it to this macro.
 - `godot_float` is usually a typedef for `double`, but it should always be used as `godot_float` for compatibility.
+- The C backend supports only Godot `float_64` ABI: 64-bit pointers with single-precision `real_t`.
+  `REAL_T_IS_DOUBLE` and 32-bit Godot builds are outside the supported target matrix.
 - Any Object, including engine object and GDCC objects, are always passed as pointers, and the pointers are passed as values, usually we do not use pointers to pointers.
 - There are 3 types: built-in types, engine types, and GDCC types, see [gdcc_type_system.md](gdcc_type_system.md) for more details.
 - Engine types and GDCC types are all Objects, built-in types are not Objects.
@@ -102,6 +116,8 @@
 ### GDExtension Entry Lifecycle Contract
 
 - Generated `gdextension_entry(...)` must publish the lifecycle level expected by the generated registration code:
+  - call `godot_initialize_interface(p_get_proc_address)` before publishing callbacks or using any runtime wrapper;
+  - return `false` immediately if interface initialization fails;
   - `r_initialization->minimum_initialization_level = GDEXTENSION_INITIALIZATION_SCENE;`
   - `r_initialization->userdata = NULL;`
   - `r_initialization->initialize = &initialize;`
@@ -110,13 +126,30 @@
 - `deinitialize(...)` must use the same level guard before printing unload messages or destroying GDCC static registries.
 - This keeps class registration, StringName/String registries, and module log output scoped to the scene-level lifecycle that Godot uses for runtime class availability.
 
-### Exact Engine Ptrcall Helper Return Carrier Contract
+### Ptrcall Helper Return Carrier Contract
 
 - Backend-owned exact engine helpers in `engine_method_binds.h` call `godot_object_method_bind_ptrcall(...)` directly.
+- Generated Godot builtin wrappers call these `GDExtensionTypePtr` result APIs directly:
+  - `GDExtensionPtrBuiltInMethod`;
+  - `GDExtensionPtrOperatorEvaluator`;
+  - `GDExtensionPtrGetter`;
+  - `GDExtensionPtrIndexedGetter`;
+  - `GDExtensionPtrKeyedGetter`.
+- Generated Godot utility wrappers call `GDExtensionPtrUtilityFunction`, whose non-`void` return slot follows the same
+  initialized carrier rule.
 - Non-`void` ptrcall return carriers must be initialized before the call:
   - primitive carriers use the same generated `{ 0 }` form for consistency;
   - destroyable value wrappers such as `godot_String`, `godot_Array`, `godot_Dictionary`, and `godot_Variant` must not be left as uninitialized stack storage.
-- This matches gdextension-lite wrapper behavior and avoids passing an invalid return carrier to Godot for value-semantic wrapper returns such as `Object.get_class() -> String`.
+- Godot's ptrcall implementations assign into the return slot through typed carrier helpers; they do not placement-construct
+  `GDExtensionTypePtr` destinations. This avoids passing an invalid return carrier to Godot for value-semantic wrapper returns such as
+  `Object.get_class() -> String`, `String.substr() -> String`, utility calls such as `lerp(...) -> Variant`, or typed container
+  metadata methods returning `Variant`.
+- This rule does not apply to interface functions whose signature explicitly asks for `GDExtensionUninitialized*Ptr`.
+  Constructor, `Variant` conversion, `godot_variant_call*`, `godot_variant_evaluate(...)`, `godot_variant_get*`, and
+  `godot_object_method_bind_call(...)` paths keep raw destination storage semantics.
+- `godot_object_method_bind_call(...)` is the exact-engine vararg exception to remember: its return slot must be a raw
+  `godot_Variant` storage location cast to `GDExtensionUninitializedVariantPtr`. Do not prebuild a nil `Variant` before
+  the call, and do not destroy that storage on error paths where Godot did not construct a return value.
 
 ### Global Helper Raw Pointer Contract
 
@@ -381,9 +414,9 @@ Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "000000000000000000000000000000000000
   - Regular builtin constructors are selected by exact `ExtensionBuiltinClass` constructor metadata
     after frontend lowering has materialized any accepted argument boundary. The generated symbol is
     `godot_new_<Type>[_with_<argType>...]`.
-  - `Transform2D`, `Transform3D`, `Basis`, and `Projection` may use backend helper-shim constructor
-    signatures when Godot API metadata has no exact constructor surface but gdextension-lite exposes
-    the helper.
+  - `Transform2D`, `Transform3D`, `Basis`, and `Projection` may use GDCC-owned helper-shim constructor
+    signatures when Godot API metadata has no exact constructor surface but the binding
+    naming contract already exposed the helper.
   - Typed `Array` / `Dictionary` construction first uses the plain container value, then calls the
     typed constructor with a real nil `Variant` script carrier. Backend must not replace this with a
     null pointer shortcut.
@@ -407,11 +440,16 @@ Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "000000000000000000000000000000000000
 - `parseExtensionType` is now a thin backend wrapper over the shared scope-layer parser.
 - Resolver/generator code that only needs current shared-normalized extension metadata must reuse `CGenHelper.parseExtensionType(...)` instead of defining local parsing forks.
 - Required normalization behavior remains:
-  - `enum::...` / `bitfield::...` -> `int`
+  - `enum::...` / `bitfield::...` -> `int` as the shared-normalized script type
   - `typedarray::Packed*Array` -> `GdPacked*ArrayType`
   - non-packed `typedarray::T` -> `GdArrayType(T)`
   - `typeddictionary::K;V` -> `GdDictionaryType(K, V)` when both leaves stay flat
   - malformed or unsupported text -> fail fast
+- This type normalization does not narrow extension API enum values. Metadata `values[].value` fields stay Godot int64
+  (`long` in Java) and backend static loads emit decimal `godot_int` literals without Java `int` truncation.
+- Top-level `global_constants[]` follows the same int64 carrier rule. It is consumed as Godot `@GlobalScope`
+  value metadata through `ExtensionAPI.globalConstants()` / `ClassRegistry`, not by re-reading JSON or by
+  treating the constant name as a type-meta owner.
 - shared parsing `typeddictionary::K;V` does not collapse the dedicated backend contract:
   - nested typed leaves still fail fast
   - outward `hint / hint_string / runtime gate` rules still belong to the typed-dictionary ABI contract
