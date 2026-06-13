@@ -529,51 +529,75 @@ public final class CGenHelper {
 
     /// Render the inbound `call_func` runtime gate for one non-Variant wrapper argument.
     ///
-    /// The wrapper keeps exact runtime checks by default. Widening is limited to the same narrow
-    /// inbound rules the frontend ordinary-boundary matrix already owns: `INT -> float` and
-    /// same-dimension `Vector*i -> Vector*`.
+    /// The wrapper keeps exact runtime checks by default. Any non-exact inbound rule must stay
+    /// aligned with the frontend ordinary-boundary matrix and must be paired with wrapper-local
+    /// materialization in `renderCallWrapperUnpackExpr(...)`.
     public @NotNull String renderCallWrapperVariantTypeGate(@NotNull GdType paramType,
                                                             @NotNull String typeExpr) {
-        if (paramType instanceof GdFloatType) {
-            return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_FLOAT || "
-                    + typeExpr + " == GDEXTENSION_VARIANT_TYPE_INT)";
+        switch (paramType) {
+            case GdFloatType _ -> {
+                return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_FLOAT || "
+                        + typeExpr + " == GDEXTENSION_VARIANT_TYPE_INT)";
+            }
+            case GdFloatVectorType vectorType -> {
+                vectorType.ensureValidBuiltinDim();
+                var targetType = requireBoundMetadataType(paramType);
+                var vectorSourceType = new GdIntVectorType(vectorType.getDimension()).getGdExtensionType();
+                return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + targetType.name() + " || "
+                        + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + vectorSourceType.name() + ")";
+            }
+            case GdStringNameType _ -> {
+                return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_STRING_NAME || "
+                        + typeExpr + " == GDEXTENSION_VARIANT_TYPE_STRING)";
+            }
+            case GdStringType _ -> {
+                return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_STRING || "
+                        + typeExpr + " == GDEXTENSION_VARIANT_TYPE_STRING_NAME)";
+            }
+            default -> {
+                var targetType = requireBoundMetadataType(paramType);
+                return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + targetType.name() + ")";
+            }
         }
-        if (paramType instanceof GdFloatVectorType vectorType) {
-            vectorType.ensureValidBuiltinDim();
-            var targetType = requireBoundMetadataType(paramType);
-            var vectorSourceType = new GdIntVectorType(vectorType.getDimension()).getGdExtensionType();
-            return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + targetType.name() + " || "
-                    + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + vectorSourceType.name() + ")";
-        }
-        var targetType = requireBoundMetadataType(paramType);
-        return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + targetType.name() + ")";
     }
 
     /// Render the inbound `call_func` local materialization expression for one wrapper argument.
     ///
-    /// This is deliberately separate from `renderUnpackFunctionName(...)` because only
-    /// Godot-to-GDExtension method calls get narrow inbound widening for selected typed params.
+    /// This is deliberately separate from `renderUnpackFunctionName(...)`: only
+    /// Godot-to-GDExtension method calls get wrapper-local inbound widening for selected typed params.
     /// The generated wrapper is responsible for running the runtime gate before evaluating this
-    /// expression; wrapper-only vector helpers are materializers, not validators.
+    /// expression; wrapper-only helpers are materializers, not validators.
     ///
     /// @param typeExpr cached runtime type expression from the preceding wrapper gate. When this is null, the
     ///                 generated expression repeats `godot_variant_get_type(...)` against `variantPtrExpr`.
     public @NotNull String renderCallWrapperUnpackExpr(@NotNull GdType paramType,
                                                        @NotNull String variantPtrExpr,
                                                        @Nullable String typeExpr) {
-        if (paramType instanceof GdFloatType) {
-            var actualTypeExpr = typeExpr != null ? typeExpr : "godot_variant_get_type(" + variantPtrExpr + ")";
-            return actualTypeExpr + " == GDEXTENSION_VARIANT_TYPE_INT"
-                    + " ? (godot_float)godot_new_int_with_Variant(" + variantPtrExpr + ")"
-                    + " : godot_new_float_with_Variant(" + variantPtrExpr + ")";
+        switch (paramType) {
+            case GdFloatType _ -> {
+                var actualTypeExpr = typeExpr != null ? typeExpr : "godot_variant_get_type(" + variantPtrExpr + ")";
+                return actualTypeExpr + " == GDEXTENSION_VARIANT_TYPE_INT"
+                        + " ? (godot_float)godot_new_int_with_Variant(" + variantPtrExpr + ")"
+                        + " : godot_new_float_with_Variant(" + variantPtrExpr + ")";
+            }
+            case GdFloatVectorType vectorType -> {
+                vectorType.ensureValidBuiltinDim();
+                var actualTypeExpr = typeExpr != null ? typeExpr : "godot_variant_get_type(" + variantPtrExpr + ")";
+                return "gdcc_new_" + renderGdTypeName(paramType) + "_from_call_arg_variant(" +
+                        variantPtrExpr + ", " + actualTypeExpr + ")";
+            }
+            case GdStringNameType _ -> {
+                var actualTypeExpr = typeExpr != null ? typeExpr : "godot_variant_get_type(" + variantPtrExpr + ")";
+                return "gdcc_new_StringName_from_call_arg_variant(" + variantPtrExpr + ", " + actualTypeExpr + ")";
+            }
+            case GdStringType _ -> {
+                var actualTypeExpr = typeExpr != null ? typeExpr : "godot_variant_get_type(" + variantPtrExpr + ")";
+                return "gdcc_new_String_from_call_arg_variant(" + variantPtrExpr + ", " + actualTypeExpr + ")";
+            }
+            default -> {
+                return renderUnpackFunctionName(paramType) + "(" + variantPtrExpr + ")";
+            }
         }
-        if (paramType instanceof GdFloatVectorType vectorType) {
-            vectorType.ensureValidBuiltinDim();
-            var actualTypeExpr = typeExpr != null ? typeExpr : "godot_variant_get_type(" + variantPtrExpr + ")";
-            return "gdcc_new_" + renderGdTypeName(paramType) + "_from_call_arg_variant(" +
-                    variantPtrExpr + ", " + actualTypeExpr + ")";
-        }
-        return renderUnpackFunctionName(paramType) + "(" + variantPtrExpr + ")";
     }
 
     /// Ordinary pack helpers are the unary `godot_new_Variant_with_<Type>` family.

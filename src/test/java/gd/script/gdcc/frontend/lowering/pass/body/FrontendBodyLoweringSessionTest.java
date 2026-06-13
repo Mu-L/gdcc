@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.lowering.pass.body;
 
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.lowering.FrontendLoweringContext;
+import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import gd.script.gdcc.frontend.lowering.FunctionLoweringContext;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringBuildCfgPass;
@@ -13,16 +14,21 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
+import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdStringNameType;
+import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -185,6 +191,162 @@ class FrontendBodyLoweringSessionTest {
                     () -> assertEquals(testCase.targetType(), castedVariable.type())
             );
         }
+    }
+
+    @Test
+    void materializeFrontendBoundaryValueConstructsStringFamilySourcesThroughBuiltinConstructor() throws Exception {
+        var cases = List.of(
+                new BuiltinConstructorBoundaryCase(
+                        "source_text",
+                        GdStringType.STRING,
+                        GdStringNameType.STRING_NAME
+                ),
+                new BuiltinConstructorBoundaryCase(
+                        "source_name",
+                        GdStringNameType.STRING_NAME,
+                        GdStringType.STRING
+                )
+        );
+
+        for (var testCase : cases) {
+            var session = prepareSession();
+            var block = new LirBasicBlock("entry_" + testCase.sourceSlotId());
+            session.ensureVariable(testCase.sourceSlotId(), testCase.sourceType());
+
+            var materializedSlotId = session.materializeFrontendBoundaryValue(
+                    block,
+                    testCase.sourceSlotId(),
+                    testCase.sourceType(),
+                    testCase.targetType(),
+                    "string_family_boundary"
+            );
+
+            var instructions = block.getNonTerminatorInstructions();
+            var constructInsn = assertInstanceOf(ConstructBuiltinInsn.class, instructions.getFirst());
+            var constructedVariable = session.targetFunction().getVariableById(materializedSlotId);
+            var constructorArgument = assertInstanceOf(
+                    LirInstruction.VariableOperand.class,
+                    constructInsn.args().getFirst()
+            );
+            assertNotNull(constructedVariable);
+
+            assertAll(
+                    testCase.sourceType().getTypeName() + " -> " + testCase.targetType().getTypeName(),
+                    () -> assertEquals(1, instructions.size()),
+                    () -> assertNotEquals(testCase.sourceSlotId(), materializedSlotId),
+                    () -> assertEquals(materializedSlotId, constructInsn.resultId()),
+                    () -> assertEquals(1, constructInsn.args().size()),
+                    () -> assertEquals(testCase.sourceSlotId(), constructorArgument.id()),
+                    () -> assertEquals(testCase.targetType(), constructedVariable.type())
+            );
+        }
+    }
+
+    @Test
+    void materializeSubscriptKeySelectsAccessKindFromStringFamilyContainerKeyType() throws Exception {
+        var session = prepareSession();
+        var nameBlock = new LirBasicBlock("string_key_to_string_name");
+        var textBlock = new LirBasicBlock("string_name_key_to_string");
+        var nameDictionary = new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT);
+        var textDictionary = new GdDictionaryType(GdStringType.STRING, GdVariantType.VARIANT);
+        session.ensureVariable("source_text", GdStringType.STRING);
+        session.ensureVariable("source_name", GdStringNameType.STRING_NAME);
+
+        var nameKey = session.materializeSubscriptKey(
+                nameBlock,
+                "source_text",
+                GdStringType.STRING,
+                nameDictionary,
+                null,
+                "string_key_for_string_name_dictionary"
+        );
+        var textKey = session.materializeSubscriptKey(
+                textBlock,
+                "source_name",
+                GdStringNameType.STRING_NAME,
+                textDictionary,
+                null,
+                "string_name_key_for_string_dictionary"
+        );
+
+        var nameConstruct = assertInstanceOf(
+                ConstructBuiltinInsn.class,
+                nameBlock.getNonTerminatorInstructions().getFirst()
+        );
+        var textConstruct = assertInstanceOf(
+                ConstructBuiltinInsn.class,
+                textBlock.getNonTerminatorInstructions().getFirst()
+        );
+        var nameArgument = assertInstanceOf(LirInstruction.VariableOperand.class, nameConstruct.args().getFirst());
+        var textArgument = assertInstanceOf(LirInstruction.VariableOperand.class, textConstruct.args().getFirst());
+        var nameVariable = session.targetFunction().getVariableById(nameKey.slotId());
+        var textVariable = session.targetFunction().getVariableById(textKey.slotId());
+        assertNotNull(nameVariable);
+        assertNotNull(textVariable);
+
+        assertAll(
+                () -> assertEquals(1, nameBlock.getNonTerminatorInstructions().size()),
+                () -> assertEquals(1, textBlock.getNonTerminatorInstructions().size()),
+                () -> assertEquals("source_text", nameArgument.id()),
+                () -> assertEquals("source_name", textArgument.id()),
+                () -> assertEquals(nameConstruct.resultId(), nameKey.slotId()),
+                () -> assertEquals(textConstruct.resultId(), textKey.slotId()),
+                () -> assertEquals(GdStringNameType.STRING_NAME, nameKey.type()),
+                () -> assertEquals(GdStringType.STRING, textKey.type()),
+                () -> assertEquals(GdStringNameType.STRING_NAME, nameVariable.type()),
+                () -> assertEquals(GdStringType.STRING, textVariable.type()),
+                () -> assertEquals(FrontendSubscriptAccessSupport.AccessKind.NAMED, nameKey.accessKind()),
+                () -> assertEquals(FrontendSubscriptAccessSupport.AccessKind.KEYED, textKey.accessKind()),
+                // These raw-source checks pin the route drift that would happen if a caller ignored
+                // the bundled `MaterializedSubscriptKey` result and recalculated from the source key.
+                () -> assertEquals(
+                        FrontendSubscriptAccessSupport.AccessKind.KEYED,
+                        FrontendSubscriptAccessSupport.determineAccessKind(nameDictionary, GdStringType.STRING)
+                ),
+                () -> assertEquals(
+                        FrontendSubscriptAccessSupport.AccessKind.NAMED,
+                        FrontendSubscriptAccessSupport.determineAccessKind(textDictionary, GdStringNameType.STRING_NAME)
+                )
+        );
+    }
+
+    @Test
+    void materializeFrontendBoundaryValueRejectsStringFamilyNeighborBoundaries() throws Exception {
+        var session = prepareSession();
+        var nodePathBlock = new LirBasicBlock("string_to_node_path");
+        var intBlock = new LirBasicBlock("string_name_to_int");
+        session.ensureVariable("source_text", GdStringType.STRING);
+        session.ensureVariable("source_name", GdStringNameType.STRING_NAME);
+
+        var nodePathException = assertThrows(
+                IllegalStateException.class,
+                () -> session.materializeFrontendBoundaryValue(
+                        nodePathBlock,
+                        "source_text",
+                        GdStringType.STRING,
+                        GdNodePathType.NODE_PATH,
+                        "string_to_node_path_boundary"
+                )
+        );
+        var intException = assertThrows(
+                IllegalStateException.class,
+                () -> session.materializeFrontendBoundaryValue(
+                        intBlock,
+                        "source_name",
+                        GdStringNameType.STRING_NAME,
+                        GdIntType.INT,
+                        "string_name_to_int_boundary"
+                )
+        );
+
+        assertAll(
+                () -> assertTrue(nodePathException.getMessage().contains("string_to_node_path_boundary"), nodePathException.getMessage()),
+                () -> assertTrue(nodePathException.getMessage().contains("rejects source type 'String'"), nodePathException.getMessage()),
+                () -> assertTrue(intException.getMessage().contains("string_name_to_int_boundary"), intException.getMessage()),
+                () -> assertTrue(intException.getMessage().contains("rejects source type 'StringName'"), intException.getMessage()),
+                () -> assertTrue(nodePathBlock.getNonTerminatorInstructions().isEmpty()),
+                () -> assertTrue(intBlock.getNonTerminatorInstructions().isEmpty())
+        );
     }
 
     @Test
@@ -463,6 +625,13 @@ class FrontendBodyLoweringSessionTest {
             @NotNull GdType sourceType,
             @NotNull GdType targetType,
             @NotNull String intrinsicName
+    ) {
+    }
+
+    private record BuiltinConstructorBoundaryCase(
+            @NotNull String sourceSlotId,
+            @NotNull GdType sourceType,
+            @NotNull GdType targetType
     ) {
     }
 
