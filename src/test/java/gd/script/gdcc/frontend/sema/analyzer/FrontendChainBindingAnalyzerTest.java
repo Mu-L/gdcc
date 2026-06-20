@@ -56,13 +56,13 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name ResolvedRoutes
                         extends Node
-                        
+
                         var payload: int = 1
-                        
+
                         class Worker:
                             static func build(seed):
                                 return ""
-                        
+
                         func ping(seed):
                             self.payload
                             Worker.build(seed)
@@ -101,17 +101,17 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name VariantCallRoutes
                         extends RefCounted
-                        
+
                         class Worker:
                             func _init():
                                 pass
-                        
+
                             static func build_count(value: int):
                                 return 1
-                        
+
                             func consume(value: int):
                                 return 1
-                        
+
                         func ping(seed):
                             Worker.new().consume(seed.anything())
                             Worker.build_count(seed.anything())
@@ -150,14 +150,14 @@ class FrontendChainBindingAnalyzerTest {
         var workerUnit = parserService.parseUnit(Path.of("tmp", "mapped_worker_chain.gd"), """
                 class_name MappedWorker
                 extends RefCounted
-                
+
                 static func build(seed) -> String:
                     return ""
                 """, diagnostics);
         var consumerUnit = parserService.parseUnit(Path.of("tmp", "mapped_consumer_chain.gd"), """
                 class_name Consumer
                 extends RefCounted
-                
+
                 func ping(seed):
                     MappedWorker.build(seed)
                 """, diagnostics);
@@ -191,17 +191,17 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name PropertyInitializerRoutes
                         extends RefCounted
-                        
+
                         class Handle:
                             func read() -> int:
                                 return 1
-                        
+
                         class Worker:
                             var handle: Handle
-                        
+
                             static func build() -> Worker:
                                 return null
-                        
+
                         var ready_value := Worker.build().handle.read()
                         const Alias = Worker.build()
                         """
@@ -254,11 +254,11 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name PropertyInitializerFailedCall
                         extends RefCounted
-                        
+
                         class Worker:
                             func read() -> int:
                                 return 1
-                        
+
                         static var failed_call := Worker.read()
                         """
         );
@@ -282,13 +282,255 @@ class FrontendChainBindingAnalyzerTest {
     }
 
     @Test
+    void analyzeResolvesTypedLocalPropertyWritePathAfterStabilizationPhase() throws Exception {
+        var analyzed = analyze(
+                "typed_local_property_write_path_baseline.gd",
+                """
+                        class_name TypedLocalPropertyWritePathBaseline
+                        extends RefCounted
+
+                        class Point:
+                            var next: Point = null
+                            var marker: int = -1
+
+                        func make_point() -> Point:
+                            return Point.new()
+
+                        func write_path(point: Point) -> void:
+                            var tail := make_point()
+                            tail.next = point
+                        """
+        );
+
+        var writePath = findFunction(analyzed.unit().ast(), "write_path");
+        var tailDeclaration = findNode(
+                writePath.body(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("tail")
+        );
+        var assignment = assertInstanceOf(
+                dev.superice.gdparser.frontend.ast.AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, writePath.body().statements().get(1)).expression()
+        );
+        var nextStep = findNode(assignment, AttributePropertyStep.class, step -> step.name().equals("next"));
+
+        var initializerType = analyzed.analysisData().expressionTypes().get(tailDeclaration.value());
+        assertNotNull(initializerType);
+        var resolvedMember = analyzed.analysisData().resolvedMembers().get(nextStep);
+        assertNotNull(resolvedMember);
+
+        assertAll(
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, initializerType.status()),
+                () -> assertTrue(initializerType.publishedType().getTypeName().endsWith("Point")),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedMember.status()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, resolvedMember.receiverKind()),
+                () -> assertTrue(resolvedMember.receiverType().getTypeName().endsWith("Point")),
+                () -> assertTrue(resolvedMember.resultType().getTypeName().endsWith("Point")),
+                () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty())
+        );
+    }
+
+    @Test
+    void analyzeResolvesTypedLocalPropertyReadPathAfterStabilizationPhase() throws Exception {
+        var analyzed = analyze(
+                "typed_local_property_read_path_baseline.gd",
+                """
+                        class_name TypedLocalPropertyReadPathBaseline
+                        extends RefCounted
+
+                        class Point:
+                            var next: Point = null
+                            var marker: int = -1
+
+                        func make_point() -> Point:
+                            return Point.new()
+
+                        func read_path() -> bool:
+                            var point := make_point()
+                            return point.marker != -1
+                        """
+        );
+
+        var readPath = findFunction(analyzed.unit().ast(), "read_path");
+        var pointDeclaration = findNode(
+                readPath.body(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("point")
+        );
+        var markerStep = findNode(readPath.body(), AttributePropertyStep.class, step -> step.name().equals("marker"));
+
+        var initializerType = analyzed.analysisData().expressionTypes().get(pointDeclaration.value());
+        assertNotNull(initializerType);
+        var resolvedMember = analyzed.analysisData().resolvedMembers().get(markerStep);
+        assertNotNull(resolvedMember);
+
+        assertAll(
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, initializerType.status()),
+                () -> assertTrue(initializerType.publishedType().getTypeName().endsWith("Point")),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedMember.status()),
+                () -> assertTrue(resolvedMember.receiverType().getTypeName().endsWith("Point")),
+                () -> assertEquals("int", resolvedMember.resultType().getTypeName()),
+                () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty())
+        );
+    }
+
+    @Test
+    void analyzeResolvesTypedLocalAliasChainAfterStabilizationPhase() throws Exception {
+        var analyzed = analyze(
+                "typed_local_alias_chain_baseline.gd",
+                """
+                        class_name TypedLocalAliasChainBaseline
+                        extends RefCounted
+
+                        class Point:
+                            var next: Point = null
+                            var marker: int = -1
+
+                        func make_point() -> Point:
+                            return Point.new()
+
+                        func read_path() -> bool:
+                            var a := make_point()
+                            var b := a
+                            var c := b
+                            return c.marker != -1
+                        """
+        );
+
+        var readPath = findFunction(analyzed.unit().ast(), "read_path");
+        var aDeclaration = findNode(readPath.body(), VariableDeclaration.class, declaration -> declaration.name().equals("a"));
+        var bDeclaration = findNode(readPath.body(), VariableDeclaration.class, declaration -> declaration.name().equals("b"));
+        var cDeclaration = findNode(readPath.body(), VariableDeclaration.class, declaration -> declaration.name().equals("c"));
+        var markerStep = findNode(readPath.body(), AttributePropertyStep.class, step -> step.name().equals("marker"));
+
+        var aInitializerType = analyzed.analysisData().expressionTypes().get(aDeclaration.value());
+        var bInitializerType = analyzed.analysisData().expressionTypes().get(bDeclaration.value());
+        var cInitializerType = analyzed.analysisData().expressionTypes().get(cDeclaration.value());
+        assertNotNull(aInitializerType);
+        assertNotNull(bInitializerType);
+        assertNotNull(cInitializerType);
+        var resolvedMember = analyzed.analysisData().resolvedMembers().get(markerStep);
+        assertNotNull(resolvedMember);
+
+        // The source-order stabilization pass updates each alias slot before chain binding consumes
+        // the next alias or the final member receiver.
+        assertAll(
+                () -> assertTrue(aInitializerType.publishedType().getTypeName().endsWith("Point")),
+                () -> assertTrue(bInitializerType.publishedType().getTypeName().endsWith("Point")),
+                () -> assertTrue(cInitializerType.publishedType().getTypeName().endsWith("Point")),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedMember.status()),
+                () -> assertTrue(resolvedMember.receiverType().getTypeName().endsWith("Point")),
+                () -> assertEquals("int", resolvedMember.resultType().getTypeName()),
+                () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty())
+        );
+    }
+
+    @Test
+    void analyzeResolvesComplexInitializerAliasAfterStabilizationPhase() throws Exception {
+        var analyzed = analyze(
+                "typed_local_complex_initializer_baseline.gd",
+                """
+                        class_name TypedLocalComplexInitializerBaseline
+                        extends RefCounted
+
+                        class Point:
+                            var next: Point = null
+                            var marker: int = -1
+
+                        class Box:
+                            var next: Point = Point.new()
+
+                        class Factory:
+                            func make_point(seed: int) -> Box:
+                                return Box.new()
+
+                        func read_path(factory: Factory, seed: int) -> bool:
+                            var p := factory.make_point(seed).next
+                            var q := p
+                            return q.marker != -1
+                        """
+        );
+
+        var readPath = findFunction(analyzed.unit().ast(), "read_path");
+        var pDeclaration = findNode(readPath.body(), VariableDeclaration.class, declaration -> declaration.name().equals("p"));
+        var qDeclaration = findNode(readPath.body(), VariableDeclaration.class, declaration -> declaration.name().equals("q"));
+        var markerStep = findNode(readPath.body(), AttributePropertyStep.class, step -> step.name().equals("marker"));
+
+        var pInitializerType = analyzed.analysisData().expressionTypes().get(pDeclaration.value());
+        var qInitializerType = analyzed.analysisData().expressionTypes().get(qDeclaration.value());
+        assertNotNull(pInitializerType);
+        assertNotNull(qInitializerType);
+        var resolvedMember = analyzed.analysisData().resolvedMembers().get(markerStep);
+        assertNotNull(resolvedMember);
+
+        // The complex chain initializer is reduced silently before chain binding, so the alias can
+        // publish an exact member fact instead of keeping the old dynamic fallback.
+        assertAll(
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, pInitializerType.status()),
+                () -> assertTrue(pInitializerType.publishedType().getTypeName().endsWith("Point")),
+                () -> assertTrue(qInitializerType.publishedType().getTypeName().endsWith("Point")),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedMember.status()),
+                () -> assertTrue(resolvedMember.receiverType().getTypeName().endsWith("Point")),
+                () -> assertEquals("int", resolvedMember.resultType().getTypeName()),
+                () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty())
+        );
+    }
+
+    @Test
+    void analyzeKeepsTrueDynamicLocalAliasOpenAfterStabilizationPhase() throws Exception {
+        var analyzed = analyze(
+                "typed_local_dynamic_fail_closed_pipeline.gd",
+                """
+                        class_name TypedLocalDynamicFailClosedPipeline
+                        extends RefCounted
+
+                        func ping(dynamic_host):
+                            var point := dynamic_host.next
+                            return point.member
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var pointDeclaration = findNode(
+                pingFunction.body(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("point")
+        );
+        var pointInitializer = pointDeclaration.value();
+        assertNotNull(pointInitializer);
+        var nextStep = findNode(pointInitializer, AttributePropertyStep.class, step -> step.name().equals("next"));
+        var memberStep = findNode(pingFunction.body(), AttributePropertyStep.class, step -> step.name().equals("member"));
+
+        var initializerType = analyzed.analysisData().expressionTypes().get(pointInitializer);
+        assertNotNull(initializerType);
+        var nextMember = analyzed.analysisData().resolvedMembers().get(nextStep);
+        assertNotNull(nextMember);
+        var memberMember = analyzed.analysisData().resolvedMembers().get(memberStep);
+        assertNotNull(memberMember);
+
+        // True dynamic receivers are runtime-open. Stabilization may preserve the Variant slot, but
+        // must not guess an exact receiver type for either the initializer or the later alias read.
+        assertAll(
+                () -> assertEquals(FrontendExpressionTypeStatus.DYNAMIC, initializerType.status()),
+                () -> assertEquals(GdVariantType.VARIANT, initializerType.publishedType()),
+                () -> assertEquals(GdVariantType.VARIANT, analyzed.analysisData().slotTypes().get(pointDeclaration)),
+                () -> assertEquals(FrontendMemberResolutionStatus.DYNAMIC, nextMember.status()),
+                () -> assertEquals(GdVariantType.VARIANT, nextMember.receiverType()),
+                () -> assertEquals(FrontendMemberResolutionStatus.DYNAMIC, memberMember.status()),
+                () -> assertEquals(GdVariantType.VARIANT, memberMember.receiverType()),
+                () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty()),
+                () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty())
+        );
+    }
+
+    @Test
     void analyzeSuppressesDuplicateChainDiagnosticWhenPropertyInitializerHeadIsSealedUpstream() throws Exception {
         var analyzed = analyze(
                 "property_initializer_head_owned_by_top_binding.gd",
                 """
                         class_name PropertyInitializerHeadOwnedByTopBinding
                         extends RefCounted
-                        
+
                         var payload: int = 1
                         var copy := self.payload
                         """
@@ -319,13 +561,13 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name PropertyInitializerSameClassTypeMetaCall
                         extends RefCounted
-                        
+
                         signal changed
                         var payload: int = 1
-                        
+
                         func read() -> int:
                             return 1
-                        
+
                         static var blocked_value := PropertyInitializerSameClassTypeMetaCall.payload
                         static var blocked_signal := PropertyInitializerSameClassTypeMetaCall.changed
                         static var blocked_call := PropertyInitializerSameClassTypeMetaCall.read()
@@ -394,7 +636,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name PropertyInitializerInheritedTypeMetaCall
                         extends PropertyInitializerBase
-                        
+
                         static var blocked_value := PropertyInitializerBase.payload
                         static var blocked_signal := PropertyInitializerBase.changed
                         static var blocked_call := PropertyInitializerBase.read()
@@ -475,16 +717,16 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name PropertyInitializerSameClassSuffixRoutes
                         extends RefCounted
-                        
+
                         signal changed
                         var payload: int = 1
-                        
+
                         func read() -> int:
                             return 1
-                        
+
                         static func build() -> PropertyInitializerSameClassSuffixRoutes:
                             return null
-                        
+
                         var blocked_value := build().payload
                         var blocked_call := build().read()
                         var blocked_signal := build().changed
@@ -544,10 +786,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name PropertyInitializerInheritedSuffixRoutes
                         extends PropertyInitializerBase
-                        
+
                         static func build_base() -> PropertyInitializerBase:
                             return null
-                        
+
                         var blocked_value := build_base().payload
                         var blocked_call := build_base().read()
                         var blocked_signal := build_base().changed
@@ -622,17 +864,17 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name ResolvedStaticRouteChain
                         extends RefCounted
-                        
+
                         class Handle:
                             func start() -> int:
                                 return 1
-                        
+
                         class Worker:
                             var handle: Handle = Handle.new()
-                        
+
                             static func build(seed) -> Worker:
                                 return Worker.new()
-                        
+
                         func ping(seed):
                             Worker.build(seed).handle.start()
                         """
@@ -682,11 +924,11 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name InstanceStaticMethod
                         extends RefCounted
-                        
+
                         class Worker:
                             static func build():
                                 return 1
-                        
+
                         func ping():
                             Worker.new().build()
                         """
@@ -721,11 +963,11 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name ConstructorSurfaceRoutes
                         extends RefCounted
-                        
+
                         class Worker:
                             func _init():
                                 pass
-                        
+
                         func ping():
                             Array()
                             Vector3i(1, 2, 3)
@@ -792,11 +1034,11 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name ParameterizedGdccConstructorRoute
                         extends RefCounted
-                        
+
                         class Worker:
                             func _init(value: int):
                                 pass
-                        
+
                         func ping(seed):
                             Worker.new(seed)
                         """
@@ -822,7 +1064,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name VariantBuiltinConstructorRoute
                         extends RefCounted
-                        
+
                         func ping(plain: Array, seed: Variant):
                             int(plain[0])
                             String(plain[0])
@@ -953,7 +1195,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name AmbiguousMultiArgBuiltinConstructorRoute
                         extends RefCounted
-                        
+
                         func ping(first: Variant, second: Variant):
                             String(first, second)
                         """,
@@ -998,7 +1240,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name SpecificBuiltinConstructorRoute
                         extends RefCounted
-                        
+
                         func ping():
                             String("seed")
                         """,
@@ -1042,7 +1284,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name NonInstantiableEngineConstructorRoute
                         extends RefCounted
-                        
+
                         func ping():
                             Node.new()
                         """,
@@ -1075,10 +1317,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name DeferredSuffix
                         extends RefCounted
-                        
+
                         func build(value: int) -> String:
                             return ""
-                        
+
                         func ping():
                             self.build(1 + 2).length
                         """
@@ -1091,6 +1333,8 @@ class FrontendChainBindingAnalyzerTest {
 
         var resolvedCall = analyzed.analysisData().resolvedCalls().get(buildStep);
         assertNotNull(resolvedCall);
+        // The binary argument is finalized during the bounded retry window, so the suffix member is
+        // resolved once instead of cascading into a second dynamic or missing-member diagnostic.
         assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status());
         assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedCall.callKind());
         var resolvedLength = analyzed.analysisData().resolvedMembers().get(lengthStep);
@@ -1111,10 +1355,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name DeferredSuffixRemainingGap
                         extends RefCounted
-                        
+
                         func build(value: int) -> String:
                             return ""
-                        
+
                         func ping(flag):
                             self.build(1 if flag else 2).length
                         """
@@ -1127,6 +1371,8 @@ class FrontendChainBindingAnalyzerTest {
 
         var deferredCall = analyzed.analysisData().resolvedCalls().get(buildStep);
         assertNotNull(deferredCall);
+        // Conditional expressions remain outside the current retry surface; after the one retry
+        // window, the chain stays deferred and the suffix is not speculatively opened.
         assertEquals(FrontendCallResolutionStatus.DEFERRED, deferredCall.status());
         assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, deferredCall.callKind());
         assertEquals(0, analyzed.analysisData().resolvedMembers().size());
@@ -1148,10 +1394,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name DynamicArgumentRoute
                         extends RefCounted
-                        
+
                         func consume(value) -> int:
                             return 1
-                        
+
                         func ping(worker):
                             self.consume(worker.ping())
                         """
@@ -1184,10 +1430,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name SubscriptArgumentRoute
                         extends RefCounted
-                        
+
                         func consume(value: int) -> int:
                             return value
-                        
+
                         func ping(items: Array[int]):
                             self.consume(items[0])
                         """
@@ -1212,10 +1458,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name DynamicAssignmentArgumentRoute
                         extends RefCounted
-                        
+
                         func consume(value: int) -> int:
                             return value
-                        
+
                         func ping(dynamic_value):
                             self.consume(dynamic_value[0] = 1)
                         """
@@ -1246,13 +1492,13 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name AttributeSubscriptSuffix
                         extends RefCounted
-                        
+
                         class Item:
                             var payload: int = 1
-                        
+
                         class Holder:
                             var items: Array[Item] = []
-                        
+
                         func ping(holder: Holder):
                             holder.items[0].payload
                         """
@@ -1282,10 +1528,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name AttributeSubscriptKeyedUnsupported
                         extends RefCounted
-                        
+
                         class Holder:
                             var text: String = ""
-                        
+
                         func ping(holder: Holder):
                             holder.text[0].length
                         """,
@@ -1311,14 +1557,14 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name MethodReferenceMembers
                         extends RefCounted
-                        
+
                         class Worker:
                             static func build() -> int:
                                 return 1
-                        
+
                         func helper() -> int:
                             return 1
-                        
+
                         func ping():
                             self.helper
                             Worker.build
@@ -1362,10 +1608,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name CallableHeadChain
                         extends RefCounted
-                        
+
                         func helper() -> int:
                             return 1
-                        
+
                         func ping():
                             helper.call()
                         """
@@ -1393,14 +1639,14 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name CallableBindAndHeadVariants
                         extends RefCounted
-                        
+
                         class Worker:
                             static func build(value: int) -> int:
                                 return value
-                        
+
                         func helper(value: int) -> int:
                             return value
-                        
+
                         func ping(items: Array[Callable], dict: Dictionary[String, Callable]):
                             helper.bind(1)
                             self.helper.bind(1)
@@ -1480,14 +1726,14 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name BlockedBareCallChainPath
                         extends RefCounted
-                        
+
                         class Target:
                             func consume(value: int) -> int:
                                 return value
-                        
+
                         func helper(value: int) -> int:
                             return value
-                        
+
                         static func ping_static(target: Target, value: int):
                             target.consume(helper(value))
                         """
@@ -1538,13 +1784,13 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name BareCallChainArgument
                         extends RefCounted
-                        
+
                         func helper() -> int:
                             return 1
-                        
+
                         func consume(value: int) -> int:
                             return value
-                        
+
                         func ping():
                             self.consume(helper())
                         """
@@ -1585,7 +1831,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name StaticLoadRoutes
                         extends Node
-                        
+
                         func ping():
                             Side.SIDE_LEFT
                             Vector3.BACK
@@ -1638,7 +1884,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name BuiltinInstancePropertyRoutes
                         extends RefCounted
-                        
+
                         func ping(vector: Vector3):
                             vector.x
                             Basis.IDENTITY.x
@@ -1692,11 +1938,11 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name FailedStaticCall
                         extends RefCounted
-                        
+
                         class Worker:
                             func speak():
                                 return 1
-                        
+
                         func ping():
                             Worker.speak()
                         """
@@ -1724,10 +1970,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name UnsupportedStaticLoad
                         extends RefCounted
-                        
+
                         class Worker:
                             pass
-                        
+
                         func ping():
                             Worker.VALUE
                         """
@@ -1757,7 +2003,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name HeadFailureRoutes
                         extends RefCounted
-                        
+
                         func ping():
                             missing.payload
                             missing_call.speak()
