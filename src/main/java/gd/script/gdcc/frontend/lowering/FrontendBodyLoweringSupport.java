@@ -10,6 +10,7 @@ import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExpressionSemanticSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendSubscriptSemanticSupport;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -20,6 +21,7 @@ import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
+import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
@@ -289,15 +291,40 @@ public final class FrontendBodyLoweringSupport {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull Node memberAnchor
     ) {
-        var publishedMember = analysisData.resolvedMembers().get(
-                Objects.requireNonNull(memberAnchor, "memberAnchor must not be null")
-        );
+        var anchor = Objects.requireNonNull(memberAnchor, "memberAnchor must not be null");
+        var publishedExpressionType = analysisData.expressionTypes().get(anchor);
+        if (publishedExpressionType != null) {
+            return requireLoweringReadyExpressionType(
+                    analysisData,
+                    anchor,
+                    describeMemberAnchor(anchor)
+            );
+        }
+
+        var publishedMember = analysisData.resolvedMembers().get(anchor);
+        if (publishedMember != null && publishedMember.status() == FrontendMemberResolutionStatus.DYNAMIC) {
+            throw new IllegalStateException(
+                    "Missing published expression type for DYNAMIC member '"
+                            + publishedMember.memberName()
+                            + "'; dynamic member value type must come from expressionTypes() before body lowering"
+            );
+        }
+        // RESOLVED member anchors can still arrive without a step-scoped `expressionTypes()` fact.
+        // In that publication shape, `resolvedMembers().resultType()` remains the exact type source
+        // for ordinary member materialization. Only `DYNAMIC` members are forbidden from using it.
         if (publishedMember == null || publishedMember.resultType() == null) {
             throw new IllegalStateException(
-                    "Missing published member result type for " + memberAnchor.getClass().getSimpleName()
+                    "Missing published member result type for " + describeMemberAnchor(anchor)
             );
         }
         return publishedMember.resultType();
+    }
+
+    private static @NotNull String describeMemberAnchor(@NotNull Node memberAnchor) {
+        return switch (memberAnchor) {
+            case AttributePropertyStep step -> "AttributePropertyStep '" + step.name() + "'";
+            default -> memberAnchor.getClass().getSimpleName();
+        };
     }
 
     private static @NotNull GdType requireSubscriptResultType(
