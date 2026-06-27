@@ -755,26 +755,36 @@ public final class FrontendChainReductionHelper {
                     + "' is not backed by builtin class metadata";
             return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.BUILTIN, receiverTypeMeta, detailReason);
         }
-        var constant = builtinClass.constants().stream()
-                .filter(candidate -> step.name().equals(candidate.name()))
-                .findFirst()
-                .orElse(null);
-        if (constant == null) {
+        var constantLookup = classRegistry.findBuiltinClassConstantInHierarchy(builtinClass.name(), step.name());
+        if (constantLookup == null) {
             var methodReference = resolveStaticMethodReference(classRegistry, receiverTypeMeta, step.name());
             if (methodReference != null) {
                 return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
             }
-            var detailReason = "Builtin constant '" + step.name() + "' not found in class '" + builtinClass.name() + "'";
+            var enumValueLookup = classRegistry.findBuiltinClassEnumValueInHierarchy(builtinClass.name(), step.name());
+            if (enumValueLookup != null) {
+                return resolvedStaticLoadTrace(
+                        stepIndex,
+                        step,
+                        incomingReceiver,
+                        ScopeOwnerKind.BUILTIN,
+                        GdIntType.INT,
+                        enumValueLookup.enumValue()
+                );
+            }
+            var detailReason = "Builtin constant or enum value '" + step.name()
+                    + "' not found in class '" + builtinClass.name() + "'";
             return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.BUILTIN, receiverTypeMeta, detailReason);
         }
+        var constant = constantLookup.constant();
         if (constant.type() == null || constant.type().isBlank()) {
-            var detailReason = "Builtin constant '" + step.name() + "' in class '" + builtinClass.name()
+            var detailReason = "Builtin constant '" + step.name() + "' in class '" + constantLookup.ownerClass().name()
                     + "' has no declared type";
             return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.BUILTIN, constant, detailReason);
         }
         var constantType = classRegistry.tryResolveDeclaredType(constant.type());
         if (constantType == null) {
-            var detailReason = "Builtin constant '" + step.name() + "' in class '" + builtinClass.name()
+            var detailReason = "Builtin constant '" + step.name() + "' in class '" + constantLookup.ownerClass().name()
                     + "' has unsupported declared type '" + constant.type() + "'";
             return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.BUILTIN, constant, detailReason);
         }
@@ -801,21 +811,31 @@ public final class FrontendChainReductionHelper {
                     + "' is not backed by engine class metadata";
             return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.ENGINE, receiverTypeMeta, detailReason);
         }
-        var constant = engineClass.constants().stream()
-                .filter(candidate -> step.name().equals(candidate.name()))
-                .findFirst()
-                .orElse(null);
-        if (constant == null) {
+        var constantLookup = classRegistry.findEngineClassConstantInHierarchy(engineClass.getName(), step.name());
+        if (constantLookup == null) {
             var methodReference = resolveStaticMethodReference(classRegistry, receiverTypeMeta, step.name());
             if (methodReference != null) {
                 return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
             }
-            var detailReason = "Engine class constant '" + step.name() + "' not found in class '" + engineClass.name() + "'";
+            var enumValueLookup = classRegistry.findEngineClassEnumValueInHierarchy(engineClass.getName(), step.name());
+            if (enumValueLookup != null) {
+                return resolvedStaticLoadTrace(
+                        stepIndex,
+                        step,
+                        incomingReceiver,
+                        ScopeOwnerKind.ENGINE,
+                        GdIntType.INT,
+                        enumValueLookup.enumValue()
+                );
+            }
+            var detailReason = "Engine class constant or enum value '" + step.name()
+                    + "' not found in class '" + engineClass.name() + "' or its superclasses";
             return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.ENGINE, receiverTypeMeta, detailReason);
         }
+        var constant = constantLookup.constant();
         var literal = constant.value() == null ? "" : constant.value().trim();
         if (!INTEGER_LITERAL_PATTERN.matcher(literal).matches()) {
-            var detailReason = "Engine class constant '" + step.name() + "' in class '" + engineClass.name()
+            var detailReason = "Engine class constant '" + step.name() + "' in class '" + constantLookup.ownerClass().name()
                     + "' is not an integer literal";
             return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.ENGINE, constant, detailReason);
         }
@@ -2094,7 +2114,7 @@ public final class FrontendChainReductionHelper {
                 yield builtinClass == null ? null : resolveMethodReference(classRegistry, builtinClass, memberName, true);
             }
             case ENGINE_CLASS, GDCC_CLASS -> {
-                var classDef = resolveDeclaredClass(classRegistry, receiverTypeMeta);
+                var classDef = classRegistry.resolveClassDefFromTypeMeta(receiverTypeMeta);
                 yield classDef == null ? null : resolveMethodReference(classRegistry, classDef, memberName, true);
             }
         };
@@ -2127,23 +2147,9 @@ public final class FrontendChainReductionHelper {
                         List.copyOf(ownerMethods)
                 );
             }
-            current = resolveMethodReferenceSuperclass(classRegistry, current);
+            current = classRegistry.resolveSuperclass(current);
         }
         return null;
-    }
-
-    private static @Nullable ClassDef resolveMethodReferenceSuperclass(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull ClassDef current
-    ) {
-        if (current.getSuperName().isBlank()) {
-            return null;
-        }
-        var builtinSuper = classRegistry.findBuiltinClass(current.getSuperName());
-        if (builtinSuper != null) {
-            return builtinSuper;
-        }
-        return classRegistry.getClassDef(new GdObjectType(current.getSuperName()));
     }
 
     private static @Nullable ScopeOwnerKind resolveMethodOwnerKind(
@@ -2164,19 +2170,6 @@ public final class FrontendChainReductionHelper {
         }
         if (classRegistry.isBuiltinClass(ownerClass.getName())) {
             return ScopeOwnerKind.BUILTIN;
-        }
-        return null;
-    }
-
-    private static @Nullable ClassDef resolveDeclaredClass(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull ScopeTypeMeta receiverTypeMeta
-    ) {
-        if (receiverTypeMeta.declaration() instanceof ClassDef classDef) {
-            return classDef;
-        }
-        if (receiverTypeMeta.instanceType() instanceof GdObjectType objectType) {
-            return classRegistry.getClassDef(objectType);
         }
         return null;
     }

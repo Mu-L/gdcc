@@ -14,11 +14,16 @@ import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.gdextension.ExtensionEnumValue;
+import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
+import gd.script.gdcc.gdextension.ExtensionSingleton;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.ScopeLookupStatus;
 import gd.script.gdcc.scope.ScopeTypeMeta;
 import gd.script.gdcc.scope.ScopeTypeMetaKind;
+import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.ForStatement;
@@ -47,6 +52,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -60,7 +66,7 @@ class FrontendTopBindingAnalyzerTest {
 
         var thrown = assertThrows(
                 IllegalStateException.class,
-                () -> analyzer.analyze(analysisData, new DiagnosticManager())
+                () -> analyzer.analyze(new ClassRegistry(ExtensionApiLoader.loadDefault()), analysisData, new DiagnosticManager())
         );
 
         assertTrue(thrown.getMessage().contains("moduleSkeleton"));
@@ -81,7 +87,7 @@ class FrontendTopBindingAnalyzerTest {
 
         var thrown = assertThrows(
                 IllegalStateException.class,
-                () -> analyzer.analyze(analysisData, preparedInput.diagnosticManager())
+                () -> analyzer.analyze(preparedInput.classRegistry(), analysisData, preparedInput.diagnosticManager())
         );
 
         assertTrue(thrown.getMessage().contains("diagnostics"));
@@ -101,7 +107,7 @@ class FrontendTopBindingAnalyzerTest {
 
         var thrown = assertThrows(
                 IllegalStateException.class,
-                () -> analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager())
+                () -> analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager())
         );
 
         assertTrue(thrown.getMessage().contains(preparedInput.unit().path().toString()));
@@ -121,7 +127,7 @@ class FrontendTopBindingAnalyzerTest {
         var staleNode = preparedInput.unit().ast();
         publishedSymbolBindings.put(staleNode, new FrontendBinding("__stale__", FrontendBindingKind.UNKNOWN, null));
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         assertSame(publishedSymbolBindings, preparedInput.analysisData().symbolBindings());
         assertTrue(preparedInput.analysisData().symbolBindings().isEmpty());
@@ -161,7 +167,7 @@ class FrontendTopBindingAnalyzerTest {
         );
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         var localDeclaration = findVariable(pingFunction.body().statements(), "local");
@@ -225,7 +231,7 @@ class FrontendTopBindingAnalyzerTest {
                 """
                         class_name GlobalConstantValue
                         extends Node
-
+                        
                         func ping():
                             print(GDCC_TEST_BIG_FLAG)
                         """,
@@ -233,7 +239,7 @@ class FrontendTopBindingAnalyzerTest {
         );
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         var useSite = findIdentifierExpression(pingFunction.body(), "GDCC_TEST_BIG_FLAG");
@@ -243,6 +249,64 @@ class FrontendTopBindingAnalyzerTest {
                 () -> assertInstanceOf(ExtensionGlobalConstant.class, binding.declarationSite()),
                 () -> assertNull(preparedInput.classRegistry().resolveTypeMeta("GDCC_TEST_BIG_FLAG")),
                 () -> assertTrue(preparedInput.diagnosticManager().snapshot().isEmpty())
+        );
+    }
+
+    @Test
+    void analyzePublishesStableSingletonResolvedValueForLaterLocalShadowing() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "singleton_later_local_resolved_value.gd",
+                """
+                        class_name SingletonLaterLocalResolvedValue
+                        extends RefCounted
+                        
+                        func ping():
+                            Engine.get_frames_drawn()
+                            var Engine: String = ""
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var engineHead = findIdentifierExpression(pingFunction.body(), "Engine");
+        var binding = assertBinding(preparedInput.analysisData(), engineHead, FrontendBindingKind.SINGLETON);
+
+        assertAll(
+                () -> assertEquals(ScopeLookupStatus.FOUND_ALLOWED, binding.valueAccessStatus()),
+                () -> assertNotNull(binding.resolvedValue()),
+                () -> assertEquals(ScopeValueKind.SINGLETON, binding.resolvedValue().kind()),
+                () -> assertEquals("Engine", binding.resolvedValue().name())
+        );
+    }
+
+    @Test
+    void analyzeKeepsInitializerSelfReferenceBoundToSingletonResolvedValue() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "singleton_initializer_self_reference_resolved_value.gd",
+                """
+                        class_name SingletonInitializerSelfReferenceResolvedValue
+                        extends RefCounted
+                        
+                        func ping():
+                            var Engine: String = Engine
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var engineDeclaration = findVariable(pingFunction.body().statements(), "Engine");
+        var initializerEngine = findIdentifierExpression(engineDeclaration.value(), "Engine");
+        var binding = assertBinding(preparedInput.analysisData(), initializerEngine, FrontendBindingKind.SINGLETON);
+
+        assertAll(
+                () -> assertEquals(ScopeLookupStatus.FOUND_ALLOWED, binding.valueAccessStatus()),
+                () -> assertNotNull(binding.resolvedValue()),
+                () -> assertEquals(ScopeValueKind.SINGLETON, binding.resolvedValue().kind()),
+                () -> assertEquals("Engine", binding.resolvedValue().name())
         );
     }
 
@@ -281,7 +345,7 @@ class FrontendTopBindingAnalyzerTest {
         );
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var sourceFile = preparedInput.unit().ast();
         var mirrorDeclaration = findVariable(sourceFile.statements(), "mirror");
@@ -373,7 +437,7 @@ class FrontendTopBindingAnalyzerTest {
         );
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var sourceFile = preparedInput.unit().ast();
         var blockedValueDeclaration = findVariable(sourceFile.statements(), "blocked_value");
@@ -449,7 +513,7 @@ class FrontendTopBindingAnalyzerTest {
         );
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         assertBinding(
@@ -494,7 +558,7 @@ class FrontendTopBindingAnalyzerTest {
         );
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         assertBinding(
@@ -521,7 +585,7 @@ class FrontendTopBindingAnalyzerTest {
                 """);
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         var initializer = findVariable(pingFunction.body().statements(), "Inner");
@@ -573,7 +637,7 @@ class FrontendTopBindingAnalyzerTest {
         );
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         assertBinding(
@@ -615,7 +679,7 @@ class FrontendTopBindingAnalyzerTest {
                 """);
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         assertBindingsForName(
@@ -658,7 +722,7 @@ class FrontendTopBindingAnalyzerTest {
                 """);
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         assertBindingsForName(
@@ -701,7 +765,7 @@ class FrontendTopBindingAnalyzerTest {
         );
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         assertBinding(
@@ -725,7 +789,7 @@ class FrontendTopBindingAnalyzerTest {
                 """);
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         assertBinding(
@@ -755,7 +819,7 @@ class FrontendTopBindingAnalyzerTest {
         classScope.defineFunction(createFunctionDef("mix", false));
         classScope.defineFunction(createFunctionDef("mix", true));
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         assertNull(preparedInput.analysisData().symbolBindings().get(findIdentifierExpression(pingFunction.body(), "mix")));
@@ -789,7 +853,7 @@ class FrontendTopBindingAnalyzerTest {
                 true
         ));
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         assertBinding(
@@ -820,7 +884,7 @@ class FrontendTopBindingAnalyzerTest {
                 """);
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var propertyFunction = findFunction(preparedInput.unit().ast(), "bind_property");
         var propertyInitializer = findVariable(propertyFunction.body().statements(), "node");
@@ -861,7 +925,7 @@ class FrontendTopBindingAnalyzerTest {
                 """);
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         var playerUseSites = findNodes(
@@ -933,7 +997,7 @@ class FrontendTopBindingAnalyzerTest {
                 """);
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         var helperFunction = findFunction(preparedInput.unit().ast(), "helper");
@@ -1114,7 +1178,7 @@ class FrontendTopBindingAnalyzerTest {
                 """);
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         assertBindingsForName(
@@ -1176,7 +1240,7 @@ class FrontendTopBindingAnalyzerTest {
                 """);
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         var defaultHelperUseSite = findIdentifierExpression(
@@ -1252,7 +1316,7 @@ class FrontendTopBindingAnalyzerTest {
         var okFunction = findFunction(preparedInput.unit().ast(), "ok");
         preparedInput.analysisData().scopesByAst().remove(skippedFunction.body());
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         assertNull(preparedInput.analysisData().symbolBindings().get(findIdentifierExpression(skippedFunction.body(), "value")));
         assertBinding(
@@ -1283,7 +1347,7 @@ class FrontendTopBindingAnalyzerTest {
         var ifStatement = findNode(pingFunction.body(), dev.superice.gdparser.frontend.ast.IfStatement.class, _ -> true);
         preparedInput.analysisData().scopesByAst().remove(ifStatement.body());
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var printedValues = findNodes(
                 pingFunction.body(),
@@ -1317,7 +1381,7 @@ class FrontendTopBindingAnalyzerTest {
                 """);
         var analyzer = new FrontendTopBindingAnalyzer();
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         assertBinding(
@@ -1357,7 +1421,7 @@ class FrontendTopBindingAnalyzerTest {
         var useSite = findIdentifierExpression(pingFunction.body(), "value");
         preparedInput.analysisData().scopesByAst().remove(useSite);
 
-        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         assertNull(preparedInput.analysisData().symbolBindings().get(useSite));
         var unsupportedDiagnostics = preparedInput.diagnosticManager().snapshot().asList().stream()
@@ -1366,6 +1430,765 @@ class FrontendTopBindingAnalyzerTest {
         assertEquals(1, unsupportedDiagnostics.size());
         assertEquals(FrontendDiagnosticSeverity.WARNING, unsupportedDiagnostics.getFirst().severity());
         assertTrue(unsupportedDiagnostics.getFirst().message().contains("value"));
+    }
+
+    // ------------------------------------------------------------------
+    // Dual-role chain-head route bias tests
+    // ------------------------------------------------------------------
+
+    /// `Engine.get_frames_drawn()` is a singleton instance call: the head `Engine` must stay
+    /// bound as `SINGLETON` so the chain enters the instance-method route, not `TYPE_META`.
+    @Test
+    void analyzeKeepsSingletonInstanceCallHeadAsSingletonBinding() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "dual_role_singleton_instance_call.gd",
+                """
+                        class_name DualRoleSingletonInstanceCall
+                        extends RefCounted
+                        
+                        func ping():
+                            Engine.get_frames_drawn()
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "Engine"),
+                FrontendBindingKind.SINGLETON
+        );
+    }
+
+    /// `Input.is_action_pressed(...)` is a singleton instance call with arguments: the head
+    /// `Input` must stay `SINGLETON`.
+    @Test
+    void analyzeKeepsSingletonInstanceCallWithArgumentsAsSingletonBinding() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "dual_role_singleton_instance_call_args.gd",
+                """
+                        class_name DualRoleSingletonInstanceCallArgs
+                        extends RefCounted
+                        
+                        func ping():
+                            Input.is_action_pressed(&"ui_accept")
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "Input"),
+                FrontendBindingKind.SINGLETON
+        );
+    }
+
+    /// `Engine.new()` is a constructor-like route on a dual-role name: the head `Engine` must
+    /// be published as `TYPE_META` so the chain enters the constructor primary route. Whether
+    /// the constructor is legal for a singleton is a downstream route concern, not a head-bias
+    /// concern.
+    @Test
+    void analyzePublishesTypeMetaForDualRoleConstructorNewRoute() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "dual_role_constructor_new.gd",
+                """
+                        class_name DualRoleConstructorNew
+                        extends RefCounted
+                        
+                        func ping():
+                            Engine.new()
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "Engine"),
+                FrontendBindingKind.TYPE_META
+        );
+    }
+
+    /// `.new()` fail-closed: when the singleton's declared type has an instance method named
+    /// `new`, the suffix resolves in the singleton instance namespace. The head must stay
+    /// `SINGLETON`, not be blindly switched to `TYPE_META`. This uses a custom fixture where
+    /// the dual-role name's engine class defines `new` as an instance method.
+    @Test
+    void analyzeDualRoleConstructorNewFailClosedWhenSingletonHasInstanceNew() throws Exception {
+        var api = createDualRoleWithInstanceNewFixtureApi();
+        var preparedInput = prepareBindingInput(
+                "dual_role_constructor_new_fail_closed.gd",
+                """
+                        class_name DualRoleConstructorNewFailClosed
+                        extends RefCounted
+                        
+                        func ping():
+                            DualWithInstanceNew.new()
+                        """,
+                new ClassRegistry(api)
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "DualWithInstanceNew"),
+                FrontendBindingKind.SINGLETON
+        );
+    }
+
+    /// Fail-closed for signal: when the singleton's declared type has a signal with the same
+    /// name as a type-meta static member (e.g. an engine class constant), the suffix resolves
+    /// in the singleton instance namespace via signal. The head must stay `SINGLETON`, not be
+    /// switched to `TYPE_META`. This uses a custom fixture where the dual-role name's engine
+    /// class defines both a signal `shared_name` and a constant `shared_name`.
+    @Test
+    void analyzeDualRoleFailClosedWhenSingletonHasSignalAndTypeMetaHasStaticMember() throws Exception {
+        var api = createDualRoleWithSignalAndConstantFixtureApi();
+        var preparedInput = prepareBindingInput(
+                "dual_role_signal_fail_closed.gd",
+                """
+                        class_name DualRoleSignalFailClosed
+                        extends RefCounted
+                        
+                        func ping():
+                            DualWithSignal.shared_name
+                        """,
+                new ClassRegistry(api)
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "DualWithSignal"),
+                FrontendBindingKind.SINGLETON
+        );
+    }
+
+    /// `IP.RESOLVER_MAX_QUERIES` is an engine class constant on a dual-role singleton: the
+    /// suffix only resolves in the type-meta static namespace, so the head `IP` must be
+    /// published as `TYPE_META`.
+    @Test
+    void analyzePublishesTypeMetaForDualRoleEngineClassConstantAccess() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "dual_role_engine_constant.gd",
+                """
+                        class_name DualRoleEngineConstant
+                        extends RefCounted
+                        
+                        func ping():
+                            IP.RESOLVER_MAX_QUERIES
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "IP"),
+                FrontendBindingKind.TYPE_META
+        );
+    }
+
+    /// `Input.MOUSE_MODE_VISIBLE` is a class enum value on a dual-role singleton: the suffix
+    /// only resolves in the type-meta static namespace (class enum), so the head `Input` must
+    /// be published as `TYPE_META`.
+    @Test
+    void analyzePublishesTypeMetaForDualRoleClassEnumValueAccess() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "dual_role_class_enum_value.gd",
+                """
+                        class_name DualRoleClassEnumValue
+                        extends RefCounted
+                        
+                        func ping():
+                            Input.MOUSE_MODE_VISIBLE
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "Input"),
+                FrontendBindingKind.TYPE_META
+        );
+    }
+
+    /// Inherited static members must participate in the dual-role bias just like direct static
+    /// members: the singleton's class is `ChildInput`, but both suffixes are declared on `BaseInput`.
+    @Test
+    void analyzePublishesTypeMetaForDualRoleInheritedEngineStaticMembers() throws Exception {
+        var api = createDualRoleInheritedStaticFixtureApi(false);
+        var preparedInput = prepareBindingInput(
+                "dual_role_inherited_static_members.gd",
+                """
+                        class_name DualRoleInheritedStaticMembers
+                        extends RefCounted
+
+                        func ping():
+                            ChildInput.PARENT_LIMIT
+                            ChildInput.PARENT_MOUSE_MODE
+                        """,
+                new ClassRegistry(api)
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "ChildInput",
+                FrontendBindingKind.TYPE_META,
+                2
+        );
+    }
+
+    /// Fail-closed still applies when both namespaces are satisfied only through inherited members.
+    @Test
+    void analyzeKeepsSingletonWhenInheritedInstanceMemberConflictsWithInheritedStaticMember() throws Exception {
+        var api = createDualRoleInheritedStaticFixtureApi(true);
+        var preparedInput = prepareBindingInput(
+                "dual_role_inherited_static_fail_closed.gd",
+                """
+                        class_name DualRoleInheritedStaticFailClosed
+                        extends RefCounted
+
+                        func ping():
+                            ChildInput.PARENT_LIMIT
+                        """,
+                new ClassRegistry(api)
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "ChildInput"),
+                FrontendBindingKind.SINGLETON
+        );
+    }
+
+    /// `ResourceUID.uid_to_path(...)` is a static method on a dual-role singleton: the suffix
+    /// only resolves in the type-meta static namespace (static method), so the head `ResourceUID`
+    /// must be published as `TYPE_META`.
+    @Test
+    void analyzePublishesTypeMetaForDualRoleStaticMethodCall() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "dual_role_static_method_call.gd",
+                """
+                        class_name DualRoleStaticMethodCall
+                        extends RefCounted
+                        
+                        func ping():
+                            ResourceUID.uid_to_path()
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "ResourceUID"),
+                FrontendBindingKind.TYPE_META
+        );
+    }
+
+    /// Mixed usage: bare `Input`, `Input.is_action_pressed(...)`, and `Input.MOUSE_MODE_VISIBLE`
+    /// in the same function. Each use-site binding must be independent: bare `Input` stays
+    /// `SINGLETON`, instance call head stays `SINGLETON`, and static constant head switches to
+    /// `TYPE_META`.
+    @Test
+    void analyzeKeepsDualRoleUseSitesIndependentInSameFunction() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "dual_role_mixed_use_sites.gd",
+                """
+                        class_name DualRoleMixedUseSites
+                        extends RefCounted
+                        
+                        func ping():
+                            var bare = Input
+                            Input.is_action_pressed(&"ui_accept")
+                            Input.MOUSE_MODE_VISIBLE
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var inputUseSites = findNodes(
+                pingFunction.body(),
+                IdentifierExpression.class,
+                identifier -> identifier.name().equals("Input")
+        );
+        // Three use-sites: bare value, instance call head, static constant head.
+        assertEquals(3, inputUseSites.size());
+        // Bare `Input` (inside VariableDeclaration initializer) stays SINGLETON.
+        var bareDecl = findVariable(pingFunction.body().statements(), "bare");
+        var bareInput = findIdentifierExpression(bareDecl.value(), "Input");
+        assertBinding(preparedInput.analysisData(), bareInput, FrontendBindingKind.SINGLETON);
+        // The other two use-sites: one is SINGLETON (instance call), one is TYPE_META (constant).
+        var nonBareSites = inputUseSites.stream()
+                .filter(site -> site != bareInput)
+                .toList();
+        var kinds = nonBareSites.stream()
+                .map(site -> preparedInput.analysisData().symbolBindings().get(site).kind())
+                .toList();
+        assertTrue(kinds.contains(FrontendBindingKind.SINGLETON), "instance call head must stay SINGLETON");
+        assertTrue(kinds.contains(FrontendBindingKind.TYPE_META), "static constant head must be TYPE_META");
+    }
+
+    /// Fail-closed: when the first suffix resolves in BOTH the singleton instance namespace and
+    /// the type-meta static namespace, the head must keep `SINGLETON`. This uses a custom fixture
+    /// where the dual-role name `AmbiguousDual` is both a singleton (type `AmbiguousDual`) and an
+    /// engine class. The engine class defines `shared_member` as BOTH a static method and an
+    /// instance method, so the suffix resolves in both namespaces.
+    @Test
+    void analyzeFailClosedKeepsSingletonWhenSuffixResolvesInBothNamespaces() throws Exception {
+        var api = createDualRoleAmbiguousFixtureApi();
+        var preparedInput = prepareBindingInput(
+                "dual_role_ambiguous_suffix.gd",
+                """
+                        class_name DualRoleAmbiguousSuffix
+                        extends RefCounted
+                        
+                        func ping():
+                            AmbiguousDual.shared_member
+                        """,
+                new ClassRegistry(api)
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "AmbiguousDual"),
+                FrontendBindingKind.SINGLETON
+        );
+    }
+
+    /// Non-dual-role engine class static access (e.g. `Node.NOTIFICATION_ENTER_TREE`) must not
+    /// be affected by the dual-role bias: `Node` is not a singleton, so it follows the existing
+    /// `TYPE_META` route as before.
+    @Test
+    void analyzeKeepsNonDualRoleEngineClassStaticAsTypeMeta() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "non_dual_role_engine_static.gd",
+                """
+                        class_name NonDualRoleEngineStatic
+                        extends Node
+                        
+                        func ping():
+                            Node.NOTIFICATION_ENTER_TREE
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "Node"),
+                FrontendBindingKind.TYPE_META
+        );
+    }
+
+    /// Property initializer: dual-role static constant access in a property initializer must
+    /// also publish `TYPE_META` at the head, consistent with executable body behavior.
+    @Test
+    void analyzePublishesTypeMetaForDualRoleConstantInPropertyInitializer() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "dual_role_property_init_constant.gd",
+                """
+                        class_name DualRolePropertyInitConstant
+                        extends RefCounted
+                        
+                        var queries: int = IP.RESOLVER_MAX_QUERIES
+                        
+                        func ping() -> int:
+                            return queries
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var sourceFile = preparedInput.unit().ast();
+        var ipHead = findIdentifierExpression(sourceFile, "IP");
+        assertBinding(preparedInput.analysisData(), ipHead, FrontendBindingKind.TYPE_META);
+    }
+
+    /// Prior-declared local shadows a dual-role singleton: the value winner must be `LOCAL_VAR`,
+    /// not `SINGLETON` or `TYPE_META`. This anchors the contract that the dual-role bias consumes
+    /// `resolveVisibleValue(...)` as the value-winner authority — a local that wins visible-value
+    /// resolution must not be overridden by the bias.
+    @Test
+    void analyzeDualRoleBiasRespectsPriorLocalShadowingSingletonValue() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "dual_role_prior_local_shadows_singleton.gd",
+                """
+                        class_name DualRolePriorLocalShadowsSingleton
+                        extends RefCounted
+                        
+                        func ping():
+                            var Engine: String = "local"
+                            Engine.get_frames_drawn()
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        // The chain-head `Engine` (in `Engine.get_frames_drawn()`) must be LOCAL_VAR, not
+        // SINGLETON or TYPE_META, because the prior local wins visible-value resolution.
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "Engine"),
+                FrontendBindingKind.LOCAL_VAR
+        );
+    }
+
+    /// Prior-declared local shadows a dual-role singleton with a static-constant-only suffix:
+    /// even though `IP.RESOLVER_MAX_QUERIES` would normally trigger the TYPE_META bias, the
+    /// prior local wins visible-value resolution, so the head must stay `LOCAL_VAR`. The bias
+    /// must not bypass the value-winner authority.
+    @Test
+    void analyzeDualRoleBiasDoesNotOverridePriorLocalForStaticConstantSuffix() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "dual_role_prior_local_shadows_static_constant.gd",
+                """
+                        class_name DualRolePriorLocalShadowsStaticConstant
+                        extends RefCounted
+                        
+                        func ping():
+                            var IP: String = "local"
+                            IP.RESOLVER_MAX_QUERIES
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "IP"),
+                FrontendBindingKind.LOCAL_VAR
+        );
+    }
+
+    /// Prior-declared local shadows a dual-role singleton with a constructor `.new()` suffix:
+    /// even though `.new()` would normally trigger the TYPE_META bias, the prior local wins
+    /// visible-value resolution, so the head must stay `LOCAL_VAR`.
+    @Test
+    void analyzeDualRoleBiasDoesNotOverridePriorLocalForConstructorNewSuffix() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "dual_role_prior_local_shadows_constructor_new.gd",
+                """
+                        class_name DualRolePriorLocalShadowsConstructorNew
+                        extends RefCounted
+                        
+                        func ping():
+                            var Engine: String = "local"
+                            Engine.new()
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "Engine"),
+                FrontendBindingKind.LOCAL_VAR
+        );
+    }
+
+    /// Parameter shadows a dual-role singleton: the value winner must be `PARAMETER`, not
+    /// `SINGLETON` or `TYPE_META`. This confirms the bias respects parameter-level shadowing
+    /// in addition to local-level shadowing.
+    @Test
+    void analyzeDualRoleBiasRespectsParameterShadowingSingletonValue() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "dual_role_parameter_shadows_singleton.gd",
+                """
+                        class_name DualRoleParameterShadowsSingleton
+                        extends RefCounted
+                        
+                        func ping(Engine):
+                            Engine.get_frames_drawn()
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "Engine"),
+                FrontendBindingKind.PARAMETER
+        );
+    }
+
+    /// Later-declared local does NOT shadow a dual-role singleton: `resolveVisibleValue` filters
+    /// later locals, so the value winner is still `SINGLETON`. The dual-role bias then applies
+    /// normally — `Engine.get_frames_drawn()` stays `SINGLETON` (instance call), and
+    /// `IP.RESOLVER_MAX_QUERIES` switches to `TYPE_META`.
+    @Test
+    void analyzeDualRoleBiasStillAppliesWhenLaterLocalDoesNotShadowSingleton() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "dual_role_later_local_no_shadow.gd",
+                """
+                        class_name DualRoleLaterLocalNoShadow
+                        extends RefCounted
+                        
+                        func ping():
+                            Engine.get_frames_drawn()
+                            IP.RESOLVER_MAX_QUERIES
+                            var Engine: String = "later"
+                            var IP: String = "later"
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        // Instance call head stays SINGLETON (later local filtered by visible-value resolver).
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "Engine"),
+                FrontendBindingKind.SINGLETON
+        );
+        // Static constant head switches to TYPE_META (later local filtered).
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "IP"),
+                FrontendBindingKind.TYPE_META
+        );
+    }
+
+    /// Custom fixture: a dual-role name `DualWithInstanceNew` that is both a singleton (type
+    /// `DualWithInstanceNew`) and an engine class. The engine class defines `new` as an instance
+    /// method, so `.new()` resolves in the singleton instance namespace, exercising the
+    /// `.new()` fail-closed rule.
+    private static @NotNull ExtensionAPI createDualRoleWithInstanceNewFixtureApi() throws Exception {
+        var defaultApi = ExtensionApiLoader.loadDefault();
+        var dualClass = new ExtensionGdClass(
+                "DualWithInstanceNew",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(new ExtensionGdClass.ClassMethod(
+                        "new",
+                        false,
+                        false,
+                        false,
+                        false,
+                        0L,
+                        List.of(),
+                        null,
+                        List.of()
+                )),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var customClasses = new java.util.ArrayList<>(defaultApi.classes());
+        customClasses.add(dualClass);
+        var customSingletons = new java.util.ArrayList<>(defaultApi.singletons());
+        customSingletons.add(new ExtensionSingleton("DualWithInstanceNew", "DualWithInstanceNew"));
+        return new ExtensionAPI(
+                defaultApi.header(),
+                defaultApi.builtinClassSizes(),
+                defaultApi.builtinClassMemberOffsets(),
+                defaultApi.globalConstants(),
+                defaultApi.globalEnums(),
+                defaultApi.utilityFunctions(),
+                defaultApi.builtinClasses(),
+                customClasses,
+                customSingletons,
+                defaultApi.nativeStructures()
+        );
+    }
+
+    /// Custom fixture: a dual-role name `DualWithSignal` that is both a singleton (type
+    /// `DualWithSignal`) and an engine class. The engine class defines `shared_name` as BOTH
+    /// a signal and an integer constant, so the suffix resolves in both the singleton instance
+    /// namespace (via signal) and the type-meta static namespace (via constant), exercising the
+    /// signal fail-closed rule.
+    private static @NotNull ExtensionAPI createDualRoleWithSignalAndConstantFixtureApi() throws Exception {
+        var defaultApi = ExtensionApiLoader.loadDefault();
+        var dualClass = new ExtensionGdClass(
+                "DualWithSignal",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGdClass.SignalInfo("shared_name", List.of())),
+                List.of(),
+                List.of(new ExtensionGdClass.ConstantInfo("shared_name", "42"))
+        );
+        var customClasses = new java.util.ArrayList<>(defaultApi.classes());
+        customClasses.add(dualClass);
+        var customSingletons = new java.util.ArrayList<>(defaultApi.singletons());
+        customSingletons.add(new ExtensionSingleton("DualWithSignal", "DualWithSignal"));
+        return new ExtensionAPI(
+                defaultApi.header(),
+                defaultApi.builtinClassSizes(),
+                defaultApi.builtinClassMemberOffsets(),
+                defaultApi.globalConstants(),
+                defaultApi.globalEnums(),
+                defaultApi.utilityFunctions(),
+                defaultApi.builtinClasses(),
+                customClasses,
+                customSingletons,
+                defaultApi.nativeStructures()
+        );
+    }
+
+    /// Custom fixture: a dual-role name `AmbiguousDual` that is both a singleton (type
+    /// `AmbiguousDual`) and an engine class. The engine class defines `shared_member` as BOTH
+    /// a static method and an instance method, so the suffix resolves in both the singleton
+    /// instance namespace and the type-meta static namespace, exercising the fail-closed rule.
+    private static @NotNull ExtensionAPI createDualRoleAmbiguousFixtureApi() throws Exception {
+        var defaultApi = ExtensionApiLoader.loadDefault();
+        var ambiguousClass = new ExtensionGdClass(
+                "AmbiguousDual",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(
+                        // static method: resolves in type-meta static namespace
+                        new ExtensionGdClass.ClassMethod(
+                                "shared_member",
+                                false,
+                                false,
+                                true,
+                                false,
+                                0L,
+                                List.of(),
+                                null,
+                                List.of()
+                        ),
+                        // instance method: resolves in singleton instance namespace
+                        new ExtensionGdClass.ClassMethod(
+                                "shared_member",
+                                false,
+                                false,
+                                false,
+                                false,
+                                0L,
+                                List.of(),
+                                null,
+                                List.of()
+                        )
+                ),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var customClasses = new java.util.ArrayList<>(defaultApi.classes());
+        customClasses.add(ambiguousClass);
+        var customSingletons = new java.util.ArrayList<>(defaultApi.singletons());
+        customSingletons.add(new ExtensionSingleton("AmbiguousDual", "AmbiguousDual"));
+        return new ExtensionAPI(
+                defaultApi.header(),
+                defaultApi.builtinClassSizes(),
+                defaultApi.builtinClassMemberOffsets(),
+                defaultApi.globalConstants(),
+                defaultApi.globalEnums(),
+                defaultApi.utilityFunctions(),
+                defaultApi.builtinClasses(),
+                customClasses,
+                customSingletons,
+                defaultApi.nativeStructures()
+        );
+    }
+
+    private static @NotNull ExtensionAPI createDualRoleInheritedStaticFixtureApi(boolean inheritedInstanceConflict)
+            throws IOException {
+        var defaultApi = ExtensionApiLoader.loadDefault();
+        var parentClass = new ExtensionGdClass(
+                "BaseInput",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(new ExtensionGdClass.ClassEnum(
+                        "MouseMode", false, List.of(new ExtensionEnumValue("PARENT_MOUSE_MODE", 7))
+                )),
+                List.of(),
+                inheritedInstanceConflict
+                        ? List.of(new ExtensionGdClass.SignalInfo("PARENT_LIMIT", List.of()))
+                        : List.of(),
+                List.of(),
+                List.of(new ExtensionGdClass.ConstantInfo("PARENT_LIMIT", "42"))
+        );
+        var childClass = new ExtensionGdClass(
+                "ChildInput",
+                false,
+                true,
+                "BaseInput",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var customClasses = new java.util.ArrayList<>(defaultApi.classes());
+        customClasses.add(parentClass);
+        customClasses.add(childClass);
+        var customSingletons = new java.util.ArrayList<>(defaultApi.singletons());
+        customSingletons.add(new ExtensionSingleton("ChildInput", "ChildInput"));
+        return new ExtensionAPI(
+                defaultApi.header(),
+                defaultApi.builtinClassSizes(),
+                defaultApi.builtinClassMemberOffsets(),
+                defaultApi.globalConstants(),
+                defaultApi.globalEnums(),
+                defaultApi.utilityFunctions(),
+                defaultApi.builtinClasses(),
+                customClasses,
+                customSingletons,
+                defaultApi.nativeStructures()
+        );
     }
 
     private static @NotNull List<FrontendDiagnostic> bindingDiagnostics(@NotNull DiagnosticManager diagnosticManager) {
@@ -1444,7 +2267,7 @@ class FrontendTopBindingAnalyzerTest {
             @NotNull String fileName,
             @NotNull String source,
             @NotNull ClassRegistry classRegistry
-    ) throws Exception {
+    ) {
         return prepareBindingInput(fileName, source, classRegistry, Map.of());
     }
 
@@ -1453,7 +2276,7 @@ class FrontendTopBindingAnalyzerTest {
             @NotNull String source,
             @NotNull ClassRegistry classRegistry,
             @NotNull Map<String, String> topLevelCanonicalNameMap
-    ) throws Exception {
+    ) {
         var parserService = new GdScriptParserService();
         var diagnosticManager = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnosticManager);

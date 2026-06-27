@@ -505,6 +505,64 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runFailsFastWhenPublishedSingletonBindingLosesRegistryMetadata() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_singleton_missing_registry_metadata.gd",
+                """
+                        class_name BodyInsnSingletonMissingRegistryMetadata
+                        extends RefCounted
+                        
+                        func ping(value: int) -> int:
+                            return value
+                        """,
+                Map.of(
+                        "BodyInsnSingletonMissingRegistryMetadata",
+                        "RuntimeBodyInsnSingletonMissingRegistryMetadata"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSingletonMissingRegistryMetadata",
+                "ping"
+        );
+        var rootBlock = assertInstanceOf(dev.superice.gdparser.frontend.ast.Block.class, pingContext.loweringRoot());
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var value = assertInstanceOf(IdentifierExpression.class, returnStatement.value());
+        var originalBinding = pingContext.analysisData().symbolBindings().get(value);
+        assertNotNull(originalBinding);
+        // Simulate a broken upstream publication so this test stays focused on the body-lowering guard.
+        pingContext.analysisData().symbolBindings().put(
+                value,
+                new FrontendBinding(
+                        "MissingRegistrySingleton",
+                        FrontendBindingKind.SINGLETON,
+                        originalBinding.declarationSite()
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(
+                        exception.getMessage().contains(
+                                "Published singleton binding 'MissingRegistrySingleton'"
+                        ),
+                        exception.getMessage()
+                ),
+                () -> assertTrue(
+                        exception.getMessage().contains("missing registry-validated object metadata"),
+                        exception.getMessage()
+                )
+        );
+    }
+
+    @Test
     void runFailsFastWhenDirectSlotReceiverIdentifierPretendsToBeSelf() throws Exception {
         var prepared = prepareContext(
                 "body_insn_identifier_self_binding_receiver.gd",
@@ -2700,6 +2758,123 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(propertyLoad.resultId(), callInsn.objectId()),
                 () -> assertEquals("queue_free", callInsn.methodName()),
                 () -> assertEquals(0, storeValueIdsForProperty(instructions, "host").size())
+        );
+    }
+
+    @Test
+    void runLowersSingletonValueReceiverAsInstanceReceiverInExecutableBody() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_singleton_receiver_call.gd",
+                """
+                        class_name BodyInsnSingletonReceiverCall
+                        extends RefCounted
+                        
+                        func frames() -> int:
+                            return Engine.get_frames_drawn()
+                        
+                        func pressed() -> bool:
+                            return Input.is_action_pressed(&"ui_accept", true)
+                        
+                        func scale() -> void:
+                            Engine.set_time_scale(1.0)
+                        """,
+                Map.of("BodyInsnSingletonReceiverCall", "RuntimeBodyInsnSingletonReceiverCall"),
+                true
+        );
+        var framesContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSingletonReceiverCall",
+                "frames"
+        );
+        var pressedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSingletonReceiverCall",
+                "pressed"
+        );
+        var scaleContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSingletonReceiverCall",
+                "scale"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var framesInstructions = allInstructions(framesContext.targetFunction());
+        var framesReceiver = requireOnlyInstruction(framesContext.targetFunction(), LoadStaticInsn.class);
+        var framesCall = requireOnlyInstruction(framesContext.targetFunction(), CallMethodInsn.class);
+        var framesReturn = requireOnlyReturnInsn(framesContext.targetFunction());
+        var pressedReceiver = requireOnlyInstruction(pressedContext.targetFunction(), LoadStaticInsn.class);
+        var pressedCall = requireOnlyInstruction(pressedContext.targetFunction(), CallMethodInsn.class);
+        var pressedName = requireOnlyInstruction(pressedContext.targetFunction(), LiteralStringNameInsn.class);
+        var pressedExactMatch = requireOnlyInstruction(pressedContext.targetFunction(), LiteralBoolInsn.class);
+        var pressedArgIds = pressedCall.args().stream()
+                .map(operand -> assertInstanceOf(LirInstruction.VariableOperand.class, operand).id())
+                .toList();
+        var scaleInstructions = allInstructions(scaleContext.targetFunction());
+        var scaleReceiver = requireOnlyInstruction(scaleContext.targetFunction(), LoadStaticInsn.class);
+        var scaleCall = requireOnlyInstruction(scaleContext.targetFunction(), CallMethodInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("@GlobalScope", framesReceiver.className()),
+                () -> assertEquals("Engine", framesReceiver.staticName()),
+                () -> assertEquals("get_frames_drawn", framesCall.methodName()),
+                () -> assertEquals(framesReceiver.resultId(), framesCall.objectId()),
+                () -> assertEquals(framesCall.resultId(), framesReturn.returnValueId()),
+                () -> assertEquals(0, countInstructions(framesInstructions, CallGlobalInsn.class)),
+                () -> assertEquals("@GlobalScope", pressedReceiver.className()),
+                () -> assertEquals("Input", pressedReceiver.staticName()),
+                () -> assertEquals("is_action_pressed", pressedCall.methodName()),
+                () -> assertEquals(pressedReceiver.resultId(), pressedCall.objectId()),
+                () -> assertEquals(List.of(pressedName.resultId(), pressedExactMatch.resultId()), pressedArgIds),
+                () -> assertEquals("@GlobalScope", scaleReceiver.className()),
+                () -> assertEquals("Engine", scaleReceiver.staticName()),
+                () -> assertEquals("set_time_scale", scaleCall.methodName()),
+                () -> assertEquals(scaleReceiver.resultId(), scaleCall.objectId()),
+                () -> assertNull(scaleCall.resultId()),
+                () -> assertEquals(0, countInstructions(scaleInstructions, CallGlobalInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersSingletonReceiverBeforeLaterLocalShadowAsGlobalScopeLoad() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_singleton_receiver_later_local.gd",
+                """
+                        class_name BodyInsnSingletonReceiverLaterLocal
+                        extends RefCounted
+
+                        func frames() -> int:
+                            var frames := Engine.get_frames_drawn()
+                            var Engine: String = ""
+                            return frames
+                        """,
+                Map.of("BodyInsnSingletonReceiverLaterLocal", "RuntimeBodyInsnSingletonReceiverLaterLocal"),
+                true
+        );
+        var framesContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSingletonReceiverLaterLocal",
+                "frames"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(framesContext.targetFunction());
+        var receiver = requireOnlyInstruction(framesContext.targetFunction(), LoadStaticInsn.class);
+        var call = requireOnlyInstruction(framesContext.targetFunction(), CallMethodInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("@GlobalScope", receiver.className()),
+                () -> assertEquals("Engine", receiver.staticName()),
+                () -> assertEquals("get_frames_drawn", call.methodName()),
+                () -> assertEquals(receiver.resultId(), call.objectId()),
+                () -> assertEquals(0, countInstructions(instructions, CallGlobalInsn.class))
         );
     }
 
@@ -5834,6 +6009,53 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(packInsn.resultId(), onlyVariableOperandId(globalInsn.args())),
                 () -> assertEquals(globalInsn.resultId(), unpackInsn.variantId()),
                 () -> assertEquals(unpackInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersSingletonReceiverPropertyInitializerIntoExecutableInitFunction() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_property_singleton_receiver_call.gd",
+                """
+                        class_name BodyInsnPropertySingletonReceiverCall
+                        extends RefCounted
+                        
+                        var frames: int = Engine.get_frames_drawn()
+                        
+                        func ping() -> int:
+                            return frames
+                        """,
+                Map.of(
+                        "BodyInsnPropertySingletonReceiverCall",
+                        "RuntimeBodyInsnPropertySingletonReceiverCall"
+                ),
+                true
+        );
+        var initContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBodyInsnPropertySingletonReceiverCall",
+                "_field_init_frames"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var initFunction = initContext.targetFunction();
+        var instructions = allInstructions(initFunction);
+        var receiverLoad = requireOnlyInstruction(initFunction, LoadStaticInsn.class);
+        var methodCall = requireOnlyInstruction(initFunction, CallMethodInsn.class);
+        var returnInsn = requireOnlyReturnInsn(initFunction);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("seq_0", initFunction.getEntryBlockId()),
+                () -> assertTrue(initFunction.getBasicBlockCount() > 0),
+                () -> assertEquals("@GlobalScope", receiverLoad.className()),
+                () -> assertEquals("Engine", receiverLoad.staticName()),
+                () -> assertEquals("get_frames_drawn", methodCall.methodName()),
+                () -> assertEquals(receiverLoad.resultId(), methodCall.objectId()),
+                () -> assertEquals(methodCall.resultId(), returnInsn.returnValueId()),
+                () -> assertEquals(0, countInstructions(instructions, CallGlobalInsn.class))
         );
     }
 

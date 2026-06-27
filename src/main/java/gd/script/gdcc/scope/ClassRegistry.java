@@ -30,6 +30,30 @@ import java.util.*;
 ///   returns `FOUND_BLOCKED`
 /// - legacy `findXxx(...)` helpers stay available for compatibility callers
 public final class ClassRegistry implements Scope {
+    public record EngineClassConstantLookup(
+            @NotNull ExtensionGdClass ownerClass,
+            @NotNull ExtensionGdClass.ConstantInfo constant
+    ) {
+    }
+
+    public record EngineClassEnumValueLookup(
+            @NotNull ExtensionGdClass ownerClass,
+            @NotNull ExtensionEnumValue enumValue
+    ) {
+    }
+
+    public record BuiltinClassConstantLookup(
+            @NotNull ExtensionBuiltinClass ownerClass,
+            @NotNull ExtensionBuiltinClass.ConstantInfo constant
+    ) {
+    }
+
+    public record BuiltinClassEnumValueLookup(
+            @NotNull ExtensionBuiltinClass ownerClass,
+            @NotNull ExtensionEnumValue enumValue
+    ) {
+    }
+
     /// Built-in type are language built-in types, they are not engine defined types.
     private final Map<String, ExtensionBuiltinClass> builtinByName = new HashMap<>();
     /// Engine defined classes exposed to scripts via GDExtension API. Aka engine types.
@@ -39,6 +63,8 @@ public final class ClassRegistry implements Scope {
     private final Map<String, ExtensionGlobalEnum> globalEnumByName = new HashMap<>();
     private final Map<String, ExtensionGlobalConstant> globalConstantByName = new HashMap<>();
     private final Map<String, ExtensionSingleton> singletonByName = new HashMap<>();
+    private final Map<String, GdObjectType> singletonTypeByName = new HashMap<>();
+    private final Map<String, InvalidSingletonMetadata> invalidSingletonMetadataByName = new HashMap<>();
     /// User-defined classes keyed strictly by canonical registration name.
     private final Map<String, ClassDef> gdccClassByName = new HashMap<>();
     /// Source-facing alias side table for canonical gdcc registrations whose source name differs.
@@ -73,6 +99,62 @@ public final class ClassRegistry implements Scope {
         }
         for (var s : api.singletons()) {
             if (s != null && s.name() != null) singletonByName.put(s.name(), s);
+        }
+        validateSingletonMetadata();
+    }
+
+    /// Registry-owned singleton metadata failure.
+    ///
+    /// Frontend diagnostics translate these facts later; scope lookup and backend codegen only need a
+    /// stable query surface that distinguishes valid singleton object receivers from bad metadata.
+    public record InvalidSingletonMetadata(
+            @NotNull String lookupName,
+            @Nullable String rawType,
+            @NotNull Reason reason
+    ) {
+        public InvalidSingletonMetadata {
+            Objects.requireNonNull(lookupName, "lookupName");
+            Objects.requireNonNull(reason, "reason");
+        }
+
+        public enum Reason {
+            MISSING_TYPE,
+            UNRESOLVED_TYPE,
+            NON_OBJECT_TYPE
+        }
+    }
+
+    private void validateSingletonMetadata() {
+        for (var entry : singletonByName.entrySet()) {
+            var lookupName = entry.getKey();
+            var rawType = entry.getValue().type();
+            if (rawType == null || rawType.isBlank()) {
+                invalidSingletonMetadataByName.put(lookupName, new InvalidSingletonMetadata(
+                        lookupName,
+                        rawType,
+                        InvalidSingletonMetadata.Reason.MISSING_TYPE
+                ));
+                continue;
+            }
+
+            var declaredType = tryResolveDeclaredType(rawType);
+            if (declaredType == null) {
+                invalidSingletonMetadataByName.put(lookupName, new InvalidSingletonMetadata(
+                        lookupName,
+                        rawType,
+                        InvalidSingletonMetadata.Reason.UNRESOLVED_TYPE
+                ));
+                continue;
+            }
+            if (!(declaredType instanceof GdObjectType objectType)) {
+                invalidSingletonMetadataByName.put(lookupName, new InvalidSingletonMetadata(
+                        lookupName,
+                        rawType,
+                        InvalidSingletonMetadata.Reason.NON_OBJECT_TYPE
+                ));
+                continue;
+            }
+            singletonTypeByName.put(lookupName, objectType);
         }
     }
 
@@ -667,11 +749,17 @@ public final class ClassRegistry implements Scope {
 
     /// Return the singleton's object type for a singleton name.
     public @Nullable GdObjectType findSingletonType(@NotNull String name) {
-        var s = singletonByName.get(name);
-        if (s == null) return null;
-        var t = s.type();
-        if (t == null) return null;
-        return new GdObjectType(t);
+        return singletonTypeByName.get(name);
+    }
+
+    /// Return registry-owned invalid singleton metadata, if the API declared a singleton that cannot
+    /// become an object receiver.
+    public @Nullable InvalidSingletonMetadata findInvalidSingletonMetadata(@NotNull String name) {
+        return invalidSingletonMetadataByName.get(name);
+    }
+
+    public @NotNull @UnmodifiableView Map<String, InvalidSingletonMetadata> invalidSingletonMetadata() {
+        return Collections.unmodifiableMap(invalidSingletonMetadataByName);
     }
 
     public @NotNull @UnmodifiableView Map<String, VirtualMethodInfo> getVirtualMethods(@NotNull String className) {
@@ -837,5 +925,129 @@ public final class ClassRegistry implements Scope {
 
     public @NotNull @UnmodifiableView List<ExtensionUtilityFunction> getExtensionUtilityFunctionList() {
         return utilityByName.values().stream().toList();
+    }
+
+    /// Resolves a [ClassDef] from type-meta metadata. If the meta carries a direct `declaration()`
+    /// that is already a `ClassDef`, returns it. Otherwise, attempts to find the `ClassDef` by
+    /// resolving the `instanceType()` via `getClassDef`.
+    public @Nullable ClassDef resolveClassDefFromTypeMeta(@NotNull ScopeTypeMeta typeMeta) {
+        if (typeMeta.declaration() instanceof ClassDef classDef) {
+            return classDef;
+        }
+        if (typeMeta.instanceType() instanceof GdObjectType objectType) {
+            return getClassDef(objectType);
+        }
+        return null;
+    }
+
+    /// Resolves the immediate superclass of `current` from the registry.
+    /// Returns `null` when the super-name is blank or the class cannot be found.
+    public @Nullable ClassDef resolveSuperclass(@NotNull ClassDef current) {
+        var superName = current.getSuperName();
+        if (superName.isBlank()) {
+            return null;
+        }
+        var builtinSuper = findBuiltinClass(superName);
+        if (builtinSuper != null) {
+            return builtinSuper;
+        }
+        return getClassDef(new GdObjectType(superName));
+    }
+
+    /// Checks whether the engine class identified by `className`, or one of its engine
+    /// superclasses, declares a constant whose name equals `constantName`.
+    public boolean hasEngineClassConstant(@NotNull String className, @NotNull String constantName) {
+        return findEngineClassConstantInHierarchy(className, constantName) != null;
+    }
+
+    /// Looks up the constant named `constantName` in the queried engine class and then in its
+    /// superclasses. Direct class metadata wins over inherited metadata.
+    public @Nullable EngineClassConstantLookup findEngineClassConstantInHierarchy(
+            @NotNull String className,
+            @NotNull String constantName
+    ) {
+        var current = gdClassByName.get(className);
+        var visited = new HashSet<String>();
+        while (current != null && visited.add(current.getName())) {
+            var constant = current.constants().stream()
+                    .filter(candidate -> constantName.equals(candidate.name()))
+                    .findFirst()
+                    .orElse(null);
+            if (constant != null) {
+                return new EngineClassConstantLookup(current, constant);
+            }
+            current = resolveSuperclass(current) instanceof ExtensionGdClass superClass ? superClass : null;
+        }
+        return null;
+    }
+
+    /// Looks up the enum value named `valueName` inside the engine class named `className`.
+    /// Searches every enum on the direct class first, then walks engine superclasses.
+    public @Nullable ExtensionEnumValue findEngineClassEnumValue(@NotNull String className, @NotNull String valueName) {
+        var lookup = findEngineClassEnumValueInHierarchy(className, valueName);
+        return lookup == null ? null : lookup.enumValue();
+    }
+
+    /// Looks up an engine class enum value and carries the class that actually declared it.
+    public @Nullable EngineClassEnumValueLookup findEngineClassEnumValueInHierarchy(
+            @NotNull String className,
+            @NotNull String valueName
+    ) {
+        var engineClass = gdClassByName.get(className);
+        var visited = new HashSet<String>();
+        while (engineClass != null && visited.add(engineClass.getName())) {
+            var enumValue = engineClass.enums().stream()
+                    .flatMap(e -> e.values().stream())
+                    .filter(v -> v.name().equals(valueName))
+                    .findFirst()
+                    .orElse(null);
+            if (enumValue != null) {
+                return new EngineClassEnumValueLookup(engineClass, enumValue);
+            }
+            engineClass = resolveSuperclass(engineClass) instanceof ExtensionGdClass superClass ? superClass : null;
+        }
+        return null;
+    }
+
+    /// Looks up the builtin constant named `constantName`. Builtin metadata currently has no
+    /// superclass edge in ExtensionAPI, so this shared helper intentionally remains direct-only.
+    public @Nullable BuiltinClassConstantLookup findBuiltinClassConstantInHierarchy(
+            @NotNull String className,
+            @NotNull String constantName
+    ) {
+        var builtinClass = builtinByName.get(className);
+        if (builtinClass == null) {
+            return null;
+        }
+        return builtinClass.constants().stream()
+                .filter(candidate -> constantName.equals(candidate.name()))
+                .findFirst()
+                .map(constant -> new BuiltinClassConstantLookup(builtinClass, constant))
+                .orElse(null);
+    }
+
+    /// Looks up the enum value named `valueName` declared inside the builtin class named `className`.
+    /// Searches every enum of the class. Returns `null` when the class or the enum value is not found.
+    public @Nullable ExtensionEnumValue findBuiltinClassEnumValue(@NotNull String className, @NotNull String valueName) {
+        var lookup = findBuiltinClassEnumValueInHierarchy(className, valueName);
+        return lookup == null ? null : lookup.enumValue();
+    }
+
+    /// Looks up a builtin enum value and carries the builtin class that declared it. This matches
+    /// the engine lookup shape even though builtin metadata is direct-only today.
+    public @Nullable BuiltinClassEnumValueLookup findBuiltinClassEnumValueInHierarchy(
+            @NotNull String className,
+            @NotNull String valueName
+    ) {
+        var builtinClass = builtinByName.get(className);
+        if (builtinClass == null) {
+            return null;
+        }
+        return builtinClass.enums().stream()
+                .flatMap(e -> e.values().stream())
+                .filter(v -> v.name().equals(valueName))
+                .findFirst()
+                .map(enumValue -> new BuiltinClassEnumValueLookup(builtinClass, enumValue))
+                .orElse(null);
     }
 }

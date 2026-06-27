@@ -6,7 +6,7 @@
 ## 文档状态
 
 - 状态：Implemented / Maintained
-- 更新时间：2026-02-26
+- 更新时间：2026-06-27
 - 适用范围：`C backend` 对 `load_static` / `store_static` 的生成与校验
 
 ---
@@ -17,12 +17,20 @@
 
 `$r = load_static "<class_name>" "<static_name>"`
 
-当前后端只支持四类静态读取：
+ 当前后端支持七类静态读取：
 
-1. `@GlobalScope` 顶层 global constants
-2. global enum 项
-3. builtin class constants
-4. engine class integer constants
+1. `@GlobalScope` singleton properties
+2. `@GlobalScope` 顶层 global constants
+3. global enum 项
+4. builtin class constants
+5. builtin class enum values
+6. engine class integer constants
+7. engine class enum values
+
+engine class constants / enum values 按 `ClassRegistry` 的 inherited static lookup 解析：先查 receiver class
+本身，再沿 `classes[].inherits` 近到远查父类，返回实际声明 owner 后再执行 literal materialization 与诊断。
+IR 中的 `class_name` 仍保留源码 receiver class，不在 frontend canonicalize 成 owner class。builtin metadata 当前没有
+superclass edge，因此 builtin constant / enum value 入口保持 direct-only。
 
 不支持：
 
@@ -47,7 +55,7 @@
 
 - `LoadStaticInsnGen`：
   - 做 IR 层校验（result 存在、可写、非 ref）
-  - 完成四路分发（global constant / enum / builtin / engine-int）
+  - 完成多路分发（global constant / global enum / singleton / builtin constant / builtin enum / engine-int constant / engine enum）
   - 调用 `CBodyBuilder` 与 `CBuiltinBuilder` 发射代码
 - `StoreStaticInsnGen`：
   - 对 `STORE_STATIC` 统一抛 `InvalidInsnException`
@@ -70,6 +78,23 @@
 - `ExtensionGlobalConstant.value` 使用 Java `long` 保存 Godot int64 metadata；后端输出十进制 `godot_int`
   literal，不按 Java `int` 截断。
 
+### 3.0.1 singleton properties
+
+- 从顶层 `singletons[]` 读取，`ExtensionSingleton.name()` 是 `@GlobalScope` property lookup name，
+  `ExtensionSingleton.type()` 是 declared object return type。
+- `ClassRegistry` 预先验证 singleton metadata。只有 `type` 能 strict resolve 为 `GdObjectType` 时，
+  `findSingletonType(lookupName)` 才返回有效类型；缺失、空白、unknown 或非 object type 都不会发布为
+  singleton value。
+- Backend IR 使用 `load_static "@GlobalScope" "<singleton_name>"` 显式表示 singleton property read。
+  `LoadStaticInsnGen` 先检查 singleton property，再回退 global constant，避免 object singleton 被旧的
+  global-constant-only `int` 校验误拒绝。
+- C backend 发射 `godot_<lookupName>_singleton()` wrapper 调用。`Engine`、`ClassDB` 等 fixed-provided
+  wrappers 只作为 provided symbol 使用，不重复输出到 `engine_method_binds.h`；非 provided singleton 才生成
+  module-local wrapper。
+- singleton getter 返回 Godot engine registry 中已存在的 object pointer，是 borrowed source。
+  `LoadStaticInsnGen` 必须用 borrowed object assignment 路径，不能走 `callAssign(...)` 或任何 owned-result
+  producer 路径。
+
 ### 3.1 global enum values
 
 - 从 `global_enums[].values[]` 读取。
@@ -90,13 +115,33 @@
 - 在 codegen 阶段做“常量声明类型 -> 目标变量类型”兼容校验
 - 错误信息可定位到“常量声明类型”而不是仅凭 literal 推断
 
+### 3.2.1 builtin class enum values
+
+- 从 `builtin_classes[].enums[].values[]` 读取（`ExtensionBuiltinClass.ClassEnum` -> `ExtensionEnumValue`）。
+- 查找走 `ClassRegistry.findBuiltinClassEnumValueInHierarchy(className, valueName)`；由于 ExtensionAPI builtin
+  metadata 当前没有 superclass edge，这条入口保持 direct-only。`LoadStaticInsnGen` 在 builtin constant 未命中后回退到 enum value 分支。
+- enum value 恒为整数：静态类型 `GdIntType.INT`，后端以 `Long.toString(value)` 输出十进制 `godot_int`
+  literal，与 global enum value 路径一致，不经过 `CBuiltinBuilder.materializeStaticLiteralValue`。
+
 ### 3.3 engine class constants
 
 - 从 `classes[].constants[]` 读取
+- 查找走 `ClassRegistry.findEngineClassConstantInHierarchy(className, constantName)`，直接类优先，父类按
+  `inherits` 链近到远查找；缺失 superclass metadata 或循环继承时 fail closed。
 - 当前只接受可解析为整数的 `value`
 - 该值在模型中保持 Godot 原始字符串 literal；不要为了统一 enum value 宽度把 builtin / engine class
   constant 的 construct string 改成数值 carrier。
 - 非整数常量直接 `InvalidInsnException`
+
+### 3.3.1 engine class enum values
+
+- 从 `classes[].enums[].values[]` 读取（`ExtensionGdClass.ClassEnum` -> `ExtensionEnumValue`）。
+- 查找走 `ClassRegistry.findEngineClassEnumValueInHierarchy(className, valueName)`；`LoadStaticInsnGen` 在 engine
+  integer constant 未命中后回退到 enum value 分支，并保留 source receiver class 作为 IR 操作数。
+- enum value 恒为整数：静态类型 `GdIntType.INT`，后端以 `Long.toString(value)` 输出十进制 `godot_int`
+  literal，与 global enum value 路径一致。
+- 这与 engine class **常量** 的字符串 literal 校验（`INTEGER_LITERAL_PATTERN`）是两条独立分支；enum value
+  走 long carrier，不经过该正则。
 
 ---
 
@@ -141,19 +186,23 @@
 
 建议长期保留以下测试关注点：
 
-1. `@GlobalScope` global constant 成功/失败
-2. global enum 成功/失败
-3. builtin constant 成功（普通值 + `INF`）
-4. engine class integer constant 成功
-5. engine class non-integer constant 失败
-6. result 变量非法（缺失 / ref）
-7. `store_static` 统一拒绝
-8. builtin constant `type` 元数据解析正确
+1. `@GlobalScope` singleton property 成功/失败
+2. `@GlobalScope` global constant 成功/失败
+3. global enum 成功/失败
+4. builtin constant 成功（普通值 + `INF`）
+5. engine class integer constant 成功
+6. inherited engine class integer constant / enum value 成功，且直接类成员遮蔽父类成员
+7. engine class non-integer constant 失败
+8. inherited engine class non-integer constant 失败，诊断指向实际 owner class
+9. result 变量非法（缺失 / ref）
+10. `store_static` 统一拒绝
+11. builtin constant `type` 元数据解析正确
+12. fixed-provided singleton wrapper 不进入 module-local header，non-provided singleton 才进入
 
 建议命令（按需 targeted）：
 
 ```bash
-./gradlew test --tests CLoadStaticInsnGenTest --tests CStoreStaticInsnGenTest --tests ExtensionApiLoaderTest --no-daemon --info --console=plain
+script/run-gradle-targeted-tests.sh --tests CLoadStaticInsnGenTest,CStoreStaticInsnGenTest,ExtensionApiLoaderTest
 ```
 
 ---
