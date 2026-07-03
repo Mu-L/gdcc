@@ -6,8 +6,19 @@
     - Primitive types: `GdPrimitiveType` and subclasses (`GdIntType`, `GdFloatType`, `GdBoolType`, `GdStringType`, ...).
     - Vector/geometry types: `GdVectorType`, `GdFloatVectorType`, `GdQuaternionType`, `GdTransform3DType`, etc.
     - Container types: `GdArrayType`, `GdDictionaryType`, and `GdPacked*` variants.
-    - Object/reference types: `GdObjectType`, `GdNodePathType`, `GdRidType`, `GdSignalType`, `GdCallableType`.
-    - Meta/extension types: `GdMetaType`, `GdExtensionTypeEnum` for annotations and extension points.
+- Object/reference types: `GdObjectType`, `GdNodePathType`, `GdRidType`, `GdSignalType`, `GdCallableType`.
+- Meta/extension types: `GdMetaType`, `GdExtensionTypeEnum` for annotations and extension points.
+- Compiler-only types: `GdCompilerType` as the shared abstraction for backend-only storage types, with `GdccForRangeIterType` as the first concrete example.
+
+## Compiler-only Types
+
+- `GdCompilerType` models GDCC-owned runtime storage that only exists inside compiler / lowering / LIR / backend pipelines.
+- Compiler-only types are not part of the GDScript source-facing type set:
+  - declared type parsers must not resolve them
+  - type-meta and outward ABI metadata must not publish them
+  - ordinary user-facing semantic facts such as `expressionTypes()` and ordinary slot typing must not expose them
+- `GdccForRangeIterType` is the first concrete `GdCompilerType`. It represents backend-owned range-iterator state storage, not a user-declarable `range(...)` result type.
+- Compiler-only types may participate in LIR/backend-local assignment and intrinsic contracts, but they are outside the ordinary frontend assignment/conversion matrix.
 
 ## Major Types (Summary)
 - `GdPrimitiveType`: atomic values.
@@ -60,7 +71,8 @@
       - `Array[SubClass]` -> `Array[SuperClass]`
       - `Dictionary[K, V]` -> `Dictionary` / `Dictionary[Variant, Variant]`
       - `Dictionary[K1, V1]` -> `Dictionary[K2, V2]` when both key/value directions are assignable.
-    - Other implicit promotions (for example numeric promotion) are not part of generic assignment compatibility and must be handled by dedicated lowering/instruction semantics.
+- Other implicit promotions (for example numeric promotion) are not part of generic assignment compatibility and must be handled by dedicated lowering/instruction semantics.
+- Compiler-only types are not part of the ordinary assignment-compatibility matrix; they are handled by LIR/backend-specific contracts and must not be treated as source-facing declared types.
 - For "TypeType", which is a type representing another type:
   - e.g. `var N = Node` where `N` is a "TypeType" representing the `Node` type.
   - We do not explicitly model "TypeType" in the type system; instead, we use a `StringName` to represent the type name as the implementation detail.

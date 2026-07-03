@@ -15,10 +15,9 @@ import gd.script.gdcc.lir.LirVariable;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.scope.*;
-import gd.script.gdcc.scope.*;
 import gd.script.gdcc.scope.resolver.ScopeTypeParsers;
 import gd.script.gdcc.type.*;
-import gd.script.gdcc.type.*;
+import gd.script.gdcc.util.TypeCheckUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -265,6 +264,7 @@ public final class CGenHelper {
 
     public @NotNull String renderGdTypeInC(@NotNull GdType gdType) {
         return switch (gdType) {
+            case GdCompilerType compilerType -> compilerType.getCStorageTypeName();
             case GdContainerType gdContainerType -> switch (gdContainerType) {
                 case GdArrayType gdArrayType -> {
                     if (gdArrayType.getValueType() instanceof GdVariantType) {
@@ -298,6 +298,7 @@ public final class CGenHelper {
 
     public @NotNull String renderGdTypeRefInC(@NotNull GdType gdType) {
         return switch (gdType) {
+            case GdCompilerType compilerType -> compilerType.getCStorageTypeName() + "*";
             case GdContainerType gdContainerType -> switch (gdContainerType) {
                 case GdArrayType gdArrayType -> {
                     if (gdArrayType.getValueType() instanceof GdVariantType) {
@@ -467,6 +468,7 @@ public final class CGenHelper {
 
     public @NotNull String renderGdTypeName(@NotNull GdType gdType) {
         return switch (gdType) {
+            case GdCompilerType _ -> gdType.getTypeName();
             case GdContainerType gdContainerType -> switch (gdContainerType) {
                 case GdArrayType _ -> "Array";
                 case GdDictionaryType _ -> "Dictionary";
@@ -516,6 +518,9 @@ public final class CGenHelper {
     }
 
     public @NotNull String renderUnpackFunctionName(@NotNull GdType type) {
+        if (type instanceof GdCompilerType) {
+            throw new IllegalArgumentException("compiler-only type leaked into Variant unpack: " + type.getTypeName());
+        }
         if (type instanceof GdObjectType objectType) {
             if (objectType.checkGdccType(context.classRegistry())) {
                 return "(" + objectType.getTypeName() + "*)godot_new_gdcc_Object_with_Variant";
@@ -534,6 +539,7 @@ public final class CGenHelper {
     /// materialization in `renderCallWrapperUnpackExpr(...)`.
     public @NotNull String renderCallWrapperVariantTypeGate(@NotNull GdType paramType,
                                                             @NotNull String typeExpr) {
+        TypeCheckUtil.requireNonCompilerOnly(paramType, "call wrapper type gate");
         switch (paramType) {
             case GdFloatType _ -> {
                 return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_FLOAT || "
@@ -541,7 +547,7 @@ public final class CGenHelper {
             }
             case GdFloatVectorType vectorType -> {
                 vectorType.ensureValidBuiltinDim();
-                var targetType = requireBoundMetadataType(paramType);
+                var targetType = requireBoundMetadataType(paramType, "call wrapper type gate");
                 var vectorSourceType = new GdIntVectorType(vectorType.getDimension()).getGdExtensionType();
                 return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + targetType.name() + " || "
                         + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + vectorSourceType.name() + ")";
@@ -555,7 +561,7 @@ public final class CGenHelper {
                         + typeExpr + " == GDEXTENSION_VARIANT_TYPE_STRING_NAME)";
             }
             default -> {
-                var targetType = requireBoundMetadataType(paramType);
+                var targetType = requireBoundMetadataType(paramType, "call wrapper type gate");
                 return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + targetType.name() + ")";
             }
         }
@@ -573,6 +579,7 @@ public final class CGenHelper {
     public @NotNull String renderCallWrapperUnpackExpr(@NotNull GdType paramType,
                                                        @NotNull String variantPtrExpr,
                                                        @Nullable String typeExpr) {
+        TypeCheckUtil.requireNonCompilerOnly(paramType, "call wrapper unpack expression");
         switch (paramType) {
             case GdFloatType _ -> {
                 var actualTypeExpr = typeExpr != null ? typeExpr : "godot_variant_get_type(" + variantPtrExpr + ")";
@@ -603,21 +610,39 @@ public final class CGenHelper {
     /// Ordinary pack helpers are the unary `godot_new_Variant_with_<Type>` family.
     /// `Nil` is excluded because it uses the dedicated nullary `godot_new_Variant_nil()`.
     public @NotNull String renderPackFunctionName(@NotNull GdType type) {
-        if (type instanceof GdNilType) {
-            throw new IllegalArgumentException("Nil uses dedicated godot_new_Variant_nil() materialization");
-        }
-        if (type instanceof GdObjectType objectType) {
-            if (objectType.checkGdccType(context.classRegistry())) {
-                return "gdcc_new_Variant_with_gdcc_Object";
+        switch (type) {
+            case GdCompilerType _ ->
+                    throw new IllegalArgumentException("compiler-only type leaked into Variant pack: " + type.getTypeName());
+            case GdNilType _ ->
+                    throw new IllegalArgumentException("Nil uses dedicated godot_new_Variant_nil() materialization");
+            case GdObjectType objectType -> {
+                if (objectType.checkGdccType(context.classRegistry())) {
+                    return "gdcc_new_Variant_with_gdcc_Object";
+                }
+                return "godot_new_Variant_with_Object";
             }
-            return "godot_new_Variant_with_Object";
-        } else {
-            return "godot_new_Variant_with_" + renderGdTypeName(type);
+            default -> {
+                return "godot_new_Variant_with_" + renderGdTypeName(type);
+            }
         }
+    }
+
+    /// Render the prepare-block init helper for compiler-only storage.
+    ///
+    /// This is intentionally narrower than ordinary constructor/default-value rendering:
+    /// only `GdCompilerType` may use this helper-name path, while regular Godot builtins keep
+    /// their existing `Construct*` / literal initialization flow in `CCodegen`.
+    public @NotNull String renderCompilerOnlyInitFunctionName(@NotNull GdCompilerType compilerType) {
+        compilerType.validateCStorageContract();
+        return compilerType.getCInitHelperName();
     }
 
     public @NotNull String renderCopyAssignFunctionName(@NotNull GdType type) {
         return switch (type) {
+            case GdCompilerType compilerType -> {
+                compilerType.validateCStorageContract();
+                yield compilerType.getCCopyHelperName();
+            }
             case GdObjectType _, GdPrimitiveType _ -> "";
             case GdVoidType _, GdNilType _ ->
                     throw new IllegalArgumentException("Type " + type.getTypeName() + " does not support copy assignment");
@@ -632,6 +657,10 @@ public final class CGenHelper {
         if (!type.isDestroyable()) {
             throw new IllegalArgumentException("Type " + type.getTypeName() + " is not destroyable");
         }
+        if (type instanceof GdCompilerType compilerType) {
+            compilerType.validateCStorageContract();
+            return compilerType.getCDestroyHelperName();
+        }
         if (type instanceof GdObjectType) {
             return "godot_object_destroy";
         } else {
@@ -645,6 +674,7 @@ public final class CGenHelper {
     /// - only destroyable non-object wrappers materialize an addressable local slot that the wrapper must destroy
     /// - object locals stay as plain pointers here, so they must not be blanket destroy/release'd at wrapper exit
     public @NotNull String renderCallWrapperDestroyStmt(@NotNull GdType type, @NotNull String varName) {
+        TypeCheckUtil.requireNonCompilerOnly(type, "call wrapper destroy stmt");
         if (type instanceof GdObjectType || !type.isDestroyable()) {
             return "";
         }
@@ -718,7 +748,7 @@ public final class CGenHelper {
     public @NotNull BoundMetadata renderBoundMetadata(@NotNull GdType type,
                                                       @NotNull String baseUsageExpr,
                                                       @NotNull String useSite) {
-        var extensionType = requireBoundMetadataType(type);
+        var extensionType = requireBoundMetadataType(type, useSite + " metadata");
         var usageExpr = type instanceof GdVariantType
                 ? baseUsageExpr + " | godot_PROPERTY_USAGE_NIL_IS_VARIANT"
                 : baseUsageExpr;
@@ -755,7 +785,9 @@ public final class CGenHelper {
         return "godot_PROPERTY_USAGE_NO_EDITOR";
     }
 
-    private @NotNull GdExtensionTypeEnum requireBoundMetadataType(@NotNull GdType type) {
+    private @NotNull GdExtensionTypeEnum requireBoundMetadataType(@NotNull GdType type,
+                                                                  @NotNull String useSite) {
+        TypeCheckUtil.requireNonCompilerOnly(type, useSite);
         var extensionType = type.getGdExtensionType();
         if (extensionType == null) {
             throw new IllegalArgumentException("Type " + type.getTypeName() + " does not have outward GDExtension metadata");
@@ -780,6 +812,9 @@ public final class CGenHelper {
                                                     @NotNull String containerKind,
                                                     boolean allowVariantLeaf) {
         return switch (type) {
+            case GdCompilerType _ -> throw new IllegalArgumentException(
+                    "compiler-only type leaked into " + containerKind + " outward hint leaf at " + useSite + ": " + type.getTypeName()
+            );
             case GdVariantType _ -> {
                 if (allowVariantLeaf) {
                     yield type.getTypeName();
@@ -886,6 +921,9 @@ public final class CGenHelper {
                                                                               @NotNull String containerKind,
                                                                               boolean allowVariantLeaf) {
         return switch (type) {
+            case GdCompilerType _ -> throw new IllegalArgumentException(
+                    "compiler-only type leaked into " + containerKind + " runtime leaf at " + useSite + ": " + type.getTypeName()
+            );
             case GdVariantType _ -> {
                 if (allowVariantLeaf) {
                     yield GdExtensionTypeEnum.NIL;

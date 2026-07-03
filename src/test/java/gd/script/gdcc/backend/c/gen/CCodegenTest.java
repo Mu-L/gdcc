@@ -35,6 +35,7 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntVectorType;
@@ -208,6 +209,150 @@ public class CCodegenTest {
         assertTrue(bindHeaderCode.contains("No module-local Godot wrappers were collected for this module."), bindHeaderCode);
         assertTrue(hCode.contains("GDEXTENSION_MY_MODULE_ENTRY_H"));
         assertTrue(hCode.contains("#include \"engine_method_binds.h\""));
+    }
+
+    @Test
+    public void generateShouldRejectCompilerOnlyTypeOnHiddenFunctionReturnBeforeBackendSynthesis() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        var helper = new LirFunctionDef("helper");
+        helper.setHidden(true);
+        helper.setReturnType(GdccForRangeIterType.FOR_RANGE_ITER);
+        var entry = new LirBasicBlock("entry");
+        entry.setTerminator(new ReturnInsn(null));
+        helper.addBasicBlock(entry);
+        helper.setEntryBlockId("entry");
+        workerClass.addFunction(helper);
+
+        var module = new LirModule("compiler_only_hidden_return", List.of(workerClass));
+        var classRegistry = new ClassRegistry(new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        ));
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var exception = assertThrows(IllegalArgumentException.class, codegen::generate);
+
+        assertTrue(exception.getMessage().contains("compiler-only type leaked into function return"), exception.getMessage());
+        assertFalse(exception.getMessage().contains("dedicated prepare initialization"), exception.getMessage());
+        assertFalse(exception.getMessage().contains("property initializer"), exception.getMessage());
+        assertFalse(exception.getMessage().contains("outward GDExtension metadata"), exception.getMessage());
+    }
+
+    @Test
+    public void generateShouldRejectCompilerOnlyPropertyBeforeDefaultInitSynthesis() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        workerClass.addProperty(new LirPropertyDef("iter", GdccForRangeIterType.FOR_RANGE_ITER));
+
+        var module = new LirModule("compiler_only_property", List.of(workerClass));
+        var classRegistry = new ClassRegistry(new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        ));
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var exception = assertThrows(IllegalArgumentException.class, codegen::generate);
+
+        assertTrue(exception.getMessage().contains("compiler-only type leaked into property"), exception.getMessage());
+        assertFalse(exception.getMessage().contains("property initializer"), exception.getMessage());
+        assertFalse(exception.getMessage().contains("outward GDExtension metadata"), exception.getMessage());
+    }
+
+    @Test
+    public void generateShouldEmitCompilerOnlyPrepareInitCallForLocalVariables() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        var func = new LirFunctionDef("prepare_compiler_only_local");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER);
+        var entryBlock = new LirBasicBlock("entry");
+        entryBlock.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entryBlock);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("compiler_only_prepare", List.of(workerClass));
+        var classRegistry = new ClassRegistry(new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        ));
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var files = codegen.generate();
+        var cCode = generatedFileText(files, "entry.c");
+
+        assertTrue(cCode.contains("gdcc_for_range_iter $iter;"), cCode);
+        assertTrue(cCode.contains("$iter = gdcc_for_range_iter_init();"), cCode);
+        assertFalse(cCode.contains("godot_new_GdccForRangeIter"), cCode);
+    }
+
+    @Test
+    public void generateShouldKeepCompilerOnlyPrepareInitOnExplicitHelperPath() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        var func = new LirFunctionDef("prepare_compiler_only_local_again");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER);
+        var entryBlock = new LirBasicBlock("entry");
+        entryBlock.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entryBlock);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("compiler_only_prepare_again", List.of(workerClass));
+        var classRegistry = new ClassRegistry(new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        ));
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var files = codegen.generate();
+        var cCode = generatedFileText(files, "entry.c");
+
+        assertTrue(cCode.contains("$iter = gdcc_for_range_iter_init();"), cCode);
+        assertFalse(cCode.contains("ConstructBuiltinInsn"), cCode);
+        assertFalse(cCode.contains("godot_new_GdccForRangeIter"), cCode);
     }
 
     @Test

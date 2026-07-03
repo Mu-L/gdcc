@@ -889,6 +889,9 @@ public final class CBodyBuilder {
     @NotNull
     public static String renderDefaultValueExpr(@NotNull GdType type) {
         return switch (type) {
+            case GdCompilerType _ -> throw new IllegalArgumentException(
+                    "compiler-only type leaked into default value expression: " + type.getTypeName()
+            );
             case GdVoidType _ -> "";
             case GdBoolType _ -> "false";
             case GdIntType _ -> "0";
@@ -964,6 +967,10 @@ public final class CBodyBuilder {
     /// - Object pointers: NO
     /// - Value-semantic types (String, Variant, Array, etc.): YES
     private boolean needsAddressOf(@NotNull GdType type) {
+        if (type instanceof GdCompilerType compilerType) {
+            compilerType.validateCStorageContract();
+            return compilerType.isPassedByPointerInC();
+        }
         // Primitives are passed by value
         // Object pointers are already pointers
         // All other types (String, StringName, Variant, Array, Dictionary, etc.)
@@ -980,6 +987,10 @@ public final class CBodyBuilder {
 
         // Primitives and object pointers: direct assignment
         if (type instanceof GdPrimitiveType || type instanceof GdObjectType) {
+            return new RenderResult(code, List.of());
+        }
+
+        if (checkCompilerOnlyDirectAssignment(type)) {
             return new RenderResult(code, List.of());
         }
 
@@ -1008,6 +1019,7 @@ public final class CBodyBuilder {
                 canDestroyOldValue(target),
                 target,
                 value,
+                value.type(),
                 !helper.renderCopyAssignFunctionName(value.type()).isEmpty()
         )) {
             return PreparedAssignmentRhs.ordinary(rhsResult);
@@ -1051,6 +1063,10 @@ public final class CBodyBuilder {
             return new RenderResult(code, List.of());
         }
 
+        if (checkCompilerOnlyDirectAssignment(type)) {
+            return new RenderResult(code, List.of());
+        }
+
         // Value-semantic types: need to copy for return
         var copyFunc = helper.renderCopyAssignFunctionName(type);
         if (!copyFunc.isEmpty()) {
@@ -1060,6 +1076,15 @@ public final class CBodyBuilder {
         }
 
         return new RenderResult(code, List.of());
+    }
+
+    /// Compiler-only direct assignment is an explicit protocol, not an empty-helper side effect.
+    private boolean checkCompilerOnlyDirectAssignment(@NotNull GdType type) {
+        if (!(type instanceof GdCompilerType compilerType)) {
+            return false;
+        }
+        compilerType.validateCStorageContract();
+        return compilerType.isDirectStructAssignmentSafe();
     }
 
     private void emitTempDecls(@NotNull List<TempVar> temps) {

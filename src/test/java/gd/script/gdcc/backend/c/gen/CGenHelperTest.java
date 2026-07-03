@@ -11,6 +11,7 @@ import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntVectorType;
@@ -58,6 +59,31 @@ class CGenHelperTest {
 
         var context = new CodegenContext(projectInfo, classRegistry);
         helper = new CGenHelper(context, List.of(gdccBase, gdccChild, gdccInner));
+    }
+
+    @Test
+    @DisplayName("compiler-only range iterator should use gdcc storage helpers and reject Variant helpers")
+    void compilerOnlyRangeIteratorShouldUseGdccHelpersAndRejectVariantHelpers() {
+        var type = GdccForRangeIterType.FOR_RANGE_ITER;
+
+        assertEquals("gdcc_for_range_iter", helper.renderGdTypeInC(type));
+        assertEquals("gdcc_for_range_iter*", helper.renderGdTypeRefInC(type));
+        assertEquals("GdccForRangeIter", helper.renderGdTypeName(type));
+        assertEquals("gdcc_for_range_iter_init", helper.renderCompilerOnlyInitFunctionName(type));
+        assertEquals("", helper.renderCopyAssignFunctionName(type));
+        assertEquals("gdcc_for_range_iter_destroy", helper.renderDestroyFunctionName(type));
+        assertFalse(helper.renderGdTypeInC(type).contains("godot_"));
+        assertFalse(helper.renderDestroyFunctionName(type).contains("godot_"));
+        assertThrows(IllegalArgumentException.class, () -> helper.renderPackFunctionName(type));
+        assertThrows(IllegalArgumentException.class, () -> helper.renderUnpackFunctionName(type));
+    }
+
+    @Test
+    @DisplayName("compiler-only helper rendering should keep explicit direct-assignment contract")
+    void compilerOnlyHelperRenderingShouldKeepExplicitDirectAssignmentContract() {
+        var type = GdccForRangeIterType.FOR_RANGE_ITER;
+        assertTrue(type.isDirectStructAssignmentSafe(), "existing compiler-only type should stay on direct assignment path");
+        assertEquals("", helper.renderCopyAssignFunctionName(type), "consumer should still observe the explicit direct-assignment contract");
     }
 
     @Test
@@ -210,6 +236,20 @@ class CGenHelperTest {
         );
 
         assertTrue(ex.getMessage().contains("does not have outward GDExtension metadata"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should reject compiler-only metadata slots")
+    void renderBoundMetadataShouldRejectCompilerOnlySlot() {
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderBoundMetadata(GdccForRangeIterType.FOR_RANGE_ITER, "godot_PROPERTY_USAGE_DEFAULT")
+        );
+
+        assertEquals(
+                "compiler-only type leaked into bound slot metadata: GdccForRangeIter",
+                ex.getMessage()
+        );
     }
 
     @Test
@@ -627,6 +667,37 @@ class CGenHelperTest {
     }
 
     @Test
+    @DisplayName("call wrapper helpers should reject compiler-only types")
+    void callWrapperHelpersShouldRejectCompilerOnlyTypes() {
+        var typeGateEx = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderCallWrapperVariantTypeGate(GdccForRangeIterType.FOR_RANGE_ITER, "type")
+        );
+        assertEquals(
+                "compiler-only type leaked into call wrapper type gate: GdccForRangeIter",
+                typeGateEx.getMessage()
+        );
+
+        var unpackEx = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderCallWrapperUnpackExpr(GdccForRangeIterType.FOR_RANGE_ITER, "value_ptr", "value_type")
+        );
+        assertEquals(
+                "compiler-only type leaked into call wrapper unpack expression: GdccForRangeIter",
+                unpackEx.getMessage()
+        );
+
+        var destroyEx = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderCallWrapperDestroyStmt(GdccForRangeIterType.FOR_RANGE_ITER, "value")
+        );
+        assertEquals(
+                "compiler-only type leaked into call wrapper destroy stmt: GdccForRangeIter",
+                destroyEx.getMessage()
+        );
+    }
+
+    @Test
     @DisplayName("call wrapper type gate should keep narrow primitive widening rules")
     void renderCallWrapperVariantTypeGateShouldKeepNarrowPrimitiveWideningRules() {
         assertEquals(
@@ -780,6 +851,13 @@ class CGenHelperTest {
         assertTrue(source.contains("godot_StringName source = godot_new_StringName_with_Variant(value);"), source);
         assertTrue(source.contains("godot_String result = godot_new_String_with_StringName(&source);"), source);
         assertTrue(source.contains("godot_StringName_destroy(&source);"), source);
+
+        assertTrue(source.contains("typedef struct gdcc_for_range_iter"), source);
+        assertTrue(source.contains("gdcc_for_range_iter_from_bounds"), source);
+        assertTrue(source.contains("gdcc_for_range_iter_should_continue"), source);
+        assertTrue(source.contains("gdcc_for_range_iter_next"), source);
+        assertTrue(source.contains("gdcc_for_range_iter_get"), source);
+        assertTrue(source.contains("godot_print_error(\"range step argument is zero\""), source);
     }
 
     @Test
