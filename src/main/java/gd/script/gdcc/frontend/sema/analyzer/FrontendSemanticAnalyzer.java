@@ -16,11 +16,8 @@ import java.util.Objects;
 /// - skeleton publication
 /// - lexical scope graph construction
 /// - callable-parameter and supported local-variable inventory
-/// - top-binding publication for symbol-category resolution
-/// - source-order local `:=` slot stabilization
-/// - chain member/call publication
-/// - expression-type publication
-/// - callable-local slot-type publication
+/// - interface/body suite publication for statement-local top binding, local slot stabilization,
+///   chain binding, expression typing, and callable-local slot finalization
 /// - annotation-usage validation
 /// - diagnostics-only engine virtual override validation
 /// - diagnostics-only type-check traversal
@@ -31,27 +28,19 @@ public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder;
     private final @NotNull FrontendScopeAnalyzer scopeAnalyzer;
     private final @NotNull FrontendVariableAnalyzer variableAnalyzer;
-    private final @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer;
-    private final @NotNull FrontendLocalTypeStabilizationAnalyzer localTypeStabilizationAnalyzer;
-    private final @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer;
-    private final @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer;
-    private final @NotNull FrontendVarTypePostAnalyzer varTypePostAnalyzer;
     private final @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer;
     private final @NotNull FrontendVirtualOverrideAnalyzer virtualOverrideAnalyzer;
     private final @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer;
     private final @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer;
     private final @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer;
+    private final @NotNull FrontendInterfacePhase interfacePhase;
+    private final @NotNull FrontendSuiteResolver suiteResolver;
 
     public FrontendSemanticAnalyzer() {
         this(
                 new FrontendClassSkeletonBuilder(),
                 new FrontendScopeAnalyzer(),
                 new FrontendVariableAnalyzer(),
-                new FrontendTopBindingAnalyzer(),
-                new FrontendLocalTypeStabilizationAnalyzer(),
-                new FrontendChainBindingAnalyzer(),
-                new FrontendExprTypeAnalyzer(),
-                new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
                 new FrontendVirtualOverrideAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
@@ -60,16 +49,29 @@ public final class FrontendSemanticAnalyzer {
         );
     }
 
+    public FrontendSemanticAnalyzer(
+            @NotNull FrontendInterfacePhase interfacePhase,
+            @NotNull FrontendSuiteResolver suiteResolver
+    ) {
+        this(
+                new FrontendClassSkeletonBuilder(),
+                new FrontendScopeAnalyzer(),
+                new FrontendVariableAnalyzer(),
+                new FrontendAnnotationUsageAnalyzer(),
+                new FrontendVirtualOverrideAnalyzer(),
+                new FrontendTypeCheckAnalyzer(),
+                new FrontendLoopControlFlowAnalyzer(),
+                new FrontendCompileCheckAnalyzer(),
+                interfacePhase,
+                suiteResolver
+        );
+    }
+
     public FrontendSemanticAnalyzer(@NotNull FrontendClassSkeletonBuilder classSkeletonBuilder) {
         this(
                 classSkeletonBuilder,
                 new FrontendScopeAnalyzer(),
                 new FrontendVariableAnalyzer(),
-                new FrontendTopBindingAnalyzer(),
-                new FrontendLocalTypeStabilizationAnalyzer(),
-                new FrontendChainBindingAnalyzer(),
-                new FrontendExprTypeAnalyzer(),
-                new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
                 new FrontendVirtualOverrideAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
@@ -86,11 +88,6 @@ public final class FrontendSemanticAnalyzer {
                 classSkeletonBuilder,
                 scopeAnalyzer,
                 new FrontendVariableAnalyzer(),
-                new FrontendTopBindingAnalyzer(),
-                new FrontendLocalTypeStabilizationAnalyzer(),
-                new FrontendChainBindingAnalyzer(),
-                new FrontendExprTypeAnalyzer(),
-                new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
                 new FrontendVirtualOverrideAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
@@ -108,11 +105,6 @@ public final class FrontendSemanticAnalyzer {
                 classSkeletonBuilder,
                 scopeAnalyzer,
                 variableAnalyzer,
-                new FrontendTopBindingAnalyzer(),
-                new FrontendLocalTypeStabilizationAnalyzer(),
-                new FrontendChainBindingAnalyzer(),
-                new FrontendExprTypeAnalyzer(),
-                new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
                 new FrontendVirtualOverrideAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
@@ -121,254 +113,12 @@ public final class FrontendSemanticAnalyzer {
         );
     }
 
+    /// Creates a testable active-phase pipeline while keeping body-fact publication owned solely
+    /// by the default interface/body resolver pair.
     public FrontendSemanticAnalyzer(
             @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
             @NotNull FrontendScopeAnalyzer scopeAnalyzer,
             @NotNull FrontendVariableAnalyzer variableAnalyzer,
-            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer
-    ) {
-        this(
-                classSkeletonBuilder,
-                scopeAnalyzer,
-                variableAnalyzer,
-                topBindingAnalyzer,
-                new FrontendLocalTypeStabilizationAnalyzer(),
-                new FrontendChainBindingAnalyzer(),
-                new FrontendExprTypeAnalyzer(),
-                new FrontendVarTypePostAnalyzer(),
-                new FrontendAnnotationUsageAnalyzer(),
-                new FrontendVirtualOverrideAnalyzer(),
-                new FrontendTypeCheckAnalyzer(),
-                new FrontendLoopControlFlowAnalyzer(),
-                new FrontendCompileCheckAnalyzer()
-        );
-    }
-
-    public FrontendSemanticAnalyzer(
-            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
-            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
-            @NotNull FrontendVariableAnalyzer variableAnalyzer,
-            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
-            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer
-    ) {
-        this(
-                classSkeletonBuilder,
-                scopeAnalyzer,
-                variableAnalyzer,
-                topBindingAnalyzer,
-                new FrontendLocalTypeStabilizationAnalyzer(),
-                chainBindingAnalyzer,
-                new FrontendExprTypeAnalyzer(),
-                new FrontendVarTypePostAnalyzer(),
-                new FrontendAnnotationUsageAnalyzer(),
-                new FrontendVirtualOverrideAnalyzer(),
-                new FrontendTypeCheckAnalyzer(),
-                new FrontendLoopControlFlowAnalyzer(),
-                new FrontendCompileCheckAnalyzer()
-        );
-    }
-
-    public FrontendSemanticAnalyzer(
-            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
-            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
-            @NotNull FrontendVariableAnalyzer variableAnalyzer,
-            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
-            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
-            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer
-    ) {
-        this(
-                classSkeletonBuilder,
-                scopeAnalyzer,
-                variableAnalyzer,
-                topBindingAnalyzer,
-                new FrontendLocalTypeStabilizationAnalyzer(),
-                chainBindingAnalyzer,
-                exprTypeAnalyzer,
-                new FrontendVarTypePostAnalyzer(),
-                new FrontendAnnotationUsageAnalyzer(),
-                new FrontendVirtualOverrideAnalyzer(),
-                new FrontendTypeCheckAnalyzer(),
-                new FrontendLoopControlFlowAnalyzer(),
-                new FrontendCompileCheckAnalyzer()
-        );
-    }
-
-    public FrontendSemanticAnalyzer(
-            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
-            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
-            @NotNull FrontendVariableAnalyzer variableAnalyzer,
-            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
-            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
-            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
-            @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer
-    ) {
-        this(
-                classSkeletonBuilder,
-                scopeAnalyzer,
-                variableAnalyzer,
-                topBindingAnalyzer,
-                new FrontendLocalTypeStabilizationAnalyzer(),
-                chainBindingAnalyzer,
-                exprTypeAnalyzer,
-                new FrontendVarTypePostAnalyzer(),
-                new FrontendAnnotationUsageAnalyzer(),
-                new FrontendVirtualOverrideAnalyzer(),
-                typeCheckAnalyzer,
-                new FrontendLoopControlFlowAnalyzer(),
-                new FrontendCompileCheckAnalyzer()
-        );
-    }
-
-    public FrontendSemanticAnalyzer(
-            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
-            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
-            @NotNull FrontendVariableAnalyzer variableAnalyzer,
-            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
-            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
-            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
-            @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer,
-            @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer
-    ) {
-        this(
-                classSkeletonBuilder,
-                scopeAnalyzer,
-                variableAnalyzer,
-                topBindingAnalyzer,
-                new FrontendLocalTypeStabilizationAnalyzer(),
-                chainBindingAnalyzer,
-                exprTypeAnalyzer,
-                new FrontendVarTypePostAnalyzer(),
-                annotationUsageAnalyzer,
-                new FrontendVirtualOverrideAnalyzer(),
-                typeCheckAnalyzer,
-                new FrontendLoopControlFlowAnalyzer(),
-                new FrontendCompileCheckAnalyzer()
-        );
-    }
-
-    public FrontendSemanticAnalyzer(
-            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
-            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
-            @NotNull FrontendVariableAnalyzer variableAnalyzer,
-            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
-            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
-            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
-            @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer,
-            @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer,
-            @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer
-    ) {
-        this(
-                classSkeletonBuilder,
-                scopeAnalyzer,
-                variableAnalyzer,
-                topBindingAnalyzer,
-                new FrontendLocalTypeStabilizationAnalyzer(),
-                chainBindingAnalyzer,
-                exprTypeAnalyzer,
-                new FrontendVarTypePostAnalyzer(),
-                annotationUsageAnalyzer,
-                new FrontendVirtualOverrideAnalyzer(),
-                typeCheckAnalyzer,
-                loopControlFlowAnalyzer,
-                new FrontendCompileCheckAnalyzer()
-        );
-    }
-
-    public FrontendSemanticAnalyzer(
-            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
-            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
-            @NotNull FrontendVariableAnalyzer variableAnalyzer,
-            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
-            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
-            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
-            @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer,
-            @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer,
-            @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer
-    ) {
-        this(
-                classSkeletonBuilder,
-                scopeAnalyzer,
-                variableAnalyzer,
-                topBindingAnalyzer,
-                new FrontendLocalTypeStabilizationAnalyzer(),
-                chainBindingAnalyzer,
-                exprTypeAnalyzer,
-                new FrontendVarTypePostAnalyzer(),
-                annotationUsageAnalyzer,
-                new FrontendVirtualOverrideAnalyzer(),
-                typeCheckAnalyzer,
-                new FrontendLoopControlFlowAnalyzer(),
-                compileCheckAnalyzer
-        );
-    }
-
-    public FrontendSemanticAnalyzer(
-            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
-            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
-            @NotNull FrontendVariableAnalyzer variableAnalyzer,
-            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
-            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
-            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
-            @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer,
-            @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer,
-            @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer,
-            @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer
-    ) {
-        this(
-                classSkeletonBuilder,
-                scopeAnalyzer,
-                variableAnalyzer,
-                topBindingAnalyzer,
-                new FrontendLocalTypeStabilizationAnalyzer(),
-                chainBindingAnalyzer,
-                exprTypeAnalyzer,
-                new FrontendVarTypePostAnalyzer(),
-                annotationUsageAnalyzer,
-                new FrontendVirtualOverrideAnalyzer(),
-                typeCheckAnalyzer,
-                loopControlFlowAnalyzer,
-                compileCheckAnalyzer
-        );
-    }
-
-    public FrontendSemanticAnalyzer(
-            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
-            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
-            @NotNull FrontendVariableAnalyzer variableAnalyzer,
-            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
-            @NotNull FrontendLocalTypeStabilizationAnalyzer localTypeStabilizationAnalyzer,
-            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
-            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
-            @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer,
-            @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer,
-            @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer,
-            @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer
-    ) {
-        this(
-                classSkeletonBuilder,
-                scopeAnalyzer,
-                variableAnalyzer,
-                topBindingAnalyzer,
-                localTypeStabilizationAnalyzer,
-                chainBindingAnalyzer,
-                exprTypeAnalyzer,
-                new FrontendVarTypePostAnalyzer(),
-                annotationUsageAnalyzer,
-                new FrontendVirtualOverrideAnalyzer(),
-                typeCheckAnalyzer,
-                loopControlFlowAnalyzer,
-                compileCheckAnalyzer
-        );
-    }
-
-    public FrontendSemanticAnalyzer(
-            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
-            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
-            @NotNull FrontendVariableAnalyzer variableAnalyzer,
-            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
-            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
-            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
-            @NotNull FrontendVarTypePostAnalyzer varTypePostAnalyzer,
             @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer,
             @NotNull FrontendVirtualOverrideAnalyzer virtualOverrideAnalyzer,
             @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer,
@@ -379,48 +129,31 @@ public final class FrontendSemanticAnalyzer {
                 classSkeletonBuilder,
                 scopeAnalyzer,
                 variableAnalyzer,
-                topBindingAnalyzer,
-                new FrontendLocalTypeStabilizationAnalyzer(),
-                chainBindingAnalyzer,
-                exprTypeAnalyzer,
-                varTypePostAnalyzer,
                 annotationUsageAnalyzer,
                 virtualOverrideAnalyzer,
                 typeCheckAnalyzer,
                 loopControlFlowAnalyzer,
-                compileCheckAnalyzer
+                compileCheckAnalyzer,
+                new FrontendInterfacePhase(),
+                new FrontendSuiteResolver()
         );
     }
 
-    public FrontendSemanticAnalyzer(
+    private FrontendSemanticAnalyzer(
             @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
             @NotNull FrontendScopeAnalyzer scopeAnalyzer,
             @NotNull FrontendVariableAnalyzer variableAnalyzer,
-            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
-            @NotNull FrontendLocalTypeStabilizationAnalyzer localTypeStabilizationAnalyzer,
-            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
-            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
-            @NotNull FrontendVarTypePostAnalyzer varTypePostAnalyzer,
             @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer,
             @NotNull FrontendVirtualOverrideAnalyzer virtualOverrideAnalyzer,
             @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer,
             @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer,
-            @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer
+            @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer,
+            @NotNull FrontendInterfacePhase interfacePhase,
+            @NotNull FrontendSuiteResolver suiteResolver
     ) {
         this.classSkeletonBuilder = Objects.requireNonNull(classSkeletonBuilder, "classSkeletonBuilder must not be null");
         this.scopeAnalyzer = Objects.requireNonNull(scopeAnalyzer, "scopeAnalyzer must not be null");
         this.variableAnalyzer = Objects.requireNonNull(variableAnalyzer, "variableAnalyzer must not be null");
-        this.topBindingAnalyzer = Objects.requireNonNull(topBindingAnalyzer, "topBindingAnalyzer must not be null");
-        this.localTypeStabilizationAnalyzer = Objects.requireNonNull(
-                localTypeStabilizationAnalyzer,
-                "localTypeStabilizationAnalyzer must not be null"
-        );
-        this.chainBindingAnalyzer = Objects.requireNonNull(chainBindingAnalyzer, "chainBindingAnalyzer must not be null");
-        this.exprTypeAnalyzer = Objects.requireNonNull(exprTypeAnalyzer, "exprTypeAnalyzer must not be null");
-        this.varTypePostAnalyzer = Objects.requireNonNull(
-                varTypePostAnalyzer,
-                "varTypePostAnalyzer must not be null"
-        );
         this.annotationUsageAnalyzer = Objects.requireNonNull(
                 annotationUsageAnalyzer,
                 "annotationUsageAnalyzer must not be null"
@@ -435,6 +168,8 @@ public final class FrontendSemanticAnalyzer {
                 "loopControlFlowAnalyzer must not be null"
         );
         this.compileCheckAnalyzer = Objects.requireNonNull(compileCheckAnalyzer, "compileCheckAnalyzer must not be null");
+        this.interfacePhase = Objects.requireNonNull(interfacePhase, "interfacePhase must not be null");
+        this.suiteResolver = Objects.requireNonNull(suiteResolver, "suiteResolver must not be null");
     }
 
     /// Runs the current frontend analyzer framework against one module using a shared
@@ -448,6 +183,14 @@ public final class FrontendSemanticAnalyzer {
     /// Compile callers must use `analyzeForCompile(...)` and check the resulting diagnostics for
     /// errors before allowing frontend output to enter lowering.
     public @NotNull FrontendAnalysisData analyze(
+            @NotNull FrontendModule module,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        return analyzeShared(module, classRegistry, diagnosticManager);
+    }
+
+    private @NotNull FrontendAnalysisData analyzeShared(
             @NotNull FrontendModule module,
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnosticManager
@@ -481,32 +224,11 @@ public final class FrontendSemanticAnalyzer {
         variableAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
-        // Top-binding analysis classifies supported use-sites into stable symbol categories while
-        // still keeping member/call resolution out of scope. Keeping it separate from variable
-        // analysis preserves a clean hand-off between declaration inventory and use-site binding.
-        topBindingAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-
-        // Local type stabilization updates only block-local `:=` slot types. It runs after use-site
-        // symbols are classified and before chain binding consumes receiver slots.
-        localTypeStabilizationAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-
-        // Chain-binding analysis consumes published symbol/scope facts plus stabilized local slots,
-        // then emits the first stable member/call side tables without opening whole-module
-        // expression typing yet.
-        chainBindingAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-
-        // Expression typing consumes the published symbol/member/call facts and releases expression
-        // facts without taking primary ownership of inferred local slot stabilization.
-        exprTypeAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-
-        // Lowering is only allowed to consume published facts, so the final callable-local slot
-        // types are republished here after local stabilization and expression typing have settled
-        // the lexical inventory state.
-        varTypePostAnalyzer.analyze(analysisData, diagnosticManager);
+        // Interface analysis freezes callable/property entry roots before the body owner
+        // publication path runs. Shared facts can only enter stable storage through
+        // SuiteResolver's per-owner export transaction.
+        var interfaceSurface = interfacePhase.analyze(classRegistry, analysisData);
+        suiteResolver.resolve(interfaceSurface, classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
         // Annotation-usage validation consumes retained annotations plus the published class/scope

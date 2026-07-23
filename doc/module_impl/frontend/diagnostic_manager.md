@@ -212,7 +212,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.unsupported_parameter_default_value`
   - variable analyzer 对 parameter default value 当前尚未接线时发出的 feature-boundary error
 - `sema.unsupported_variable_inventory_subtree`
-  - variable analyzer 对 lambda / `for` / `match` / block-local `const` inventory 边界发出的 feature-boundary error
+  - variable analyzer 对 lambda / `match` / block-local `const` inventory 边界发出的 feature-boundary error
 - `sema.variable_slot_publication`
   - var-type-post analyzer 对 supported callable-local `var` 因 earlier duplicate/shadowing reject 而无法发布 `slotTypes()` 时发出的 warning
   - warning message 若能在当前 callable 边界内找到幸存的 accepted local / parameter / capture，必须带出该幸存绑定的语义类别与声明位置
@@ -220,7 +220,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.binding`
   - top binding 命中的 blocked / unknown / shadowing 诊断
 - `sema.unsupported_binding_subtree`
-  - top binding 对 parameter default、lambda、`for`、`match`、block-local `const` 等明确 unsupported subtree 的边界 error
+  - top binding 对 parameter default、lambda、`match`、block-local `const` 等明确 unsupported subtree 的边界 error
   - top binding 对 missing-scope / skipped subtree 的恢复诊断继续允许使用 warning
 - `sema.member_resolution`
   - chain binding 中 blocked / failed member step 的语义错误
@@ -266,10 +266,11 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.compile_check`
   - compile-only `FrontendCompileCheckAnalyzer` 对进入 lowering 前仍不可编译的 surface 发出的最终 error
   - 同时覆盖：
-    - 当前首批显式封口的 `assert`、`ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression`
+    - 当前首批显式封口的 `assert`、`ForStatement`、`ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression`
     - compile surface 上 `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 中仍残留的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`
     - supported callable-local `var` 因 `sema.variable_slot_publication` warning 仍缺失 `slotTypes()` 的 lowering-only fact 缺洞
   - `assert` 在这里仍只是 compile-only blocked；共享 type-check 继续保留 Godot-compatible condition contract，不把它回退成 strict-bool `sema.type_check`
+  - `ForStatement` 已进入 shared semantic；当前 blocker 只锚定 statement root，不读取 iterable typed fact/iteration plan，也不进入 body，直到 route-aware CFG/lowering 接通
   - 上述 7 类表达式属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
   - `ConditionalExpression` 当前单独被列入这份清单，是因为真正的 lowering 需要等 frontend CFG graph / condition-evaluation-region 合同冻结后再接通；现有 metadata-only `FrontendLoweringCfgPass` 仍属于过渡层
   - `DYNAMIC` 不属于 compile blocker；它保留为 frontend 已接受的 runtime-open 事实，而不是 lowering 未实现状态
@@ -330,6 +331,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 
 - `FrontendSemanticAnalyzer` 当前返回 `FrontendAnalysisData`
 - analyze 流程围绕同一份共享分析数据推进
+- interface/body suite resolver 路径会在每个 body statement boundary 刷新 `FrontendAnalysisData.diagnostics()`，让后一 statement 能读取 current-suite upstream diagnostic snapshot；suite export 在 patch transaction 应用后保留最终 body snapshot
 - analyze 现在已经具备独立的多 phase 主链路：
     - skeleton 结束后先发布 `updateModuleSkeleton(...)`
     - 再发布一次 pre-scope `updateDiagnostics(...)`
@@ -348,6 +350,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `analyzeForCompile(...)` 在共享 11 phase 之后追加：
     - 调用 `FrontendCompileCheckAnalyzer.analyze(...)`
     - 再次 `updateDiagnostics(...)`，把 compile-only final gate 的诊断写回最终边界快照
+- compile gate 运行前仍要求 stable diagnostics boundary 已发布，但 duplicate suppression 会冻结 live `DiagnosticManager.snapshot()`，避免 interface/body upstream diagnostics 因调用方尚未再次复制到 `FrontendAnalysisData` 而被漏看
 - 共享 `analyze(...)` 的结果当前仍只是 frontend semantic snapshot，不应直接视为 lowering-ready
 - inspection 与未来 LSP 入口继续消费共享 `analyze(...)`，不应被 `sema.compile_check` 污染
 - 未来 frontend -> LIR lowering 调用方必须：

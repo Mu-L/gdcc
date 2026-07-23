@@ -61,12 +61,8 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
-import java.util.Collections;
-import java.util.IdentityHashMap;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
+import java.util.function.Predicate;
 
 /// Compile-only final frontend gate that runs after the shared semantic pipeline.
 ///
@@ -86,13 +82,13 @@ public class FrontendCompileCheckAnalyzer {
     /// gate's own hard-stop diagnostic. Those categories stay configurable here so future warning-
     /// based blockers do not need another dedicated ignore-upstream branch.
     private static final @NotNull Map<String, String> NON_CONFLICTING_UPSTREAM_DIAGNOSTIC_CATEGORIES = Map.of(
-            FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY,
+            FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY,
             "slot-publication warning explains the missing lowering-ready fact and must coexist with compile_check"
     );
     /// Compile mode usually blocks only on upstream `ERROR`s. This set is the narrow exception list
     /// for already-published non-error diagnostics that still represent a lowering-blocking gap.
     private static final @NotNull Set<String> NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES = Set.of(
-            FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY
+            FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
     );
 
     public void analyze(
@@ -103,7 +99,13 @@ public class FrontendCompileCheckAnalyzer {
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
 
         var moduleSkeleton = analysisData.moduleSkeleton();
-        var publishedDiagnostics = analysisData.diagnostics();
+        // Keep the stable boundary precondition even though dedup reads the live manager below.
+        analysisData.diagnostics();
+        // Freeze the live manager at compile-gate entry. This captures the latest interface/body
+        // upstream diagnostics even if a caller has not yet copied that manager state back into
+        // `FrontendAnalysisData`, while still preventing diagnostics emitted by this gate from
+        // suppressing later checks in the same run.
+        var publishedDiagnostics = diagnosticManager.snapshot();
         var scopesByAst = analysisData.scopesByAst();
 
         for (var sourceClassRelation : moduleSkeleton.sourceClassRelations()) {
@@ -416,9 +418,17 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
-        /// `for` remains outside compile mode until the lowering/backend route is implemented.
+        /// `for` is shared-semantic supported but remains blocked before CFG/lowering is entered.
         @Override
         public @NotNull FrontendASTTraversalDirective handleForStatement(@NotNull ForStatement forStatement) {
+            if (supportedExecutableBlockDepth <= 0 || isNotPublished(forStatement)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            reportExplicitCompileBlock(
+                    forStatement,
+                    "For statement is supported by shared semantic analysis but cannot be compiled until its CFG "
+                            + "and lowering route is implemented"
+            );
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -437,14 +447,14 @@ public class FrontendCompileCheckAnalyzer {
         }
 
         /// Replay the AST walker over a flat statement list in source order.
-        private void walkStatements(@NotNull java.util.List<Statement> statements) {
+        private void walkStatements(@NotNull List<Statement> statements) {
             for (var statement : statements) {
                 astWalker.walk(statement);
             }
         }
 
         /// Traverse declarations with executable depth pinned to zero so nested bodies must opt in explicitly.
-        private void walkNonExecutableContainerStatements(@NotNull java.util.List<Statement> statements) {
+        private void walkNonExecutableContainerStatements(@NotNull List<Statement> statements) {
             var previousDepth = supportedExecutableBlockDepth;
             supportedExecutableBlockDepth = 0;
             try {
@@ -542,7 +552,10 @@ public class FrontendCompileCheckAnalyzer {
                 if (!isCompileBlocking(publishedType.status()) || !compileSurfaceNodes.contains(anchor)) {
                     continue;
                 }
-                if (isAssignmentRootCoveredByExplicitSelfPrefixDiagnostic(anchor, publishedType)) {
+                if (isAssignmentRootCoveredByExplicitSelfPrefixDiagnostic(anchor)) {
+                    continue;
+                }
+                if (isCoveredByStaticSelfBindingDiagnostic(publishedType.detailReason())) {
                     continue;
                 }
                 var compileAnchor = compileAnchorForExpressionType(anchor);
@@ -566,6 +579,9 @@ public class FrontendCompileCheckAnalyzer {
                 var anchor = requireAttributePropertyStep(entry.getKey());
                 var publishedMember = Objects.requireNonNull(entry.getValue(), "publishedMember must not be null");
                 if (!isCompileBlocking(publishedMember.status()) || !compileSurfaceNodes.contains(anchor)) {
+                    continue;
+                }
+                if (isCoveredByStaticSelfBindingDiagnostic(publishedMember.detailReason())) {
                     continue;
                 }
                 reportCompileBlock(
@@ -678,10 +694,7 @@ public class FrontendCompileCheckAnalyzer {
         /// Assignment root facts can propagate a prefix-owned blocked `self` route. When that exact
         /// prefix already has the upstream binding diagnostic, keep ownership there instead of adding
         /// a generic root-level compile blocker for the same cause.
-        private boolean isAssignmentRootCoveredByExplicitSelfPrefixDiagnostic(
-                @NotNull Node anchor,
-                @NotNull FrontendExpressionType publishedType
-        ) {
+        private boolean isAssignmentRootCoveredByExplicitSelfPrefixDiagnostic(@NotNull Node anchor) {
             if (!(anchor instanceof AssignmentExpression assignmentExpression)) {
                 return false;
             }
@@ -689,13 +702,18 @@ public class FrontendCompileCheckAnalyzer {
             if (selfExpression == null) {
                 return false;
             }
-            var selfType = expressionTypes.get(selfExpression);
-            if (selfType == null
-                    || selfType.status() != publishedType.status()
-                    || !isCompileBlocking(selfType.status())) {
+            return hasPublishedConflictingDiagnosticAt(selfExpression);
+        }
+
+        private boolean isCoveredByStaticSelfBindingDiagnostic(@Nullable String detailReason) {
+            if (detailReason == null || !detailReason.contains("Keyword 'self' is not available in static context")) {
                 return false;
             }
-            return hasPublishedConflictingDiagnosticAt(selfExpression);
+            return publishedDiagnostics.asList().stream().anyMatch(diagnostic ->
+                    diagnostic.category().equals("sema.binding")
+                            && diagnostic.message().contains("Keyword 'self' is not available in static context")
+                            && (diagnostic.sourcePath() != null && diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(sourcePath)))
+            );
         }
 
         private static @Nullable SelfExpression directExplicitSelfAssignmentTargetPrefixOrNull(
@@ -823,7 +841,7 @@ public class FrontendCompileCheckAnalyzer {
         /// Find one previously published diagnostic that exactly matches the anchor range in the same file.
         private @Nullable FrontendDiagnostic findPublishedDiagnosticAt(
                 @NotNull Node anchor,
-                @NotNull java.util.function.Predicate<FrontendDiagnostic> predicate
+                @NotNull Predicate<FrontendDiagnostic> predicate
         ) {
             var anchorRange = FrontendRange.fromAstRange(anchor.range());
             return publishedDiagnostics.asList().stream()

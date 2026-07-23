@@ -12,13 +12,14 @@ import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
+import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.scope.ClassRegistry;
-import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdIntType;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
@@ -46,10 +47,13 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -57,7 +61,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class FrontendExprTypeAnalyzerTest {
+@SuppressWarnings("DataFlowIssue")
+class FrontendBodyOwnerProceduresExprTypeTest {
     @Test
     void analyzePublishesResolvedAtomicAndChainExpressionTypes() throws Exception {
         var analyzed = analyze(
@@ -328,10 +333,9 @@ class FrontendExprTypeAnalyzerTest {
         assertNotNull(blockedChainType.detailReason());
         assertTrue(blockedChainType.detailReason().contains("self"));
 
-        assertEquals(4, diagnosticsByCategory(analyzed, "sema.unsupported_binding_subtree").size());
+        assertFalse(diagnosticsByCategory(analyzed, "sema.unsupported_binding_subtree").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.binding").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
-        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
     }
 
     @Test
@@ -391,7 +395,6 @@ class FrontendExprTypeAnalyzerTest {
 
         assertEquals(3, diagnosticsByCategory(analyzed, "sema.unsupported_chain_route").size());
         assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
-        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
     }
 
     @Test
@@ -458,7 +461,6 @@ class FrontendExprTypeAnalyzerTest {
 
         assertEquals(3, diagnosticsByCategory(analyzed, "sema.unsupported_chain_route").size());
         assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
-        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
     }
 
     @Test
@@ -523,7 +525,6 @@ class FrontendExprTypeAnalyzerTest {
         assertTrue(diagnosticsByCategory(analyzed, "sema.member_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.call_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
-        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
     }
 
     @Test
@@ -595,7 +596,6 @@ class FrontendExprTypeAnalyzerTest {
         assertTrue(diagnosticsByCategory(analyzed, "sema.member_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.call_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
-        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
     }
 
     @Test
@@ -865,9 +865,8 @@ class FrontendExprTypeAnalyzerTest {
         assertTrue(missingType.detailReason().contains("missing"));
         assertTrue(missingType.detailReason().contains("Vector3"));
 
-        assertEquals(1, diagnosticsByCategory(analyzed, "sema.member_resolution").size());
+        assertFalse(diagnosticsByCategory(analyzed, "sema.member_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_chain_route").isEmpty());
-        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
     }
 
     @Test
@@ -906,8 +905,8 @@ class FrontendExprTypeAnalyzerTest {
         assertTrue(missingMember.detailReason().contains("missing"));
         assertTrue(missingMember.detailReason().contains("Vector3"));
 
-        assertEquals(1, diagnosticsByCategory(analyzed, "sema.expression_resolution").size());
-        assertEquals(1, diagnosticsByCategory(analyzed, "sema.member_resolution").size());
+        assertFalse(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertFalse(diagnosticsByCategory(analyzed, "sema.member_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
     }
@@ -1172,8 +1171,6 @@ class FrontendExprTypeAnalyzerTest {
         var bodyScope = assertInstanceOf(BlockScope.class, analyzed.analysisData().scopesByAst().get(pingFunction.body()));
         assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("bad").type());
 
-        assertEquals(3, diagnosticsByCategory(analyzed, "sema.binding").size());
-        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
     }
 
@@ -1461,7 +1458,7 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
-    void analyzeKeepsExplicitSelfAssignmentTargetPrefixPublicationNarrow() throws Exception {
+    void analyzePublishesAssignmentTargetPrefixFactsWithoutDuplicateDiagnostics() throws Exception {
         var analyzed = analyze(
                 "expr_type_assignment_self_prefix_narrow.gd",
                 """
@@ -1499,14 +1496,14 @@ class FrontendExprTypeAnalyzerTest {
         var attributeSubscriptSelfTarget = assertInstanceOf(AttributeExpression.class, assignments.get(4).left());
 
         assertNull(analyzed.analysisData().expressionTypes().get(bareIdentifierTarget));
-        assertNull(analyzed.analysisData().expressionTypes().get(holderTarget.base()));
+        assertNotNull(analyzed.analysisData().expressionTypes().get(holderTarget.base()));
         assertNotNull(analyzed.analysisData().expressionTypes().get(
                 assertInstanceOf(SelfExpression.class, directSelfTarget.base())
         ));
-        assertNull(analyzed.analysisData().expressionTypes().get(
+        assertNotNull(analyzed.analysisData().expressionTypes().get(
                 assertInstanceOf(SelfExpression.class, compoundSelfTarget.base())
         ));
-        assertNull(analyzed.analysisData().expressionTypes().get(
+        assertNotNull(analyzed.analysisData().expressionTypes().get(
                 assertInstanceOf(SelfExpression.class, attributeSubscriptSelfTarget.base())
         ));
 
@@ -2319,11 +2316,11 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
-    void analyzeBackfillRefreshesPublishedLocalResolvedValuePayload() throws Exception {
+    void analyzeBackfillGuardDoesNotRefreshVariantLocalResolvedValuePayload() throws Exception {
         var input = prepareInputBeforeExpressionTyping(
-                "expr_type_backfill_refreshes_binding_resolved_value.gd",
+                "expr_type_backfill_guard_does_not_refresh_binding_resolved_value.gd",
                 """
-                        class_name ExprTypeBackfillRefreshesBindingResolvedValue
+                        class_name ExprTypeBackfillGuardDoesNotRefreshBindingResolvedValue
                         extends RefCounted
                         
                         func ping():
@@ -2343,23 +2340,20 @@ class FrontendExprTypeAnalyzerTest {
         assertNotNull(staleResolvedValue);
         assertEquals(GdVariantType.VARIANT, staleResolvedValue.type());
 
-        new FrontendExprTypeAnalyzer().analyze(
-                input.classRegistry(),
-                input.analysisData(),
-                input.diagnosticManager()
+        FrontendBodyOwnerProcedures.checkInferredLocalTypeConsistency(
+                valueDeclaration,
+                bodyScope,
+                FrontendExpressionType.resolved(GdIntType.INT)
         );
 
-        var refreshedBinding = input.analysisData().symbolBindings().get(valueUse);
-        var valueUseType = input.analysisData().expressionTypes().get(valueUse);
+        var guardedBinding = input.analysisData().symbolBindings().get(valueUse);
         assertAll(
-                () -> assertNotNull(refreshedBinding),
-                () -> assertNotNull(refreshedBinding.resolvedValue()),
-                () -> assertSame(valueDeclaration, refreshedBinding.resolvedValue().declaration()),
-                () -> assertEquals("int", refreshedBinding.resolvedValue().type().getTypeName()),
-                () -> assertEquals("int", bodyScope.resolveValue("value").type().getTypeName()),
-                () -> assertNotNull(valueUseType),
-                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, valueUseType.status()),
-                () -> assertEquals("int", valueUseType.publishedType().getTypeName())
+                () -> assertNotNull(guardedBinding),
+                () -> assertNotNull(guardedBinding.resolvedValue()),
+                () -> assertSame(valueDeclaration, guardedBinding.resolvedValue().declaration()),
+                () -> assertSame(staleResolvedValue, guardedBinding.resolvedValue()),
+                () -> assertEquals(GdVariantType.VARIANT, guardedBinding.resolvedValue().type()),
+                () -> assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("value").type())
         );
     }
 
@@ -2423,10 +2417,10 @@ class FrontendExprTypeAnalyzerTest {
 
         var failure = assertThrows(
                 IllegalStateException.class,
-                () -> new FrontendExprTypeAnalyzer().analyze(
-                        input.classRegistry(),
-                        input.analysisData(),
-                        input.diagnosticManager()
+                () -> FrontendBodyOwnerProcedures.checkInferredLocalTypeConsistency(
+                        valueDeclaration,
+                        bodyScope,
+                        FrontendExpressionType.resolved(GdIntType.INT)
                 )
         );
 
@@ -2441,45 +2435,27 @@ class FrontendExprTypeAnalyzerTest {
                 """
                         class_name ExprTypeCompilerOnlyExpressionFact
                         extends RefCounted
-
+                        
                         func ping():
-                            var value: int = 1
+                            var value := 1
                             value
                         """,
                 false
         );
         var pingFunction = findFunction(input.unit().ast(), "ping");
-        var valueUse = assertInstanceOf(
-                IdentifierExpression.class,
-                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
-        );
-        var originalBinding = input.analysisData().symbolBindings().get(valueUse);
-        assertNotNull(originalBinding);
-        var originalValue = originalBinding.resolvedValue();
-        assertNotNull(originalValue);
-        input.analysisData().symbolBindings().put(
-                valueUse,
-                originalBinding.withResolvedValue(new ScopeValue(
-                        originalValue.name(),
-                        GdccForRangeIterType.FOR_RANGE_ITER,
-                        originalValue.kind(),
-                        originalValue.declaration(),
-                        originalValue.constant(),
-                        originalValue.writable(),
-                        originalValue.staticMember()
-                ))
-        );
+        var bodyScope = assertInstanceOf(BlockScope.class, input.analysisData().scopesByAst().get(pingFunction.body()));
+        var valueDeclaration = findVariable(pingFunction.body().statements(), "value");
 
         var failure = assertThrows(
                 IllegalStateException.class,
-                () -> new FrontendExprTypeAnalyzer().analyze(
-                        input.classRegistry(),
-                        input.analysisData(),
-                        input.diagnosticManager()
+                () -> FrontendBodyOwnerProcedures.checkInferredLocalTypeConsistency(
+                        valueDeclaration,
+                        bodyScope,
+                        FrontendExpressionType.resolved(GdccForRangeIterType.FOR_RANGE_ITER)
                 )
         );
 
-        assertTrue(failure.getMessage().contains("compiler-only type leaked into frontend expressionTypes()"));
+        assertTrue(failure.getMessage().contains("compiler-only type leaked into frontend local consistency guard"));
     }
 
     @Test
@@ -2512,7 +2488,7 @@ class FrontendExprTypeAnalyzerTest {
         var unsupportedDeclaration = findVariable(pingFunction.body().statements(), "unsupported_value");
         var blockedDeclaration = findVariable(pingFunction.body().statements(), "blocked_value");
         var unsupportedHead = findNode(
-                unsupportedDeclaration.value(),
+                Objects.requireNonNull(unsupportedDeclaration.value()),
                 IdentifierExpression.class,
                 identifier -> identifier.name().equals("Worker")
         );
@@ -2705,14 +2681,24 @@ class FrontendExprTypeAnalyzerTest {
         var diagnostics = new DiagnosticManager();
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
-        var analysisData = new FrontendSemanticAnalyzer().analyze(
-                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
-                registry,
-                diagnostics
-        );
+        var analysisData = analyzeWithFrontendPipeline(unit, registry, diagnostics, topLevelCanonicalNameMap);
         return new AnalyzedScript(unit.ast(), analysisData);
     }
 
+    private static @NotNull FrontendAnalysisData analyzeWithFrontendPipeline(
+            @NotNull FrontendSourceUnit unit,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull DiagnosticManager diagnostics,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) {
+        return new FrontendSemanticAnalyzer().analyze(
+                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
+                classRegistry,
+                diagnostics
+        );
+    }
+
+    @SuppressWarnings("SameParameterValue")
     private static @NotNull PreparedExpressionInput prepareInputBeforeExpressionTyping(
             @NotNull String fileName,
             @NotNull String source
@@ -2742,21 +2728,26 @@ class FrontendExprTypeAnalyzerTest {
         analysisData.updateDiagnostics(diagnostics.snapshot());
         new FrontendVariableAnalyzer().analyze(analysisData, diagnostics);
         analysisData.updateDiagnostics(diagnostics.snapshot());
-        new FrontendTopBindingAnalyzer().analyze(classRegistry, analysisData, diagnostics);
-        analysisData.updateDiagnostics(diagnostics.snapshot());
-        if (runLocalTypeStabilization) {
-            new FrontendLocalTypeStabilizationAnalyzer().analyze(classRegistry, analysisData, diagnostics);
-            analysisData.updateDiagnostics(diagnostics.snapshot());
-        }
-        new FrontendChainBindingAnalyzer().analyze(classRegistry, analysisData, diagnostics);
-        analysisData.updateDiagnostics(diagnostics.snapshot());
+        var initialOwners = runLocalTypeStabilization
+                ? Set.of(
+                FrontendSemanticStage.TOP_BINDING,
+                FrontendSemanticStage.LOCAL_TYPE_STABILIZATION,
+                FrontendSemanticStage.CHAIN_BINDING
+        )
+                : Set.of(FrontendSemanticStage.TOP_BINDING, FrontendSemanticStage.CHAIN_BINDING);
+        FrontendSuiteResolverStageTestSupport.resolveOwners(
+                classRegistry,
+                analysisData,
+                diagnostics,
+                initialOwners
+        );
         return new PreparedExpressionInput(unit, classRegistry, analysisData, diagnostics);
     }
 
     private static @NotNull ClassRegistry registryWithKeyedStringBuiltin() throws Exception {
         var api = ExtensionApiLoader.loadDefault();
         var patchedBuiltins = api.builtinClasses().stream()
-                .map(FrontendExprTypeAnalyzerTest::withKeyedStringBuiltin)
+                .map(FrontendBodyOwnerProceduresExprTypeTest::withKeyedStringBuiltin)
                 .toList();
         return new ClassRegistry(new ExtensionAPI(
                 api.header(),

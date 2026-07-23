@@ -1,11 +1,14 @@
 # FrontendChainBinding / ExprType 实现说明
 
-> 本文档作为 `FrontendChainBindingAnalyzer`、`FrontendExprTypeAnalyzer` 及其共享 body-phase support 的长期事实源，定义当前 phase 顺序、side-table / diagnostic owner 边界、局部 chain reduction 架构、已冻结的 published contract，以及后续工程必须遵守的 fail-closed 边界。本文档替代旧的规划性文档与验收流水账，不再保留进度记录或阶段日志。
+> 本文档作为 `FrontendBodyOwnerProcedures` 中 chain-binding、expression-typing owner 及其
+> 共享 body-phase support 的长期事实源，定义当前 phase 顺序、side-table / diagnostic owner
+> 边界、局部 chain reduction 架构、已冻结的 published contract，以及后续工程必须遵守的
+> fail-closed 边界。
 
 ## 文档状态
 
-- 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、shared expression semantic support、unary/binary expression semantics、class property initializer support island、subscript / assignment typed contract、explicit self assignment-target prefix publication、`:=` 局部类型稳定化与 expr-owned diagnostics 已落地）
-- 更新时间：2026-06-27
+- 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、SuiteResolver statement-local owner procedures、for header/body dispatch、typed overlay-aware expression semantics、property initializer support island与 expr-owned diagnostics 已落地）
+- 更新时间：2026-07-20
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -31,7 +34,8 @@
   - 不引入 whole-module fixpoint，不把 body 语义改造成多轮全局收敛
   - 不新增新的全局 side table，也不让已有 side table 互相越权
   - 不把 `FrontendBinding` 重塑为 usage-aware 模型
-  - 不在这里转正 parameter default、lambda、`for`、`match`、block-local `const`、class constant 的正式 body 语义
+  - 不在这里转正 parameter default、lambda、`match`、block-local `const`、class constant 的正式 body 语义
+  - 不在这里实现 for iteration planning、iterator slot refinement 或 lowering route classification
   - 不在这里扩张 keyed builtin、numeric promotion 或其它 typed-boundary 兼容矩阵；`StringName` / `String` 互转由 `frontend_implicit_conversion_matrix.md` 与 shared boundary helper 独立管理
 
 ---
@@ -40,7 +44,7 @@
 
 ### 1.1 主链路位置
 
-当前 `FrontendSemanticAnalyzer` 的稳定顺序是：
+当前 production `FrontendSemanticAnalyzer` 的稳定顺序是：
 
 1. `FrontendClassSkeletonBuilder.build(...)`
 2. `analysisData.updateModuleSkeleton(...)`
@@ -49,21 +53,18 @@
 5. `analysisData.updateDiagnostics(...)`
 6. `FrontendVariableAnalyzer.analyze(...)`
 7. `analysisData.updateDiagnostics(...)`
-8. `FrontendTopBindingAnalyzer.analyze(...)`
-9. `analysisData.updateDiagnostics(...)`
-10. `FrontendLocalTypeStabilizationAnalyzer.analyze(...)`
-11. `analysisData.updateDiagnostics(...)`
-12. `FrontendChainBindingAnalyzer.analyze(...)`
-13. `analysisData.updateDiagnostics(...)`
-14. `FrontendExprTypeAnalyzer.analyze(...)`
-15. `analysisData.updateDiagnostics(...)`
+8. `FrontendInterfacePhase.analyze(...)`
+9. `FrontendSuiteResolver.resolve(...)`，内部按 statement root 固定执行 top binding -> local type stabilization -> chain binding -> expr typing -> var type post
+10. `analysisData.updateDiagnostics(...)`
 
 这意味着：
 
-- `FrontendLocalTypeStabilizationAnalyzer` 运行在 top binding 之后、chain binding 之前，只回写符合条件的 `:=` local `BlockScope` slot
-- `FrontendChainBindingAnalyzer` 只运行在 skeleton、scope graph、variable inventory、`symbolBindings()` 与局部类型稳定化结果已发布之后
-- `FrontendExprTypeAnalyzer` 只运行在 `symbolBindings()`、`resolvedMembers()` 与当前 `resolvedCalls()` published surface 已发布之后
-- body phase 仍保持“先发布 member/call，再发布 expression type”的顶层边界，不回头重开更早 phase
+- production body facts 只通过 SuiteResolver 的 `FrontendTypedLexicalEnvironment` overlay 与 per-owner patch transaction 导出
+- chain binding owner procedure 只在当前 statement root 内消费已发布 / pending 的 binding 与 stabilized local slot fact
+- expr typing owner procedure 只在 chain-owned member/call facts 已对当前 root 可见后发布 expression facts 与 bare-call facts
+- 阶段 K 已删除 standalone chain/expr whole-module analyzer 与 window shim；focused tests
+  直接覆盖 `FrontendBodyOwnerProcedures`、typed overlay 与 per-owner patch export，不再维护
+  comparison publication path
 
 ### 1.2 当前 owner 边界
 
@@ -479,11 +480,12 @@ writable / compatibility 规则为：
 
 - parameter default
 - lambda subtree
-- `for` subtree
 - `match` subtree
 - block-local `const`
 - class constant
 - scope-local 手动 `type-meta`
+
+`ForStatement` 已使用 header-only statement boundary：iterator type 与 iterable expression 在外层 lexical context 中运行 owner procedures，flush 后通过普通 child-suite path 解析 `FOR_BODY`。For body 中的 ordinary expressions 与 locals 复用本合同；typed result 不能决定是否进入 body。Iteration plan 与 iterator exact refinement 属于后续独立 owner，不由 chain/expr owner 猜测。
 
 当前 remaining explicit-deferred expression set 固定为：
 

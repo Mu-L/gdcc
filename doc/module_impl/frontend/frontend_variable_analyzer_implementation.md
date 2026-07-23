@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 性质：长期事实源
-- 最后校对：2026-04-02
+- 最后校对：2026-07-20（阶段 L：for iterator/body inventory 已转正，结构支持面不再依赖 typed gate）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -24,7 +24,7 @@
   - 不在这里实现完整 frontend binder / body
   - 不在这里写入 `symbolBindings()` 或表达式类型 side-table
   - 不在这里实现成员解析、调用解析或 use-site declaration-order 可见性
-  - 不在这里接入 lambda / `for` / `match` / block-local `const` 的完整 inventory
+  - 不在这里接入 lambda / `match` / block-local `const` 的完整 inventory
   - 不改变 shared `Scope` lookup 协议
 
 ---
@@ -42,12 +42,15 @@
 5. `analysisData.updateDiagnostics(...)`
 6. `FrontendVariableAnalyzer.analyze(...)`
 7. `analysisData.updateDiagnostics(...)`
+8. `FrontendInterfacePhase.analyze(...)`
+9. `FrontendSuiteResolver.resolve(...)`
 
 这意味着：
 
 - `FrontendVariableAnalyzer` 只运行在 skeleton 与 scope graph 已发布之后
 - 它消费 `moduleSkeleton`、`diagnostics` 与 `scopesByAst`
 - 它不会重建 scope graph，而是就地 enrich 已发布的 `CallableScope` / `BlockScope`
+- 它发布的是 interface/body pipeline 的 inventory 前置条件；body 事实不再由 shared analyzer 的 legacy whole-phase owner bypass 回填，而是由 SuiteResolver 的 statement-local owner procedures 通过 per-owner patch transaction 导出
 
 ### 1.2 当前职责
 
@@ -55,13 +58,13 @@
 
 - 把 `FunctionDeclaration` / `ConstructorDeclaration` 参数写入对应 `CallableScope`
 - 把 supported executable subtree 中的普通局部 `var` 写入对应 `BlockScope`
+- 为每个 `ForStatement` 在其 `FOR_BODY` scope 发布 iterator binding，并遍历 body 发布 ordinary local inventory
 - 对当前明确不支持的 variable-inventory 来源发出显式 error，避免静默跳过
 - 对 duplicate / shadowing / target scope kind mismatch 发布恢复性 diagnostic，并保持其他 subtree 继续处理
 
 `FrontendVariableAnalyzer` 明确不负责：
 
 - lambda parameter / local / capture inventory
-- `for` iterator binding 与 loop body local inventory
 - `match` pattern binding 与 section local inventory
 - block-local `const` binding
 - 参数默认值表达式的类型/绑定分析
@@ -80,6 +83,8 @@
 - `ConstructorDeclaration` parameter -> owning `CallableScope`
 - function / constructor body 中的普通局部 `var` -> body `BlockScope`
 - supported nested executable block 中的普通局部 `var` -> 对应 `BlockScope`
+- `ForStatement` iterator -> 对应 `FOR_BODY` scope，declaration identity 为 owning `ForStatement`
+- for body 中的普通局部 `var` -> 对应 `FOR_BODY` scope
 
 当前支持写入 ordinary local `var` 的 `BlockScopeKind` 为：
 
@@ -90,6 +95,7 @@
 - `ELIF_BODY`
 - `ELSE_BODY`
 - `WHILE_BODY`
+- `FOR_BODY`
 
 ### 2.2 当前不写入的绑定
 
@@ -98,8 +104,6 @@
 - lambda parameter
 - lambda local
 - lambda capture
-- `for` iterator binding
-- `for` body local
 - `match` pattern binding
 - `match` section local
 - block-local `const`
@@ -188,7 +192,7 @@
 需要特别注意：
 
 - binder 主遍历不会把 arbitrary expression subtree 当作 local-binding 域
-- lambda / `for` / `match` subtree 不会进入 binding walk
+- lambda / `match` subtree 不会进入 binding walk；`ForStatement` 使用专用 iterator/body inventory path
 - unsupported feature-boundary error 由独立的 boundary reporter 扫描 callable body 后补发
 
 ### 4.3 executable-context 判定
@@ -225,7 +229,6 @@
   - 参数默认值当前被忽略
 - `sema.unsupported_variable_inventory_subtree`
   - lambda subtree 当前不支持
-  - `for` subtree 当前不支持
   - `match` subtree 当前不支持
   - block-local `const` 当前不支持
 
@@ -250,7 +253,9 @@
   - 当前 declaration range
   - 冲突 declaration range（若已有 declaration 可回溯到 AST）
   - enclosing callable / block 语义归属
-  - source path
+- source path
+
+For iterator 与 parameter、外层 local 或 body local 冲突时仍发布 `sema.variable_binding`，但会保留以 owning `ForStatement` 为 declaration identity 的 iterator recovery binding。普通源码重名不能制造缺失 iterator index/baseline 的结构洞；后续 body resolver 因此仍可继续，并由原始合法 binding 保持冲突可见性。
 
 ### 5.4 缺 scope 记录的语义
 
@@ -314,7 +319,7 @@
 后续最直接的增量工作包括：
 
 - lambda parameter / local / capture inventory
-- `for` iterator 与 loop-body inventory
+- for iteration planning 与 iterator slot refinement
 - `match` pattern binding 与 section inventory
 - block-local `const` inventory
 - `frontend.sema.resolver.FrontendVisibleValueResolver`
@@ -329,6 +334,7 @@
 
 - `FrontendVariableAnalyzerTest`
   - parameter/local 正向写入
+  - for iterator、body local、nested for 与冲突恢复 binding
   - unsupported feature-boundary error
 - duplicate / shadowing / kind mismatch 负向路径
 - duplicate / shadowing local 详细 diagnostic message 锚点

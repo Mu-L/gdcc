@@ -1,11 +1,21 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.Node;
+import gd.script.gdcc.exception.FrontendAnalysisPatchException;
+import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
+import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendPublishedFactTypeGuard;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.scope.Scope;
+import gd.script.gdcc.scope.ScopeValue;
+import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.type.GdVariantType;
+import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -91,29 +101,93 @@ public final class FrontendAnalysisData {
     }
 
     public void updateSymbolBindings(@NotNull FrontendAstSideTable<FrontendBinding> symbolBindings) {
+        FrontendPublishedFactTypeGuard.checkSymbolBindings(symbolBindings);
         replaceSideTableContents(this.symbolBindings, symbolBindings, "symbolBindings");
     }
 
     /// Replaces the published expression-fact snapshot in place while preserving the stable table
     /// reference. Callers may publish both expression-root facts and attribute-step facts here.
     public void updateExpressionTypes(@NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes) {
+        FrontendPublishedFactTypeGuard.checkExpressionTypes(expressionTypes);
         replaceSideTableContents(this.expressionTypes, expressionTypes, "expressionTypes");
     }
 
     public void updateResolvedMembers(@NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers) {
+        FrontendPublishedFactTypeGuard.checkResolvedMembers(resolvedMembers);
         replaceSideTableContents(this.resolvedMembers, resolvedMembers, "resolvedMembers");
     }
 
     public void updateResolvedCalls(@NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls) {
+        FrontendPublishedFactTypeGuard.checkResolvedCalls(resolvedCalls);
         replaceSideTableContents(this.resolvedCalls, resolvedCalls, "resolvedCalls");
     }
 
     public void updateSlotTypes(@NotNull FrontendAstSideTable<GdType> slotTypes) {
+        FrontendPublishedFactTypeGuard.checkSlotTypes(slotTypes);
         replaceSideTableContents(
                 this.slotTypes,
                 slotTypes,
                 "slotTypes"
         );
+    }
+
+    /// Applies one single-owner patch without replacing any stable side-table reference.
+    ///
+    /// Conflict checks and local-slot validation are scoped to this patch. Repeated calls, including
+    /// calls from `FrontendPatchTransaction`, do not form an atomic unit and do not roll back earlier patches.
+    public void applyPatch(@NotNull FrontendOwnerPatch patch) {
+        var checkedPatch = Objects.requireNonNull(patch, "patch must not be null");
+        FrontendPublishedFactTypeGuard.checkOwnerPatch(checkedPatch);
+        applyPatchFields(
+                checkedPatch.stage(),
+                checkedPatch.symbolBindings(),
+                checkedPatch.resolvedMembers(),
+                checkedPatch.resolvedCalls(),
+                checkedPatch.expressionTypes(),
+                checkedPatch.slotTypes(),
+                checkedPatch.localSlotTypeUpdates()
+        );
+    }
+
+    private void applyPatchFields(
+            @NotNull FrontendSemanticStage stage,
+            @NotNull FrontendAstSideTable<FrontendBinding> patchSymbolBindings,
+            @NotNull FrontendAstSideTable<FrontendResolvedMember> patchResolvedMembers,
+            @NotNull FrontendAstSideTable<FrontendResolvedCall> patchResolvedCalls,
+            @NotNull FrontendAstSideTable<FrontendExpressionType> patchExpressionTypes,
+            @NotNull FrontendAstSideTable<GdType> patchSlotTypes,
+            @NotNull List<FrontendLocalSlotTypeUpdate> localSlotTypeUpdates
+    ) {
+        var validatedLocalSlotUpdates = validateLocalSlotTypeUpdates(stage, localSlotTypeUpdates);
+        checkPatchConflicts(symbolBindings, patchSymbolBindings, "symbolBindings", FrontendAnalysisData::sameBinding);
+        checkPatchConflicts(
+                resolvedMembers,
+                patchResolvedMembers,
+                "resolvedMembers",
+                FrontendAnalysisData::sameResolvedMember
+        );
+        checkPatchConflicts(
+                resolvedCalls,
+                patchResolvedCalls,
+                "resolvedCalls",
+                FrontendAnalysisData::sameResolvedCall
+        );
+        checkPatchConflicts(
+                expressionTypes,
+                patchExpressionTypes,
+                "expressionTypes",
+                FrontendAnalysisData::sameExpressionType
+        );
+        checkPatchConflicts(slotTypes, patchSlotTypes, "slotTypes", FrontendAnalysisData::sameType);
+
+        mergeSideTable(symbolBindings, patchSymbolBindings);
+        mergeSideTable(resolvedMembers, patchResolvedMembers);
+        mergeSideTable(resolvedCalls, patchResolvedCalls);
+        mergeSideTable(expressionTypes, patchExpressionTypes);
+        mergeSideTable(slotTypes, patchSlotTypes);
+        for (var validatedUpdate : validatedLocalSlotUpdates) {
+            applyLocalSlotTypeUpdate(validatedUpdate);
+        }
     }
 
     public @NotNull FrontendModuleSkeleton moduleSkeleton() {
@@ -159,11 +233,293 @@ public final class FrontendAnalysisData {
         return slotTypes;
     }
 
+    /// Refreshes published local bindings after a verified local-slot rewrite.
+    ///
+    /// This helper intentionally updates only the `resolvedValue` payload. The binding kind, source
+    /// name, and declaration identity stay frozen from top binding so downstream phases keep seeing
+    /// the same lexical choice while observing the narrowed slot type.
+    public void refreshPublishedLocalBindingPayloads(
+            @NotNull FrontendLocalSlotTypeUpdate slotTypeUpdate,
+            @NotNull ScopeValue updatedValue
+    ) {
+        var checkedUpdate = Objects.requireNonNull(slotTypeUpdate, "slotTypeUpdate must not be null");
+        var checkedUpdatedValue = Objects.requireNonNull(updatedValue, "updatedValue must not be null");
+        if (checkedUpdatedValue.declaration() != checkedUpdate.declaration()) {
+            throw patchFailure(
+                    "local slot refresh resolved a different declaration for '"
+                            + checkedUpdate.name()
+                            + "'"
+            );
+        }
+        if (!sameType(checkedUpdatedValue.type(), checkedUpdate.type())) {
+            throw patchFailure(
+                    "local slot refresh resolved an unexpected type for '"
+                            + checkedUpdate.name()
+                            + "': expected "
+                            + checkedUpdate.type().getTypeName()
+                            + ", got "
+                            + checkedUpdatedValue.type().getTypeName()
+            );
+        }
+        checkNoCompilerOnlyLeak(
+                checkedUpdatedValue.type(),
+                "symbolBindings local payload refresh for '" + checkedUpdate.name() + "'"
+        );
+        for (var entry : symbolBindings.entrySet()) {
+            var binding = entry.getValue();
+            var resolvedValue = binding.resolvedValue();
+            if (resolvedValue == null || resolvedValue.declaration() != checkedUpdate.declaration()) {
+                continue;
+            }
+            entry.setValue(binding.withResolvedValue(checkedUpdatedValue));
+        }
+    }
+
     private <T> @NotNull T requirePublished(@Nullable T value, @NotNull String fieldName) {
         if (value == null) {
             throw new IllegalStateException(fieldName + " has not been published yet");
         }
         return value;
+    }
+
+    private @NotNull List<ValidatedLocalSlotTypeUpdate> validateLocalSlotTypeUpdates(
+            @NotNull FrontendSemanticStage stage,
+            @NotNull List<FrontendLocalSlotTypeUpdate> localSlotTypeUpdates
+    ) {
+        if (localSlotTypeUpdates.isEmpty()) {
+            return List.of();
+        }
+        if (stage != FrontendSemanticStage.LOCAL_TYPE_STABILIZATION) {
+            throw patchFailure(
+                    "Only LOCAL_TYPE_STABILIZATION patches may publish local slot type updates, but got "
+                            + stage
+            );
+        }
+        var validatedUpdates = new ArrayList<ValidatedLocalSlotTypeUpdate>(localSlotTypeUpdates.size());
+        for (var update : localSlotTypeUpdates) {
+            validatedUpdates.add(validateLocalSlotTypeUpdate(update, validatedUpdates));
+        }
+        return List.copyOf(validatedUpdates);
+    }
+
+    private @NotNull ValidatedLocalSlotTypeUpdate validateLocalSlotTypeUpdate(
+            @NotNull FrontendLocalSlotTypeUpdate update,
+            @NotNull List<ValidatedLocalSlotTypeUpdate> validatedUpdates
+    ) {
+        checkNoVoidLocalSlotType(update.type(), update.name());
+        checkNoCompilerOnlyLeak(update.type(), "local slot update for '" + update.name() + "'");
+        var existingValue = lookupPendingLocalSlotValue(update, validatedUpdates);
+        if (existingValue == null) {
+            existingValue = requireCurrentLocalSlotValue(update);
+        }
+        if (existingValue.declaration() != update.declaration()) {
+            throw patchFailure(
+                    "local slot update targeted a different declaration for '" + update.name() + "'"
+            );
+        }
+        if (sameType(existingValue.type(), update.type())) {
+            return new ValidatedLocalSlotTypeUpdate(update, null);
+        }
+        if (!(existingValue.type() instanceof GdVariantType)) {
+            throw patchFailure(
+                    "local slot update changed exact type for '"
+                            + update.name()
+                            + "' from "
+                            + existingValue.type().getTypeName()
+                            + " to "
+                            + update.type().getTypeName()
+            );
+        }
+        return new ValidatedLocalSlotTypeUpdate(
+                update,
+                new ScopeValue(
+                        existingValue.name(),
+                        update.type(),
+                        existingValue.kind(),
+                        existingValue.declaration(),
+                        existingValue.constant(),
+                        existingValue.writable(),
+                        existingValue.staticMember()
+                )
+        );
+    }
+
+    private @Nullable ScopeValue lookupPendingLocalSlotValue(
+            @NotNull FrontendLocalSlotTypeUpdate target,
+            @NotNull List<ValidatedLocalSlotTypeUpdate> validatedUpdates
+    ) {
+        for (var i = validatedUpdates.size() - 1; i >= 0; i--) {
+            var validatedUpdate = validatedUpdates.get(i);
+            var update = validatedUpdate.update();
+            if (update.scope() != target.scope()
+                    || !update.name().equals(target.name())
+                    || update.declaration() != target.declaration()) {
+                continue;
+            }
+            return validatedUpdate.refreshedValue() != null
+                    ? validatedUpdate.refreshedValue()
+                    : requireCurrentLocalSlotValue(update);
+        }
+        return null;
+    }
+
+    private @NotNull ScopeValue requireCurrentLocalSlotValue(@NotNull FrontendLocalSlotTypeUpdate update) {
+        var currentValue = update.scope().resolveValueHere(update.name());
+        if (currentValue == null) {
+            throw patchFailure("local slot update targeted a missing binding for '" + update.name() + "'");
+        }
+        if (currentValue.kind() != ScopeValueKind.LOCAL) {
+            throw patchFailure("local slot update targeted a non-local binding for '" + update.name() + "'");
+        }
+        return currentValue;
+    }
+
+    private void applyLocalSlotTypeUpdate(@NotNull ValidatedLocalSlotTypeUpdate validatedUpdate) {
+        var refreshedValue = validatedUpdate.refreshedValue();
+        if (refreshedValue == null) {
+            return;
+        }
+        var update = validatedUpdate.update();
+        update.scope().resetLocalType(update.name(), update.declaration(), update.type());
+        refreshPublishedLocalBindingPayloads(update, refreshedValue);
+    }
+
+    private <V> void checkPatchConflicts(
+            @NotNull FrontendAstSideTable<V> stableTable,
+            @NotNull FrontendAstSideTable<V> patchTable,
+            @NotNull String fieldName,
+            @NotNull SameValueChecker<V> sameValueChecker
+    ) {
+        for (var entry : patchTable.entrySet()) {
+            var existingValue = stableTable.get(entry.getKey());
+            if (existingValue == null || sameValueChecker.sameValue(existingValue, entry.getValue())) {
+                continue;
+            }
+            throw patchFailure(
+                    fieldName
+                            + " patch conflicted on "
+                            + describeNode(entry.getKey())
+            );
+        }
+    }
+
+    private static <V> void mergeSideTable(
+            @NotNull FrontendAstSideTable<V> stableTable,
+            @NotNull FrontendAstSideTable<V> patchTable
+    ) {
+        for (var entry : patchTable.entrySet()) {
+            if (!stableTable.containsKey(entry.getKey())) {
+                stableTable.put(entry.getKey(), entry.getValue());
+            }
+        }
+    }
+
+    static void checkNoCompilerOnlyLeak(@Nullable GdType type, @NotNull String fieldName) {
+        FrontendPublishedFactTypeGuard.checkNoCompilerOnlyLeak(type, fieldName);
+    }
+
+    static void checkNoVoidLocalSlotType(@NotNull GdType type, @NotNull String localName) {
+        if (type instanceof GdVoidType) {
+            throw patchFailure("local slot update for '" + localName + "' must not publish void");
+        }
+    }
+
+    static boolean sameBinding(@NotNull FrontendBinding first, @NotNull FrontendBinding second) {
+        return first.kind() == second.kind()
+                && first.symbolName().equals(second.symbolName())
+                && first.declarationSite() == second.declarationSite()
+                && first.valueAccessStatus() == second.valueAccessStatus()
+                && sameScopeValue(first.resolvedValue(), second.resolvedValue());
+    }
+
+    static boolean sameResolvedMember(
+            @NotNull FrontendResolvedMember first,
+            @NotNull FrontendResolvedMember second
+    ) {
+        return first.bindingKind() == second.bindingKind()
+                && first.status() == second.status()
+                && first.receiverKind() == second.receiverKind()
+                && first.ownerKind() == second.ownerKind()
+                && first.declarationSite() == second.declarationSite()
+                && first.memberName().equals(second.memberName())
+                && sameType(first.receiverType(), second.receiverType())
+                && sameType(first.resultType(), second.resultType())
+                && Objects.equals(first.detailReason(), second.detailReason());
+    }
+
+    static boolean sameResolvedCall(@NotNull FrontendResolvedCall first, @NotNull FrontendResolvedCall second) {
+        return first.callKind() == second.callKind()
+                && first.status() == second.status()
+                && first.receiverKind() == second.receiverKind()
+                && first.ownerKind() == second.ownerKind()
+                && first.declarationSite() == second.declarationSite()
+                && first.callableName().equals(second.callableName())
+                && sameType(first.receiverType(), second.receiverType())
+                && sameType(first.returnType(), second.returnType())
+                && sameTypeList(first.argumentTypes(), second.argumentTypes())
+                && sameExactCallableBoundary(first.exactCallableBoundary(), second.exactCallableBoundary())
+                && Objects.equals(first.detailReason(), second.detailReason());
+    }
+
+    static boolean sameExactCallableBoundary(
+            @Nullable FrontendResolvedCall.ExactCallableBoundary first,
+            @Nullable FrontendResolvedCall.ExactCallableBoundary second
+    ) {
+        if (first == null || second == null) {
+            return first == second;
+        }
+        return first.isVararg() == second.isVararg()
+                && sameTypeList(first.fixedParameterTypes(), second.fixedParameterTypes());
+    }
+
+    static boolean sameExpressionType(
+            @NotNull FrontendExpressionType first,
+            @NotNull FrontendExpressionType second
+    ) {
+        return first.status() == second.status()
+                && sameType(first.publishedType(), second.publishedType())
+                && Objects.equals(first.detailReason(), second.detailReason());
+    }
+
+    static boolean sameScopeValue(@Nullable ScopeValue first, @Nullable ScopeValue second) {
+        if (first == null || second == null) {
+            return first == second;
+        }
+        return first.kind() == second.kind()
+                && first.constant() == second.constant()
+                && first.writable() == second.writable()
+                && first.staticMember() == second.staticMember()
+                && first.declaration() == second.declaration()
+                && first.name().equals(second.name())
+                && sameType(first.type(), second.type());
+    }
+
+    static boolean sameTypeList(@NotNull List<GdType> first, @NotNull List<GdType> second) {
+        if (first.size() != second.size()) {
+            return false;
+        }
+        for (var i = 0; i < first.size(); i++) {
+            if (!sameType(first.get(i), second.get(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static boolean sameType(@Nullable GdType first, @Nullable GdType second) {
+        if (first == null || second == null) {
+            return first == second;
+        }
+        return first == second
+                || (first.getClass() == second.getClass() && first.getTypeName().equals(second.getTypeName()));
+    }
+
+    static @NotNull String describeNode(@NotNull Node node) {
+        return node.getClass().getSimpleName();
+    }
+
+    static @NotNull FrontendAnalysisPatchException patchFailure(@NotNull String message) {
+        return new FrontendAnalysisPatchException(message);
     }
 
     private static <V> void replaceSideTableContents(
@@ -178,5 +534,19 @@ public final class FrontendAnalysisData {
         }
         target.clear();
         target.putAll(source);
+    }
+
+    @FunctionalInterface
+    private interface SameValueChecker<V> {
+        boolean sameValue(@NotNull V first, @NotNull V second);
+    }
+
+    private record ValidatedLocalSlotTypeUpdate(
+            @NotNull FrontendLocalSlotTypeUpdate update,
+            @Nullable ScopeValue refreshedValue
+    ) {
+        private ValidatedLocalSlotTypeUpdate {
+            Objects.requireNonNull(update, "update must not be null");
+        }
     }
 }

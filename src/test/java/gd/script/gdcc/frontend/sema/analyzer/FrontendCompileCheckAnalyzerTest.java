@@ -71,7 +71,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("missing_compile_check_diagnostics.gd", """
                 class_name MissingCompileCheckDiagnostics
                 extends Node
-                
+
                 func ping():
                     pass
                 """);
@@ -91,7 +91,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckExplicitBlocks
                 extends Node
-                
+
                 var property_array = [1]
                 var property_preload = preload("res://icon.svg")
                 
@@ -115,8 +115,10 @@ class FrontendCompileCheckAnalyzerTest {
         assertEquals(8, compileDiagnostics.size());
         assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && FrontendDiagnostic.sourcePathText(Path.of("tmp", "compile_check_explicit_blocks.gd"))
-                        .equals(diagnostic.sourcePath())
+                        && Objects.equals(
+                        FrontendDiagnostic.sourcePathText(Path.of("tmp", "compile_check_explicit_blocks.gd")),
+                        diagnostic.sourcePath()
+                )
                         && diagnostic.range() != null
         ));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("assert statement")));
@@ -148,7 +150,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_assert_contract.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
 
-        assertEquals(1, compileDiagnostics.size());
+        assertEquals(1, compileDiagnostics.size(), () -> compiled.diagnostics().asList().toString());
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.type_check").isEmpty());
         assertTrue(compileDiagnostics.getFirst().message().contains("assert statement"));
     }
@@ -235,7 +237,7 @@ class FrontendCompileCheckAnalyzerTest {
         var variableDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.variable_binding");
         var slotPublicationWarnings = diagnosticsByCategory(
                 compiled.diagnostics(),
-                FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY
+                FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
         );
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
 
@@ -264,7 +266,7 @@ class FrontendCompileCheckAnalyzerTest {
 
         var slotPublicationWarnings = diagnosticsByCategory(
                 compiled.diagnostics(),
-                FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY
+                FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
         );
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
 
@@ -518,7 +520,10 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
 
         var compiled = analyzeForCompile("compile_check_static_method_route.gd", source);
-        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                () -> diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").toString()
+        );
     }
 
     @Test
@@ -546,7 +551,10 @@ class FrontendCompileCheckAnalyzerTest {
                 source,
                 Map.of("MappedWorker", "RuntimeWorker")
         );
-        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                () -> diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").toString()
+        );
     }
 
     @Test
@@ -668,12 +676,40 @@ class FrontendCompileCheckAnalyzerTest {
 
         var compiled = analyzeForCompile("compile_check_skipped_surface.gd", source);
 
-        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(compileDiagnostics.getFirst().message().contains("For statement"));
         var unsupportedBindingDiagnostics = diagnosticsByCategory(
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
         );
-        assertEquals(5, unsupportedBindingDiagnostics.size());
+        assertEquals(4, unsupportedBindingDiagnostics.size());
+    }
+
+    @Test
+    void forIsSharedSemanticSupportedButCompileModeStopsAtStatementRoot() throws Exception {
+        var source = """
+                class_name CompileCheckForBridge
+                extends Node
+
+                func ping(values):
+                    for item in values:
+                        var copy := item
+                        assert(item)
+                """;
+
+        var shared = analyzeShared("compile_check_for_bridge.gd", source);
+        var compiled = analyzeForCompile("compile_check_for_bridge.gd", source);
+
+        assertTrue(shared.diagnostics().asList().stream().noneMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_variable_inventory_subtree")
+                        || diagnostic.category().equals("sema.unsupported_binding_subtree")
+                        || diagnostic.category().equals("sema.compile_check")
+        ));
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(compileDiagnostics.getFirst().message().contains("For statement"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("CFG"));
     }
 
     @Test
@@ -704,6 +740,34 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeDeduplicatesAgainstLiveManagerSnapshotWhenAnalysisDataSnapshotIsStale() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_live_manager_upstream.gd", """
+                class_name CompileCheckLiveManagerUpstream
+                extends Node
+                
+                func ping():
+                    [1]
+                """);
+        var arrayExpression = findNode(preparedInput.unit().ast(), ArrayExpression.class, _ -> true);
+        preparedInput.diagnosticManager().error(
+                "sema.synthetic",
+                "synthetic upstream error not yet copied to analysisData",
+                preparedInput.unit().path(),
+                FrontendRange.fromAstRange(arrayExpression.range())
+        );
+        assertTrue(diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.synthetic").isEmpty());
+
+        new FrontendCompileCheckAnalyzer().analyze(
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var finalSnapshot = preparedInput.diagnosticManager().snapshot();
+        assertTrue(diagnosticsByCategory(finalSnapshot, "sema.compile_check").isEmpty());
+        assertEquals(1, diagnosticsByCategory(finalSnapshot, "sema.synthetic").size());
+    }
+
+    @Test
     void analyzeReportsGenericCompileBlocksForPublishedCompileSurfaceFacts() throws Exception {
         var preparedInput = prepareCompileCheckInput("compile_check_published_facts.gd", """
                 class_name CompileCheckPublishedFacts
@@ -725,8 +789,16 @@ class FrontendCompileCheckAnalyzerTest {
         var payloadCopyDeclaration = findVariable(pingFunction.body().statements(), "payload_copy");
         var readValueDeclaration = findVariable(pingFunction.body().statements(), "read_value");
         var copyIdentifier = assertInstanceOf(dev.superice.gdparser.frontend.ast.IdentifierExpression.class, copyDeclaration.value());
-        var payloadStep = findNode(payloadCopyDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("payload"));
-        var readStep = findNode(readValueDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("read"));
+        var payloadStep = findNode(
+                Objects.requireNonNull(payloadCopyDeclaration.value()),
+                AttributePropertyStep.class,
+                step -> step.name().equals("payload")
+        );
+        var readStep = findNode(
+                Objects.requireNonNull(readValueDeclaration.value()),
+                AttributeCallStep.class,
+                step -> step.name().equals("read")
+        );
 
         preparedInput.analysisData().expressionTypes().put(
                 copyIdentifier,
@@ -856,16 +928,18 @@ class FrontendCompileCheckAnalyzerTest {
         assertEquals(FrontendReceiverKind.INSTANCE, publishedBareCall.receiverKind());
         preparedInput.analysisData().expressionTypes().put(
                 bareCall,
-                FrontendExpressionType.resolved(publishedBareCall.returnType())
+                FrontendExpressionType.resolved(Objects.requireNonNull(publishedBareCall.returnType()))
         );
 
         runCompileCheck(preparedInput);
 
         var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
-        assertEquals(1, compileDiagnostics.size());
-        assertEquals(FrontendRange.fromAstRange(bareCall.range()), compileDiagnostics.getFirst().range());
-        assertTrue(compileDiagnostics.getFirst().message().contains("Call expression 'helper(...)'"));
-        assertTrue(compileDiagnostics.getFirst().message().contains("not accessible in the current context"));
+        var bareCallDiagnostics = compileDiagnostics.stream()
+                .filter(diagnostic -> FrontendRange.fromAstRange(bareCall.range()).equals(diagnostic.range()))
+                .toList();
+        assertEquals(1, bareCallDiagnostics.size());
+        assertTrue(bareCallDiagnostics.getFirst().message().contains("Call expression 'helper(...)'"));
+        assertTrue(bareCallDiagnostics.getFirst().message().contains("not accessible in the current context"));
     }
 
     @Test
@@ -883,7 +957,7 @@ class FrontendCompileCheckAnalyzerTest {
         var pingFunction = findFunction(preparedInput.unit().ast().statements(), "ping");
         var valueDeclaration = findVariable(pingFunction.body().statements(), "value");
         var payloadsStep = findNode(
-                valueDeclaration.value(),
+                Objects.requireNonNull(valueDeclaration.value()),
                 AttributeSubscriptStep.class,
                 step -> step.name().equals("payloads")
         );
@@ -928,12 +1002,12 @@ class FrontendCompileCheckAnalyzerTest {
         var callValueDeclaration = findVariable(preparedInput.unit().ast().statements(), "call_value");
         var exprLiteral = assertInstanceOf(LiteralExpression.class, exprValueDeclaration.value());
         var handleStep = findNode(
-                memberValueDeclaration.value(),
+                Objects.requireNonNull(memberValueDeclaration.value()),
                 AttributePropertyStep.class,
                 step -> step.name().equals("handle")
         );
         var readStep = findNode(
-                callValueDeclaration.value(),
+                Objects.requireNonNull(callValueDeclaration.value()),
                 AttributeCallStep.class,
                 step -> step.name().equals("read")
         );
@@ -1046,8 +1120,16 @@ class FrontendCompileCheckAnalyzerTest {
         var payloadCopyDeclaration = findVariable(pingFunction.body().statements(), "payload_copy");
         var readValueDeclaration = findVariable(pingFunction.body().statements(), "read_value");
         var copyIdentifier = assertInstanceOf(dev.superice.gdparser.frontend.ast.IdentifierExpression.class, copyDeclaration.value());
-        var payloadStep = findNode(payloadCopyDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("payload"));
-        var readStep = findNode(readValueDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("read"));
+        var payloadStep = findNode(
+                Objects.requireNonNull(payloadCopyDeclaration.value()),
+                AttributePropertyStep.class,
+                step -> step.name().equals("payload")
+        );
+        var readStep = findNode(
+                Objects.requireNonNull(readValueDeclaration.value()),
+                AttributeCallStep.class,
+                step -> step.name().equals("read")
+        );
         var originalMember = Objects.requireNonNull(preparedInput.analysisData().resolvedMembers().get(payloadStep));
         var originalCall = Objects.requireNonNull(preparedInput.analysisData().resolvedCalls().get(readStep));
 
@@ -1139,7 +1221,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("deferred_compile_check.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
 
-        assertFalse(compileDiagnostics.isEmpty());
+        assertFalse(compileDiagnostics.isEmpty(), () -> compiled.diagnostics().asList().toString());
         assertTrue(compiled.diagnostics().hasErrors());
         assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
@@ -1225,12 +1307,7 @@ class FrontendCompileCheckAnalyzerTest {
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         new FrontendVariableAnalyzer().analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendTopBindingAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendChainBindingAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendExprTypeAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+        FrontendSuiteResolverStageTestSupport.resolveAllOwners(classRegistry, analysisData, diagnosticManager);
         new FrontendAnnotationUsageAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         new FrontendTypeCheckAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);

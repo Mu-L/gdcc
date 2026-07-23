@@ -1,11 +1,13 @@
 # FrontendLocalTypeStabilization 实现说明
 
-> 本文档作为 `FrontendLocalTypeStabilizationAnalyzer` 及其相邻 `:=` 局部类型稳定化合同的长期事实源，定义当前 phase 位置、输入输出边界、slot owner、稳定化规则、fail-closed 边界与测试锚点。本文档替代旧的实施计划与阶段记录，不再保留进度流水账、已完成任务列表或回滚步骤。
+> 本文档作为 `FrontendBodyOwnerProcedures` 中 local-stabilization owner 及其相邻 `:=`
+> 局部类型稳定化合同的长期事实源，定义当前 phase 位置、输入输出边界、slot owner、
+> 稳定化规则、fail-closed 边界与测试锚点。
 
 ## 文档状态
 
-- 状态：事实源维护中（source-order local `:=` slot stabilization、parameter/local alias 传播、复杂 initializer 求型、assignment initializer 与 bare `TYPE_META` fail-closed、parent/child block 边界合同已落地）
-- 更新时间：2026-06-20
+- 状态：事实源维护中（source-order local `:=` slot stabilization、for body ordinary local、parameter/local alias 传播、复杂 initializer 求型、fail-closed 边界与 SuiteResolver overlay/export 路径已落地）
+- 更新时间：2026-07-20
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -28,7 +30,8 @@
   - 不在这里做 property `:=` metadata backfill
   - 不在这里做 whole-module fixed-point
   - 不在这里做 CFG / control-flow merge aware local type refinement
-  - 不在这里转正 parameter default、lambda、capture、`for`、`match`、block-local `const`、class `const`
+  - 不在这里转正 parameter default、lambda、capture、`match`、block-local `const`、class `const`
+  - 不在这里实现 for iteration planning 或 iterator slot refinement
   - 不在这里新增公共 frontend API；如需 helper，优先保持在 analyzer/support 包内且不拥有 phase facts
 
 ---
@@ -37,29 +40,29 @@
 
 ### 1.1 主链路位置
 
-当前 `FrontendSemanticAnalyzer` 的稳定顺序是：
+当前 production `FrontendSemanticAnalyzer` 的稳定顺序是：
 
 1. skeleton
 2. scope
 3. variable inventory
-4. top binding
-5. local type stabilization
-6. chain binding
-7. expr typing
-8. callable-local slot-type republish
-9. annotation usage
-10. virtual override
-11. type check
-12. loop-control legality
-13. compile-only final gate（仅 `analyzeForCompile(...)`）
+4. interface phase
+5. SuiteResolver body publication，内部 owner 顺序固定为 top binding -> local type stabilization -> chain binding -> expr typing -> callable-local slot-type republish
+6. annotation usage
+7. virtual override
+8. type check
+9. loop-control legality
+10. compile-only final gate（仅 `analyzeForCompile(...)`）
 
-每个 phase 结束后，`FrontendSemanticAnalyzer` 都会调用 `analysisData.updateDiagnostics(...)` 刷新共享诊断快照。因此 local type stabilization 虽然不拥有 diagnostics，仍然参与稳定的 phase-boundary refresh。
+每个 shared phase 结束后，`FrontendSemanticAnalyzer` 都会调用 `analysisData.updateDiagnostics(...)` 刷新共享诊断快照。SuiteResolver body path 还会在 statement boundary 刷新快照，让后一 statement 读取 current-suite upstream diagnostics。
 
-`FrontendLocalTypeStabilizationAnalyzer` 固定运行在 `FrontendTopBindingAnalyzer` 之后、`FrontendChainBindingAnalyzer` 之前。它的职责是先把 block-local `:=` slot 稳定到当前可得到的 exact type，再让 chain binding 消费这些 receiver slot，避免第一次正式发布 member/call facts 时把本应静态的 receiver 误读成 `Variant`。
+生产 body path 中，local stabilization 作为 `FrontendBodyOwnerProcedures` 的 statement-local
+owner procedure 运行在 top binding 之后、chain binding 之前。阶段 K 已删除 standalone
+whole-module analyzer 与 window shim；focused coverage 通过 SuiteResolver、typed overlay 和
+per-owner patch transaction 锚定，不再存在第二条发布路径。
 
 ### 1.2 当前职责
 
-`FrontendLocalTypeStabilizationAnalyzer` 当前只负责一件事：在已发布的 callable executable body 中，按源码顺序稳定符合条件的 local `var := initializer` slot type。
+local stabilization 当前只负责一件事：在已发布的 callable executable body 中，按源码顺序稳定符合条件的 local `var := initializer` slot type。
 
 它当前稳定负责：
 
@@ -150,7 +153,7 @@ BlockScope.resetLocalType(...)
 - declaration 所在 scope 是 `BlockScope`
 - `FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind()) == true`
 
-这条边界继承 callable-local inventory 合同，不会把 class property、class const、block-local `const` 或当前未支持的 subtree 混进来。
+这条边界继承 structural callable-local inventory 合同。`FOR_BODY` 中的 ordinary `VariableDeclaration` 可以参与稳定化；iterator identity 是 `ForStatement`，不是 eligible declaration，由后续 iteration planning 负责精化。
 
 ### 3.2 Source-order 单遍
 
@@ -276,14 +279,13 @@ package-private `probe(...)` 仅作为测试观察窗口存在，用来运行与
 
 - parameter default
 - lambda / capture
-- `for`
 - `match`
 - block-local `const`
 - class `const`
 - unsupported subtree
 - control-flow merge / join
 
-这些边界若未来要打开，必须与 variable inventory、visible-value resolution、chain binding、expr typing 和 type check 一起收口，不能在本 phase 单独偷开支持面。
+这些边界若未来要打开，必须与 variable inventory、visible-value resolution、chain binding、expr typing 和 type check 一起收口，不能在本 phase 单独偷开支持面。For body 已经通过普通 SuiteResolver path 进入本 owner，但 iterator refinement 仍不属于 local `var :=` stabilization。
 
 ---
 
@@ -332,6 +334,7 @@ focused case 至少要继续覆盖：
 - forward local reference
 - assignment-based local type refinement
 - CFG branch / loop merge aware refinement
-- `for` / `match` / lambda / capture local inventory
+- `match` / lambda / capture local inventory
+- for iterator route-aware refinement
 - property `:=` metadata backfill
 - 跨 callable 或 whole-module 的类型收敛

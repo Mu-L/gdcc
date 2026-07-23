@@ -1,18 +1,18 @@
 package gd.script.gdcc.frontend.sema.resolver;
 
 import gd.script.gdcc.frontend.scope.BlockScope;
-import gd.script.gdcc.frontend.scope.BlockScopeKind;
 import gd.script.gdcc.frontend.scope.CallableScope;
-import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
-import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
-import gd.script.gdcc.frontend.sema.FrontendModuleSkeleton;
 import gd.script.gdcc.frontend.scope.CallableScopeKind;
+import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendBodySemanticSupportPolicy;
+import gd.script.gdcc.frontend.sema.FrontendBodyDeclarationIndex;
+import gd.script.gdcc.frontend.sema.FrontendModuleSkeleton;
+import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeLookupResult;
 import gd.script.gdcc.scope.ScopeValue;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
-import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.MatchSection;
 import dev.superice.gdparser.frontend.ast.Node;
@@ -35,23 +35,38 @@ import java.util.Objects;
 ///   explicit deferred-boundary sealing for domains whose variable inventory is not published yet
 public final class FrontendVisibleValueResolver {
     private final @NotNull FrontendAnalysisData analysisData;
+    private final @Nullable FrontendBodyDeclarationIndex bodyDeclarationIndex;
     private final @NotNull IdentityHashMap<Node, Node> parentByNode = new IdentityHashMap<>();
     private final @NotNull IdentityHashMap<Node, Boolean> indexedAstNodes = new IdentityHashMap<>();
 
     public FrontendVisibleValueResolver(@NotNull FrontendAnalysisData analysisData) {
+        this(analysisData, null);
+    }
+
+    public FrontendVisibleValueResolver(
+            @NotNull FrontendAnalysisData analysisData,
+            @Nullable FrontendBodyDeclarationIndex bodyDeclarationIndex
+    ) {
         this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
+        this.bodyDeclarationIndex = bodyDeclarationIndex;
         indexSourceAstParents(analysisData.moduleSkeleton());
     }
 
     /// Resolves one value use site under the frontend-visible declaration-order rules.
     public @NotNull FrontendVisibleValueResolution resolve(@NotNull FrontendVisibleValueResolveRequest request) {
+        return resolve(request, null);
+    }
+
+    /// Resolves one use site and overlays the returned local type only after visibility filtering.
+    public @NotNull FrontendVisibleValueResolution resolve(
+            @NotNull FrontendVisibleValueResolveRequest request,
+            @Nullable FrontendTypedLexicalEnvironment typedEnvironment
+    ) {
         Objects.requireNonNull(request, "request must not be null");
 
-        if (request.domain() != FrontendVisibleValueDomain.EXECUTABLE_BODY) {
-            return deferredUnsupported(
-                    request.domain(),
-                    FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN
-            );
+        var requestDomainBoundary = classifyRequestDomainBoundary(request);
+        if (requestDomainBoundary != null) {
+            return FrontendVisibleValueResolution.deferredUnsupported(requestDomainBoundary);
         }
 
         var useSite = request.useSite();
@@ -62,11 +77,10 @@ public final class FrontendVisibleValueResolver {
 
         var currentScope = analysisData.scopesByAst().get(useSite);
         if (currentScope == null) {
-            return deferredUnsupported(
+            return deferredMissingScope(
                     indexedAstNodes.containsKey(useSite)
                             ? FrontendVisibleValueDomain.EXECUTABLE_BODY
-                            : FrontendVisibleValueDomain.UNKNOWN_OR_SKIPPED_SUBTREE,
-                    FrontendVisibleValueDeferredReason.MISSING_SCOPE_OR_SKIPPED_SUBTREE
+                            : FrontendVisibleValueDomain.UNKNOWN_OR_SKIPPED_SUBTREE
             );
         }
         var currentScopeBoundary = classifyUnsupportedCurrentScopeBoundary(currentScope);
@@ -83,13 +97,19 @@ public final class FrontendVisibleValueResolver {
         while (scope instanceof BlockScope || scope instanceof CallableScope) {
             var currentLayerResult = scope.resolveValueHere(request.name(), request.restriction());
             if (currentLayerResult.isBlocked()) {
-                return FrontendVisibleValueResolution.foundBlocked(currentLayerResult.requireValue(), filteredHits);
+                return FrontendVisibleValueResolution.foundBlocked(
+                        effectiveValue(currentLayerResult.requireValue(), scope, typedEnvironment),
+                        filteredHits
+                );
             }
             if (currentLayerResult.isAllowed()) {
                 var visibleValue = currentLayerResult.requireValue();
                 var filteredHit = filterInvisibleCurrentLayerHit(visibleValue, scope, useSite);
                 if (filteredHit == null) {
-                    return FrontendVisibleValueResolution.foundAllowed(visibleValue, filteredHits);
+                    return FrontendVisibleValueResolution.foundAllowed(
+                            effectiveValue(visibleValue, scope, typedEnvironment),
+                            filteredHits
+                    );
                 }
                 filteredHits.add(filteredHit);
             }
@@ -100,6 +120,14 @@ public final class FrontendVisibleValueResolver {
             return FrontendVisibleValueResolution.notFound(filteredHits);
         }
         return toFrontendResolution(scope.resolveValue(request.name(), request.restriction()), filteredHits);
+    }
+
+    private @NotNull ScopeValue effectiveValue(
+            @NotNull ScopeValue value,
+            @NotNull Scope owningScope,
+            @Nullable FrontendTypedLexicalEnvironment typedEnvironment
+    ) {
+        return typedEnvironment != null ? typedEnvironment.effectiveScopeValue(value, owningScope) : value;
     }
 
     private void indexSourceAstParents(@NotNull FrontendModuleSkeleton moduleSkeleton) {
@@ -144,35 +172,45 @@ public final class FrontendVisibleValueResolver {
     ) {
         return switch (parentNode) {
             case Parameter parameter when parameter.defaultValue() == childNode ->
-                    new FrontendVisibleValueDeferredBoundary(
-                            FrontendVisibleValueDomain.PARAMETER_DEFAULT,
-                            FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
-                    );
-            case LambdaExpression lambdaExpression when lambdaExpression.body() == childNode ->
-                    new FrontendVisibleValueDeferredBoundary(
-                            FrontendVisibleValueDomain.LAMBDA_SUBTREE,
-                            FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
-                    );
+                    structuralBoundary(FrontendBodySemanticSupportPolicy.PARAMETER_DEFAULT);
+            case LambdaExpression lambdaExpression when lambdaExpression.body() == childNode -> structuralBoundary(
+                    FrontendBodySemanticSupportPolicy.LAMBDA_SUBTREE
+            );
             case VariableDeclaration variableDeclaration when variableDeclaration.kind() == DeclarationKind.CONST
                     && variableDeclaration.value() == childNode
-                    && isDeferredBlockLocalConst(variableDeclaration) -> new FrontendVisibleValueDeferredBoundary(
-                    FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE,
-                    FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
+                    && isDeferredBlockLocalConst(variableDeclaration) -> structuralBoundary(
+                    FrontendBodySemanticSupportPolicy.BLOCK_LOCAL_CONST_SUBTREE
             );
-            case ForStatement forStatement when (forStatement.iteratorType() == childNode
-                    || forStatement.iterable() == childNode
-                    || forStatement.body() == childNode) -> new FrontendVisibleValueDeferredBoundary(
-                    FrontendVisibleValueDomain.FOR_SUBTREE,
-                    FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
+            case MatchSection matchSection when matchSection.body() == childNode -> structuralBoundary(
+                    FrontendBodySemanticSupportPolicy.MATCH_SUBTREE
             );
             case MatchSection matchSection when (matchSection.guard() == childNode
-                    || matchSection.body() == childNode
-                    || containsNodeIdentity(matchSection.patterns(), childNode)) -> new FrontendVisibleValueDeferredBoundary(
-                    FrontendVisibleValueDomain.MATCH_SUBTREE,
-                    FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
+                    || containsNodeIdentity(matchSection.patterns(), childNode)) -> structuralBoundary(
+                    FrontendBodySemanticSupportPolicy.MATCH_SUBTREE
             );
             default -> null;
         };
+    }
+
+    private @Nullable FrontendVisibleValueDeferredBoundary classifyRequestDomainBoundary(
+            @NotNull FrontendVisibleValueResolveRequest request
+    ) {
+        if (request.domain() == FrontendVisibleValueDomain.EXECUTABLE_BODY) {
+            return null;
+        }
+        return new FrontendVisibleValueDeferredBoundary(
+                request.domain(),
+                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN
+        );
+    }
+
+    private @NotNull FrontendVisibleValueDeferredBoundary structuralBoundary(
+            @NotNull FrontendBodySemanticSupportPolicy policy
+    ) {
+        return new FrontendVisibleValueDeferredBoundary(
+                policy.visibleValueDomain(),
+                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN
+        );
     }
 
     /// Class-level `const` continues to belong to class-scope lookup. Only executable block-local
@@ -180,7 +218,9 @@ public final class FrontendVisibleValueResolver {
     private boolean isDeferredBlockLocalConst(@NotNull VariableDeclaration variableDeclaration) {
         var declarationScope = analysisData.scopesByAst().get(variableDeclaration);
         return declarationScope instanceof BlockScope blockScope
-                && FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind());
+                && FrontendBodySemanticSupportPolicy.forBlockScopeKind(
+                blockScope.kind()
+        ).publishesLexicalInventory();
     }
 
     /// Block-local `const` inventory is still deferred. If a same-name visible `const` declaration
@@ -237,7 +277,7 @@ public final class FrontendVisibleValueResolver {
         }
         return new FrontendVisibleValueDeferredBoundary(
                 FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE,
-                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
+                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN
         );
     }
 
@@ -248,12 +288,9 @@ public final class FrontendVisibleValueResolver {
             @NotNull Scope currentScope
     ) {
         return switch (currentScope) {
-            case BlockScope blockScope -> classifyUnsupportedCurrentBlockScopeBoundary(blockScope.kind());
+            case BlockScope blockScope -> classifyUnsupportedCurrentBlockScopeBoundary(blockScope);
             case CallableScope callableScope when callableScope.kind() == CallableScopeKind.LAMBDA_EXPRESSION ->
-                    new FrontendVisibleValueDeferredBoundary(
-                            FrontendVisibleValueDomain.LAMBDA_SUBTREE,
-                            FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
-                    );
+                    unsupportedScopeBoundary(FrontendBodySemanticSupportPolicy.LAMBDA_SUBTREE);
             default -> new FrontendVisibleValueDeferredBoundary(
                     FrontendVisibleValueDomain.EXECUTABLE_BODY,
                     FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN
@@ -273,35 +310,27 @@ public final class FrontendVisibleValueResolver {
     }
 
     private @Nullable FrontendVisibleValueDeferredBoundary classifyUnsupportedCurrentBlockScopeBoundary(
-            @NotNull BlockScopeKind kind
+            @NotNull BlockScope blockScope
     ) {
-        if (FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(kind)) {
+        var policy = FrontendBodySemanticSupportPolicy.forBlockScopeKind(blockScope.kind());
+        if (policy.publishesLexicalInventory()) {
             return null;
         }
-        return switch (kind) {
-            case LAMBDA_BODY -> new FrontendVisibleValueDeferredBoundary(
-                    FrontendVisibleValueDomain.LAMBDA_SUBTREE,
-                    FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
-            );
-            case FOR_BODY -> new FrontendVisibleValueDeferredBoundary(
-                    FrontendVisibleValueDomain.FOR_SUBTREE,
-                    FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
-            );
-            case MATCH_SECTION_BODY -> new FrontendVisibleValueDeferredBoundary(
-                    FrontendVisibleValueDomain.MATCH_SUBTREE,
-                    FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
-            );
-            default -> new FrontendVisibleValueDeferredBoundary(
-                    FrontendVisibleValueDomain.EXECUTABLE_BODY,
-                    FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN
-            );
-        };
+        return unsupportedScopeBoundary(policy);
+    }
+
+    private @NotNull FrontendVisibleValueDeferredBoundary unsupportedScopeBoundary(
+            @NotNull FrontendBodySemanticSupportPolicy policy
+    ) {
+        return structuralBoundary(policy);
     }
 
     private boolean publishesCallableLocalValueInventory(@NotNull Block block) {
         var blockScope = analysisData.scopesByAst().get(block);
         return blockScope instanceof BlockScope typedBlockScope
-                && FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(typedBlockScope.kind());
+                && FrontendBodySemanticSupportPolicy.forBlockScopeKind(
+                typedBlockScope.kind()
+        ).publishesLexicalInventory();
     }
 
     private @Nullable FrontendFilteredValueHit filterInvisibleCurrentLayerHit(
@@ -314,6 +343,7 @@ public final class FrontendVisibleValueResolver {
             return null;
         }
         if (declaration instanceof VariableDeclaration variableDeclaration) {
+            checkPublishedLocalInventory(variableDeclaration, value);
             if (isVisibleLocal(variableDeclaration, useSite)) {
                 return null;
             }
@@ -324,6 +354,23 @@ public final class FrontendVisibleValueResolver {
             );
         }
         return null;
+    }
+
+    private void checkPublishedLocalInventory(
+            @NotNull VariableDeclaration declaration,
+            @NotNull ScopeValue value
+    ) {
+        if (bodyDeclarationIndex == null) {
+            return;
+        }
+        var indexedDeclaration = bodyDeclarationIndex.declarationFor(declaration);
+        if (indexedDeclaration == null
+                || indexedDeclaration.binding().declaration() != value.declaration()
+                || indexedDeclaration.binding().kind() != value.kind()) {
+            throw new IllegalStateException(
+                    "scope local '" + value.name() + "' is missing or inconsistent in published body inventory"
+            );
+        }
     }
 
     private boolean isVisibleLocal(@NotNull VariableDeclaration variableDeclaration, @NotNull Node useSite) {
@@ -372,12 +419,14 @@ public final class FrontendVisibleValueResolver {
         };
     }
 
-    private @NotNull FrontendVisibleValueResolution deferredUnsupported(
-            @NotNull FrontendVisibleValueDomain domain,
-            @NotNull FrontendVisibleValueDeferredReason reason
+    private @NotNull FrontendVisibleValueResolution deferredMissingScope(
+            @NotNull FrontendVisibleValueDomain domain
     ) {
         return FrontendVisibleValueResolution.deferredUnsupported(
-                new FrontendVisibleValueDeferredBoundary(domain, reason)
+                new FrontendVisibleValueDeferredBoundary(
+                        domain,
+                        FrontendVisibleValueDeferredReason.MISSING_SCOPE_OR_SKIPPED_SUBTREE
+                )
         );
     }
 }
