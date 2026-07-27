@@ -1,9 +1,11 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.patch.FrontendChainBindingPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendExprTypePatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendForIterationResolutionPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalTypeStabilizationPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
@@ -29,6 +31,10 @@ import java.util.Objects;
 /// Stable side tables and `BlockScope` slots are only changed after exporting a per-owner patch
 /// transaction and applying it to `FrontendAnalysisData`. The Interface-layer baseline supplies
 /// immutable source-facing slot types until a body fact supersedes them.
+///
+/// For-iterator declarations use a split `scopesByAst` contract: header vs `FOR_BODY`. Overlay
+/// lookup for iterator refinements must use the `FOR_BODY` object identity — see
+/// `owningScopeForDeclaration` and `scope_analyzer_implementation.md` §6.1.
 public final class FrontendTypedLexicalEnvironment {
     private final @NotNull Scope scope;
     private final @NotNull FrontendAnalysisData stableData;
@@ -84,6 +90,7 @@ public final class FrontendTypedLexicalEnvironment {
         return parent != null ? parent.symbolBinding(astNode) : null;
     }
 
+    @SuppressWarnings("unused")
     public @Nullable FrontendResolvedMember resolvedMember(@NotNull Node astNode) {
         return firstNonNull(
                 pendingFacts.resolvedMembers.get(astNode),
@@ -93,6 +100,7 @@ public final class FrontendTypedLexicalEnvironment {
         );
     }
 
+    @SuppressWarnings("unused")
     public @Nullable FrontendResolvedCall resolvedCall(@NotNull Node astNode) {
         return firstNonNull(
                 pendingFacts.resolvedCall(astNode),
@@ -198,9 +206,36 @@ public final class FrontendTypedLexicalEnvironment {
             @NotNull FrontendSemanticStage owner,
             @NotNull FrontendLocalSlotTypeUpdate update
     ) {
-        requireOwner(owner, FrontendSemanticStage.LOCAL_TYPE_STABILIZATION);
-        validateLocalSlotTypeUpdate(update);
-        pendingFacts.localSlotTypeUpdates.add(update);
+        switch (owner) {
+            case LOCAL_TYPE_STABILIZATION -> {
+                validateLocalSlotTypeUpdate(update);
+                pendingFacts.localSlotTypeUpdates.add(update);
+            }
+            case FOR_ITERATION_RESOLUTION -> {
+                validateLocalSlotTypeUpdate(update);
+                pendingFacts.forIterationSlotTypeUpdates.add(update);
+            }
+            default -> throw FrontendAnalysisData.patchFailure(
+                    owner + " cannot publish local slot type updates");
+        }
+    }
+
+    public void putForIterationPlan(
+            @NotNull FrontendSemanticStage owner,
+            @NotNull Node astNode,
+            @NotNull FrontendForIterationPlan plan
+    ) {
+        requireOwner(owner, FrontendSemanticStage.FOR_ITERATION_RESOLUTION);
+        FrontendPublishedFactTypeGuard.checkForIterationPlan(plan);
+        putSideTable(
+                stableData.forIterationPlans(),
+                committedFacts.forIterationPlans,
+                pendingFacts.forIterationPlans,
+                astNode,
+                plan,
+                "forIterationPlans",
+                FrontendForIterationPlan::samePlan
+        );
     }
 
     public void putResolvedMember(
@@ -290,11 +325,11 @@ public final class FrontendTypedLexicalEnvironment {
     }
 
     public boolean hasPendingFacts() {
-        return !pendingFacts.isEmpty();
+        return pendingFacts.hasFacts();
     }
 
     public boolean hasCommittedFacts() {
-        return !committedFacts.isEmpty();
+        return committedFacts.hasFacts();
     }
 
     private void putResolvedCall(
@@ -350,12 +385,27 @@ public final class FrontendTypedLexicalEnvironment {
         if (resolvedValue == null || !(binding.declarationSite() instanceof Node declarationNode)) {
             return binding;
         }
-        var owningScope = stableData.scopesByAst().get(declarationNode);
+        var owningScope = owningScopeForDeclaration(declarationNode);
         if (owningScope == null) {
             return binding;
         }
         var effectiveValue = effectiveScopeValue(resolvedValue, owningScope);
         return effectiveValue == resolvedValue ? binding : binding.withResolvedValue(effectiveValue);
+    }
+
+    /// Resolves the `BlockScope` identity used for local-slot overlays of a declaration site.
+    ///
+    /// `scopesByAst[ForStatement]` records the header outer scope (iterable/header typing), while
+    /// `FOR_ITERATION_RESOLUTION` writes iterator refinements against `scopesByAst[for.body()]`
+    /// (`FOR_BODY`). Lookup must use the same object identity so `findLocalSlotTypeUpdate` can match.
+    private @Nullable Scope owningScopeForDeclaration(@NotNull Node declarationNode) {
+        if (declarationNode instanceof ForStatement forStatement) {
+            var bodyScope = stableData.scopesByAst().get(forStatement.body());
+            if (bodyScope instanceof BlockScope forBodyScope) {
+                return forBodyScope;
+            }
+        }
+        return stableData.scopesByAst().get(declarationNode);
     }
 
     private static @NotNull ScopeValue withType(@NotNull ScopeValue value, @NotNull GdType type) {
@@ -445,19 +495,24 @@ public final class FrontendTypedLexicalEnvironment {
         private final @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes = new FrontendAstSideTable<>();
         private final @NotNull FrontendAstSideTable<GdType> slotTypes = new FrontendAstSideTable<>();
         private final @NotNull List<FrontendLocalSlotTypeUpdate> localSlotTypeUpdates = new ArrayList<>();
+        private final @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans = new FrontendAstSideTable<>();
+        private final @NotNull List<FrontendLocalSlotTypeUpdate> forIterationSlotTypeUpdates = new ArrayList<>();
 
         private @Nullable FrontendResolvedCall resolvedCall(@NotNull Node astNode) {
             var chainCall = chainResolvedCalls.get(astNode);
             return chainCall != null ? chainCall : exprResolvedCalls.get(astNode);
         }
 
-        private @Nullable GdType localSlotType(
+        /// Matches by `scope` / `declaration` **object identity** (`==`) and name equality.
+        /// For-iterator updates require the `FOR_BODY` instance written by `refineIteratorSlot`.
+        private static @Nullable GdType findLocalSlotTypeUpdate(
+                @NotNull List<FrontendLocalSlotTypeUpdate> updates,
                 @NotNull BlockScope scope,
                 @NotNull String name,
                 @NotNull Object declaration
         ) {
-            for (var i = localSlotTypeUpdates.size() - 1; i >= 0; i--) {
-                var update = localSlotTypeUpdates.get(i);
+            for (var i = updates.size() - 1; i >= 0; i--) {
+                var update = updates.get(i);
                 if (update.scope() == scope
                         && update.declaration() == declaration
                         && update.name().equals(name)) {
@@ -465,6 +520,22 @@ public final class FrontendTypedLexicalEnvironment {
                 }
             }
             return null;
+        }
+
+        private @Nullable GdType localSlotType(
+                @NotNull BlockScope scope,
+                @NotNull String name,
+                @NotNull Object declaration
+        ) {
+            var forIterationType = findLocalSlotTypeUpdate(
+                    forIterationSlotTypeUpdates,
+                    scope,
+                    name,
+                    declaration
+            );
+            return forIterationType != null
+                    ? forIterationType
+                    : findLocalSlotTypeUpdate(localSlotTypeUpdates, scope, name, declaration);
         }
 
         private void mergeFrom(@NotNull OverlayFacts incoming) {
@@ -484,7 +555,14 @@ public final class FrontendTypedLexicalEnvironment {
             );
             mergeSideTable(expressionTypes, incoming.expressionTypes, "expressionTypes", FrontendAnalysisData::sameExpressionType);
             mergeSideTable(slotTypes, incoming.slotTypes, "slotTypes", FrontendAnalysisData::sameType);
+            mergeSideTable(
+                    forIterationPlans,
+                    incoming.forIterationPlans,
+                    "forIterationPlans",
+                    FrontendForIterationPlan::samePlan
+            );
             localSlotTypeUpdates.addAll(incoming.localSlotTypeUpdates);
+            forIterationSlotTypeUpdates.addAll(incoming.forIterationSlotTypeUpdates);
         }
 
         private void checkNoCompilerOnlyLeaks() {
@@ -495,6 +573,8 @@ public final class FrontendTypedLexicalEnvironment {
             FrontendPublishedFactTypeGuard.checkExpressionTypes(expressionTypes);
             FrontendPublishedFactTypeGuard.checkSlotTypes(slotTypes);
             FrontendPublishedFactTypeGuard.checkLocalSlotTypeUpdates(localSlotTypeUpdates);
+            FrontendPublishedFactTypeGuard.checkForIterationPlans(forIterationPlans);
+            FrontendPublishedFactTypeGuard.checkLocalSlotTypeUpdates(forIterationSlotTypeUpdates);
         }
 
         private @NotNull List<FrontendOwnerPatch> toOwnerPatches() {
@@ -511,20 +591,25 @@ public final class FrontendTypedLexicalEnvironment {
             if (!expressionTypes.isEmpty() || !exprResolvedCalls.isEmpty()) {
                 patches.add(new FrontendExprTypePatch(expressionTypes, exprResolvedCalls));
             }
+            if (!forIterationPlans.isEmpty() || !forIterationSlotTypeUpdates.isEmpty()) {
+                patches.add(new FrontendForIterationResolutionPatch(forIterationPlans, forIterationSlotTypeUpdates));
+            }
             if (!slotTypes.isEmpty()) {
                 patches.add(new FrontendVarTypePostPatch(slotTypes));
             }
             return patches;
         }
 
-        private boolean isEmpty() {
-            return symbolBindings.isEmpty()
-                    && resolvedMembers.isEmpty()
-                    && chainResolvedCalls.isEmpty()
-                    && exprResolvedCalls.isEmpty()
-                    && expressionTypes.isEmpty()
-                    && slotTypes.isEmpty()
-                    && localSlotTypeUpdates.isEmpty();
+        private boolean hasFacts() {
+            return !symbolBindings.isEmpty()
+                    || !resolvedMembers.isEmpty()
+                    || !chainResolvedCalls.isEmpty()
+                    || !exprResolvedCalls.isEmpty()
+                    || !expressionTypes.isEmpty()
+                    || !slotTypes.isEmpty()
+                    || !localSlotTypeUpdates.isEmpty()
+                    || !forIterationPlans.isEmpty()
+                    || !forIterationSlotTypeUpdates.isEmpty();
         }
 
         private void clear() {
@@ -535,6 +620,8 @@ public final class FrontendTypedLexicalEnvironment {
             expressionTypes.clear();
             slotTypes.clear();
             localSlotTypeUpdates.clear();
+            forIterationPlans.clear();
+            forIterationSlotTypeUpdates.clear();
         }
 
         private static <V> void mergeSideTable(

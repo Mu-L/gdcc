@@ -54,20 +54,27 @@ extend the runtime-provided `godot_*` surface.
 - `gdcc_call.h`: convenience Variant packers and `GD_OBJECT_CALL*` helpers for dynamic object calls.
 - `gdcc_operator.h`: backend-owned operator support such as division/shift guards, integer power
   and object identity comparison.
-- `gdcc_intrinsic.h`: wrapper-only inbound materialization helpers for accepted Variant payloads whose
-  runtime type differs from the published method metadata. It owns vector narrow-payload helpers
-  and string-family `String` / `StringName` cross-case helpers; scalar `int -> float` inbound
-  materialization remains directly emitted by the generated wrapper code. The same header also owns
-  compiler-only range-iterator runtime storage helpers:
-  - `gdcc_for_range_iter` is the backend-owned C storage struct for `compiler::GdccForRangeIter`
-  - `gdcc_for_range_iter_init()` is the prepare-block default initializer
-  - `gdcc_for_range_iter_destroy()` is the matching destroy hook; it is intentionally a no-op today
-  - `gdcc_for_range_iter_from_bounds()` materializes normalized `start/end/step` bounds and reports
-    `step == 0` through `godot_print_error(...)` before returning an always-terminating fallback state with
-    `step=1`. A zero-step argument is a programming error; frontend lowering and generated code must not
-    emit zero-step range iterators under any normal path.
-  - `gdcc_for_range_iter_should_continue()`, `gdcc_for_range_iter_next()` and
-    `gdcc_for_range_iter_get()` implement the range intrinsic family
+- `gdcc_intrinsic.h`: umbrella header that includes `gdcc/intrinsic/*` split implementations. It owns
+  wrapper-only inbound materialization helpers (`call_arg_materialize.h`) for accepted Variant payloads
+  whose runtime type differs from published method metadata, plus compiler-only for-iterator runtime
+  storage helpers:
+  - `intrinsic/for_range_iter.h`: `gdcc_for_range_iter` POD storage; `from_bounds` / `should_continue` /
+    `next` / `get`. Zero step is empty (no diagnostic), matching Godot 4.5.1 optimized range loop.
+  - `intrinsic/for_float_iter.h`: POD FLOAT shorthand (`current < end`, step `+1.0`).
+  - `intrinsic/for_variant_iter.h`: generic `Variant::iter_*` protocol state.
+  - `intrinsic/for_string_iter.h`: String index iteration (`substr(index, 1)`).
+  - `intrinsic/for_array_iter.h`: shared Array handle + cached size; `get` uses
+    `godot_array_operator_index_const(&source, index)` + Variant copy (no raw base-pointer cache;
+    Array is reference-semantic and may reallocate on resize).
+  - `intrinsic/for_dictionary_iter.h`: heap-shared keys box (`Dictionary_keys()` snapshot + non-atomic
+    refcount) + cached contiguous key `Variant*` base; `next`/`copy` only bump refcount; last
+    `destroy` frees the box. For-iter locals are single-threaded. **Semantic divergence**: Godot VM
+    uses a live cursor that invalidates on mutation during iteration; this snapshot approach is a
+    deliberate safer divergence — mutations to the dictionary after the snapshot do not affect the
+    iteration sequence.
+  - `intrinsic/for_packed_array_iter.h`: per-family Packed*Array iterator structs (no kind union).
+    Each family owns a typed COW snapshot + typed element base pointer; `get` returns the typed
+    element without runtime family dispatch.
   - these helpers are GDCC-owned runtime support and must keep the `gdcc_*` namespace instead of
     pretending to be generated `godot_*` wrappers
 - `gdcc_helper.h`: the aggregate helper header included by generated entry code. It provides

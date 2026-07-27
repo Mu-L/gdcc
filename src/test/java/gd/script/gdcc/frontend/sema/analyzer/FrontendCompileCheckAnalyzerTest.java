@@ -29,6 +29,7 @@ import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
@@ -656,13 +657,6 @@ class FrontendCompileCheckAnalyzerTest {
                         body_local is int
                         assert(body_local)
                     const answer = [body_local]
-                    for item in [body_local]:
-                        {"item": item}
-                        preload("res://icon.svg")
-                        $Camera3D
-                        item as int
-                        item is int
-                        assert(item)
                     match body_local:
                         var bound when bound > 0:
                             [bound]
@@ -677,8 +671,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_skipped_surface.gd", source);
 
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        assertEquals(1, compileDiagnostics.size());
-        assertTrue(compileDiagnostics.getFirst().message().contains("For statement"));
+        assertEquals(0, compileDiagnostics.size());
         var unsupportedBindingDiagnostics = diagnosticsByCategory(
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
@@ -687,7 +680,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void forIsSharedSemanticSupportedButCompileModeStopsAtStatementRoot() throws Exception {
+    void forGenericVariantRouteReleasesBodyOntoCompileSurface() throws Exception {
         var source = """
                 class_name CompileCheckForBridge
                 extends Node
@@ -708,8 +701,109 @@ class FrontendCompileCheckAnalyzerTest {
         ));
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         assertEquals(1, compileDiagnostics.size());
-        assertTrue(compileDiagnostics.getFirst().message().contains("For statement"));
-        assertTrue(compileDiagnostics.getFirst().message().contains("CFG"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("assert"));
+    }
+
+    @Test
+    void analyzeForCompileReleasesRangeCallRouteOntoCompileSurface() throws Exception {
+        var source = """
+                class_name CompileCheckForRangeReleased
+                extends Node
+
+                func ping():
+                    for i in range(3):
+                        var copy := i
+                """;
+
+        var compiled = analyzeForCompile("compile_check_for_range_released.gd", source);
+
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(compiled.diagnostics().asList().stream()
+                .noneMatch(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR));
+    }
+
+    @Test
+    void analyzeForCompileReleasesIntShorthandRouteOntoCompileSurface() throws Exception {
+        var source = """
+                class_name CompileCheckForIntShorthandReleased
+                extends Node
+
+                func ping():
+                    for i in 5:
+                        var copy := i
+                """;
+
+        var compiled = analyzeForCompile("compile_check_for_int_shorthand_released.gd", source);
+
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(compiled.diagnostics().asList().stream()
+                .noneMatch(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR));
+    }
+
+    @Test
+    void analyzeForCompileScansReleasedRangeLoopBody() throws Exception {
+        var source = """
+                class_name CompileCheckForRangeBodyScanned
+                extends Node
+
+                func ping():
+                    for i in range(3):
+                        assert(i)
+                """;
+
+        var compiled = analyzeForCompile("compile_check_for_range_body_scanned.gd", source);
+
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(compileDiagnostics.getFirst().message().contains("assert"));
+    }
+
+    @Test
+    void analyzeForCompileDoesNotReWrapUpstreamErrorOnForRouteNotReady() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_for_upstream_error.gd", """
+                class_name CompileCheckForUpstreamError
+                extends Node
+
+                func ping(values):
+                    for item in values:
+                        var copy := item
+                """);
+        var forStatement = findNode(preparedInput.unit().ast(), ForStatement.class, ignored -> true);
+        preparedInput.diagnosticManager().error(
+                "sema.synthetic",
+                "synthetic upstream error owning the for statement anchor",
+                preparedInput.unit().path(),
+                FrontendRange.fromAstRange(forStatement.range())
+        );
+        preparedInput.analysisData().updateDiagnostics(preparedInput.diagnosticManager().snapshot());
+
+        runCompileCheck(preparedInput);
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.compile_check").isEmpty());
+        assertEquals(1, diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.synthetic").size());
+    }
+
+    @Test
+    void analyzeForCompileFailsFastWhenForIterationPlanIsNotPublished() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_for_missing_plan.gd", """
+                class_name CompileCheckForMissingPlan
+                extends Node
+
+                func ping():
+                    for i in range(3):
+                        var copy := i
+                """);
+        var forStatement = findNode(preparedInput.unit().ast(), ForStatement.class, ignored -> true);
+        preparedInput.analysisData().forIterationPlans().remove(forStatement);
+
+        var failure = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCompileCheckAnalyzer().analyze(
+                        preparedInput.analysisData(),
+                        preparedInput.diagnosticManager()
+                )
+        );
+        assertTrue(failure.getMessage().contains("for-in iteration plan has not been published"));
     }
 
     @Test

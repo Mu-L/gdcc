@@ -10,15 +10,18 @@ import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import gd.script.gdcc.frontend.sema.FrontendForIterationRoute;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Statement;
@@ -1255,6 +1258,562 @@ class FrontendTypeCheckAnalyzerTest {
         );
 
         assertTrue(failure.getMessage().contains("compiler-only type leaked into frontend condition fact"));
+    }
+
+    @Test
+    void analyzeFailsFastWhenForIterationPlanIsNotPublished() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_missing_iteration_plan.gd", """
+                class_name ForMissingIterationPlan
+                extends RefCounted
+                
+                func ping():
+                    for i in range(3):
+                        pass
+                """);
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var forStatement = findNode(pingFunction, ForStatement.class, ignored -> true);
+        preparedInput.analysisData().forIterationPlans().remove(forStatement);
+
+        var failure = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendTypeCheckAnalyzer().analyze(
+                        preparedInput.classRegistry(),
+                        preparedInput.analysisData(),
+                        preparedInput.diagnosticManager()
+                )
+        );
+
+        assertTrue(failure.getMessage().contains("for-in iteration plan has not been published"));
+    }
+
+    @Test
+    void analyzeReportsRangeArityDiagnosticsForEmptyAndOverflowingRange() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_range_arity.gd", """
+                class_name ForRangeArity
+                extends RefCounted
+                
+                func ping():
+                    for i in range():
+                        pass
+                    for j in range(1, 2, 3, 4):
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(2, diagnostics.size());
+        assertTrue(diagnostics.get(0).message().contains("range(...) expects between 1 and 3 arguments but got 0"));
+        assertTrue(diagnostics.get(1).message().contains("range(...) expects between 1 and 3 arguments but got 4"));
+    }
+
+    @Test
+    void analyzeAcceptsValidRangeArityAndZeroStepWithoutDiagnostic() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_range_valid_arity.gd", """
+                class_name ForRangeValidArity
+                extends RefCounted
+                
+                func ping():
+                    for a in range(3):
+                        pass
+                    for b in range(1, 3):
+                        pass
+                    for c in range(2, 8, 2):
+                        pass
+                    for d in range(1, 2, 0):
+                        pass
+                    for e in range(8, 2, -2):
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check").isEmpty());
+    }
+
+    @Test
+    void analyzeAcceptsDynamicIntegerRangeBoundaries() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_range_dynamic_bounds.gd", """
+                class_name ForRangeDynamicBounds
+                extends RefCounted
+                
+                func ping():
+                    var start: int = 1
+                    var end: int = 5
+                    var step: int = 2
+                    for a in range(start, end):
+                        pass
+                    for b in range(1, end):
+                        pass
+                    for c in range(start, end, step):
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check").isEmpty());
+    }
+
+    @Test
+    void analyzeReportsRangeArgumentThatCannotEnterIntSlotAtArgumentPosition() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_range_bad_argument.gd", """
+                class_name ForRangeBadArgument
+                extends RefCounted
+                
+                func ping():
+                    var end: String = "x"
+                    var step: String = "y"
+                    for a in range("literal"):
+                        pass
+                    for b in range(1, end):
+                        pass
+                    for c in range(1, 5, step):
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(3, diagnostics.size());
+        assertTrue(diagnostics.get(0).message().contains("range(...) argument #1 type 'String' is not assignable to 'int'"));
+        assertTrue(diagnostics.get(1).message().contains("range(...) argument #2 type 'String' is not assignable to 'int'"));
+        assertTrue(diagnostics.get(2).message().contains("range(...) argument #3 type 'String' is not assignable to 'int'"));
+    }
+
+    @Test
+    void analyzeDoesNotReportUnsupportedForGenericVariantRoute() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_generic_route.gd", """
+                class_name ForGenericRoute
+                extends RefCounted
+                
+                func ping(values):
+                    for item in values:
+                        pass
+                    for f in 2.2:
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check").isEmpty());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var forStatements = findNodes(pingFunction, ForStatement.class, ignored -> true);
+        assertEquals(2, forStatements.size());
+        var firstPlan = Objects.requireNonNull(
+                preparedInput.analysisData().forIterationPlans().get(forStatements.getFirst())
+        );
+        var secondPlan = Objects.requireNonNull(
+                preparedInput.analysisData().forIterationPlans().get(forStatements.get(1))
+        );
+        assertEquals(FrontendForIterationRoute.GENERIC_VARIANT, firstPlan.route());
+        assertEquals(FrontendForIterationRoute.FLOAT_SHORTHAND, secondPlan.route());
+        assertSame(GdVariantType.VARIANT, firstPlan.exposedIteratorType());
+        assertEquals("float", secondPlan.semanticElementType().getTypeName());
+        assertEquals("float", secondPlan.exposedIteratorType().getTypeName());
+    }
+
+    @Test
+    void analyzeAcceptsCompatibleExplicitIteratorTypeUsingSemanticElementType() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_iterator_compatible.gd", """
+                class_name ForIteratorCompatible
+                extends RefCounted
+                
+                func ping():
+                    for i: float in range(3):
+                        pass
+                    for j: int in range(3):
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check").isEmpty());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var forStatements = findNodes(pingFunction, ForStatement.class, ignored -> true);
+        var floatPlan = Objects.requireNonNull(
+                preparedInput.analysisData().forIterationPlans().get(forStatements.getFirst())
+        );
+        assertEquals("float", floatPlan.exposedIteratorType().getTypeName());
+        assertEquals("int", floatPlan.semanticElementType().getTypeName());
+        var intPlan = Objects.requireNonNull(
+                preparedInput.analysisData().forIterationPlans().get(forStatements.get(1))
+        );
+        assertEquals("int", intPlan.exposedIteratorType().getTypeName());
+    }
+
+    @Test
+    void analyzeRejectsExplicitIteratorTypeThatCannotReceiveElement() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_iterator_incompatible.gd", """
+                class_name ForIteratorIncompatible
+                extends RefCounted
+                
+                func ping():
+                    for i: String in range(3):
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(1, diagnostics.size());
+        assertTrue(diagnostics.getFirst().message()
+                .contains("for-in iterator declared type 'String' cannot receive iterated element type 'int'"));
+    }
+
+    @Test
+    void analyzeReportsNonIterableHardTypesAtTypeCheckBoundary() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_non_iterable_hard_types.gd", """
+                class_name ForNonIterableHardTypes
+                extends RefCounted
+                
+                func ping(callable: Callable, signal_value: Signal, rid: RID, string_name: StringName,
+                        node_path: NodePath, vector4: Vector4, rect2: Rect2):
+                    for item in true:
+                        pass
+                    for item in callable:
+                        pass
+                    for item in signal_value:
+                        pass
+                    for item in rid:
+                        pass
+                    for item in string_name:
+                        pass
+                    for item in node_path:
+                        pass
+                    for item in vector4:
+                        pass
+                    for item in rect2:
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(8, diagnostics.size());
+        for (var typeName : List.of("bool", "Callable", "Signal", "RID", "StringName", "NodePath", "Vector4", "Rect2")) {
+            assertTrue(diagnostics.stream().anyMatch(diagnostic -> diagnostic.message()
+                    .equals("Unable to iterate on value of type \"" + typeName + "\"")));
+        }
+    }
+
+    @Test
+    void analyzeKeepsVariantAndUnresolvedIterableDiagnosticsWithTheirUpstreamOwners() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_dynamic_or_unresolved.gd", """
+                class_name ForDynamicOrUnresolved
+                extends RefCounted
+                
+                func ping(values: Variant):
+                    for value in values:
+                        pass
+                    for missing_value in missing_iterable:
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check").isEmpty());
+        assertTrue(preparedInput.diagnosticManager().snapshot().asList().stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("missing_iterable")));
+    }
+
+    @Test
+    void analyzeStillTraversesBodyAfterNonIterableDiagnostic() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_non_iterable_body.gd", """
+                class_name ForNonIterableBody
+                extends RefCounted
+                
+                func ping():
+                    for item in true:
+                        var invalid: int = "bad"
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(2, diagnostics.size());
+        assertTrue(diagnostics.stream().anyMatch(diagnostic -> diagnostic.message()
+                .equals("Unable to iterate on value of type \"bool\"")));
+        assertTrue(diagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Local variable 'invalid'")));
+    }
+
+    @Test
+    void analyzeExplicitIteratorTypeUsesTypedContainerSemanticElement() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_typed_container_iterator.gd", """
+                class_name ForTypedContainerIterator
+                extends RefCounted
+                
+                func ping(values: Array[int]):
+                    for item: String in values:
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(1, diagnostics.size());
+        assertTrue(diagnostics.getFirst().message()
+                .contains("for-in iterator declared type 'String' cannot receive iterated element type 'int'"));
+    }
+
+    @Test
+    void analyzeRejectsExplicitIteratorTypeAgainstStringSemanticElement() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_string_iterator_type.gd", """
+                class_name ForStringIteratorType
+                extends RefCounted
+                
+                func ping():
+                    for item: float in "abc":
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(1, diagnostics.size());
+        assertTrue(diagnostics.getFirst().message()
+                .contains("for-in iterator declared type 'float' cannot receive iterated element type 'String'"));
+    }
+
+    @Test
+    void analyzeNonIterableExplicitIteratorDoesNotAddFallbackConversionDiagnostic() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_non_iterable_explicit_iterator.gd", """
+                class_name ForNonIterableExplicitIterator
+                extends RefCounted
+                
+                func ping():
+                    for item: String in true:
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(1, diagnostics.size());
+        assertEquals("Unable to iterate on value of type \"bool\"", diagnostics.getFirst().message());
+    }
+
+    @Test
+    void analyzeExplicitVariantIteratorKeepsVariantSlotAcrossRoutes() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_explicit_variant_iterator.gd", """
+                class_name ForExplicitVariantIterator
+                extends RefCounted
+                
+                func ping(values: Variant):
+                    var limit := 3
+                    for range_item: Variant in range(3):
+                        pass
+                    for shorthand_item: Variant in limit:
+                        pass
+                    for dynamic_item: Variant in values:
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check").isEmpty());
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var forStatements = findNodes(pingFunction, ForStatement.class, _ -> true);
+        assertEquals(3, forStatements.size());
+        for (var forStatement : forStatements) {
+            var plan = Objects.requireNonNull(preparedInput.analysisData().forIterationPlans().get(forStatement));
+            assertSame(GdVariantType.VARIANT, plan.exposedIteratorType());
+            assertSame(GdVariantType.VARIANT, preparedInput.analysisData().slotTypes().get(forStatement));
+        }
+    }
+
+    @Test
+    void analyzeTypeChecksForBodyOrdinaryLocalInitializer() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_body_local_initializer.gd", """
+                class_name ForBodyLocalInitializer
+                extends RefCounted
+                
+                func ping(values):
+                    for item in values:
+                        var value: int = "invalid"
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(1, diagnostics.size());
+        assertTrue(diagnostics.getFirst().message().contains("Local variable 'value'"));
+        assertTrue(diagnostics.getFirst().message().contains("not assignable to declared slot type 'int'"));
+    }
+
+    @Test
+    void analyzeTypeChecksNestedForBodiesWithoutMaskingInnerErrors() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_nested_body.gd", """
+                class_name ForNestedBody
+                extends RefCounted
+                
+                func ping(values):
+                    for i in values:
+                        var outer_bad: int = "outer"
+                        for j in values:
+                            var inner_bad: int = "inner"
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(2, diagnostics.size());
+        assertTrue(diagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("outer_bad")));
+        assertTrue(diagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("inner_bad")));
+    }
+
+    @Test
+    void analyzeTypeChecksForBodyReturnStatement() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_body_return.gd", """
+                class_name ForBodyReturn
+                extends RefCounted
+                
+                func ping() -> int:
+                    for i in range(3):
+                        return "not int"
+                    return 0
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(1, diagnostics.size());
+        assertTrue(diagnostics.getFirst().message().contains("Return value type"));
+    }
+
+    @Test
+    void analyzeRangeAndIntShorthandRoutesRefineIteratorToInt() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_route_refinement.gd", """
+                class_name ForRouteRefinement
+                extends RefCounted
+                
+                func ping():
+                    var limit := 3
+                    for i in range(3):
+                        var x := i + 1
+                    for k in limit:
+                        var y := k + 1
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check").isEmpty());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var forStatements = findNodes(pingFunction, ForStatement.class, ignored -> true);
+        assertEquals(2, forStatements.size());
+        var rangePlan = Objects.requireNonNull(
+                preparedInput.analysisData().forIterationPlans().get(forStatements.getFirst())
+        );
+        var shorthandPlan = Objects.requireNonNull(
+                preparedInput.analysisData().forIterationPlans().get(forStatements.get(1))
+        );
+        assertEquals(FrontendForIterationRoute.RANGE_CALL, rangePlan.route());
+        assertEquals(FrontendForIterationRoute.INT_SHORTHAND, shorthandPlan.route());
+        assertSame(GdIntType.INT, preparedInput.analysisData().slotTypes().get(forStatements.getFirst()));
+        assertSame(GdIntType.INT, preparedInput.analysisData().slotTypes().get(forStatements.get(1)));
+    }
+
+    @Test
+    void analyzeKeepsUpstreamAssignmentAndCallBoundaryDiagnosticsInBareRangeForBody() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_body_upstream_boundary.gd", """
+                class_name ForBodyUpstreamBoundary
+                extends RefCounted
+                
+                func ping():
+                    for i in range(3):
+                        undeclared_target = 1
+                        some_undefined_callable()
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var bindingErrors = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.binding");
+        assertTrue(
+                bindingErrors.stream().anyMatch(diagnostic -> diagnostic.message().contains("undeclared_target")),
+                "upstream assignment boundary diagnostic expected in bare-range for body"
+        );
+        assertTrue(
+                bindingErrors.stream().anyMatch(diagnostic -> diagnostic.message().contains("some_undefined_callable")),
+                "upstream call boundary diagnostic expected in bare-range for body"
+        );
     }
 
     private static void assertEvent(

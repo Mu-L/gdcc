@@ -265,9 +265,20 @@ public final class DomLirParser implements LirParser {
                     "compiler-only type leaked into " + useSite.displayName() + ": " + typeText
             );
         }
-        if (GdccForRangeIterType.LIR_TYPE_TEXT.equals(typeText)) {
-            return GdccForRangeIterType.FOR_RANGE_ITER;
-        }
-        throw new IllegalArgumentException("Unknown compiler-only type text: " + typeText);
+        return switch (typeText) {
+            case GdccForRangeIterType.LIR_TYPE_TEXT -> GdccForRangeIterType.FOR_RANGE_ITER;
+            case GdccForVariantIterType.LIR_TYPE_TEXT -> GdccForVariantIterType.FOR_VARIANT_ITER;
+            case GdccForStringIterType.LIR_TYPE_TEXT -> GdccForStringIterType.FOR_STRING_ITER;
+            case GdccForArrayIterType.LIR_TYPE_TEXT -> GdccForArrayIterType.FOR_ARRAY_ITER;
+            case GdccForDictionaryIterType.LIR_TYPE_TEXT -> GdccForDictionaryIterType.FOR_DICTIONARY_ITER;
+            case GdccForFloatIterType.LIR_TYPE_TEXT -> GdccForFloatIterType.FOR_FLOAT_ITER;
+            default -> {
+                var packed = GdccForPackedArrayIterType.findByLirTypeText(typeText);
+                if (packed != null) {
+                    yield packed;
+                }
+                throw new IllegalArgumentException("Unknown compiler-only type text: " + typeText);
+            }
+        };
     }
 }

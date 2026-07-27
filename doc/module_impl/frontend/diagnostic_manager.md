@@ -6,7 +6,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / expr-typing / type-check / loop-control / compile-check / exception 诊断链路已落地）
-- 更新时间：2026-04-01
+- 更新时间：2026-07-24
 - 适用范围：
     - `src/main/java/gd/script/gdcc/frontend/diagnostic/**`
     - `src/main/java/gd/script/gdcc/frontend/parse/**`
@@ -253,6 +253,8 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - 该 category 只负责 override header 合同，不会把函数 subtree 提前标记为 skipped；后续 body analyzers 仍继续消费该函数体
 - `sema.type_check`
   - type-check analyzer 对 ordinary local / class property / return typed contract 不兼容发出的 error
+  - type-check analyzer 对静态已知不可迭代 hard type 发出的 `Unable to iterate on value of type "X"` error；锚定 iterable expression，不阻断 for body 遍历
+  - `Variant`、`Object` 与静态未知 iterable 保持 runtime-open；已有 upstream 不稳定 typed fact 时不重复包装
 - `sema.type_hint`
   - type-check analyzer 对 property `:=` / 未声明显式类型 property 发出的手动显式类型提醒 warning
   - 该 warning 只提示建议的显式类型，不表示 property metadata 已被推导或回写
@@ -266,12 +268,12 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.compile_check`
   - compile-only `FrontendCompileCheckAnalyzer` 对进入 lowering 前仍不可编译的 surface 发出的最终 error
   - 同时覆盖：
-    - 当前首批显式封口的 `assert`、`ForStatement`、`ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression`
+    - 当前首批显式封口的 `assert`、`ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression`，以及按 route-aware policy 处理的 `ForStatement`
     - compile surface 上 `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 中仍残留的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`
     - supported callable-local `var` 因 `sema.variable_slot_publication` warning 仍缺失 `slotTypes()` 的 lowering-only fact 缺洞
   - `assert` 在这里仍只是 compile-only blocked；共享 type-check 继续保留 Godot-compatible condition contract，不把它回退成 strict-bool `sema.type_check`
-  - `ForStatement` 已进入 shared semantic；当前 blocker 只锚定 statement root，不读取 iterable typed fact/iteration plan，也不进入 body，直到 route-aware CFG/lowering 接通
-  - 上述 7 类表达式属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
+  - `ForStatement` 已进入 shared semantic 并由 compile gate 按 route-aware policy 处理：读取 `forIterationPlans()` 与 `ForLoweringContractRegistry`，已注册 lowering contract 的 route 放行并进入 body 重扫 facts，未注册 contract 的 route（当前 `OBJECT_CUSTOM`）在 statement root 发 route-not-ready blocker（说明缺少 lowering route，而非 `FOR_SUBTREE` unsupported）；已注册 route 的 CFG/body lowering 已落地
+  - 上述 7 类表达式（即 `ConditionalExpression` 至 `TypeTestExpression`，不含 statement 级 `assert` 与 route-aware 的 `ForStatement`）属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
   - `ConditionalExpression` 当前单独被列入这份清单，是因为真正的 lowering 需要等 frontend CFG graph / condition-evaluation-region 合同冻结后再接通；现有 metadata-only `FrontendLoweringCfgPass` 仍属于过渡层
   - `DYNAMIC` 不属于 compile blocker；它保留为 frontend 已接受的 runtime-open 事实，而不是 lowering 未实现状态
   - 该 category 只属于 compile-only 入口，不属于默认共享语义 / inspection / 未来 LSP 入口

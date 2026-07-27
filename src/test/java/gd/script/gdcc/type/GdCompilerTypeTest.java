@@ -2,8 +2,13 @@ package gd.script.gdcc.type;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -19,31 +24,42 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class GdCompilerTypeTest {
 
     @Test
-    @org.junit.jupiter.api.DisplayName("GdCompilerType is a permitted subtype of GdType")
-    void compilerTypeIsPermittedByGdType() {
-        var type = GdccForRangeIterType.FOR_RANGE_ITER;
-        // GdCompilerType extends GdType, so every compiler-only type is also a GdType.
-        assertInstanceOf(GdType.class, type);
-        assertInstanceOf(GdCompilerType.class, type);
+    @org.junit.jupiter.api.DisplayName("All compiler-only types are permitted subtypes of GdType")
+    void compilerTypesArePermittedByGdType() {
+        for (var type : compilerTypes()) {
+            // GdCompilerType extends GdType, so every compiler-only type is also a GdType.
+            assertInstanceOf(GdType.class, type);
+            assertInstanceOf(GdCompilerType.class, type);
+        }
     }
 
     @Test
-    @org.junit.jupiter.api.DisplayName("GdccForRangeIterType is the sole permitted GdCompilerType subtype")
-    void forRangeIterIsSolePermittedSubtype() {
-        // GdCompilerType is sealed and permits only GdccForRangeIterType.
-        // The singleton instance must be assignable to GdCompilerType.
-        assertTrue(GdCompilerType.class.isAssignableFrom(GdccForRangeIterType.class),
-                "GdccForRangeIterType must implement GdCompilerType");
+    @org.junit.jupiter.api.DisplayName("GdCompilerType sealed permits match all iterator state types")
+    void sealedPermitsMatchKnownIteratorStateTypes() {
+        assertEquals(
+                Set.of(
+                        GdccForRangeIterType.class,
+                        GdccForVariantIterType.class,
+                        GdccForStringIterType.class,
+                        GdccForArrayIterType.class,
+                        GdccForDictionaryIterType.class,
+                        GdccForPackedArrayIterType.class,
+                        GdccForFloatIterType.class
+                ),
+                Arrays.stream(GdCompilerType.class.getPermittedSubclasses())
+                        .collect(Collectors.toUnmodifiableSet())
+        );
     }
 
     @Test
     @org.junit.jupiter.api.DisplayName("compiler-only type shared defaults: non-nullable, no metadata, destroyable")
     void sharedDefaultsHold() {
-        var type = GdccForRangeIterType.FOR_RANGE_ITER;
-        // These are inherited from GdCompilerType default methods, not re-declared per concrete type.
-        assertFalse(type.isNullable(), "compiler-only types are value-passed and non-nullable by design");
-        assertNull(type.getGdExtensionType(), "compiler-only types carry no GDExtension metadata");
-        assertTrue(type.isDestroyable(), "compiler-only storage types are destroyable non-object values");
+        for (var type : compilerTypes()) {
+            // These are inherited from GdCompilerType default methods, not re-declared per concrete type.
+            assertFalse(type.isNullable(), "compiler-only types are value-passed and non-nullable by design");
+            assertNull(type.getGdExtensionType(), "compiler-only types carry no GDExtension metadata");
+            assertTrue(type.isDestroyable(), "compiler-only storage types are destroyable non-object values");
+        }
     }
 
     @Test
@@ -75,6 +91,27 @@ class GdCompilerTypeTest {
     }
 
     @Test
+    @org.junit.jupiter.api.DisplayName("refcounted iterator states require gdcc deep-copy helpers")
+    void refcountedIteratorStatesRequireDeepCopyHelpers() {
+        assertDeepCopyContract(GdccForVariantIterType.FOR_VARIANT_ITER, "gdcc_for_variant_iter_copy");
+        assertDeepCopyContract(GdccForStringIterType.FOR_STRING_ITER, "gdcc_for_string_iter_copy");
+        assertDeepCopyContract(GdccForArrayIterType.FOR_ARRAY_ITER, "gdcc_for_array_iter_copy");
+        assertDeepCopyContract(GdccForDictionaryIterType.FOR_DICTIONARY_ITER, "gdcc_for_dictionary_iter_copy");
+        for (var family : GdccForPackedArrayIterType.all()) {
+            assertDeepCopyContract(family, family.getCCopyHelperName());
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("float iterator state uses direct struct assignment")
+    void floatIteratorStateUsesDirectStructAssignment() {
+        var type = GdccForFloatIterType.FOR_FLOAT_ITER;
+        assertTrue(type.isDirectStructAssignmentSafe());
+        assertEquals("", type.getCCopyHelperName());
+        assertDoesNotThrow(type::validateCStorageContract);
+    }
+
+    @Test
     @org.junit.jupiter.api.DisplayName("compiler-only type internal name is stable but not a source-facing declared type")
     void internalNameIsStableAndNotSourceFacing() {
         var type = GdccForRangeIterType.FOR_RANGE_ITER;
@@ -87,7 +124,6 @@ class GdCompilerTypeTest {
     @Test
     @org.junit.jupiter.api.DisplayName("compiler-only type stays outside all user-facing type families")
     void staysOutOfUserFacingTypeFamilies() {
-        var type = GdccForRangeIterType.FOR_RANGE_ITER;
         var userFacingFamilies = List.<Class<?>>of(
                 GdPrimitiveType.class,
                 GdObjectType.class,
@@ -100,27 +136,49 @@ class GdCompilerTypeTest {
                 GdStringLikeType.class,
                 GdVectorType.class
         );
-        for (var family : userFacingFamilies) {
-            assertFalse(family.isAssignableFrom(type.getClass()),
-                    family.getSimpleName() + " must not be assignable from compiler-only type");
+        for (var type : compilerTypes()) {
+            for (var family : userFacingFamilies) {
+                assertFalse(family.isAssignableFrom(type.getClass()),
+                        family.getSimpleName() + " must not be assignable from compiler-only type");
+            }
         }
     }
 
     @Test
     @org.junit.jupiter.api.DisplayName("compiler-only type must not produce godot_* default helper names")
     void mustNotProduceGodotDefaultHelpers() {
-        var type = GdccForRangeIterType.FOR_RANGE_ITER;
-        var cStorage = type.getCStorageTypeName();
-        var cInit = type.getCInitHelperName();
-        var cDestroy = type.getCDestroyHelperName();
+        for (var type : compilerTypes()) {
+            var cStorage = type.getCStorageTypeName();
+            var cInit = type.getCInitHelperName();
+            var cDestroy = type.getCDestroyHelperName();
 
-        // All helper names must use gdcc_* namespace, not godot_* generated binding defaults.
-        assertFalse(cStorage.startsWith("godot_"), "C storage type must not use godot_* prefix: " + cStorage);
-        assertFalse(cInit.startsWith("godot_"), "C init helper must not use godot_* prefix: " + cInit);
-        assertFalse(cDestroy.startsWith("godot_"), "C destroy helper must not use godot_* prefix: " + cDestroy);
+            // All helper names must use gdcc_* namespace, not godot_* generated binding defaults.
+            assertFalse(cStorage.startsWith("godot_"), "C storage type must not use godot_* prefix: " + cStorage);
+            assertFalse(cInit.startsWith("godot_"), "C init helper must not use godot_* prefix: " + cInit);
+            assertFalse(cDestroy.startsWith("godot_"), "C destroy helper must not use godot_* prefix: " + cDestroy);
 
-        assertTrue(cStorage.startsWith("gdcc_"), "C storage type must use gdcc_* prefix: " + cStorage);
-        assertTrue(cInit.startsWith("gdcc_"), "C init helper must use gdcc_* prefix: " + cInit);
-        assertTrue(cDestroy.startsWith("gdcc_"), "C destroy helper must use gdcc_* prefix: " + cDestroy);
+            assertTrue(cStorage.startsWith("gdcc_"), "C storage type must use gdcc_* prefix: " + cStorage);
+            assertTrue(cInit.startsWith("gdcc_"), "C init helper must use gdcc_* prefix: " + cInit);
+            assertTrue(cDestroy.startsWith("gdcc_"), "C destroy helper must use gdcc_* prefix: " + cDestroy);
+        }
+    }
+
+    private static List<GdCompilerType> compilerTypes() {
+        var all = new ArrayList<GdCompilerType>();
+        all.add(GdccForRangeIterType.FOR_RANGE_ITER);
+        all.add(GdccForVariantIterType.FOR_VARIANT_ITER);
+        all.add(GdccForStringIterType.FOR_STRING_ITER);
+        all.add(GdccForArrayIterType.FOR_ARRAY_ITER);
+        all.add(GdccForDictionaryIterType.FOR_DICTIONARY_ITER);
+        all.addAll(GdccForPackedArrayIterType.all());
+        all.add(GdccForFloatIterType.FOR_FLOAT_ITER);
+        return List.copyOf(all);
+    }
+
+    private static void assertDeepCopyContract(GdCompilerType type, String expectedCopyHelper) {
+        assertFalse(type.isDirectStructAssignmentSafe());
+        assertEquals(expectedCopyHelper, type.getCCopyHelperName());
+        assertTrue(type.getCCopyHelperName().startsWith("gdcc_"));
+        assertDoesNotThrow(type::validateCStorageContract);
     }
 }

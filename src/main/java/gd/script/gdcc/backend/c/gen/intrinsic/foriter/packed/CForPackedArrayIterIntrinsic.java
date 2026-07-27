@@ -1,72 +1,72 @@
-package gd.script.gdcc.backend.c.gen.intrinsic;
+package gd.script.gdcc.backend.c.gen.intrinsic.foriter.packed;
 
 import gd.script.gdcc.backend.c.gen.CBodyBuilder;
 import gd.script.gdcc.backend.c.gen.CIntrinsicFunction;
 import gd.script.gdcc.lir.LirVariable;
 import gd.script.gdcc.type.GdBoolType;
-import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdType;
-import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdccForPackedArrayIterType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
 
-/// Intrinsics for immutable `for range(...)` iterator state operations.
+/// Per-family Packed*Array `for-in` iterator intrinsics.
 ///
-/// The LIR names stay backend-owned (`gdcc.for_range_iter.*`) while the C helper symbols use
-/// `gdcc_*` names. That keeps handwritten LIR from escaping into arbitrary C calls and avoids
-/// colliding with the prepare-block storage initializer `gdcc_for_range_iter_init`.
-public final class CForRangeIterIntrinsic implements CIntrinsicFunction {
-    public static final @NotNull String INIT_NAME = "gdcc.for_range_iter.init";
-    public static final @NotNull String SHOULD_CONTINUE_NAME = "gdcc.for_range_iter.should_continue";
-    public static final @NotNull String NEXT_NAME = "gdcc.for_range_iter.next";
-    public static final @NotNull String GET_NAME = "gdcc.for_range_iter.get";
-
-    static final @NotNull String INIT_HELPER_NAME = "gdcc_for_range_iter_from_bounds";
-    static final @NotNull String SHOULD_CONTINUE_HELPER_NAME = "gdcc_for_range_iter_should_continue";
-    static final @NotNull String NEXT_HELPER_NAME = "gdcc_for_range_iter_next";
-    static final @NotNull String GET_HELPER_NAME = "gdcc_for_range_iter_get";
-
+/// One LIR intrinsic set exists for each Packed*Array family; helpers map 1:1 to typed C symbols
+/// so `get`/`copy`/`destroy` need no runtime family switch.
+public final class CForPackedArrayIterIntrinsic implements CIntrinsicFunction {
     private final @NotNull Spec spec;
 
-    private CForRangeIterIntrinsic(@NotNull Spec spec) {
+    private CForPackedArrayIterIntrinsic(@NotNull Spec spec) {
         this.spec = spec;
     }
 
-    public static @NotNull CForRangeIterIntrinsic init() {
-        return new CForRangeIterIntrinsic(new Spec(
-                INIT_NAME,
-                INIT_HELPER_NAME,
-                GdccForRangeIterType.FOR_RANGE_ITER,
-                List.of(GdIntType.INT, GdIntType.INT, GdIntType.INT)
+    public static @NotNull List<CForPackedArrayIterIntrinsic> allOperations() {
+        var ops = new ArrayList<CForPackedArrayIterIntrinsic>();
+        for (var family : GdccForPackedArrayIterType.all()) {
+            ops.add(init(family));
+            ops.add(shouldContinue(family));
+            ops.add(next(family));
+            ops.add(get(family));
+        }
+        return List.copyOf(ops);
+    }
+
+    public static @NotNull CForPackedArrayIterIntrinsic init(@NotNull GdccForPackedArrayIterType family) {
+        return new CForPackedArrayIterIntrinsic(new Spec(
+                family.getInitIntrinsicName(),
+                family.getCFromHelperName(),
+                family,
+                List.of(family.sourceType())
         ));
     }
 
-    public static @NotNull CForRangeIterIntrinsic shouldContinue() {
-        return new CForRangeIterIntrinsic(new Spec(
-                SHOULD_CONTINUE_NAME,
-                SHOULD_CONTINUE_HELPER_NAME,
+    public static @NotNull CForPackedArrayIterIntrinsic shouldContinue(@NotNull GdccForPackedArrayIterType family) {
+        return new CForPackedArrayIterIntrinsic(new Spec(
+                family.getShouldContinueIntrinsicName(),
+                family.getCShouldContinueHelperName(),
                 GdBoolType.BOOL,
-                List.of(GdccForRangeIterType.FOR_RANGE_ITER)
+                List.of(family)
         ));
     }
 
-    public static @NotNull CForRangeIterIntrinsic next() {
-        return new CForRangeIterIntrinsic(new Spec(
-                NEXT_NAME,
-                NEXT_HELPER_NAME,
-                GdccForRangeIterType.FOR_RANGE_ITER,
-                List.of(GdccForRangeIterType.FOR_RANGE_ITER)
+    public static @NotNull CForPackedArrayIterIntrinsic next(@NotNull GdccForPackedArrayIterType family) {
+        return new CForPackedArrayIterIntrinsic(new Spec(
+                family.getNextIntrinsicName(),
+                family.getCNextHelperName(),
+                family,
+                List.of(family)
         ));
     }
 
-    public static @NotNull CForRangeIterIntrinsic get() {
-        return new CForRangeIterIntrinsic(new Spec(
-                GET_NAME,
-                GET_HELPER_NAME,
-                GdIntType.INT,
-                List.of(GdccForRangeIterType.FOR_RANGE_ITER)
+    public static @NotNull CForPackedArrayIterIntrinsic get(@NotNull GdccForPackedArrayIterType family) {
+        return new CForPackedArrayIterIntrinsic(new Spec(
+                family.getGetIntrinsicName(),
+                family.getCGetHelperName(),
+                family.elementType(),
+                List.of(family)
         ));
     }
 

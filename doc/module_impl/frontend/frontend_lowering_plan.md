@@ -116,7 +116,7 @@
 
 当前明确不纳入：
 
-- `for`
+- `for` 的 `OBJECT_CUSTOM`（Object `_iter_*`）；其余已注册 route 已闭环，见 `frontend_for_range_loop_implementation.md`
 - `match`
 - `lambda`
 - `assert`
@@ -214,6 +214,7 @@
 - `ConditionalExpression` 依赖 frontend CFG graph / condition-evaluation-region 合同先稳定
 - `assert` 依赖 lowering/backend 的 statement 语义
 - container / cast / runtime integration / static field 相关 blocker 均应在对应 lowering/backend 设计闭环后再解除
+- `for` 的 compile gate 为 route-aware policy：`ForLoweringContractRegistry` 中已注册 contract 的 route 放行，未注册 route（当前 `OBJECT_CUSTOM`）发 route-not-ready blocker；已注册 route 的 CFG/body lowering 已落地，见 `frontend_for_range_loop_implementation.md`
 
 ---
 
@@ -221,7 +222,7 @@
 
 以下内容即使 body lowering 初步落地，也继续保持 post-MVP，不应混入已有 lowering pass 的局部放行：
 
-- `for`
+- `for` 的 `OBJECT_CUSTOM`（Object `_iter_*` 精确协议）仍属 post-MVP；其余已注册 route 已接入，见 `frontend_for_range_loop_implementation.md`
 - `match`
 - `lambda`
 - 参数默认值语义本身
