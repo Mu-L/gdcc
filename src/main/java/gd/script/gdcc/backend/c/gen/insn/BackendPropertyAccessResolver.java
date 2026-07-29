@@ -191,6 +191,15 @@ public final class BackendPropertyAccessResolver {
         return bodyBuilder.valueOfVar(receiverVar);
     }
 
+    /// Materializes a validated live typed wrapper pointer for direct GDCC field access.
+    /// The `assert_object_live` guard is already present in the LIR stream before this instruction.
+    static @NotNull String renderGdccLiveOwnerPointerExpr(@NotNull CBodyBuilder bodyBuilder,
+                                                          @NotNull LirVariable ownerVar,
+                                                          @NotNull GdObjectType ownerType) {
+        var fatType = bodyBuilder.helper().renderObjectFatPtrStorageType(ownerType);
+        return fatType + "_live_ptr(" + bodyBuilder.valueOfVar(ownerVar).generateCode() + ")";
+    }
+
     static @NotNull BuiltinPropertyLookup resolveBuiltinProperty(@NotNull CBodyBuilder bodyBuilder,
                                                                  @NotNull GdType objectType,
                                                                  @NotNull String propertyName) {

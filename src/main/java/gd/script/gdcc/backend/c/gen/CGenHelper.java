@@ -5,6 +5,9 @@ import gd.script.gdcc.backend.c.gen.binding.BindingData;
 import gd.script.gdcc.backend.c.gen.binding.BoundMetadata;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodHelperParam;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodSymbolKey;
+import gd.script.gdcc.backend.c.gen.binding.GodotBindingSupport;
+import gd.script.gdcc.backend.c.gen.fatptr.ObjectFatPtrSpec;
+import gd.script.gdcc.backend.c.gen.fatptr.ObjectFatPtrUpcastSpec;
 import gd.script.gdcc.backend.c.gen.insn.BackendMethodCallResolver;
 import gd.script.gdcc.backend.c.gen.insn.OperatorResolver;
 import gd.script.gdcc.lir.LirClassDef;
@@ -102,28 +105,73 @@ public final class CGenHelper {
         return List.copyOf(specsByName.values());
     }
 
+    /// C parameter type of a generated `gdcc_eval_*` helper.
+    /// Object operands are internal fat pointers (by value); non-objects keep their usual ref shape.
     public @NotNull String renderOperatorEvaluatorHelperTypeInC(@NotNull GdType type) {
-        if (type instanceof GdObjectType) {
-            return "GDExtensionObjectPtr";
-        }
         return renderGdTypeRefInC(type);
     }
 
+    /// C return type of a generated `gdcc_eval_*` helper (same as internal storage).
     public @NotNull String renderOperatorEvaluatorHelperReturnTypeInC(@NotNull GdType type) {
+        return renderGdTypeInC(type);
+    }
+
+    /// Declares a local raw object slot when a fat-pointer operand must be lowered to Godot's
+    /// `GDExtensionPtrOperatorEvaluator` ABI (`void*` of a live raw object pointer). Empty for non-objects.
+    public @NotNull String renderOperatorEvaluatorObjectRawSlotDecl(@NotNull GdType type, @NotNull String argName) {
+        if (!(type instanceof GdObjectType objectType)) {
+            return "";
+        }
+        var fatType = renderObjectFatPtrStorageType(objectType);
+        return "GDExtensionObjectPtr " + argName + "_raw = " + fatType + "_live_object(" + argName + ");\n";
+    }
+
+    /// Argument expression passed to `GDExtensionPtrOperatorEvaluator`.
+    /// Object operands pass the address of the temporary raw slot materialised above.
+    public @NotNull String renderOperatorEvaluatorArgExpr(@NotNull GdType type, @NotNull String argName) {
+        if (type instanceof GdObjectType) {
+            return "&" + argName + "_raw";
+        }
+        if (type instanceof GdPrimitiveType) {
+            return "&" + argName;
+        }
+        return argName;
+    }
+
+    /// Local result carrier type for the evaluator out-parameter.
+    /// Godot writes a raw object pointer; the helper then captures it into a fat pointer return.
+    ///
+    /// Defensive: Godot 4.5.1 `extension_api` has no builtin operator with `return_type: Object`
+    /// (Object appears only as a right operand; returns are bool/String). Object/object `==`/`!=` also
+    /// bypass evaluators via `OBJECT_COMPARISON`. This branch stays so a future metadata surface
+    /// keeps the same raw-carrier → ownership-neutral `_from_raw` shape as other raw producers.
+    public @NotNull String renderOperatorEvaluatorResultCarrierTypeInC(@NotNull GdType type) {
         if (type instanceof GdObjectType) {
             return "GDExtensionObjectPtr";
         }
         return renderGdTypeInC(type);
     }
 
-    public @NotNull String renderOperatorEvaluatorArgExpr(@NotNull GdType type, @NotNull String argName) {
-        if (type instanceof GdPrimitiveType || type instanceof GdObjectType) {
-            return "&" + argName;
+    /// Converts the evaluator result carrier into the helper return expression.
+    /// See {@link #renderOperatorEvaluatorResultCarrierTypeInC} for why the object branch is kept.
+    public @NotNull String renderOperatorEvaluatorReturnExpr(@NotNull GdType type, @NotNull String resultName) {
+        if (type instanceof GdObjectType objectType) {
+            return renderFatPtrFromRawExpr(resultName, objectType);
         }
-        return argName;
+        return resultName;
     }
 
+    private @NotNull String renderFatPtrFromRawExpr(@NotNull String rawCode, @NotNull GdObjectType objectType) {
+        return renderObjectFatPtrStorageType(objectType) + "_from_raw((GDExtensionObjectPtr)(" + rawCode + "))";
+    }
+
+    /// Context-aware default/zero expression for hard-fail returns and null slots.
+    /// Object values use the per-type fat pointer zero compound literal; other types keep the
+    /// legacy non-object defaults from `CBodyBuilder.renderDefaultValueExpr`.
     public @NotNull String renderDefaultValueExprInC(@NotNull GdType type) {
+        if (type instanceof GdObjectType objectType) {
+            return "(" + renderObjectFatPtrStorageType(objectType) + "){ 0 }";
+        }
         return CBodyBuilder.renderDefaultValueExpr(type);
     }
 
@@ -221,15 +269,18 @@ public final class CGenHelper {
     private void collectBindingData(@NotNull List<? extends ClassDef> classDefs) {
         bindingDataSet.clear();
         for (var classDef : classDefs) {
-            // Properties getter and setters binding data
+            var ownerName = classDef.getName();
+            // Properties getter and setters binding data (instance; owner-specific self).
             for (var propertyDef : classDef.getProperties()) {
                 bindingDataSet.add(new BindingData(
+                        ownerName,
                         List.of(),
                         propertyDef.getType(),
                         List.of(),
                         false
                 ));
                 bindingDataSet.add(new BindingData(
+                        ownerName,
                         List.of(propertyDef.getType()),
                         GdVoidType.VOID,
                         List.of(),
@@ -253,6 +304,7 @@ public final class CGenHelper {
                     }
                 }
                 bindingDataSet.add(new BindingData(
+                        functionDef.isStatic() ? null : ownerName,
                         paramTypes,
                         functionDef.getReturnType(),
                         defaultVariables,
@@ -262,6 +314,8 @@ public final class CGenHelper {
         }
     }
 
+    /// Internal storage / temporary / return C type for a GdType.
+    /// Object values use per-type fat pointer structs; container element object slots stay raw Godot pointers.
     public @NotNull String renderGdTypeInC(@NotNull GdType gdType) {
         return switch (gdType) {
             case GdCompilerType compilerType -> compilerType.getCStorageTypeName();
@@ -270,32 +324,28 @@ public final class CGenHelper {
                     if (gdArrayType.getValueType() instanceof GdVariantType) {
                         yield "godot_Array";
                     } else {
-                        yield "godot_TypedArray(" + renderGdTypeInC(gdArrayType.getValueType()) + ")";
+                        yield "godot_TypedArray(" + renderContainerElementTypeInC(gdArrayType.getValueType()) + ")";
                     }
                 }
                 case GdDictionaryType gdDictionaryType -> {
                     if (gdContainerType.getKeyType() instanceof GdVariantType && gdContainerType.getValueType() instanceof GdVariantType) {
                         yield "godot_Dictionary";
                     } else {
-                        yield "godot_TypedDictionary(" + renderGdTypeInC(gdDictionaryType.getKeyType()) + ", " + renderGdTypeInC(gdDictionaryType.getValueType()) + ")";
+                        yield "godot_TypedDictionary(" +
+                                renderContainerElementTypeInC(gdDictionaryType.getKeyType()) + ", " +
+                                renderContainerElementTypeInC(gdDictionaryType.getValueType()) + ")";
                     }
                 }
                 case GdPackedArrayType gdPackedArrayType -> "godot_" + gdPackedArrayType.getTypeName();
             };
-            case GdObjectType gdObjectType -> {
-                if (gdObjectType.checkEngineType(context.classRegistry())) {
-                    yield "godot_" + gdObjectType.getTypeName() + "*";
-                } else if (gdObjectType.checkGdccType(context.classRegistry())) {
-                    yield gdObjectType.getTypeName() + "*";
-                } else {
-                    yield "GDExtensionObjectPtr";
-                }
-            }
+            case GdObjectType gdObjectType -> renderObjectFatPtrStorageType(gdObjectType);
             case GdVoidType _ -> "void";
             default -> "godot_" + gdType.getTypeName();
         };
     }
 
+    /// Internal parameter C type for a GdType.
+    /// Object parameters are fat pointer structs passed by value (same shape as storage).
     public @NotNull String renderGdTypeRefInC(@NotNull GdType gdType) {
         return switch (gdType) {
             case GdCompilerType compilerType -> compilerType.getCStorageTypeName() + "*";
@@ -304,27 +354,21 @@ public final class CGenHelper {
                     if (gdArrayType.getValueType() instanceof GdVariantType) {
                         yield "godot_Array*";
                     } else {
-                        yield "godot_TypedArray(" + renderGdTypeInC(gdArrayType.getValueType()) + ")*";
+                        yield "godot_TypedArray(" + renderContainerElementTypeInC(gdArrayType.getValueType()) + ")*";
                     }
                 }
                 case GdDictionaryType gdDictionaryType -> {
                     if (gdContainerType.getKeyType() instanceof GdVariantType && gdContainerType.getValueType() instanceof GdVariantType) {
                         yield "godot_Dictionary*";
                     } else {
-                        yield "godot_TypedDictionary(" + renderGdTypeInC(gdDictionaryType.getKeyType()) + ", " + renderGdTypeInC(gdDictionaryType.getValueType()) + ")*";
+                        yield "godot_TypedDictionary(" +
+                                renderContainerElementTypeInC(gdDictionaryType.getKeyType()) + ", " +
+                                renderContainerElementTypeInC(gdDictionaryType.getValueType()) + ")*";
                     }
                 }
                 case GdPackedArrayType gdPackedArrayType -> "godot_" + gdPackedArrayType.getTypeName() + "*";
             };
-            case GdObjectType gdObjectType -> {
-                if (gdObjectType.checkEngineType(context.classRegistry())) {
-                    yield "godot_" + gdObjectType.getTypeName() + "*";
-                } else if (gdObjectType.checkGdccType(context.classRegistry())) {
-                    yield gdObjectType.getTypeName() + "*";
-                } else {
-                    yield "GDExtensionObjectPtr";
-                }
-            }
+            case GdObjectType gdObjectType -> renderObjectFatPtrParameterType(gdObjectType);
             case GdVoidType _ -> "void*";
             case GdPrimitiveType _ -> "godot_" + gdType.getTypeName();
             default -> "godot_" + gdType.getTypeName() + "*";
@@ -333,9 +377,75 @@ public final class CGenHelper {
 
     public @NotNull String renderValueRef(@NotNull GdType gdType, @NotNull String v) {
         return switch (gdType) {
+            // Fat pointer structs and primitives are value-shaped; other value types pass storage addresses.
             case GdObjectType _, GdPrimitiveType _ -> v;
             default -> "&" + v;
         };
+    }
+
+    /// Godot TypedArray/TypedDictionary element slots remain raw object pointers, not fat structs.
+    private @NotNull String renderContainerElementTypeInC(@NotNull GdType elementType) {
+        if (elementType instanceof GdObjectType objectType) {
+            return renderObjectBarePointerType(objectType);
+        }
+        return renderGdTypeInC(elementType);
+    }
+
+    /// Bare raw pointer spelling used by Godot container macros (`godot_Node*`, `Player*`).
+    public @NotNull String renderObjectBarePointerType(@NotNull GdObjectType objectType) {
+        var pointerCType = renderObjectRawPointerType(objectType);
+        if (pointerCType.endsWith(" *")) {
+            return pointerCType.substring(0, pointerCType.length() - 2) + "*";
+        }
+        return pointerCType;
+    }
+
+    /// Role-specific object renderers for fat-pointer storage vs raw ABI boundaries.
+    /// Internal storage/parameter/return use fat pointers; ptrcall slots and Godot receivers stay raw.
+
+    public @NotNull ObjectFatPtrSpec requireObjectFatPtrSpec(@NotNull GdObjectType objectType, @NotNull String surface) {
+        return ObjectFatPtrSpec.forObjectType(context.classRegistry(), objectType, surface);
+    }
+
+    public @NotNull String renderObjectFatPtrStorageType(@NotNull GdObjectType objectType) {
+        return requireObjectFatPtrSpec(objectType, "internal storage type").fatPtrTypeName();
+    }
+
+    public @NotNull String renderObjectFatPtrParameterType(@NotNull GdObjectType objectType) {
+        return requireObjectFatPtrSpec(objectType, "internal parameter type").fatPtrTypeName();
+    }
+
+    public @NotNull String renderObjectFatPtrStorageAddressType(@NotNull GdObjectType objectType) {
+        return requireObjectFatPtrSpec(objectType, "internal storage address type").fatPtrTypeName() + " *";
+    }
+
+    public @NotNull String renderObjectRawPointerType(@NotNull GdObjectType objectType) {
+        return requireObjectFatPtrSpec(objectType, "raw ABI pointer slot").pointerCType();
+    }
+
+    public @NotNull String renderObjectReceiverType(@NotNull GdObjectType objectType) {
+        // Validate the static object type, but the Godot receiver slot is always the raw ABI pointer.
+        requireObjectFatPtrSpec(objectType, "Godot receiver");
+        return "GDExtensionObjectPtr";
+    }
+
+    /// Collects deterministic upcast helper specs among already-collected fat pointer types.
+    /// Only assignable source -> target pairs are emitted; same-type copies are plain struct copies.
+    public @NotNull List<ObjectFatPtrUpcastSpec> collectObjectFatPtrUpcastSpecs(@NotNull List<ObjectFatPtrSpec> specs) {
+        var upcasts = new ArrayList<ObjectFatPtrUpcastSpec>();
+        for (var source : specs) {
+            for (var target : specs) {
+                if (source.fatPtrTypeName().equals(target.fatPtrTypeName())) {
+                    continue;
+                }
+                if (!context.classRegistry().checkAssignable(source.objectType(), target.objectType())) {
+                    continue;
+                }
+                upcasts.add(ObjectFatPtrUpcastSpec.forPair(source, target));
+            }
+        }
+        upcasts.sort(Comparator.comparing(ObjectFatPtrUpcastSpec::helperName));
+        return List.copyOf(upcasts);
     }
 
     /// Engine bind accessor symbols must stay backend-owned and collision-free relative to public Godot wrappers.
@@ -401,10 +511,14 @@ public final class CGenHelper {
     }
 
     /// Ptrcall consumes addresses of argument storage slots.
-    /// - value-shaped params pass `&arg`
+    /// - object fat params first materialize a raw local, then pass `&argN_raw`
+    /// - other value-shaped params pass `&arg`
     /// - storage-pointer params pass the helper argument directly
     /// - enum/bitfield params first point at a helper-local raw slot
     public @NotNull String renderEngineMethodPtrcallSlotExpr(@NotNull EngineMethodHelperParam param) {
+        if (checkEngineMethodHelperObjectParam(param)) {
+            return "&" + renderEngineMethodHelperObjectRawSlotName(param);
+        }
         return switch (param.slotMode()) {
             case VALUE_ADDRESS -> "&" + param.name();
             case STORAGE_POINTER -> param.name();
@@ -429,13 +543,199 @@ public final class CGenHelper {
                 " = (" + param.slotCType() + ")" + param.name() + ";";
     }
 
+    /// Exact engine helper public surface uses owner fat `self`.
+    public @NotNull String renderEngineMethodHelperSelfType(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        if (!(resolved.ownerType() instanceof GdObjectType ownerObjectType)) {
+            throw new IllegalArgumentException(
+                    "Exact engine helper self type requires object owner, got '" +
+                            resolved.ownerType().getTypeName() + "'"
+            );
+        }
+        return renderObjectFatPtrStorageType(ownerObjectType);
+    }
+
+    /// Materialize validated raw Godot receiver for ptrcall/call inside the helper body.
+    public @NotNull String renderEngineMethodHelperSelfLiveExpr(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        return renderEngineMethodHelperSelfType(resolved) + "_live_object(self)";
+    }
+
+    public boolean checkEngineMethodHelperObjectParam(@NotNull EngineMethodHelperParam param) {
+        return param.type() instanceof GdObjectType;
+    }
+
+    public @NotNull String renderEngineMethodHelperObjectRawSlotName(@NotNull EngineMethodHelperParam param) {
+        if (!checkEngineMethodHelperObjectParam(param)) {
+            throw new IllegalArgumentException("Engine helper object raw slot requires object param: " + param.name());
+        }
+        return param.name() + "_raw";
+    }
+
+    /// Object fixed args enter as fat pointers; ptrcall needs a local raw slot address.
+    public @NotNull String renderEngineMethodHelperObjectRawSlotDecl(@NotNull EngineMethodHelperParam param) {
+        if (!(param.type() instanceof GdObjectType objectType)) {
+            throw new IllegalArgumentException("Engine helper object raw slot requires object param: " + param.name());
+        }
+        var fatType = renderObjectFatPtrStorageType(objectType);
+        return "GDExtensionObjectPtr " + renderEngineMethodHelperObjectRawSlotName(param) +
+                " = " + fatType + "_live_object(" + param.name() + ");";
+    }
+
+    public boolean checkEngineMethodHelperObjectReturn(@NotNull GdType returnType) {
+        return returnType instanceof GdObjectType;
+    }
+
+    /// Wrap a successful ptrcall raw object return into the helper's fat return surface.
+    public @NotNull String renderEngineMethodHelperObjectFromRaw(
+            @NotNull GdType returnType,
+            @NotNull String rawExpr
+    ) {
+        if (!(returnType instanceof GdObjectType objectType)) {
+            throw new IllegalArgumentException(
+                    "Engine helper object from_raw requires object return, got '" + returnType.getTypeName() + "'"
+            );
+        }
+        return renderObjectFatPtrStorageType(objectType) + "_from_raw(" + rawExpr + ")";
+    }
+
+    /// Before destroying the temporary return Variant, establish the caller-owned object return.
+    /// Empty for non-object / definite non-RefCounted; retain for YES / try_own for UNKNOWN.
+    ///
+    /// Ownership contract (must stay balanced):
+    /// - The vararg dynamic-call path returns the object through a temporary Variant; destroying that
+    ///   Variant releases the reference it holds. This retain transfers a strong reference to the
+    ///   returned fat pointer so the helper yields an OWNED object result.
+    /// - The helper's caller must consume that OWNED result exactly once: slot write
+    ///   (`emitObjectSlotWrite(..., OWNED)`), discard (`emitDiscardedCall` immediate release), or a
+    ///   public wrapper return (pack via `to_variant` then
+    ///   `renderCallWrapperOwnedObjectReturnConsumeStmt` releases the internal OWNED `r`).
+    /// - Treating the helper return as BORROWED (retaining again, or never releasing) breaks the
+    ///   balance and leaks a RefCounted reference.
+    public @NotNull String renderEngineMethodHelperVarargObjectReturnOwnStmt(
+            @NotNull GdType returnType,
+            @NotNull String resultExpr
+    ) {
+        if (!(returnType instanceof GdObjectType objectType)) {
+            return "";
+        }
+        var fatType = renderObjectFatPtrStorageType(objectType);
+        var liveExpr = fatType + "_live_object(" + resultExpr + ")";
+        return switch (context.classRegistry().getRefCountedStatus(objectType)) {
+            case YES -> "own_object(" + liveExpr + ");";
+            case UNKNOWN -> "try_own_object(" + liveExpr + ", " + resultExpr + ".instance_id);";
+            case NO -> "";
+        };
+    }
+
+    /// Consume the internal OWNED object return carrier `r` after call-wrapper Variant packing.
+    ///
+    /// Packing (`to_variant` + `variant_new_copy` + `Variant_destroy`) establishes Variant ownership
+    /// but does not consume the function's OWNED strong reference on `r`. Release that reference
+    /// here so ownership transfers net-zero into `r_return`. Empty for non-object / non-RefCounted.
+    /// Must only be used on the return carrier — never on BORROWED argument locals.
+    public @NotNull String renderCallWrapperOwnedObjectReturnConsumeStmt(
+            @NotNull GdType returnType,
+            @NotNull String resultExpr
+    ) {
+        if (!(returnType instanceof GdObjectType objectType)) {
+            return "";
+        }
+        var fatType = renderObjectFatPtrStorageType(objectType);
+        var liveExpr = fatType + "_live_object(" + resultExpr + ")";
+        return switch (context.classRegistry().getRefCountedStatus(objectType)) {
+            case YES -> "release_object(" + liveExpr + ");";
+            case UNKNOWN -> "try_release_object(" + liveExpr + ", " + resultExpr + ".instance_id);";
+            case NO -> "";
+        };
+    }
+
     public @NotNull String renderFuncBindName(@NotNull BindingData bindingData) {
-        return renderFuncBindName(
+        var shapeName = renderFuncBindName(
                 bindingData.returnType(),
                 bindingData.paramTypes(),
                 bindingData.defaultVariables(),
                 bindingData.staticMethod()
         );
+        // Instance wrappers are owner-specific so self fat type cannot be shared by ABI shape alone.
+        if (bindingData.isInstanceMethod()) {
+            return "_" + GodotBindingSupport.cIdentifier(Objects.requireNonNull(bindingData.ownerClassName())) + shapeName;
+        }
+        return shapeName;
+    }
+
+    /// Owner-aware bind name for virtual dispatch (matches BindingData instance naming).
+    public @NotNull String renderFuncBindName(@NotNull ClassDef classDef, @NotNull FunctionDef functionDef) {
+        var paramTypes = new ArrayList<GdType>();
+        var defaultVarTypes = new ArrayList<GdType>();
+        for (var parameterDef : functionDef.getParameters()) {
+            if (parameterDef.getName().equals("self")) {
+                continue;
+            }
+            paramTypes.add(parameterDef.getType());
+            if (parameterDef.getDefaultValueFunc() != null) {
+                defaultVarTypes.add(parameterDef.getType());
+            }
+        }
+        var binding = new BindingData(
+                functionDef.isStatic() ? null : classDef.getName(),
+                paramTypes,
+                functionDef.getReturnType(),
+                defaultVarTypes,
+                functionDef.isStatic()
+        );
+        return renderFuncBindName(binding);
+    }
+
+    /// Construct owner fat self from Godot `p_instance` (GDCC wrapper pointer).
+    public @NotNull String renderRegisteredMethodSelfFatExpr(@NotNull BindingData bindingData) {
+        if (!bindingData.isInstanceMethod()) {
+            throw new IllegalArgumentException("static BindingData has no self fat expression");
+        }
+        var ownerName = Objects.requireNonNull(bindingData.ownerClassName());
+        var ownerType = new GdObjectType(ownerName);
+        var fatType = renderObjectFatPtrStorageType(ownerType);
+        var objectPtrHelper = ownerName + "_object_ptr";
+        return fatType + "_from_raw(" + objectPtrHelper + "((" + ownerName + "*)p_instance))";
+    }
+
+    public @NotNull String renderRegisteredMethodSelfFatType(@NotNull BindingData bindingData) {
+        if (!bindingData.isInstanceMethod()) {
+            throw new IllegalArgumentException("static BindingData has no self fat type");
+        }
+        return renderObjectFatPtrStorageType(new GdObjectType(Objects.requireNonNull(bindingData.ownerClassName())));
+    }
+
+    public boolean checkObjectType(@NotNull GdType type) {
+        return type instanceof GdObjectType;
+    }
+
+    /// Ptrcall object arg: raw Godot pointer slot -> borrowed fat pointer.
+    public @NotNull String renderPtrcallObjectArgDecl(@NotNull GdType paramType, int index) {
+        if (!(paramType instanceof GdObjectType objectType)) {
+            throw new IllegalArgumentException("ptrcall object arg requires object type");
+        }
+        var fatType = renderObjectFatPtrStorageType(objectType);
+        return fatType + " arg" + index + " = " + fatType + "_from_raw(*((const GDExtensionObjectPtr *)p_args[" + index + "]));";
+    }
+
+    /// Non-object ptrcall argument expression (storage pointer / value slot as before).
+    public @NotNull String renderPtrcallNonObjectArgExpr(@NotNull GdType paramType, int index) {
+        if (paramType instanceof GdObjectType) {
+            throw new IllegalArgumentException("use renderPtrcallObjectArgDecl for object args");
+        }
+        return renderValueRef(paramType, "(*((" + renderGdTypeInC(paramType) + "*)p_args[" + index + "]))");
+    }
+
+    /// Ptrcall object return: owned fat -> validated raw transfer into `r_return` (no extra release).
+    public @NotNull String renderPtrcallObjectReturnWrite(@NotNull GdType returnType, @NotNull String resultExpr) {
+        if (!(returnType instanceof GdObjectType objectType)) {
+            throw new IllegalArgumentException("ptrcall object return write requires object type");
+        }
+        var fatType = renderObjectFatPtrStorageType(objectType);
+        return "*((GDExtensionObjectPtr *)r_return) = " + fatType + "_live_object(" + resultExpr + ");";
     }
 
     private @NotNull EngineMethodSymbolKey requireEngineMethodSymbolKey(
@@ -451,7 +751,14 @@ public final class CGenHelper {
         return param.name() + "_slot";
     }
 
+    /// Shape-only bind name (no owner). Instance methods must use {@link #renderFuncBindName(ClassDef, FunctionDef)}.
+    /// Restricted to static functions so an owner-less instance bind name can never be generated.
     public @NotNull String renderFuncBindName(@NotNull FunctionDef functionDef) {
+        if (!functionDef.isStatic()) {
+            throw new IllegalArgumentException(
+                    "Instance FunctionDef bind names require owner class; use renderFuncBindName(ClassDef, FunctionDef)"
+            );
+        }
         var paramTypes = new ArrayList<GdType>();
         var defaultVarTypes = new ArrayList<GdType>();
         for (var parameterDef : functionDef.getParameters()) {
@@ -463,12 +770,11 @@ public final class CGenHelper {
                 defaultVarTypes.add(parameterDef.getType());
             }
         }
-        return renderFuncBindName(functionDef.getReturnType(), paramTypes, defaultVarTypes, functionDef.isStatic());
+        return renderFuncBindName(functionDef.getReturnType(), paramTypes, defaultVarTypes, true);
     }
 
     public @NotNull String renderGdTypeName(@NotNull GdType gdType) {
         return switch (gdType) {
-            case GdCompilerType _ -> gdType.getTypeName();
             case GdContainerType gdContainerType -> switch (gdContainerType) {
                 case GdArrayType _ -> "Array";
                 case GdDictionaryType _ -> "Dictionary";
@@ -522,11 +828,8 @@ public final class CGenHelper {
             throw new IllegalArgumentException("compiler-only type leaked into Variant unpack: " + type.getTypeName());
         }
         if (type instanceof GdObjectType objectType) {
-            if (objectType.checkGdccType(context.classRegistry())) {
-                return "(" + objectType.getTypeName() + "*)godot_new_gdcc_Object_with_Variant";
-            } else {
-                return "(godot_" + objectType.getTypeName() + "*)godot_new_Object_with_Variant";
-            }
+            // Object unpack materializes a fat pointer that preserves the Variant's instance ID.
+            return renderObjectFatPtrStorageType(objectType) + "_from_variant";
         } else {
             return "godot_new_" + renderGdTypeName(type) + "_with_Variant";
         }
@@ -536,7 +839,8 @@ public final class CGenHelper {
     ///
     /// The wrapper keeps exact runtime checks by default. Any non-exact inbound rule must stay
     /// aligned with the frontend ordinary-boundary matrix and must be paired with wrapper-local
-    /// materialization in `renderCallWrapperUnpackExpr(...)`.
+    /// materialization in `renderCallWrapperUnpackExpr(...)` (which may be the default unpack
+    /// path when the underlying C unpack function already handles the widened inbound natively).
     public @NotNull String renderCallWrapperVariantTypeGate(@NotNull GdType paramType,
                                                             @NotNull String typeExpr) {
         TypeCheckUtil.requireNonCompilerOnly(paramType, "call wrapper type gate");
@@ -559,6 +863,12 @@ public final class CGenHelper {
             case GdStringType _ -> {
                 return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_STRING || "
                         + typeExpr + " == GDEXTENSION_VARIANT_TYPE_STRING_NAME)";
+            }
+            case GdObjectType _ -> {
+                // Godot's Variant::can_convert_strict allows NIL -> OBJECT; null fat pointer
+                // materialization is already handled inside <Type>_fat_ptr_from_variant.
+                return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_OBJECT || "
+                        + typeExpr + " == GDEXTENSION_VARIANT_TYPE_NIL)";
             }
             default -> {
                 var targetType = requireBoundMetadataType(paramType, "call wrapper type gate");
@@ -616,10 +926,8 @@ public final class CGenHelper {
             case GdNilType _ ->
                     throw new IllegalArgumentException("Nil uses dedicated godot_new_Variant_nil() materialization");
             case GdObjectType objectType -> {
-                if (objectType.checkGdccType(context.classRegistry())) {
-                    return "gdcc_new_Variant_with_gdcc_Object";
-                }
-                return "godot_new_Variant_with_Object";
+                // Fat-pointer pack uses the per-type helper so freed IDs degrade through live_object.
+                return renderObjectFatPtrStorageType(objectType) + "_to_variant";
             }
             default -> {
                 return "godot_new_Variant_with_" + renderGdTypeName(type);
@@ -672,7 +980,8 @@ public final class CGenHelper {
     ///
     /// This is intentionally narrower than ordinary backend destruct semantics:
     /// - only destroyable non-object wrappers materialize an addressable local slot that the wrapper must destroy
-    /// - object locals stay as plain pointers here, so they must not be blanket destroy/release'd at wrapper exit
+    /// - object argument locals are BORROWED from Variant args and must not be released here
+    /// - OWNED object return carriers use `renderCallWrapperOwnedObjectReturnConsumeStmt` instead
     public @NotNull String renderCallWrapperDestroyStmt(@NotNull GdType type, @NotNull String varName) {
         TypeCheckUtil.requireNonCompilerOnly(type, "call wrapper destroy stmt");
         if (type instanceof GdObjectType || !type.isDestroyable()) {
@@ -693,19 +1002,19 @@ public final class CGenHelper {
 
     /// Render the expected builtin type literal for one typed-array guard element leaf.
     public @NotNull String renderTypedArrayGuardBuiltinTypeLiteral(@NotNull GdType type) {
-        return renderTypedArrayRuntimeLeaf(resolveTypedArrayGuardLeaf(type), "element leaf")
+        return renderTypedArrayRuntimeLeaf(resolveTypedArrayGuardLeaf(type))
                 .typeIntLiteral();
     }
 
     /// Object leaves need extra class/script metadata comparison in the wrapper guard.
     public boolean isTypedArrayGuardObjectLeaf(@NotNull GdType type) {
-        return renderTypedArrayRuntimeLeaf(resolveTypedArrayGuardLeaf(type), "element leaf")
+        return renderTypedArrayRuntimeLeaf(resolveTypedArrayGuardLeaf(type))
                 .objectLeaf();
     }
 
     /// Render the expected class-name literal for one typed-array object leaf.
     public @NotNull String renderTypedArrayGuardClassNameExpr(@NotNull GdType type) {
-        return renderTypedArrayRuntimeLeaf(resolveTypedArrayGuardLeaf(type), "element leaf")
+        return renderTypedArrayRuntimeLeaf(resolveTypedArrayGuardLeaf(type))
                 .classNameExpr();
     }
 
@@ -882,9 +1191,8 @@ public final class CGenHelper {
         );
     }
 
-    private @NotNull TypedContainerRuntimeLeaf renderTypedArrayRuntimeLeaf(@NotNull GdType type,
-                                                                           @NotNull String useSite) {
-        return renderTypedContainerRuntimeLeaf(type, useSite, "typed-array", false);
+    private @NotNull TypedContainerRuntimeLeaf renderTypedArrayRuntimeLeaf(@NotNull GdType type) {
+        return renderTypedContainerRuntimeLeaf(type, "element leaf", "typed-array", false);
     }
 
     private @NotNull TypedContainerRuntimeLeaf renderTypedDictionaryRuntimeLeaf(@NotNull GdType type,
@@ -1012,13 +1320,6 @@ public final class CGenHelper {
         return engineVirtual.checkOverrideSignature(functionDef, true);
     }
 
-    public boolean checkGdccType(@NotNull GdType gdType) {
-        if (gdType instanceof GdObjectType gdObjectType) {
-            return gdObjectType.checkGdccType(context.classRegistry());
-        }
-        return false;
-    }
-
     public boolean checkGdccClassByName(@NotNull String className) {
         return context.classRegistry().isGdccClass(className);
     }
@@ -1032,13 +1333,22 @@ public final class CGenHelper {
     }
 
     /// Render the dedicated constructor-time property-init apply helper name.
-    /// This stays in `CGenHelper` because it is pure generated-symbol naming, not a codegen-phase
+    /// This stays in `CGenHelper` because it is pure generated-symbol naming, not a
     /// control-flow concern.
     public @NotNull String renderPropertyInitApplyHelperName(
             @NotNull LirClassDef classDef,
             @NotNull LirPropertyDef propertyDef
     ) {
         return classDef.getName() + "_class_apply_property_init_" + propertyDef.getName();
+    }
+
+    /// Constructor/`Class*` sites materialize owner fat self for internal methods that take fat parameters.
+    public @NotNull String renderOwnerFatSelfFromWrapperPtr(
+            @NotNull String className,
+            @NotNull String wrapperPtrExpr
+    ) {
+        var fatType = renderObjectFatPtrStorageType(new GdObjectType(className));
+        return fatType + "_from_raw(" + className + "_object_ptr(" + wrapperPtrExpr + "))";
     }
 
     /// Resolve the nearest constructible native ancestor for a GDCC class.

@@ -11,6 +11,7 @@
 #include <gdcc_intrinsic.h>
 #include <stdio.h>
 #include <math.h>
+#include <stdint.h>
 
 #if !defined(GDE_EXPORT)
 #if defined(_WIN32)
@@ -71,6 +72,27 @@ static bool gdcc_is_editor_hint() {
     return godot_Engine_is_editor_hint(_gd_engine);
 }
 
+/// Function attribute macros for side-effect-free query helpers.
+/// They degrade to nothing on toolchains without GNU attribute support.
+#if defined(__GNUC__)
+#define GDCC_PURE __attribute__((pure))
+#define GDCC_CONST __attribute__((const))
+#else
+#define GDCC_PURE
+#define GDCC_CONST
+#endif
+
+/// Godot 4.5.1 ObjectDB marks RefCounted object IDs with the high bit.
+/// GDCC uses it only as the dynamic RefCounted fast-path hint, never as object identity.
+#define GDCC_OBJECT_ID_REFERENCE_BIT (UINT64_C(1) << 63)
+
+/// Checks the ObjectID reference bit without touching ObjectDB.
+static inline GDCC_CONST godot_bool gdcc_object_id_is_ref_counted(GDObjectInstanceID instance_id) {
+    return (instance_id & GDCC_OBJECT_ID_REFERENCE_BIT) != 0;
+}
+
+/// Static-YES RefCounted retain. Side-effecting: mutates reference count (not pure/const).
+/// `obj` must be the validated live raw pointer (`<T>_fat_ptr_live_object`); never pass a fat struct.
 static void own_object(const GDExtensionObjectPtr obj) {
     if (obj == NULL) {
         return;
@@ -79,56 +101,124 @@ static void own_object(const GDExtensionObjectPtr obj) {
     godot_RefCounted_reference(rc);
 }
 
-static void try_own_object(const GDExtensionObjectPtr obj) {
-    if (obj == NULL) {
+/// Runtime RefCounted retain for an object whose static type is unknown.
+/// Side-effecting: may mutate reference count (not pure/const).
+/// `obj` must be the validated live raw pointer (`<T>_fat_ptr_live_object`); `instance_id` is the
+/// fat pointer's cached ID. The ObjectID reference bit (not a ClassDB class-name query) decides
+/// RefCounted-ness; the ID is never recovered from `obj`, which may be a freed non-RefCounted raw.
+static void try_own_object(const GDExtensionObjectPtr obj, const GDObjectInstanceID instance_id) {
+    if (obj == NULL || !gdcc_object_id_is_ref_counted(instance_id)) {
         return;
     }
-    godot_StringName class_name;
-    if (!godot_object_get_class_name(obj, class_library, &class_name)) {
-        return;
-    }
-    if (godot_ClassDB_is_parent_class(godot_ClassDB_singleton(), &class_name, GD_STATIC_SN(u8"RefCounted"))) {
-        godot_RefCounted* rc = obj;
-        godot_RefCounted_reference(rc);
-    }
+    godot_RefCounted* rc = obj;
+    godot_RefCounted_reference(rc);
 }
 
+/// Static-YES RefCounted release. Side-effecting: mutates reference count and may destroy (not pure/const).
+/// If `unreference` returns true (refcount reached zero and no veto), the object is destroyed.
+/// Same raw-pointer argument contract as `own_object`.
 static void release_object(const GDExtensionObjectPtr obj) {
     if (obj == NULL) {
         return;
     }
     godot_RefCounted* rc = obj;
-    godot_RefCounted_unreference(rc);
-}
-
-static void try_release_object(const GDExtensionObjectPtr obj) {
-    if (obj == NULL) {
-        return;
-    }
-    godot_StringName class_name;
-    if (!godot_object_get_class_name(obj, class_library, &class_name)) {
-        return;
-    }
-    if (godot_ClassDB_is_parent_class(godot_ClassDB_singleton(), &class_name, GD_STATIC_SN(u8"RefCounted"))) {
-        godot_RefCounted* rc = obj;
-        godot_RefCounted_unreference(rc);
+    if (godot_RefCounted_unreference(rc)) {
+        godot_object_destroy(obj);
     }
 }
 
-static void try_destroy_object(const GDExtensionObjectPtr obj) {
+/// Runtime RefCounted release for an object whose static type is unknown.
+/// Side-effecting: may mutate reference count and destroy (not pure/const).
+/// If `unreference` returns true (refcount reached zero and no veto), the object is destroyed.
+/// Same pointer/ID contract as `try_own_object`: reference bit decides, ID never recovered from `obj`.
+static void try_release_object(const GDExtensionObjectPtr obj, const GDObjectInstanceID instance_id) {
+    if (obj == NULL || !gdcc_object_id_is_ref_counted(instance_id)) {
+        return;
+    }
+    godot_RefCounted* rc = obj;
+    if (godot_RefCounted_unreference(rc)) {
+        godot_object_destroy(obj);
+    }
+}
+
+/// Destroys an owned object whose static type is unknown.
+/// Side-effecting: release RefCounted strong ref (destroying if last) or free manually-managed object.
+/// Reference-bit hit: unreference + conditional destroy. Miss: unconditional destroy.
+/// `obj` must be the validated live raw pointer; a NULL `obj` (already freed) is a no-op.
+static void try_destroy_object(const GDExtensionObjectPtr obj, const GDObjectInstanceID instance_id) {
     if (obj == NULL) {
         return;
     }
-    godot_StringName class_name;
-    if (!godot_object_get_class_name(obj, class_library, &class_name)) {
-        return;
-    }
-    if (godot_ClassDB_is_parent_class(godot_ClassDB_singleton(), &class_name, GD_STATIC_SN(u8"RefCounted"))) {
+    if (gdcc_object_id_is_ref_counted(instance_id)) {
+        // Same as try_release_object: never force-destroy a live RefCounted object.
         godot_RefCounted* rc = obj;
-        godot_RefCounted_unreference(rc);
+        if (godot_RefCounted_unreference(rc)) {
+            godot_object_destroy(obj);
+        }
     } else {
         godot_object_destroy(obj);
     }
+}
+
+/// Resolves a live raw Godot object pointer from an instance ID.
+/// ID 0 is canonical null; non-RefCounted IDs must be validated through ObjectDB.
+/// PURE is safe because the inner Godot function-pointer call is a conservative global-state
+/// barrier, so compilers will not CSE this query across Godot API or lifecycle calls.
+static inline GDCC_PURE GDExtensionObjectPtr gdcc_object_live_ptr(GDObjectInstanceID instance_id) {
+    if (instance_id == 0) {
+        return NULL;
+    }
+    return godot_object_get_instance_from_id(instance_id);
+}
+
+/// Returns whether an instance ID denotes a live object under the ownership invariant.
+/// RefCounted reference-bit hits are treated as live without an ObjectDB lookup.
+/// After release/destroy the stale RefCounted ID still has the reference bit set and will
+/// false-positive here; callers must never query liveness after releasing ownership.
+static inline GDCC_PURE godot_bool gdcc_object_is_live(GDObjectInstanceID instance_id) {
+    if (instance_id == 0) {
+        return false;
+    }
+    if (gdcc_object_id_is_ref_counted(instance_id)) {
+        return true;
+    }
+    return gdcc_object_live_ptr(instance_id) != NULL;
+}
+
+/// Semantic inverse of `gdcc_object_is_live` for an instance ID.
+/// Fat-pointer `object_is_null` / `assert_object_live` must pass both cached raw pointer and ID
+/// through `gdcc_object_is_null_raw_and_id`; do not recover ID from a possibly-dead raw pointer.
+static inline GDCC_PURE godot_bool gdcc_object_is_null(GDObjectInstanceID instance_id) {
+    return !gdcc_object_is_live(instance_id);
+}
+
+/// Compares two already-normalized raw Godot object pointers for identity.
+/// Callers must materialize equality-normalized raws first (null∪freed → NULL; live → Godot raw).
+/// This helper does not perform liveness checks or compare instance IDs.
+static inline GDCC_CONST godot_bool gdcc_object_live_ptrs_equal(GDExtensionObjectPtr left, GDExtensionObjectPtr right) {
+    return left == right;
+}
+
+/// Reads an instance ID from a raw object pointer that the caller already guarantees is live.
+/// Mapping NULL -> 0 is safe. Calling this on a freed/dangling raw pointer is use-after-free.
+/// Only `from_raw` capture paths may use this; null/equality/assert must never recover ID from raw.
+static inline GDObjectInstanceID gdcc_object_id_from_raw(GDExtensionObjectPtr raw) {
+    if (raw == NULL) {
+        return 0;
+    }
+    return godot_object_get_instance_id(raw);
+}
+
+/// Null/freed query for a fat-pointer pair `(raw, instance_id)`.
+/// Never calls `godot_object_get_instance_id` on raw. ID is the liveness authority; raw == NULL is
+/// also treated as null. Generic and untyped: no per-class specialization.
+static inline GDCC_PURE godot_bool gdcc_object_is_null_raw_and_id(
+        GDExtensionObjectPtr raw,
+        GDObjectInstanceID instance_id) {
+    if (raw == NULL || instance_id == 0) {
+        return true;
+    }
+    return gdcc_object_is_null(instance_id);
 }
 
 /// Converts a Godot raw object pointer back to the bound GDCC native instance.
@@ -147,8 +237,15 @@ static GDExtensionClassInstancePtr gdcc_object_from_godot_object_ptr(GDExtension
 /// This macro is representation-only and must not be treated as a retain/release boundary.
 #define gdcc_object_to_godot_object_ptr(obj, object_ptr_helper) ({ __typeof__(obj) _o = (obj); _o ? object_ptr_helper(_o) : NULL; })
 
+/// Unpacks an OBJECT Variant into the bound GDCC native instance.
+/// Returns NULL for null or freed object payloads (Godot freed == null semantics).
+/// Liveness is validated through ObjectDB before any pointer dereference (ID-first pattern).
 static GDExtensionClassInstancePtr godot_new_gdcc_Object_with_Variant(const godot_Variant* value) {
-    const GDExtensionObjectPtr obj = godot_new_Object_with_Variant(value);
+    GDObjectInstanceID id = godot_variant_get_object_instance_id(value);
+    const GDExtensionObjectPtr obj = gdcc_object_live_ptr(id);
+    if (obj == NULL) {
+        return NULL;
+    }
     return gdcc_object_from_godot_object_ptr(obj);
 }
 
@@ -196,7 +293,8 @@ static godot_bool gdcc_check_variant_type_builtin(const godot_Variant *value,
 /// Runtime type guard for Variant -> Object unpack.
 /// - exact type match always passes.
 /// - subclass match is optional via `allow_subclass`.
-/// - null object payload is accepted for object targets.
+/// - null or freed object payload is accepted for object targets (Godot freed == null semantics).
+/// Liveness is validated through ObjectDB before any pointer dereference (ID-first pattern).
 static godot_bool gdcc_check_variant_type_object(const godot_Variant *value,
                                                  const godot_StringName *expected_class_name,
                                                  godot_bool allow_subclass) {
@@ -207,7 +305,12 @@ static godot_bool gdcc_check_variant_type_object(const godot_Variant *value,
         return false;
     }
 
-    GDExtensionObjectPtr object_value = godot_new_Object_with_Variant(value);
+    GDObjectInstanceID instance_id = godot_variant_get_object_instance_id(value);
+    if (instance_id == 0) {
+        return true;
+    }
+
+    GDExtensionObjectPtr object_value = gdcc_object_live_ptr(instance_id);
     if (object_value == NULL) {
         return true;
     }

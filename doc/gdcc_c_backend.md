@@ -22,14 +22,20 @@ already exists, otherwise use the project's own `compiler-cache` directory.
     - `obj` must be a GDCC wrapper pointer value.
     - `Class_object_ptr` must be the generated helper for the static type of `obj`.
   - `godot_object_from_gdcc_object_ptr` is deprecated and must not be used in new or migrated code paths.
-  - Convert from Godot object pointer using `gdcc_object_from_godot_object_ptr(GDExtensionObjectPtr ptr)`.
-  - `Variant` can be converted to/from GDCC object types using `gdcc_new_Variant_with_gdcc_Object(obj)` and `godot_new_gdcc_Object_with_Variant`.
-    - `gdcc_new_Variant_with_gdcc_Object(obj)` receives a raw GDCC wrapper pointer, selects the generated `<Class>_object_ptr` helper with `_Generic`, and performs the GDCC -> Godot pointer conversion internally.
-    - Do not pre-convert the argument with `gdcc_object_to_godot_object_ptr(...)` before passing it to this macro.
+  - Convert from Godot object pointer using `gdcc_object_from_godot_object_ptr(GDExtensionObjectPtr ptr)`,
+    then immediately capture into an internal fat pointer via `<Type>_fat_ptr_from_raw(...)` when the value enters
+    generated storage, parameters, or returns.
+  - **Internal object values** are per-static-type fat pointers (`gdcc_<Type>_fat_ptr = { typed_ptr, instance_id }`).
+    Pack/unpack with Variant via `<Type>_fat_ptr_to_variant` / `<Type>_fat_ptr_from_variant`.
+    The legacy `gdcc_new_Variant_with_gdcc_Object` macro has been removed; do not reintroduce it.
+  - **Raw object pointers** (`GDExtensionObjectPtr`, `godot_<Type>*`, GDCC wrapper `<Class>*`) appear only at
+    ABI / layout / helper boundaries (ptrcall slots, wrapper instance fields, lifecycle helpers that take a live raw
+    ptr, container element slots). They are not the internal storage/parameter/return shape.
 - `godot_float` is usually a typedef for `double`, but it should always be used as `godot_float` for compatibility.
 - The C backend supports only Godot `float_64` ABI: 64-bit pointers with single-precision `real_t`.
   `REAL_T_IS_DOUBLE` and 32-bit Godot builds are outside the supported target matrix.
-- Any Object, including engine object and GDCC objects, are always passed as pointers, and the pointers are passed as values, usually we do not use pointers to pointers.
+- Internal object values (`gdcc_<Type>_fat_ptr`) are passed by value (the fat struct itself). Raw Godot/wrapper
+  pointers are still pointer values at ABI boundaries; nested pointer-to-pointer is avoided unless the ABI requires it.
 - There are 3 types: built-in types, engine types, and GDCC types, see [gdcc_type_system.md](gdcc_type_system.md) for more details.
 - Compiler-only storage types are backend-owned `GdType` implementations that do not belong to the source-facing type namespace. They are rendered with explicit `gdcc_*` storage/helper names and must never fall back to the default `godot_*` naming path.
 - Engine types and GDCC types are all Objects, built-in types are not Objects.
@@ -39,15 +45,16 @@ already exists, otherwise use the project's own `compiler-cache` directory.
     - Function parameters are always `ref=true`.
     - Function local variables are always `ref=false`.
   - Primitive types (`godot_bool`, `godot_int`, `godot_float`) are always value types, regardless of `ref`.
-  - Object types are always pointer types, regardless of `ref`:
-    - Engine object types use `godot_<Type>*` / `GDExtensionObjectPtr`.
-    - GDCC object types use `<GdccClass>*`.
-  - Other built-in types are the only category affected by `ref`:
+  - Object types use per-type fat pointers for internal storage / parameters / returns, regardless of `ref`:
+    - Engine and GDCC object values: `gdcc_<Type>_fat_ptr` (struct by value).
+    - Raw ABI/layout forms remain separate: `godot_<Type>*` / `GDExtensionObjectPtr` for Godot boundaries;
+      `<GdccClass>*` for GDCC wrapper instances (layout only, not value storage).
+  - Other built-in types are the only category whose C shape is driven by `ref`:
     - `ref=true` means pointer type in C.
     - `ref=false` means non-pointer value type in C.
   - In short:
     - Primitive types are always by value.
-    - Object types are always object pointers.
+    - Object types are always internal fat pointers (raw pointers only at ABI/layout/helper edges).
     - Only other built-in types change C type shape based on `ref`.
 - For `String`, `StringName`, `NodePath`, `Callable`, `Signal`, `Packed*Array`:
   - They are value-semantic wrapper structs that hold opaque engine-side state.
@@ -93,27 +100,50 @@ already exists, otherwise use the project's own `compiler-cache` directory.
   - When destroying a reference counted object, think twice if we need to destroy (mem-delete) or just release it (decrease reference count).
   - If we can 100% sure that an object is ref-counted, we can use `own_object` and `release_object` directly, these 2 functions are faster.
 - For type mapping between compiler types and C types:
-  - GDCC types are directly used as C types, e.g., `MyCustomGdClass` is used as `MyCustomGdClass*`.
+  - Object **values** map to `gdcc_<Type>_fat_ptr` for both engine and GDCC types.
+  - GDCC **wrapper instances** keep the C struct name, e.g. `MyCustomGdClass` / `MyCustomGdClass*` at layout and
+    registration boundaries; do not confuse wrapper pointers with object-value storage.
   - Compiler-only types are mapped to their own explicit C storage names and helper names, not to generated `godot_*` ABI symbols.
-  - Other types are mapped with a `godot_` prefix, e.g., `int` is mapped to `godot_int`, `String` is mapped to `godot_String`.
-- Always remember GDExtension API does not receive GDCC object ptrs, convert them to `godot_Object*` using generated per-class helper functions first.
-- When receiving `godot_Object*` from GDExtension API that is actually a GDCC object, convert it to the correct GDCC type using `gdcc_object_from_godot_object_ptr(GDExtensionObjectPtr ptr)` if necessary.
+  - Other non-object types are mapped with a `godot_` prefix, e.g., `int` is mapped to `godot_int`, `String` is mapped to `godot_String`.
+- Always remember GDExtension API does not receive GDCC wrapper or fat-pointer values: lower to a validated live
+  `godot_Object*` / `GDExtensionObjectPtr` (via `<Type>_fat_ptr_live_object` and, when needed, per-class
+  `Class_object_ptr` / `gdcc_object_to_godot_object_ptr`) before the call.
+- When receiving `godot_Object*` from GDExtension API that is actually a GDCC object, convert the raw pointer with
+  `gdcc_object_from_godot_object_ptr(...)` if a wrapper pointer is required, then capture ID into
+  `gdcc_<Type>_fat_ptr` via `<Type>_fat_ptr_from_raw(...)` for internal use.
+
+### Object Value Representation (Mandatory)
+
+- Internal object storage, parameters, and returns always use `gdcc_<Type>_fat_ptr` once the static type is known.
+  Unknown object types fail fast at codegen; there is no silent fallback to bare `GDExtensionObjectPtr`.
+- Fat-pointer helpers (generated into `object_fat_ptr_types.h`):
+  - `_from_raw` / `_from_variant`: ingress (capture or preserve `instance_id`)
+  - `_live_object` / `_live_ptr`: validated raw for Godot ABI / typed field access (RefCountedStatus-specialized)
+  - `_to_variant`: outbound Variant pack (freed sources become OBJECT/null; outbound cannot keep a freed ID — Godot public ABI limit)
+  - upcast helpers: preserve `instance_id`, rebuild target typed pointer
+- Hard-fail liveness guard for dereference sites is the LIR instruction `assert_object_live`, lowered through
+  `gdcc_object_is_null_raw_and_id(raw, instance_id)` (never recover ID from a possibly-freed raw pointer).
+- Static RefCounted (`RefCountedStatus.YES`) uses the cached typed pointer under the ownership invariant;
+  `UNKNOWN` uses the ObjectID reference bit (bit 63) for `try_*` lifecycle without ClassDB class-name queries.
+- Full design, contracts and acceptance matrix:
+  [object_value_fat_pointer_implementation.md](module_impl/backend/object_value_fat_pointer_implementation.md).
 
 ### Pointer Conversion Baseline (Mandatory)
 
 - This baseline is effective immediately and must be treated as a gate for follow-up implementation.
 - `godot_object_from_gdcc_object_ptr` is deprecated and must not appear in newly modified code.
-- All GDCC -> Godot pointer conversions must use generated, class-specific helper functions.
-- Standard form for conversion in generated C code:
-  - `gdcc_object_to_godot_object_ptr($value, MyGdccType_object_ptr)`
+- All GDCC wrapper -> Godot raw pointer conversions must use generated, class-specific helper functions.
+- Standard form for conversion in generated C code (wrapper pointer operand, not a fat pointer):
+  - `gdcc_object_to_godot_object_ptr($wrapper, MyGdccType_object_ptr)`
 - Keep static type and helper matched:
-  - If the value static type is `MyChild*`, use `MyChild_object_ptr`.
+  - If the wrapper static type is `MyChild*`, use `MyChild_object_ptr`.
   - Do not mix with parent helper unless the value has already been upcast safely.
 - Any touched legacy path that still depends on the deprecated macro must be migrated in the same change or explicitly tracked as migration debt.
-- Generated GDCC wrapper layout is the fact source for object pointer access:
+- Generated GDCC wrapper layout is the fact source for **instance layout** object pointer access (not value storage):
   - root GDCC wrapper structs store `GDExtensionObjectPtr _object`;
   - GDCC subclasses store their parent wrapper as the first `_super` field;
   - generated `<Class>_object_ptr(...)` and `<Class>_set_object_ptr(...)` are the only template helpers that read or write the real Godot object pointer through that layout.
+  - Object **values** still live in `gdcc_<Type>_fat_ptr` slots; wrapper layout remains raw by design.
 
 ### GDExtension Entry Lifecycle Contract
 
@@ -156,9 +186,15 @@ already exists, otherwise use the project's own `compiler-cache` directory.
 ### Global Helper Raw Pointer Contract
 
 - `CBodyBuilder#checkGlobalFuncRequireGodotRawPtr` is the single gate for global C helper calls whose object arguments must be Godot raw object pointers.
-- If a new helper is defined to accept `GDExtensionObjectPtr` (for example `gdcc_cmp_object`), add its function name to `checkGlobalFuncRequireGodotRawPtr`.
+- The gate uses:
+  - an explicit allowlist (`gdcc_object_from_godot_object_ptr`, `gdcc_object_is_null_raw_and_id`);
+  - a temporary `godot_*` prefix backlog for generated Godot wrappers (prefer structured callee metadata long-term).
+- Generated `gdcc_eval_*` operator evaluator helpers accept fat-pointer object operands/returns and lower to raw slots only inside the helper body. They must NOT be treated as raw-ABI callees.
+- Object lifecycle helpers (`own_object` / `release_object` / `try_own_object` / `try_release_object` / `try_destroy_object`) do NOT go through this gate or `callVoid`. They are emitted by `emitObjectLifecycleCall` / `ownOrTryOwn` / `releaseOrTryRelease`, which pass the validated live raw pointer plus (for the `try_*` variants) the fat pointer's `instance_id`.
+- If a new non-`godot_*` helper is defined to accept `GDExtensionObjectPtr`, add its exact function name to the explicit allowlist (do not invent new name-prefix special cases).
 - Instruction generators should pass object arguments as regular `valueOfVar(...)` values and let `CBodyBuilder` handle pointer conversion centrally.
 - Do not duplicate per-generator object pointer normalization helpers for this case.
+- `gdcc_cmp_object` was removed; production object equality uses C1 normalized raw comparison.
 
 ### Backend-owned Runtime Writeback Helper
 
@@ -238,23 +274,24 @@ already exists, otherwise use the project's own `compiler-cache` directory.
 
 ### call_func Wrapper Local Cleanup Contract
 
-- Generated `call_func` wrappers own the temporary non-object wrapper locals they materialize themselves:
-  - parameter locals created by `godot_new_<Type>_with_Variant(...)`
+- Generated `call_func` wrappers own the temporary wrapper-local values they materialize themselves:
+  - parameter locals created by `godot_new_<Type>_with_Variant(...)` (non-object) or BORROWED fat unpack (object)
   - the staged `godot_Variant ret` used to publish non-`void` returns
-  - the non-`void` local `r` when the returned type is a destroyable non-object wrapper
+  - the non-`void` local `r` when the returned type is an object (`OWNED` fat pointer) or a destroyable non-object wrapper
 - Those locals are outside ordinary `CBodyBuilder` slot lifecycle:
   - they live only inside the generated wrapper glue
-  - the wrapper must destroy them explicitly before returning to Godot
+  - the wrapper must destroy/release them explicitly before returning to Godot
 - Cleanup order is fixed:
   1. publish `r_return` with `godot_variant_new_copy(...)`
   2. destroy local `ret`
-  3. destroy local `r` when its source type is a destroyable non-object wrapper
-  4. destroy wrapper-owned argument locals in reverse order
-- Do not apply this cleanup contract to object pointers or primitives:
-  - object args/returns are plain pointer locals here, not value wrappers with `destroy(&slot)` semantics
-  - primitive args/returns never need wrapper cleanup
-- Backend touchpoint:
-  - `CGenHelper.renderCallWrapperDestroyStmt(...)` is the single type-driven helper that decides whether an argument/return local needs this wrapper cleanup
+  3. release `OWNED` object return carrier `r` (`release_object` / `try_release_object` per `RefCountedStatus`)
+  4. destroy local `r` when its source type is a destroyable non-object wrapper
+  5. destroy wrapper-owned argument locals in reverse order
+- Object argument locals are BORROWED from Variant args and must not be released.
+- Primitive args/returns never need wrapper cleanup.
+- Backend touchpoints:
+  - `CGenHelper.renderCallWrapperOwnedObjectReturnConsumeStmt(...)` consumes OWNED object return `r` after pack
+  - `CGenHelper.renderCallWrapperDestroyStmt(...)` destroys destroyable non-object wrapper locals only
 
 ### Receiver Value Terminology
 
@@ -306,7 +343,9 @@ Object category rules:
       - `Array[SubClass]` -> `Array[SuperClass]`
       - `Dictionary[K, V]` -> `Dictionary` / `Dictionary[Variant, Variant]`
       - `Dictionary[K1, V1]` -> `Dictionary[K2, V2]` when both key/value directions are assignable.
-    - Always remember if the value that is assigning into a result variable whose type is a GDCC object is returned from a GDExtension function, it is always a `godot_Object*` that needs to be converted to the correct GDCC type.
+    - Always remember: a GDExtension / raw-ABI helper that returns an object produces a raw `godot_Object*` /
+      `GDExtensionObjectPtr`. Capture it into the destination fat pointer with `<Type>_fat_ptr_from_raw(...)`
+      (ownership-neutral representation change); do not store the bare raw pointer in internal object slots.
 - For object slot writes, ownership comes from producer provenance, not from the target slot shape alone:
   - fresh function/method/constructor/property-init helper results are `OWNED`
   - reads from existing storage (`local` / `parameter` / `field` / property / index / `self`) are `BORROWED`
@@ -327,8 +366,9 @@ Object category rules:
   does not upgrade it; the later slot write / return publish decides whether retain is needed.
 - When construct a `Variant` from an object, the new `Variant` owns the object, so you do not need to call `try_own_object` or `own_object` again.
 - `try_own_object`, `try_release_object` are safe to use on non-ref-counted objects, they will do nothing in that case, but always use non-try version if you are 100% sure the object is ref-counted for better performance.
-- `try_own_object`, `try_release_object`, `own_object` and `release_object` receives only Godot object ptr but not GDCC object ptr, so remember to pass helper-converted Godot object ptr instead of raw `gdcc_object`.
-- `try_destroy_object` is used to destroy an object that we own, if an object is ref-counted it is the same as `try_release_object`, if it is not ref-counted, it will be actually destroyed, so always remember to check the type and use it properly.
+- The `try_*` helpers decide RefCounted-ness via the ObjectID reference bit (bit 63), not a ClassDB class-name query. They take the validated live Godot object ptr plus the fat pointer's cached `instance_id`: `try_own_object(<T>_fat_ptr_live_object(v), v.instance_id)`. The ID must come from the fat pointer, never recovered from a possibly-freed raw ptr.
+- `own_object` and `release_object` receive only the Godot object ptr (single argument); the `try_*` variants additionally receive the `instance_id`. None of them accepts a GDCC object ptr, so remember to pass helper-converted Godot object ptr instead of raw `gdcc_object`.
+- `try_destroy_object` is used to destroy an object that we own, if an object is ref-counted it is the same as `try_release_object`, if it is not ref-counted, it will be actually destroyed. It also takes `(live ptr, instance_id)`; the reference bit selects release vs destroy.
 - Call lifecycle functions on `NULL` is safe, they will do nothing in that case, so you do not need to check if the pointer is `NULL` before calling lifecycle functions.
 - Object return publishing is modeled as writing `_return_val`:
   - borrowed source -> retain at `_return_val`
@@ -431,19 +471,23 @@ Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "000000000000000000000000000000000000
   - Typed `Array` / `Dictionary` construction first uses the plain container value, then calls the
     typed constructor with a real nil `Variant` script carrier. Backend must not replace this with a
     null pointer shortcut.
-- For object constructor route (`construct_object` / frontend `.new(...)` object target), call
-  `godot_new_XXX()` directly for engine classes, and call generated `XXX_class_create_instance(...)`
-  directly for gdcc classes. For non-`RefCounted` gdcc classes this remains `XXX_class_create_instance(NULL, true)`.
-  When the GDCC target definitely inherits `RefCounted`, generated C constructor call sites must use
-  `XXX_class_create_instance(NULL, false)` first, then wrap that external create call with
-  `gdcc_ref_counted_init_raw(..., true)` before the result enters the existing object slot write /
-  pointer-conversion path. The generated `*_class_create_instance(...)` itself stays a raw native-object
-  allocation/binding helper and
-  must not perform the external RefCounted init on behalf of every caller. When the same GDCC
-  `RefCounted` class is instantiated by Godot engine entry points or by GDScript, Godot itself is
-  responsible for initializing the reference count as part of its own creation path. GDCC custom constructors
-  themselves remain zero-arg only; parameterized custom constructor routes are blocked in frontend
-  compile mode.
+- For object constructor route (`construct_object` / frontend `.new(...)` object target):
+  - Engine classes: call `godot_new_XXX()` directly. When the engine target definitely inherits
+    `RefCounted`, the module-local constructor wrapper (`engine_method_binds.h.ftl`) must call
+    `gdcc_ref_counted_init_raw(object, false)` after `godot_classdb_construct_object` so the returned
+    raw pointer is OWNED at refcount=1 (aligned with GDCC create paths). Non-`RefCounted` engine
+    classes stay plain construct without `init_ref`.
+  - GDCC classes: call generated `XXX_class_create_instance(...)` directly. For non-`RefCounted`
+    gdcc classes this remains `XXX_class_create_instance(NULL, true)`. When the GDCC target
+    definitely inherits `RefCounted`, generated C constructor call sites must use
+    `XXX_class_create_instance(NULL, false)` first, then wrap that external create call with
+    `gdcc_ref_counted_init_raw(..., true)` before the result enters the existing object slot write /
+    pointer-conversion path. The generated `*_class_create_instance(...)` itself stays a raw
+    native-object allocation/binding helper and must not perform the external RefCounted init on
+    behalf of every caller. When the same GDCC `RefCounted` class is instantiated by Godot engine
+    entry points or by GDScript, Godot itself is responsible for initializing the reference count
+    as part of its own creation path. GDCC custom constructors themselves remain zero-arg only;
+    parameterized custom constructor routes are blocked in frontend compile mode.
 - For `$"..."`, generate NodePath constructor with utf8_chars.
 
 ### Extension Type Metadata Parsing Ownership

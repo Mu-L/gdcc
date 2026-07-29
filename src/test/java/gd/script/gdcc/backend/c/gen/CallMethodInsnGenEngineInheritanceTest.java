@@ -77,34 +77,24 @@ class CallMethodInsnGenEngineInheritanceTest {
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(
-                entrySource.contains("GDInheritanceBaseWorker_base_value(&($child->_super));"),
-                "Child receiver should upcast via _super chain for parent static dispatch."
+                entrySource.contains("GDInheritanceBaseWorker_base_value(gdcc_GDInheritanceChildWorker_fat_ptr_upcast_to_GDInheritanceBaseWorker($child));"),
+                "Child receiver should upcast via fat pointer helper for parent static dispatch."
         );
         assertTrue(
-                entrySource.contains("godot_Object_call(gdcc_object_to_godot_object_ptr($baseRef, GDInheritanceBaseWorker_object_ptr), GD_STATIC_SN(u8\"child_only_consume_peer\")"),
-                "Base-typed GDCC receiver should use OBJECT_DYNAMIC dispatch with helper conversion."
+                entrySource.contains("godot_Object_call(gdcc_GDInheritanceBaseWorker_fat_ptr_live_object($baseRef), GD_STATIC_SN(u8\"child_only_consume_peer\")"),
+                "Base-typed GDCC receiver should use OBJECT_DYNAMIC dispatch with fat live_object conversion."
         );
         assertTrue(
-                entrySource.contains("gdcc_new_Variant_with_gdcc_Object($peer)"),
-                "OBJECT_DYNAMIC arg packing should use gdcc_new_Variant_with_gdcc_Object."
+                entrySource.contains("gdcc_GDInheritancePeerWorker_fat_ptr_to_variant($peer)"),
+                "OBJECT_DYNAMIC arg packing should use fat to_variant.\n" + entrySource
         );
         assertFalse(
-                entrySource.contains("gdcc_new_Variant_with_gdcc_Object(gdcc_object_to_godot_object_ptr("),
-                "gdcc_new_Variant_with_gdcc_Object must receive raw GDCC pointer and convert exactly once inside macro."
+                entrySource.contains("gdcc_new_Variant_with_gdcc_Object("),
+                "Removed helper gdcc_new_Variant_with_gdcc_Object must not appear; pack via fat to_variant."
         );
         assertFalse(
-                entrySource.contains("godot_new_Variant_with_Object(gdcc_object_to_godot_object_ptr($peer"),
-                "No direct replacement should bypass gdcc_new_Variant_with_gdcc_Object entry point."
-        );
-
-        var headerSource = Files.readString(tempDir.resolve("entry.h"));
-        assertTrue(
-                headerSource.contains("#define gdcc_new_Variant_with_gdcc_Object(obj)"),
-                "Generated header should provide gdcc_new_Variant_with_gdcc_Object macro."
-        );
-        assertTrue(
-                headerSource.contains("gdcc_object_to_godot_object_ptr((obj), _Generic((obj),"),
-                "GDCC object variant pack macro should route through helper-based conversion."
+                entrySource.contains("gdcc_object_to_godot_object_ptr("),
+                "OBJECT_DYNAMIC path must not emit wrapper-boundary gdcc_object_to_godot_object_ptr."
         );
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));

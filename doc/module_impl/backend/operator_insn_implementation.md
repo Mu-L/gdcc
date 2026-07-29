@@ -83,21 +83,27 @@
 
 ### 3.5 Object 比较特化（`==` / `!=`）
 
-仅当左右均为 `Object` 类型时生效：
+仅当左右均为 `Object` 类型时生效（fat-pointer C1 normalized raw equality）：
 
-1. `==`：
-   - 双 `NULL` -> `true`
-   - 单侧 `NULL` -> `false`
-   - 双非空 -> `godot_object_get_instance_id(left) == godot_object_get_instance_id(right)`
-2. `!=`：上述结果取反。
-3. 其他 Object 运算符：fail-fast。
+1. 两侧各自 materialize **equality-normalized raw**（`CBodyBuilder.renderEqualityNormalizedRaw`）：
+   - 先用 `gdcc_object_is_null_raw_and_id(raw_sentinel, instance_id)` 判定 null ∪ freed；
+   - null/freed → `NULL`；
+   - live engine → `(GDExtensionObjectPtr)value.ptr`；
+   - live GDCC → `gdcc_<Type>_fat_ptr_live_object(value)`（禁止 dead 路径 `Type_object_ptr`）。
+2. `==`：`normalized_left == normalized_right`；`!=` 同理。
+3. 语义折叠：`null == null` / `freed == null` / `freedA == freedB` 为 true；live 与 null/freed 为 false；
+   live 同/异实例按 Godot raw 指针 identity。
+4. **禁止**直接比较 fat struct；**禁止**以 `instance_id` 为 `==` 比较键；**禁止**从 raw 调用
+   `godot_object_get_instance_id(...)`。
+5. nullness 查询仅服务 “禁止解引用 dead wrapper / 折叠 dead”，与 `object_is_null` 指令职责分离。
+6. 其他 Object 运算符：fail-fast。
 
 ### 3.6 Nil 比较特化
 
 1. `Nil == Nil` -> `true`。
 2. `Nil != Nil` -> `false`。
 3. `Nil` 与非 `Nil` 比较：
-   - 对方为 `Object(null)` 时相等；
+   - 对方为 Object 时：使用 `gdcc_object_is_null_raw_and_id(raw, instance_id)`（null ∪ freed → true）。
    - 其余情况不相等。
 4. `Nil` 非比较运算不特化，走默认分流。
 5. 该特化只在左右都不是已发布 `Variant` 时参与 resolver。

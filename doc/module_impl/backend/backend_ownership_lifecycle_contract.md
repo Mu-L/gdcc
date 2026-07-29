@@ -9,7 +9,7 @@
 - 范围：
   - `src/main/java/gd/script/gdcc/backend/c/**`
   - `src/main/c/codegen/**`
-- 更新时间：2026-04-10
+- 更新时间：2026-07-29（Object → UNKNOWN ownership boundary）
 - 上游对齐基线：Godot `755fa449c4aa94fdf2c58e2b726fd62efde07e09`
 - 关联文档：
   - `doc/gdcc_ownership_lifecycle_spec.md`
@@ -98,6 +98,8 @@
   - `YES` -> `release_object`
   - `UNKNOWN` -> `try_release_object`
   - `NO` -> no-op
+- 所有 release/destroy helper 内部检查 `godot_RefCounted_unreference` 返回值：为 true（引用计数归零且无
+  script/binding veto）时调用 `godot_object_destroy` 释放对象。调用侧在 release/destroy 后不得再访问该指针。
 
 ### 6. 指针表示转换合同
 
@@ -127,6 +129,62 @@
 - `AUTO_GENERATED` destruct 只允许出现在 `__finally__`
 - `AUTO_GENERATED` 不允许用于 `try_own_object` / `try_release_object`
 - backend 继续依赖 provenance 校验后的 IR；生成器做 fail-fast 防御，不做语义修补
+
+### 8. vararg 动态调用返回所有权合同
+
+exact-engine helper 的 vararg（动态 `object_method_bind_call`）路径，对象返回值必须经过临时 `Variant ret`
+中转。该路径的引用计数收支必须保持平衡：
+
+- helper 端：unpack 出对象后、`godot_Variant_destroy(&ret)` 之前，必须按 `RefCountedStatus` 补发
+  `own_object` / `try_own_object`（`CGenHelper.renderEngineMethodHelperVarargObjectReturnOwnStmt`）。
+  这一步把临时 Variant 持有的引用转交给返回的 fat pointer，使 helper 返回成为 `OWNED` producer。
+  - `YES` -> `own_object`
+  - `UNKNOWN` -> `try_own_object`
+  - `NO` -> no-op（非 `RefCounted` 对象不引用计数，Variant 销毁不影响其存活）
+- 调用端：helper 返回的这份 `OWNED` 强引用必须被**恰好消费一次**，三条闭合路径：
+  - 写槽：`emitObjectSlotWrite(..., OWNED)` 直接接管，不重复 retain；后续由覆盖写或 `__finally__` cleanup 释放
+  - discard：`emitDiscardedCall` 立即 `release_object` / `try_release_object`
+  - public wrapper：call wrapper 用 `to_variant` 把 fat 返回打包进返回 Variant。打包为 `r_return`
+    建立自己的引用（`to_variant` + `variant_new_copy` + `Variant_destroy`），但**不消费**函数返回的
+    internal OWNED 强引用；wrapper 必须在 `Variant_destroy(&ret)` 之后对返回载体 `r` 补发
+    `release_object` / `try_release_object`（`CGenHelper.renderCallWrapperOwnedObjectReturnConsumeStmt`），
+    使 ownership 净零转入 `r_return`。`YES` → `release_object`，`UNKNOWN` → `try_release_object`，
+    `NO` → no-op。该 consume **仅**用于返回载体，不得对 BORROWED 参数 locals 使用。
+- exact / ptrcall 路径**不**适用本合同：它直接把 raw 指针写进 slot（`result_raw`），没有 Variant 中转去释放引用，
+  `_from_raw` 捕获即自带所有权，无需额外 retain / release。
+
+静态类型驱动的所有权边界（`Object` 根类型）：
+
+- own/release/consume 决策以**槽或返回值的静态类型**的 `RefCountedStatus` 为键，不是运行时实际类型。
+- 精确引擎类型 `Object` 由 `ClassRegistry.getRefCountedStatus` 解析为 `UNKNOWN`（扩展 API 虽标
+  `is_refcounted=false`，但 `Object` 槽/返回值可能持有 live `RefCounted` 实例）。
+- 因此所有权转移边界（slot retain/release、wrapper consume、discard、helper own、`__finally__`
+  cleanup）对 `Object` 统一走运行期 `try_own_object` / `try_release_object`，与已有 UNKNOWN 路径一致。
+- `try_*` helper 以 `(validated live raw ptr, fat.instance_id)` 为参，内部用 ObjectID reference bit
+  判别 RefCounted（不做 ClassDB 类名查询）；ID 来自 fat pointer 缓存，不从可能已释放的裸指针反推。
+- 例：`func f() -> Object: return RefCounted.new()` — wrapper 在 pack 后 `try_release` 消费构造
+  `init_ref` 的 OWNED；`func echo(o: Object) -> Object: return o` — body 对 BORROWED 写返回时
+  `try_own`，wrapper 再 `try_release`，引用收支平衡。
+- 确定的非 RC 子类（`Node` 等）与继承 `Object` 但未走到 `RefCounted` 的 GDCC 用户类仍为 `NO`，不
+  触发 `try_*`。
+- 若将来出现其它“静态基类可能承载 RC 实例”的边界类型，同样应按 `UNKNOWN` 处理，而不是仅改
+  wrapper consume 一侧。
+
+违约后果：
+
+- 把 helper 返回误判为 `BORROWED`（再 retain 一次，或始终不 release）→ 残留多余 ownership，形成 `RefCounted` 泄漏
+- 漏掉 helper 端的 own → fat pointer 不持有强引用，违反 fat-pointer ownership invariant，
+  RefCounted fast path 会读到已被 Variant destroy 释放的对象（UAF）
+- 漏掉 call wrapper 对 OWNED 返回 `r` 的 `release_object` → 内部 OWNED 引用泄漏，GDScript 侧
+  `get_reference_count()` 多 1（fresh return 终值 2 而非 1）
+- 对 BORROWED 参数 locals 误发 `release_object` → 少计 1 引用，GDScript 释放时提前 free 形成 UAF
+
+实现锚点：
+
+- `src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java`（`renderEngineMethodHelperVarargObjectReturnOwnStmt` / `renderCallWrapperOwnedObjectReturnConsumeStmt`）
+- `src/main/c/codegen/template_451/engine_method_binds.h.ftl`（vararg 路径 `result = unpack(&ret)` 之后；engine constructor `gdcc_ref_counted_init_raw`）
+- `src/main/c/codegen/template_451/entry.h.ftl`（call wrapper pack 后 consume OWNED `r`）
+- `src/main/java/gd/script/gdcc/backend/c/gen/CBodyBuilder.java`（`emitCallResultAssignment` / `emitDiscardedCall`）
 
 ## 明确拒绝的错误路线
 
@@ -192,6 +250,8 @@ Godot 不会因为 local variable 离开作用域就自动 `free()` / `queue_fre
 2. 新增 ptr conversion helper 或模板宏时，最容易把表示转换误做成 ownership 边界，造成隐式 retain/release 漂移。
 3. 若未来放宽 move-return 允许集合，必须先增强 slot provenance；不能继续靠 `ValueRef` 形态猜测 source 是否可 move。
 4. auto-cleanup 若被重新理解为“所有对象值统一回收”，会直接破坏 `_return_val`、non-`RefCounted` locals 与 `ref` alias 的既有合同。
+5. 新增消费 exact-engine helper 返回的路径时，必须保证其 `OWNED` 对象返回被恰好消费一次（写槽 / discard / wrapper consume）；
+   漏消费或误当 `BORROWED` 再 retain 都会造成 `RefCounted` 泄漏（见长期合同 §8）。
 
 ## 工程反思
 

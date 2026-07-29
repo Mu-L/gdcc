@@ -7,6 +7,7 @@ import gd.script.gdcc.backend.TemplateLoader;
 import gd.script.gdcc.backend.c.gen.binding.GenerateRenderFacade;
 import gd.script.gdcc.backend.c.gen.binding.usage.GodotBindingUsageBuffer;
 import gd.script.gdcc.backend.c.gen.binding.usage.GodotBindingUsageSession;
+import gd.script.gdcc.backend.c.gen.fatptr.CObjectFatPtrCollector;
 import gd.script.gdcc.backend.c.gen.insn.*;
 import gd.script.gdcc.enums.GdInstruction;
 import gd.script.gdcc.enums.LifecycleProvenance;
@@ -39,6 +40,8 @@ public class CCodegen implements Codegen {
     static {
         registerInsnGen(new NopInsnGen());
         registerInsnGen(new LineNumberInsnGen());
+        registerInsnGen(new AssertObjectLiveInsnGen());
+        registerInsnGen(new ObjectIsNullInsnGen());
         registerInsnGen(new ControlFlowInsnGen());
         registerInsnGen(new NewDataInsnGen());
         registerInsnGen(new AssignInsnGen());
@@ -490,11 +493,6 @@ public class CCodegen implements Codegen {
     /// Renders the constructor-time property initializer apply body.
     /// The init helper still only produces a value; this method owns the direct backing-field first-write
     /// route so property initialization keeps unified slot-write semantics without becoming a setter call.
-    public @NotNull String generatePropertyInitApplyBody(@NotNull LirClassDef clazz,
-                                                         @NotNull LirPropertyDef property) {
-        return generatePropertyInitApplyBody(clazz, property, GodotBindingUsageBuffer.noOp());
-    }
-
     private @NotNull String generatePropertyInitApplyBody(@NotNull LirClassDef clazz,
                                                           @NotNull LirPropertyDef property,
                                                           @NotNull GodotBindingUsageBuffer usageBuffer) {
@@ -508,13 +506,17 @@ public class CCodegen implements Codegen {
                 initFunction,
                 usageBuffer
         );
+        // Internal init helpers take owner fat self; the apply wrapper still receives Class*.
+        var ownerType = new GdObjectType(clazz.getName());
+        var fatType = helper.renderObjectFatPtrStorageType(ownerType);
+        var selfFatArg = fatType + "_from_raw(" + clazz.getName() + "_object_ptr(self))";
         bodyBuilder.applyPropertyInitializerFirstWrite(
                 "self->" + property.getName(),
                 property.getType(),
-                clazz.getName() + "_" + initFunction.getName() + "(self)",
+                clazz.getName() + "_" + initFunction.getName() + "(" + selfFatArg + ")",
                 initFunction.getReturnType(),
-                initFunction.getReturnType() instanceof GdObjectType objectType
-                        ? (objectType.checkGdccType(ctx.classRegistry()) ? CBodyBuilder.PtrKind.GDCC_PTR : CBodyBuilder.PtrKind.GODOT_PTR)
+                initFunction.getReturnType() instanceof GdObjectType
+                        ? CBodyBuilder.PtrKind.FAT_PTR
                         : CBodyBuilder.PtrKind.NON_OBJECT,
                 // Property-init helpers are a dedicated fresh-producer entry: the apply helper must
                 // consume the returned object directly instead of re-owning the field write.
@@ -569,6 +571,13 @@ public class CCodegen implements Codegen {
             var usedEngineMethods = usageSession.engineMethods();
             var usedEngineConstructors = usageSession.engineConstructors();
             var usedModuleLocalBindings = usageSession.moduleLocalBindings();
+            var objectFatPtrSpecs = CObjectFatPtrCollector.collect(
+                    module,
+                    ctx.classRegistry(),
+                    usedEngineMethods,
+                    usedEngineConstructors,
+                    usedModuleLocalBindings
+            );
             var bindTplCtx = Map.of(
                     "module", module,
                     "helper", helper,
@@ -580,6 +589,15 @@ public class CCodegen implements Codegen {
                     "template_451/engine_method_binds.h.ftl",
                     bindTplCtx
             );
+            var objectFatPtrTypesTplCtx = Map.of(
+                    "module", module,
+                    "helper", helper,
+                    "objectFatPtrSpecs", objectFatPtrSpecs
+            );
+            var objectFatPtrTypesSrc = TemplateLoader.renderFromClasspath(
+                    "template_451/object_fat_ptr_types.h.ftl",
+                    objectFatPtrTypesTplCtx
+            );
             var hTplCtx = Map.of(
                     "module", module,
                     "helper", helper
@@ -587,16 +605,19 @@ public class CCodegen implements Codegen {
             var hSrc = TemplateLoader.renderFromClasspath("template_451/entry.h.ftl", hTplCtx);
             cSrc = CCodeFormatter.format(cSrc);
             engineMethodBindsSrc = CCodeFormatter.format(engineMethodBindsSrc);
+            objectFatPtrTypesSrc = CCodeFormatter.format(objectFatPtrTypesSrc);
             hSrc = CCodeFormatter.format(hSrc);
 
             var cBytes = cSrc.getBytes(StandardCharsets.UTF_8);
             var engineMethodBindsBytes = engineMethodBindsSrc.getBytes(StandardCharsets.UTF_8);
+            var objectFatPtrTypesBytes = objectFatPtrTypesSrc.getBytes(StandardCharsets.UTF_8);
             var hBytes = hSrc.getBytes(StandardCharsets.UTF_8);
 
             var cFile = new GeneratedFile(cBytes, "entry.c");
             var engineMethodBindsFile = new GeneratedFile(engineMethodBindsBytes, "engine_method_binds.h");
+            var objectFatPtrTypesFile = new GeneratedFile(objectFatPtrTypesBytes, "object_fat_ptr_types.h");
             var hFile = new GeneratedFile(hBytes, "entry.h");
-            return List.of(cFile, engineMethodBindsFile, hFile);
+            return List.of(cFile, engineMethodBindsFile, objectFatPtrTypesFile, hFile);
         } catch (IOException | TemplateException e) {
             throw new RuntimeException("Failed to generate C code: " + e.getMessage(), e);
         }

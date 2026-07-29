@@ -35,8 +35,16 @@ A writable storage location, including but not limited to:
 
 ### 2.3 Representation Conversion
 
-- Conversion between GDCC object pointers (`<Type*>`) and Godot raw object pointers
-- For example: `gdcc_object_from_godot_object_ptr(...)`, `gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)`
+Internal object **values** are per-static-type fat pointers (`gdcc_<Type>_fat_ptr`). Representation conversion
+covers both:
+
+1. Fat pointer ↔ validated live raw Godot pointer (`<Type>_fat_ptr_from_raw` / `<Type>_fat_ptr_live_object`,
+   and same-type or upcast fat-to-fat helpers that preserve `instance_id`)
+2. GDCC **wrapper** pointers (`<Type*>`) ↔ Godot raw object pointers at layout/ABI edges
+   (for example `gdcc_object_from_godot_object_ptr(...)`, `gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)`)
+
+Do not confuse wrapper instance layout (`<Type*>` / `_object` / `_super`) with object-value storage
+(`gdcc_<Type>_fat_ptr`).
 
 **Representation conversion does not change ownership category.**
 An `OWNED` value stays `OWNED` after conversion, and a `BORROWED` value stays `BORROWED`;
@@ -119,6 +127,20 @@ Select operation by `RefCountedStatus`:
 - `YES`: `own_object` / `release_object`
 - `UNKNOWN`: `try_own_object` / `try_release_object`
 - `NO`: object own/release is a no-op
+
+The `try_*` helpers detect RefCounted at runtime via the ObjectID reference bit (bit 63), not a ClassDB
+class-name query. They receive the validated live raw pointer (`<T>_fat_ptr_live_object(v)`) plus the fat
+pointer's cached `instance_id` (`v.instance_id`); the ID is never recovered from the raw pointer. The
+precise (`own_object` / `release_object`) variants stay single-argument.
+
+`ClassRegistry.getRefCountedStatus` mapping notes:
+
+- Exact engine type `Object` is `UNKNOWN`: an Object-typed slot/return may hold a live `RefCounted`
+  instance, so ownership boundaries must use runtime `try_*` helpers.
+- Definite non-`RefCounted` subclasses (`Node`, …) stay `NO`.
+- Definite `RefCounted` / `Resource` types stay `YES`.
+- GDCC user classes that inherit `Object` without reaching `RefCounted` stay `NO` (they are not the
+  engine root-Object special case).
 
 Automatic local cleanup rule:
 
@@ -204,12 +226,17 @@ Interaction with `__prepare__` / `__finally__`:
   - local non-`void` return carrier `r`
 - Cleanup rule for those locals is value-wrapper specific:
   - destroyable non-object wrappers must be explicitly destroyed before the wrapper returns
-  - object pointers and primitives must not go through this `destroy(&slot)` path
+  - `OWNED` object return carrier `r` must be released after Variant packing
+    (`release_object` / `try_release_object` per `RefCountedStatus`) so internal ownership
+    transfers net-zero into `r_return`
+  - object argument locals are BORROWED from Variant args and must not be released here
+  - primitives never need wrapper cleanup
 - Required success-path order:
   1. publish `r_return`
   2. destroy local `ret`
-  3. destroy destroyable non-object `r`
-  4. destroy wrapper-owned argument locals in reverse order
+  3. release `OWNED` object return carrier `r` (when RefCounted YES/UNKNOWN)
+  4. destroy destroyable non-object `r`
+  5. destroy wrapper-owned argument locals in reverse order
 - This rule complements, but does not replace, the function-body ownership model in Section 3:
   - Builder-managed slots still follow the unified slot-write/return/discard rules
   - wrapper locals stay a template-owned responsibility boundary

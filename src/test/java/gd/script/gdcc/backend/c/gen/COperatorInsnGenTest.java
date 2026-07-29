@@ -32,6 +32,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -78,8 +79,8 @@ class COperatorInsnGenTest {
     }
 
     @Test
-    @DisplayName("object == should call gdcc_cmp_object helper")
-    void objectEqualUsesInstanceIdSpecialization() {
+    @DisplayName("engine object == should compare C1 equality-normalized raw pointers")
+    void objectEqualUsesNormalizedRawComparison() {
         var body = generateBody(
                 emptyApi(),
                 new BinaryOpInsn("result", GodotOperator.EQUAL, "left_obj", "right_obj"),
@@ -90,12 +91,20 @@ class COperatorInsnGenTest {
                 )
         );
 
-        assertTrue(body.contains("$result = gdcc_cmp_object($left_obj, $right_obj);"), body);
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($left_obj).ptr, $left_obj.instance_id) ? NULL : (GDExtensionObjectPtr)($left_obj).ptr)"),
+                body);
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($right_obj).ptr, $right_obj.instance_id) ? NULL : (GDExtensionObjectPtr)($right_obj).ptr)"),
+                body);
+        assertTrue(body.contains(" == "), body);
+        assertFalse(body.contains(".instance_id =="), body);
+        assertFalse(body.contains("godot_object_get_instance_id("), body);
     }
 
     @Test
-    @DisplayName("object != should negate gdcc_cmp_object result")
-    void objectNotEqualUsesNegatedSpecialization() {
+    @DisplayName("engine object != should compare C1 equality-normalized raw pointers")
+    void objectNotEqualUsesNormalizedRawComparison() {
         var body = generateBody(
                 emptyApi(),
                 new BinaryOpInsn("result", GodotOperator.NOT_EQUAL, "left_obj", "right_obj"),
@@ -106,8 +115,68 @@ class COperatorInsnGenTest {
                 )
         );
 
-        assertTrue(body.contains("__gdcc_tmp_gdcc_cmp_object_eq_0 = gdcc_cmp_object($left_obj, $right_obj);"), body);
-        assertTrue(body.contains("$result = !__gdcc_tmp_gdcc_cmp_object_eq_0;"), body);
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($left_obj).ptr, $left_obj.instance_id) ? NULL : (GDExtensionObjectPtr)($left_obj).ptr)"),
+                body);
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($right_obj).ptr, $right_obj.instance_id) ? NULL : (GDExtensionObjectPtr)($right_obj).ptr)"),
+                body);
+        assertTrue(body.contains(" != "), body);
+        assertFalse(body.contains(".instance_id !="), body);
+        assertFalse(body.contains("godot_object_get_instance_id("), body);
+    }
+
+    @Test
+    @DisplayName("GDCC object == should normalize via is_null_raw_and_id and live_object without dead object_ptr")
+    void gdccObjectEqualUsesNormalizedLiveObject() {
+        var myObject = new LirClassDef("MyObject", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var body = generateBody(
+                emptyApi(),
+                new BinaryOpInsn("result", GodotOperator.EQUAL, "left_obj", "right_obj"),
+                List.of(
+                        new VariableSpec("left_obj", new GdObjectType("MyObject"), false),
+                        new VariableSpec("right_obj", new GdObjectType("MyObject"), false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                ),
+                GdVoidType.VOID,
+                List.of(myObject)
+        );
+
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($left_obj).ptr, $left_obj.instance_id) ? NULL : gdcc_MyObject_fat_ptr_live_object($left_obj))"),
+                body);
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($right_obj).ptr, $right_obj.instance_id) ? NULL : gdcc_MyObject_fat_ptr_live_object($right_obj))"),
+                body);
+        assertTrue(body.contains(" == "), body);
+        assertFalse(body.contains("MyObject_object_ptr"), body);
+        assertFalse(body.contains(".instance_id =="), body);
+        assertFalse(body.contains("godot_object_get_instance_id("), body);
+    }
+
+    @Test
+    @DisplayName("mixed GDCC/engine object == should normalize each side with its own live path")
+    void mixedGdccEngineObjectEqualUsesPerSideNormalization() {
+        var myObject = new LirClassDef("MyObject", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var body = generateBody(
+                emptyApi(),
+                new BinaryOpInsn("result", GodotOperator.EQUAL, "left_gdcc", "right_engine"),
+                List.of(
+                        new VariableSpec("left_gdcc", new GdObjectType("MyObject"), false),
+                        new VariableSpec("right_engine", GdObjectType.OBJECT, false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                ),
+                GdVoidType.VOID,
+                List.of(myObject)
+        );
+
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($left_gdcc).ptr, $left_gdcc.instance_id) ? NULL : gdcc_MyObject_fat_ptr_live_object($left_gdcc))"),
+                body);
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($right_engine).ptr, $right_engine.instance_id) ? NULL : (GDExtensionObjectPtr)($right_engine).ptr)"),
+                body);
+        assertFalse(body.contains("MyObject_object_ptr"), body);
     }
 
     @Test
@@ -159,11 +228,11 @@ class COperatorInsnGenTest {
                 )
         );
 
-        assertTrue(body.contains("$result = (!(true));"), body);
+        assertTrue(body.contains("$result = (false);"), body);
     }
 
     @Test
-    @DisplayName("Nil == Object should compare object with NULL")
+    @DisplayName("Nil == Object should compare the raw object pointer against NULL")
     void nilEqualObjectUsesNullCompare() {
         var body = generateBody(
                 emptyApi(),
@@ -175,11 +244,11 @@ class COperatorInsnGenTest {
                 )
         );
 
-        assertTrue(body.contains("$result = ($obj == NULL);"), body);
+        assertTrue(body.contains("gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($obj).ptr, $obj.instance_id)"), body);
     }
 
     @Test
-    @DisplayName("Object == Nil should compare object with NULL")
+    @DisplayName("Object == Nil should use gdcc_object_is_null_raw_and_id")
     void objectEqualNilUsesNullCompare() {
         var body = generateBody(
                 emptyApi(),
@@ -191,11 +260,11 @@ class COperatorInsnGenTest {
                 )
         );
 
-        assertTrue(body.contains("$result = ($obj == NULL);"), body);
+        assertTrue(body.contains("gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($obj).ptr, $obj.instance_id)"), body);
     }
 
     @Test
-    @DisplayName("Object != Nil should negate NULL compare")
+    @DisplayName("Object != Nil should negate gdcc_object_is_null_raw_and_id")
     void objectNotEqualNilNegatesNullCompare() {
         var body = generateBody(
                 emptyApi(),
@@ -207,7 +276,7 @@ class COperatorInsnGenTest {
                 )
         );
 
-        assertTrue(body.contains("$result = (!($obj == NULL));"), body);
+        assertTrue(body.contains("(!gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($obj).ptr, $obj.instance_id))"), body);
     }
 
     @Test
@@ -499,12 +568,22 @@ class COperatorInsnGenTest {
         assertTrue(body.contains("GD_STATIC_SN(u8\"Node\")"), body);
         assertTrue(body.contains(", true)"), body);
         assertFalse(body.contains(", false) || gdcc_check_variant_type_object("), body);
-        assertTrue(body.contains("$result = (godot_Node*)godot_new_Object_with_Variant(&__gdcc_tmp_op_eval_result_"), body);
+        assertTrue(body.contains("gdcc_Node_fat_ptr_from_variant(&__gdcc_tmp_op_eval_result_"), body);
     }
 
     @Test
     @DisplayName("variant_evaluate path should allow GDCC object subclass check while keeping canonical expected name")
     void variantEvaluatePathSupportsGdccObjectSubtypeCheck() {
+        var sharedClass = new LirClassDef(
+                "RuntimeOuter__sub__Shared",
+                "RefCounted",
+                false,
+                false,
+                Map.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
         var body = generateBody(
                 emptyApi(),
                 new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
@@ -512,13 +591,16 @@ class COperatorInsnGenTest {
                         new VariableSpec("left", GdVariantType.VARIANT, false),
                         new VariableSpec("right", GdVariantType.VARIANT, false),
                         new VariableSpec("result", new GdObjectType("RuntimeOuter__sub__Shared"), false)
-                )
+                ),
+                GdVoidType.VOID,
+                List.of(sharedClass)
         );
 
         assertTrue(body.contains("gdcc_check_variant_type_object(&__gdcc_tmp_op_eval_result_"), body);
         assertTrue(body.contains("GD_STATIC_SN(u8\"RuntimeOuter__sub__Shared\")"), body);
         assertTrue(body.contains(", true)"), body);
         assertFalse(body.contains(", false) || gdcc_check_variant_type_object("), body);
+        assertTrue(body.contains("_fat_ptr_from_variant(&__gdcc_tmp_op_eval_result_"), body);
     }
 
     @Test
@@ -567,7 +649,8 @@ class COperatorInsnGenTest {
                         new VariableSpec("right", GdIntType.INT, false),
                         new VariableSpec("result", GdVariantType.VARIANT, false)
                 ),
-                GdBoolType.BOOL
+                GdBoolType.BOOL,
+                List.of()
         );
 
         assertTrue(body.contains("GDCC_PRINT_RUNTIME_ERROR(\"godot_variant_evaluate failed for operator 'ADD'\""), body);
@@ -638,7 +721,8 @@ class COperatorInsnGenTest {
                         new VariableSpec("right", GdIntType.INT, false),
                         new VariableSpec("result", GdIntType.INT, false)
                 ),
-                GdBoolType.BOOL
+                GdBoolType.BOOL,
+                List.of()
         );
 
         assertTrue(body.contains("if (false) {"), body);
@@ -659,7 +743,8 @@ class COperatorInsnGenTest {
                         new VariableSpec("right", GdIntType.INT, false),
                         new VariableSpec("result", GdIntType.INT, false)
                 ),
-                GdBoolType.BOOL
+                GdBoolType.BOOL,
+                List.of()
         );
 
         assertTrue(body.contains("if (gdcc_int_division_by_zero($right)) {"), body);
@@ -680,7 +765,8 @@ class COperatorInsnGenTest {
                         new VariableSpec("right", GdIntType.INT, false),
                         new VariableSpec("result", GdIntType.INT, false)
                 ),
-                GdBoolType.BOOL
+                GdBoolType.BOOL,
+                List.of()
         );
 
         assertTrue(body.contains("if (gdcc_int_division_by_zero($right)) {"), body);
@@ -701,7 +787,8 @@ class COperatorInsnGenTest {
                         new VariableSpec("right", GdIntType.INT, false),
                         new VariableSpec("result", GdIntType.INT, false)
                 ),
-                GdBoolType.BOOL
+                GdBoolType.BOOL,
+                List.of()
         );
 
         assertTrue(body.contains("if (gdcc_int_shift_left_invalid($left, $right)) {"), body);
@@ -722,7 +809,8 @@ class COperatorInsnGenTest {
                         new VariableSpec("right", GdIntType.INT, false),
                         new VariableSpec("result", GdIntType.INT, false)
                 ),
-                GdBoolType.BOOL
+                GdBoolType.BOOL,
+                List.of()
         );
 
         assertTrue(body.contains("if (gdcc_int_shift_right_invalid($right)) {"), body);
@@ -781,7 +869,8 @@ class COperatorInsnGenTest {
                         new VariableSpec("right", GdFloatType.FLOAT, false),
                         new VariableSpec("result", GdFloatType.FLOAT, false)
                 ),
-                GdBoolType.BOOL
+                GdBoolType.BOOL,
+                List.of()
         );
 
         assertTrue(body.contains("if (gdcc_float_division_by_zero($right)) {"), body);
@@ -813,13 +902,14 @@ class COperatorInsnGenTest {
     private @NotNull String generateBody(@NotNull ExtensionAPI api,
                                          @NotNull LirInstruction instruction,
                                          @NotNull List<VariableSpec> variableSpecs) {
-        return generateBody(api, instruction, variableSpecs, GdVoidType.VOID);
+        return generateBody(api, instruction, variableSpecs, GdVoidType.VOID, List.of());
     }
 
     private @NotNull String generateBody(@NotNull ExtensionAPI api,
                                          @NotNull LirInstruction instruction,
                                          @NotNull List<VariableSpec> variableSpecs,
-                                         @NotNull GdType returnType) {
+                                         @NotNull GdType returnType,
+                                         @NotNull List<LirClassDef> extraGdccClasses) {
         var workerClass = new LirClassDef("Worker", "RefCounted", false, false,
                 Map.of(), List.of(), List.of(), List.of());
         var func = new LirFunctionDef("operator_test");
@@ -838,8 +928,11 @@ class COperatorInsnGenTest {
         func.setEntryBlockId("entry");
         workerClass.addFunction(func);
 
-        var module = new LirModule("test_module", List.of(workerClass));
-        var codegen = newCodegen(api, module, List.of(workerClass));
+        var gdccClasses = new ArrayList<LirClassDef>();
+        gdccClasses.add(workerClass);
+        gdccClasses.addAll(extraGdccClasses);
+        var module = new LirModule("test_module", List.copyOf(gdccClasses));
+        var codegen = newCodegen(api, module, gdccClasses);
         return codegen.generateFuncBody(workerClass, func);
     }
 

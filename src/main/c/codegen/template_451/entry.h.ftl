@@ -1,6 +1,5 @@
 <#-- @ftlvariable name="module" type="gd.script.gdcc.lir.LirModule" -->
 <#-- @ftlvariable name="helper" type="gd.script.gdcc.backend.c.gen.CGenHelper" -->
-<#-- @ftlvariable name="gen" type="gd.script.gdcc.backend.c.gen.CCodegen" -->
 <#include "trim.ftl">
 <#include "func.ftl">
 #ifndef GDEXTENSION_${module.moduleName?upper_case}_ENTRY_H
@@ -9,7 +8,6 @@
 #include <godot_binding.h>
 static GDExtensionClassLibraryPtr class_library = NULL;
 #include <gdcc_helper.h>
-#include "engine_method_binds.h"
 
 struct GDExtensionInitializationStatus {
     godot_bool initialized;
@@ -23,6 +21,8 @@ void deinitialize(void* userdata, GDExtensionInitializationLevel p_level);
 <#list module.classDefs as classDef>
 typedef struct ${classDef.name} ${classDef.name};
 </#list>
+
+#include "object_fat_ptr_types.h"
 
 <#list module.classDefs as classDef>
 // Class definition for ${classDef.name}
@@ -82,13 +82,10 @@ typedef struct <@lambdaCaptureName classDef func/> {
 
 </#list>
 
-<#if module.classDefs?size gt 0>
-#define gdcc_new_Variant_with_gdcc_Object(obj) godot_new_Variant_with_Object(gdcc_object_to_godot_object_ptr((obj), _Generic((obj), <#list module.classDefs as classDef>${classDef.name}*: ${classDef.name}_object_ptr<#if classDef_has_next>, </#if></#list>)))
-</#if>
-
 <#assign operatorEvaluatorHelperSpecs = helper.collectOperatorEvaluatorHelperSpecs(module)>
 <#if operatorEvaluatorHelperSpecs?size gt 0>
 // Operator evaluator helpers
+// Internal signatures use fat-pointer object values; Godot's evaluator ABI still takes raw object pointer slots.
 <#list operatorEvaluatorHelperSpecs as spec>
 static inline ${helper.renderOperatorEvaluatorHelperReturnTypeInC(spec.returnType)} ${spec.functionName}(
     ${helper.renderOperatorEvaluatorHelperTypeInC(spec.leftType)} left<#if !spec.unary>,
@@ -106,17 +103,22 @@ static inline ${helper.renderOperatorEvaluatorHelperReturnTypeInC(spec.returnTyp
             return ${helper.renderDefaultValueExprInC(spec.returnType)};
         }
     }
+    ${helper.renderOperatorEvaluatorObjectRawSlotDecl(spec.leftType, "left")}<#if !spec.unary>${helper.renderOperatorEvaluatorObjectRawSlotDecl(spec.rightType, "right")}</#if>
     // Operator evaluators assign into an existing carrier; destroyable returns must start initialized.
-    ${helper.renderOperatorEvaluatorHelperReturnTypeInC(spec.returnType)} result = { 0 };
+    // Object returns (if any) use a raw carrier then ownership-neutral _from_raw. Live production paths
+    // today only need object operands (e.g. String in Object); object return is defensive for metadata.
+    ${helper.renderOperatorEvaluatorResultCarrierTypeInC(spec.returnType)} result = { 0 };
     evaluator(
         ${helper.renderOperatorEvaluatorArgExpr(spec.leftType, "left")},
         <#if spec.unary>NULL<#else>${helper.renderOperatorEvaluatorArgExpr(spec.rightType, "right")}</#if>,
         &result
     );
-    return result;
+    return ${helper.renderOperatorEvaluatorReturnExpr(spec.returnType, "result")};
 }
 </#list>
 </#if>
+
+#include "engine_method_binds.h"
 
 // Method binding helpers
 
@@ -251,22 +253,46 @@ static void call${helper.renderFuncBindName(bindingData)}(
         </#if>
     </#list>
 
-    // Call the function. Any wrapper-local non-object values materialized above must
-    // be explicitly destroyed here; they are outside the ordinary function-body slot
-    // lifecycle managed by CBodyBuilder.
-    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(void*<#list bindingData.paramTypes as paramType>, ${helper.renderGdTypeRefInC(paramType)}</#list>) = method_userdata;
+    // Call the function. Instance methods receive owner fat self; static methods omit self.
+    // Wrapper-local non-object values materialized above must be destroyed here.
+<#if bindingData.staticMethod>
+    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(<#list bindingData.paramTypes as paramType>${helper.renderGdTypeRefInC(paramType)}<#if paramType_has_next>, </#if></#list>) = method_userdata;
     <#if bindingData.returnType.typeName != "void">
-        ${helper.renderGdTypeInC(bindingData.returnType)} r = function(p_instance<#list bindingData.paramTypes as paramType>, ${helper.renderValueRef(paramType, "arg${paramType_index}")}</#list>);
+        ${helper.renderGdTypeInC(bindingData.returnType)} r = function(<#list bindingData.paramTypes as paramType>${helper.renderValueRef(paramType, "arg${paramType_index}")}<#if paramType_has_next>, </#if></#list>);
         godot_Variant ret = ${helper.renderPackFunctionName(bindingData.returnType)}(${helper.renderValueRef(bindingData.returnType, "r")});
         godot_variant_new_copy(r_return, &ret);
         godot_Variant_destroy(&ret);
+        <#assign returnObjectConsumeStmt = helper.renderCallWrapperOwnedObjectReturnConsumeStmt(bindingData.returnType, "r")>
+        <#if returnObjectConsumeStmt?has_content>
+        ${returnObjectConsumeStmt}
+        </#if>
         <#assign returnCleanupStmt = helper.renderCallWrapperDestroyStmt(bindingData.returnType, "r")>
         <#if returnCleanupStmt?has_content>
         ${returnCleanupStmt}
         </#if>
     <#else>
-        (function(p_instance<#list bindingData.paramTypes as paramType>, ${helper.renderValueRef(paramType, "arg${paramType_index}")}</#list>));
+        (function(<#list bindingData.paramTypes as paramType>${helper.renderValueRef(paramType, "arg${paramType_index}")}<#if paramType_has_next>, </#if></#list>));
     </#if>
+<#else>
+    ${helper.renderRegisteredMethodSelfFatType(bindingData)} self_fat = ${helper.renderRegisteredMethodSelfFatExpr(bindingData)};
+    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(${helper.renderRegisteredMethodSelfFatType(bindingData)}<#list bindingData.paramTypes as paramType>, ${helper.renderGdTypeRefInC(paramType)}</#list>) = method_userdata;
+    <#if bindingData.returnType.typeName != "void">
+        ${helper.renderGdTypeInC(bindingData.returnType)} r = function(self_fat<#list bindingData.paramTypes as paramType>, ${helper.renderValueRef(paramType, "arg${paramType_index}")}</#list>);
+        godot_Variant ret = ${helper.renderPackFunctionName(bindingData.returnType)}(${helper.renderValueRef(bindingData.returnType, "r")});
+        godot_variant_new_copy(r_return, &ret);
+        godot_Variant_destroy(&ret);
+        <#assign returnObjectConsumeStmt = helper.renderCallWrapperOwnedObjectReturnConsumeStmt(bindingData.returnType, "r")>
+        <#if returnObjectConsumeStmt?has_content>
+        ${returnObjectConsumeStmt}
+        </#if>
+        <#assign returnCleanupStmt = helper.renderCallWrapperDestroyStmt(bindingData.returnType, "r")>
+        <#if returnCleanupStmt?has_content>
+        ${returnCleanupStmt}
+        </#if>
+    <#else>
+        (function(self_fat<#list bindingData.paramTypes as paramType>, ${helper.renderValueRef(paramType, "arg${paramType_index}")}</#list>));
+    </#if>
+</#if>
     <#assign argCount = bindingData.paramTypes?size>
     <#list bindingData.paramTypes?reverse as paramType>
         <#assign argIndex = argCount - paramType_index - 1>
@@ -280,13 +306,38 @@ static void call${helper.renderFuncBindName(bindingData)}(
 static void ptrcall${helper.renderFuncBindName(bindingData)}(
     void* method_userdata, GDExtensionClassInstancePtr p_instance,
     const GDExtensionConstTypePtr* p_args, GDExtensionTypePtr r_return) {
-    // Call the function.
-    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(void*<#list bindingData.paramTypes as paramType>, ${helper.renderGdTypeRefInC(paramType)}</#list>) = method_userdata;
-    <#if bindingData.returnType.typeName == "void">
-        (function(p_instance<#list bindingData.paramTypes as paramType>, ${helper.renderValueRef(paramType, "(*((${helper.renderGdTypeInC(paramType)}*)p_args[${paramType_index}]))")}</#list>));
+    // Object args/returns use raw Godot pointer slots; self is owner fat for instance methods.
+<#list bindingData.paramTypes as paramType>
+<#if helper.checkObjectType(paramType)>
+    ${helper.renderPtrcallObjectArgDecl(paramType, paramType_index)}
+</#if>
+</#list>
+<#if bindingData.staticMethod>
+    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(<#list bindingData.paramTypes as paramType>${helper.renderGdTypeRefInC(paramType)}<#if paramType_has_next>, </#if></#list>) = method_userdata;
+<#else>
+    ${helper.renderRegisteredMethodSelfFatType(bindingData)} self_fat = ${helper.renderRegisteredMethodSelfFatExpr(bindingData)};
+    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(${helper.renderRegisteredMethodSelfFatType(bindingData)}<#list bindingData.paramTypes as paramType>, ${helper.renderGdTypeRefInC(paramType)}</#list>) = method_userdata;
+</#if>
+<#if bindingData.returnType.typeName == "void">
+    <#if bindingData.staticMethod>
+        (function(<#list bindingData.paramTypes as paramType><#if helper.checkObjectType(paramType)>arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if><#if paramType_has_next>, </#if></#list>));
     <#else>
-        *((${helper.renderGdTypeInC(bindingData.returnType)}*)r_return) = function(p_instance<#list bindingData.paramTypes as paramType>, ${helper.renderValueRef(paramType, "(*((${helper.renderGdTypeInC(paramType)}*)p_args[${paramType_index}]))")}</#list>);
+        (function(self_fat<#list bindingData.paramTypes as paramType>, <#if helper.checkObjectType(paramType)>arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if></#list>));
     </#if>
+<#elseif helper.checkObjectType(bindingData.returnType)>
+    <#if bindingData.staticMethod>
+        ${helper.renderGdTypeInC(bindingData.returnType)} r = function(<#list bindingData.paramTypes as paramType><#if helper.checkObjectType(paramType)>arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if><#if paramType_has_next>, </#if></#list>);
+    <#else>
+        ${helper.renderGdTypeInC(bindingData.returnType)} r = function(self_fat<#list bindingData.paramTypes as paramType>, <#if helper.checkObjectType(paramType)>arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if></#list>);
+    </#if>
+        ${helper.renderPtrcallObjectReturnWrite(bindingData.returnType, "r")}
+<#else>
+    <#if bindingData.staticMethod>
+        *((${helper.renderGdTypeInC(bindingData.returnType)}*)r_return) = function(<#list bindingData.paramTypes as paramType><#if helper.checkObjectType(paramType)>arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if><#if paramType_has_next>, </#if></#list>);
+    <#else>
+        *((${helper.renderGdTypeInC(bindingData.returnType)}*)r_return) = function(self_fat<#list bindingData.paramTypes as paramType>, <#if helper.checkObjectType(paramType)>arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if></#list>);
+    </#if>
+</#if>
 }
 
 static void gdcc_bind_method${helper.renderFuncBindName(bindingData)}(

@@ -83,7 +83,7 @@ void ${classDef.name}_class_bind_methods() {
     // Methods
     <#list classDef.functions as function>
         <#if !function.hidden && !function.lambda>
-    gdcc_bind_method${helper.renderFuncBindName(function)}(class_name, GD_STATIC_SN(u8"${function.name}"), ${classDef.name}_${function.name}<#if function.parameters?size gt function.static?then(0, 1)>,<#else>);</#if>
+    gdcc_bind_method${helper.renderFuncBindName(classDef, function)}(class_name, GD_STATIC_SN(u8"${function.name}"), ${classDef.name}_${function.name}<#if function.parameters?size gt function.static?then(0, 1)>,<#else>);</#if>
             <#list function.parameters as parameter>
                 <#if parameter.name != "self">
                     GD_STATIC_SN(u8"${parameter.name}"), GDEXTENSION_VARIANT_TYPE_${parameter.type.gdExtensionType.name()}<#if parameter_has_next>,<#else>);</#if>
@@ -170,7 +170,8 @@ void ${classDef.name}_class_constructor(${classDef.name}* self) {
     </#list>
     <#list classDef.functions as function>
         <#if function.name == "_init" && !function.static && function.parameters?size == 1>
-            ${classDef.name}__init(self);
+            <#-- _init takes owner fat self; the constructor still has a Class* wrapper. -->
+            ${classDef.name}__init(${helper.renderOwnerFatSelfFromWrapperPtr(classDef.name, "self")});
         </#if>
     </#list>
 }
@@ -182,11 +183,9 @@ void ${classDef.name}_class_destructor(${classDef.name}* self) {
     <#list classDef.properties as property>
         <#if property.type.destroyable>
             <#if property.type.gdExtensionType.name() == "OBJECT">
-                <#if helper.checkGdccType(property.type)>
-                    try_release_object(${helper.renderGdTypeName(property.type)}_object_ptr(self->${property.name}));
-                <#else>
-                    try_release_object(self->${property.name});
-                </#if>
+                // Object properties store fat pointers; release the validated live raw Godot object.
+                // The cached instance_id drives the runtime RefCounted reference-bit check.
+                try_release_object(${helper.renderObjectFatPtrStorageType(property.type)}_live_object(self->${property.name}), self->${property.name}.instance_id);
             <#else>
                 ${helper.renderDestroyFunctionName(property.type)}(&(self->${property.name}));
             </#if>
@@ -231,7 +230,7 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
     <#list classDef.functions as function>
         <#if helper.checkVirtualMethod(classDef, function)>
             if (p_virtual_call_userdata == &${classDef.name}_${function.name}) {
-                ptrcall${helper.renderFuncBindName(function)}(p_virtual_call_userdata, p_instance, p_args, r_ret);
+                ptrcall${helper.renderFuncBindName(classDef, function)}(p_virtual_call_userdata, p_instance, p_args, r_ret);
                 return;
             }
         </#if>
