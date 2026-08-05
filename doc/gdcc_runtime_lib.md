@@ -80,7 +80,8 @@ extend the runtime-provided `godot_*` surface.
 - `gdcc_helper.h`: the aggregate helper header included by generated entry code. It provides
   runtime error printing, Object property get/set helpers, RefCounted ownership helpers, GDCC
   wrapper pointer conversion helpers, compatibility constructors, UTF-8 formatting helpers,
-  Variant type guards, Variant writeback classification and `godot_Variant_call(...)`.
+  Variant type guards, GDScript `is` type-test helpers, Variant writeback classification and
+  `godot_Variant_call(...)`.
   - Object **values** in generated code are per-type fat pointers (`gdcc_<Type>_fat_ptr` from
     module `object_fat_ptr_types.h`); `gdcc_helper.h` owns the shared raw/ID query and lifecycle
     surface used by those helpers.
@@ -88,6 +89,15 @@ extend the runtime-provided `godot_*` surface.
     `gdcc_object_id_is_ref_counted` are annotated `GDCC_PURE` / `GDCC_CONST` where safe.
   - Lifecycle helpers (`own_object` / `release_object` / `try_*`) take validated live raw pointers
     (plus cached `instance_id` for `try_*`), mutate ownership / ObjectDB state, and are never pure.
+  - GDScript `is` / LIR `is_instance_of` helpers (null/freed → **false**; do **not** reuse
+    `gdcc_check_variant_type_object`, which accepts null for unpack):
+    - `gdcc_is_instance_of_object_{raw_and_id,variant}` — Object inheritance via ClassDB.
+    - `gdcc_is_instance_of_typed_{array,dictionary}[,_variant]` — exact typed-container metadata.
+      Used for parameterized targets even when the static value type is bare `Array` /
+      `Dictionary` (those slots may still carry typed metadata at runtime).
+    - Non-parameterized builtin `is` stays inlined as `godot_variant_get_type(...) == ENUM`.
+    - Freed instances produce `false` (Godot release behavior); Godot's debug-only runtime
+      error is not replicated.
 
 ## Binding Generator Overview
 

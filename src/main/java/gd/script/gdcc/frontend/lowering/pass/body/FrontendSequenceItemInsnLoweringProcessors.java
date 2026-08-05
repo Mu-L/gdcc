@@ -35,14 +35,20 @@ import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
+import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
 import gd.script.gdcc.lir.insn.LineNumberInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
+import gd.script.gdcc.lir.insn.UnaryOpInsn;
+import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import gd.script.gdcc.util.TypeTestFoldResult;
+import gd.script.gdcc.util.TypeTestFoldUtil;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.lir.insn.VariantGetNamedInsn;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
@@ -64,7 +70,6 @@ import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
-import gd.script.gdcc.type.GdObjectType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -893,10 +898,15 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
     }
 
-    /// Holds the explicit fail-fast boundary for type-test items until their runtime lowering contract is frozen.
+    /// Lowers `value is T` / `value is not T` to a single `is_instance_of` (or a folded bool constant).
     ///
-    /// The dedicated processor keeps future extension localized: once type-test lowering is ready,
-    /// the registry entry can be replaced without touching unrelated item handlers.
+    /// Current type-test lowering contract:
+    /// - RHS target comes from the published `typeTestTargets` side-table (never re-resolved here)
+    /// - `UNRESOLVED_OBJECT` always emits runtime `is_instance_of` and never folds
+    /// - known targets may fold to `true`/`false` when the operand static type decides the outcome
+    /// - `Variant` target is the top type and always folds (`true` / `is not` → `false`)
+    /// - `negated` is applied either by folding the constant or by wrapping with `unary_op NOT`
+    /// - never expands into `get_variant_type` / multi-intrinsic LIR recipes
     private static final class FrontendTypeTestInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<TypeTestItem, Void> {
         @Override
@@ -911,8 +921,66 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 @NotNull TypeTestItem node,
                 @Nullable Void context
         ) {
-            throw session.unsupportedSequenceItem(node, "type-test lowering is not implemented yet");
+            var expression = node.expression();
+            var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
+            var valueSlotId = session.slotIdForValue(node.operandValueId());
+            var valueType = session.requireValueType(node.operandValueId());
+            var target = session.requireTypeTestTarget(expression);
+
+            return switch (target) {
+                case FrontendTypeTestTarget.TargetUnresolvedObject(var unresolvedTypeName) ->
+                    // Source identifier is intentionally not remapped; backend must force runtime.
+                        emitIsInstanceOfWithOptionalNot(
+                                session,
+                                block,
+                                resultSlotId,
+                                unresolvedTypeName,
+                                valueSlotId,
+                                expression.negated()
+                        );
+                case FrontendTypeTestTarget.TargetKnown(var knownTargetType) -> {
+                    var folded = TypeTestFoldUtil.fold(
+                            session.classRegistry(),
+                            valueType,
+                            knownTargetType
+                    );
+                    if (folded != TypeTestFoldResult.RUNTIME_OPEN) {
+                        var constant = expression.negated() != (folded == TypeTestFoldResult.TRUE);
+                        block.appendNonTerminatorInstruction(new LiteralBoolInsn(resultSlotId, constant));
+                        yield block;
+                    }
+                    yield emitIsInstanceOfWithOptionalNot(
+                            session,
+                            block,
+                            resultSlotId,
+                            knownTargetType.getTypeName(),
+                            valueSlotId,
+                            expression.negated()
+                    );
+                }
+            };
         }
+
+        private static @NotNull LirBasicBlock emitIsInstanceOfWithOptionalNot(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull String resultSlotId,
+                @NotNull String typeName,
+                @NotNull String valueSlotId,
+                boolean negated
+        ) {
+            if (!negated) {
+                block.appendNonTerminatorInstruction(new IsInstanceOfInsn(resultSlotId, typeName, valueSlotId));
+                return block;
+            }
+            // Keep the intermediate positive test in a dedicated temp so the published result slot
+            // only ever holds the final (possibly negated) bool.
+            var positiveSlotId = session.allocateWritableRouteTemp("type_test_positive", GdBoolType.BOOL);
+            block.appendNonTerminatorInstruction(new IsInstanceOfInsn(positiveSlotId, typeName, valueSlotId));
+            block.appendNonTerminatorInstruction(new UnaryOpInsn(resultSlotId, GodotOperator.NOT, positiveSlotId));
+            return block;
+        }
+
     }
 
     /// Initializes the hidden loop-carried iterator state by calling the route's init intrinsic.
