@@ -23,7 +23,7 @@
   - `doc/module_impl/frontend/frontend_lowering_cfg_pass_implementation.md`
   - `doc/module_impl/frontend/diagnostic_manager.md`
 - 明确非目标：
-  - `CastExpression` / `as`、`is_instance_of()` 全局函数和 `not in` 不属于本合同
+  - `CastExpression` / `as` 由独立合同 `frontend_cast_expression_implementation.md` 管理；`is_instance_of()` 全局函数和 `not in` 不属于本合同
   - path-based、autoload、global-script-class 不作为本合同额外扩展的类型来源
   - nested structured container（例如 `Array[Array[int]]`）不属于支持面
   - 不增加独立 HIR pass，也不把 type test 拆成多个 LIR opcode
@@ -184,9 +184,9 @@ runtime helper 的完整 ABI 说明以 `doc/gdcc_runtime_lib.md` 和 `gdcc_helpe
   - 构建 `TypeTestItem`
 - `src/main/java/gd/script/gdcc/frontend/lowering/cfg/item/TypeTestItem.java`
   - 固定 CFG value-op 形状
-- `src/main/java/gd/script/gdcc/util/TypeTestFoldResult.java`
+- `src/main/java/gd/script/gdcc/util/type/TypeTestFoldResult.java`
   - 共享折叠结果：`TRUE` / `FALSE` / `RUNTIME_OPEN`
-- `src/main/java/gd/script/gdcc/util/TypeTestFoldUtil.java`
+- `src/main/java/gd/script/gdcc/util/type/TypeTestFoldUtil.java`
   - frontend 与 backend 共用的静态 `is` 折叠决策树
 - `src/main/java/gd/script/gdcc/frontend/lowering/pass/body/FrontendSequenceItemInsnLoweringProcessors.java`
   - 统一 lowering、消费 `TypeTestFoldUtil` 和 `is not` 的 NOT 包装
@@ -213,7 +213,7 @@ runtime helper 的完整 ABI 说明以 `doc/gdcc_runtime_lib.md` 和 `gdcc_helpe
   - `typeTestTargets` 的幂等合并和冲突保护
 - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzerTest.java`
   - TypeTest 不产生显式 compile blocker，其它 compile surface 仍被正确封口
-- `src/test/java/gd/script/gdcc/util/TypeTestFoldUtilTest.java`
+- `src/test/java/gd/script/gdcc/util/type/TypeTestFoldUtilTest.java`
   - 共享折叠决策树的直接合同（含裸容器 vs 参数化目标的 `RUNTIME_OPEN`）
 - `src/test/java/gd/script/gdcc/frontend/lowering/pass/body/FrontendTypeTestInsnLoweringTest.java`
   - builtin、Object、Variant、Nil、typed container、unresolved target、`is not` 和 frontend 折叠矩阵

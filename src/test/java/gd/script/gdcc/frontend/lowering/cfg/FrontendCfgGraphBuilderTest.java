@@ -5,6 +5,7 @@ import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.CastItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
@@ -41,6 +42,7 @@ import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.CommentStatement;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -81,6 +83,49 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendCfgGraphBuilderTest {
     private static final Range SYNTHETIC_RANGE = new Range(0, 1, new Point(0, 0), new Point(0, 1));
+
+    @Test
+    void buildExecutableBodyPublishesCastItemWithOperandFirst() throws Exception {
+        // Shared semantic path: CFG item shape for CastExpression is stable and compile-ready.
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_cast_item.gd",
+                """
+                        class_name CfgBuilderCastItem
+                        extends RefCounted
+                        
+                        func probe(value: int) -> float:
+                            return value as float
+                        """,
+                "probe",
+                Map.of("CfgBuilderCastItem", "RuntimeCfgBuilderCastItem")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+        var castItem = requireSingleSequenceItem(graph, CastItem.class);
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("seq_0"));
+        var castIndex = entryNode.items().indexOf(castItem);
+        assertTrue(castIndex >= 0, "CastItem must appear in entry sequence");
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var castExpression = assertInstanceOf(CastExpression.class, returnStatement.value());
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertSame(castExpression, castItem.expression()),
+                () -> assertEquals(List.of(castItem.operandValueId()), castItem.operandValueIds()),
+                () -> assertEquals(castItem.resultValueId(), castItem.resultValueIdOrNull()),
+                () -> assertNotEquals(castItem.operandValueId(), castItem.resultValueId()),
+                // Operand value is produced before the cast item (source order).
+                () -> assertTrue(
+                        entryNode.items().subList(0, castIndex).stream().anyMatch(item ->
+                                item instanceof ValueOpItem valueOp
+                                        && castItem.operandValueId().equals(valueOp.resultValueIdOrNull())
+                        ),
+                        () -> "Expected operand producer before CastItem in " + entryNode.items()
+                )
+        );
+    }
 
     @Test
     void buildExecutableBodyFailsFastForBreakWithoutLoopFrame() throws Exception {
@@ -1102,10 +1147,9 @@ class FrontendCfgGraphBuilderTest {
         var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
         var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
         var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
-        var originalBinding = analyzed.analysisData().symbolBindings().get(receiver);
-        analyzed.analysisData().symbolBindings().put(
+        analyzed.analysisData().symbolBindings().compute(
                 receiver,
-                new FrontendBinding(
+                (k, originalBinding) -> new FrontendBinding(
                         "values",
                         FrontendBindingKind.CAPTURE,
                         originalBinding == null ? receiver : originalBinding.declarationSite()
@@ -1148,10 +1192,9 @@ class FrontendCfgGraphBuilderTest {
         var assignmentStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().get(1));
         var assignmentExpression = assertInstanceOf(AssignmentExpression.class, assignmentStatement.expression());
         var target = assertInstanceOf(IdentifierExpression.class, assignmentExpression.left());
-        var originalBinding = analyzed.analysisData().symbolBindings().get(target);
-        analyzed.analysisData().symbolBindings().put(
+        analyzed.analysisData().symbolBindings().compute(
                 target,
-                new FrontendBinding(
+                (k, originalBinding) -> new FrontendBinding(
                         "self",
                         FrontendBindingKind.SELF,
                         originalBinding == null ? target : originalBinding.declarationSite()
@@ -1199,10 +1242,9 @@ class FrontendCfgGraphBuilderTest {
         var assignmentStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().get(1));
         var assignmentExpression = assertInstanceOf(AssignmentExpression.class, assignmentStatement.expression());
         var target = assertInstanceOf(IdentifierExpression.class, assignmentExpression.left());
-        var originalBinding = analyzed.analysisData().symbolBindings().get(target);
-        analyzed.analysisData().symbolBindings().put(
+        analyzed.analysisData().symbolBindings().compute(
                 target,
-                new FrontendBinding(
+                (k, originalBinding) -> new FrontendBinding(
                         "value",
                         FrontendBindingKind.CONSTANT,
                         originalBinding == null ? target : originalBinding.declarationSite()
@@ -1246,10 +1288,9 @@ class FrontendCfgGraphBuilderTest {
         var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
         var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
         var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
-        var originalBinding = analyzed.analysisData().symbolBindings().get(receiver);
-        analyzed.analysisData().symbolBindings().put(
+        analyzed.analysisData().symbolBindings().compute(
                 receiver,
-                new FrontendBinding(
+                (k, originalBinding) -> new FrontendBinding(
                         "self",
                         FrontendBindingKind.SELF,
                         originalBinding == null ? receiver : originalBinding.declarationSite()
