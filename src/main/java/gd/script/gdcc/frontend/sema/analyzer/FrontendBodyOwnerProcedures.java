@@ -1,5 +1,6 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
+import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -10,6 +11,7 @@ import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
+import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
@@ -35,6 +37,7 @@ import gd.script.gdcc.frontend.sema.FrontendBodySemanticSupportPolicy;
 import gd.script.gdcc.frontend.sema.FrontendBodyDeclarationIndex;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
+import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
@@ -923,21 +926,68 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     ) {
         switch (root) {
             case VariableDeclaration variableDeclaration when variableDeclaration.value() != null ->
-                    publishExpressionType(context, resolver, variableDeclaration.value(), false);
+                    publishExpressionType(
+                            context,
+                            resolver,
+                            variableDeclaration.value(),
+                            false,
+                            declaredInitializerExpectedType(context, variableDeclaration)
+                    );
             case ExpressionStatement expressionStatement ->
-                    publishExpressionType(context, resolver, expressionStatement.expression(), true);
+                    publishExpressionType(context, resolver, expressionStatement.expression(), true, null);
             case ReturnStatement returnStatement when returnStatement.value() != null ->
-                    publishExpressionType(context, resolver, returnStatement.value(), false);
+                    publishExpressionType(
+                            context,
+                            resolver,
+                            returnStatement.value(),
+                            false,
+                            // Variant/void return slots do not provide typed-container context.
+                            contextualExpectedOrNull(context.currentCallableReturnType())
+                    );
             case AssertStatement assertStatement -> {
-                publishExpressionType(context, resolver, assertStatement.condition(), false);
+                publishExpressionType(context, resolver, assertStatement.condition(), false, null);
                 if (assertStatement.message() != null) {
-                    publishExpressionType(context, resolver, assertStatement.message(), false);
+                    publishExpressionType(context, resolver, assertStatement.message(), false, null);
                 }
             }
-            case Expression expression -> publishExpressionType(context, resolver, expression, false);
+            case Expression expression -> publishExpressionType(context, resolver, expression, false, null);
             default ->
-                    forEachExpression(root, expression -> publishExpressionType(context, resolver, expression, false));
+                    forEachExpression(root, expression -> publishExpressionType(context, resolver, expression, false, null));
         }
+    }
+
+    /// Explicit typed local/property slots supply expected type; inferred (`:=`) stays generic.
+    private static @Nullable GdType declaredInitializerExpectedType(
+            @NotNull FrontendSuiteContext context,
+            @NotNull VariableDeclaration variableDeclaration
+    ) {
+        if (FrontendDeclaredTypeSupport.isInferredTypeRef(variableDeclaration.type())) {
+            return null;
+        }
+        var declarationScope = context.analysisData().scopesByAst().get(variableDeclaration);
+        if (declarationScope instanceof BlockScope blockScope) {
+            var slot = blockScope.resolveValueHere(variableDeclaration.name().trim());
+            if (slot != null && slot.declaration() == variableDeclaration) {
+                return contextualExpectedOrNull(slot.type());
+            }
+        }
+        if (context.propertyInitializerContext() != null) {
+            var propertySlot = context.propertyInitializerContext()
+                    .declaringClassScope()
+                    .resolveValueHere(variableDeclaration.name().trim());
+            if (propertySlot != null) {
+                return contextualExpectedOrNull(propertySlot.type());
+            }
+        }
+        return null;
+    }
+
+    /// `Variant` is an ordinary outer boundary target, not a container construction context.
+    private static @Nullable GdType contextualExpectedOrNull(@Nullable GdType expectedType) {
+        if (expectedType == null || expectedType instanceof GdVariantType || expectedType instanceof GdVoidType) {
+            return null;
+        }
+        return expectedType;
     }
 
     private static void publishExpressionType(
@@ -946,7 +996,17 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             @NotNull Expression expression,
             boolean allowStatementResult
     ) {
-        resolver.populateRootExpressionTransientCaches(expression, allowStatementResult);
+        publishExpressionType(context, resolver, expression, allowStatementResult, null);
+    }
+
+    private static void publishExpressionType(
+            @NotNull FrontendSuiteContext context,
+            @NotNull BodyExpressionResolver resolver,
+            @NotNull Expression expression,
+            boolean allowStatementResult,
+            @Nullable GdType expectedType
+    ) {
+        resolver.populateRootExpressionTransientCaches(expression, allowStatementResult, expectedType);
         for (var entry : resolver.finalizedExpressionTypes().entrySet()) {
             if (resolver.isRouteHeadOnlyTypeMeta(entry.getKey())) {
                 continue;
@@ -986,6 +1046,13 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             );
             reportUnresolvedTypeTestTargetWarning(context, entry.getKey(), entry.getValue());
             reportHardTypedIncompatibilityWarning(context, entry.getKey(), entry.getValue());
+        }
+        for (var entry : resolver.containerLiteralPlans().entrySet()) {
+            context.typedEnvironment().putContainerLiteralPlan(
+                    FrontendSemanticStage.EXPR_TYPE,
+                    entry.getKey(),
+                    entry.getValue()
+            );
         }
     }
 
@@ -1355,6 +1422,12 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<TypeTestExpression, FrontendTypeTestTarget> typeTestTargets =
                 new IdentityHashMap<>();
+        private final @NotNull IdentityHashMap<Expression, FrontendContainerLiteralPlan> containerLiteralPlans =
+                new IdentityHashMap<>();
+        /// Expected type used when the expression was finalized (null expected stored as absent value
+        /// via a sentinel-free Optional map). Conflicts fail-fast instead of silently rewriting.
+        private final @NotNull IdentityHashMap<Expression, java.util.Optional<GdType>> finalExpectedTypes =
+                new IdentityHashMap<>();
         /// Explicit false means the non-success status was propagated from a dependency; the root
         /// must not re-emit the same diagnostic. Missing keys default to root-owned (true).
         private final @NotNull IdentityHashMap<Expression, Boolean> rootOwnsExpressionDiagnostics =
@@ -1403,28 +1476,73 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 @NotNull Expression expression,
                 boolean finalizeWindow
         ) {
+            return resolveExpressionTypeExpected(expression, finalizeWindow, null);
+        }
+
+        /// Expected-type-aware entry used by container-literal contexts, typed roots, and selected calls.
+        private @NotNull FrontendExpressionType resolveExpressionTypeExpected(
+                @NotNull Expression expression,
+                boolean finalizeWindow,
+                @Nullable GdType expectedType
+        ) {
             var published = context.typedEnvironment().expressionType(expression);
             if (published != null) {
+                checkExpectedTypeMatchesFinal(expression, expectedType);
                 return published;
             }
-            var cache = finalizeWindow ? finalizedExpressionTypes : expressionTypes;
-            var cached = cache.get(expression);
-            if (cached != null) {
-                return cached;
-            }
-            var computed = computeExpressionType(expression, finalizeWindow);
-            cache.put(expression, computed);
             if (finalizeWindow) {
+                checkExpectedTypeMatchesFinal(expression, expectedType);
+                var finalized = finalizedExpressionTypes.get(expression);
+                if (finalized != null) {
+                    return finalized;
+                }
+            } else if (expectedType == null) {
+                var cached = expressionTypes.get(expression);
+                if (cached != null) {
+                    return cached;
+                }
+            }
+            // Non-null expected + !finalizeWindow: recompute without identity cache (overload preview).
+            var computed = computeExpressionType(expression, finalizeWindow, expectedType);
+            if (finalizeWindow) {
+                finalExpectedTypes.put(expression, java.util.Optional.ofNullable(expectedType));
+                finalizedExpressionTypes.put(expression, computed);
+                expressionTypes.put(expression, computed);
+            } else if (expectedType == null) {
                 expressionTypes.put(expression, computed);
             }
             return computed;
+        }
+
+        private void checkExpectedTypeMatchesFinal(
+                @NotNull Expression expression,
+                @Nullable GdType expectedType
+        ) {
+            var finalizedExpected = finalExpectedTypes.get(expression);
+            if (finalizedExpected == null) {
+                return;
+            }
+            var previous = finalizedExpected.orElse(null);
+            if (!FrontendAnalysisData.sameType(previous, expectedType)) {
+                throw new IllegalStateException(
+                        "Expression finalized with expected type "
+                                + typeNameOrNull(previous)
+                                + " cannot be re-requested with expected type "
+                                + typeNameOrNull(expectedType)
+                );
+            }
+        }
+
+        private static @NotNull String typeNameOrNull(@Nullable GdType type) {
+            return type == null ? "<null>" : type.getTypeName();
         }
 
         /// Computes the root expression for side effects only: it records statement-vs-value
         /// assignment usage and fills owner-local transient caches that the caller publishes in bulk.
         private void populateRootExpressionTransientCaches(
                 @NotNull Expression expression,
-                boolean allowStatementResult
+                boolean allowStatementResult,
+                @Nullable GdType expectedType
         ) {
             if (expression instanceof AssignmentExpression assignmentExpression) {
                 assignmentUsages.put(
@@ -1434,12 +1552,13 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                                 : FrontendAssignmentSemanticSupport.AssignmentUsage.VALUE_REQUIRED
                 );
             }
-            resolveExpressionType(expression, true);
+            resolveExpressionTypeExpected(expression, true, expectedType);
         }
 
         private @NotNull FrontendExpressionType computeExpressionType(
                 @NotNull Expression expression,
-                boolean finalizeWindow
+                boolean finalizeWindow,
+                @Nullable GdType expectedType
         ) {
             return switch (expression) {
                 case LiteralExpression literalExpression -> expressionSemanticSupport
@@ -1491,6 +1610,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         resolveTypeTestExpressionType(typeTestExpression, finalizeWindow);
                 case CastExpression castExpression ->
                         resolveCastExpressionType(castExpression, finalizeWindow);
+                case ArrayExpression arrayExpression ->
+                        resolveArrayExpressionType(arrayExpression, finalizeWindow, expectedType);
+                case DictionaryExpression dictionaryExpression ->
+                        resolveDictionaryExpressionType(dictionaryExpression, finalizeWindow, expectedType);
                 default -> expressionSemanticSupport
                         .resolveRemainingExplicitExpressionType(
                                 expression,
@@ -1524,11 +1647,48 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         ) {
             var result = expressionSemanticSupport.resolveCastExpressionType(
                     castExpression,
-                    this::resolveExpressionType,
+                    this::resolveExpressionTypeExpected,
                     finalizeWindow
             );
             // Propagated value-operand failures keep the upstream diagnostic owner.
             rootOwnsExpressionDiagnostics.put(castExpression, result.rootOwnsOutcome());
+            return result.expressionType();
+        }
+
+        private @NotNull FrontendExpressionType resolveArrayExpressionType(
+                @NotNull ArrayExpression arrayExpression,
+                boolean finalizeWindow,
+                @Nullable GdType expectedType
+        ) {
+            var result = expressionSemanticSupport.resolveArrayExpressionType(
+                    arrayExpression,
+                    this::resolveExpressionTypeExpected,
+                    finalizeWindow,
+                    expectedType
+            );
+            rootOwnsExpressionDiagnostics.put(arrayExpression, result.rootOwnsOutcome());
+            // Only finalized resolutions publish plans; speculative previews must not enter this map.
+            if (finalizeWindow && result.publishedContainerLiteralPlanOrNull() != null) {
+                containerLiteralPlans.put(arrayExpression, result.publishedContainerLiteralPlanOrNull());
+            }
+            return result.expressionType();
+        }
+
+        private @NotNull FrontendExpressionType resolveDictionaryExpressionType(
+                @NotNull DictionaryExpression dictionaryExpression,
+                boolean finalizeWindow,
+                @Nullable GdType expectedType
+        ) {
+            var result = expressionSemanticSupport.resolveDictionaryExpressionType(
+                    dictionaryExpression,
+                    this::resolveExpressionTypeExpected,
+                    finalizeWindow,
+                    expectedType
+            );
+            rootOwnsExpressionDiagnostics.put(dictionaryExpression, result.rootOwnsOutcome());
+            if (finalizeWindow && result.publishedContainerLiteralPlanOrNull() != null) {
+                containerLiteralPlans.put(dictionaryExpression, result.publishedContainerLiteralPlanOrNull());
+            }
             return result.expressionType();
         }
 
@@ -1543,7 +1703,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                             assignmentExpression,
                             FrontendAssignmentSemanticSupport.AssignmentUsage.VALUE_REQUIRED
                     ),
-                    this::resolveExpressionType,
+                    this::resolveExpressionTypeExpected,
                     finalizeWindow
             ).expressionType();
             if (finalizeWindow) {
@@ -1580,9 +1740,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             finalizeAssignmentTargetValueExpression(attributeExpression.base());
             for (var step : attributeExpression.steps()) {
                 if (step instanceof AttributeCallStep attributeCallStep) {
-                    for (var argument : attributeCallStep.arguments()) {
-                        resolveExpressionType(argument, true);
-                    }
+                    resolveAttributeCallArguments(attributeCallStep, true);
                 } else if (step instanceof AttributeSubscriptStep attributeSubscriptStep) {
                     for (var argument : attributeSubscriptStep.arguments()) {
                         resolveExpressionType(argument, true);
@@ -1624,7 +1782,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         ) {
             var result = expressionSemanticSupport.resolveCallExpressionType(
                     callExpression,
-                    this::resolveExpressionType,
+                    this::resolveExpressionTypeExpected,
                     true,
                     finalizeWindow
             );
@@ -1644,9 +1802,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             resolveExpressionType(attributeExpression.base(), finalizeWindow);
             for (var step : attributeExpression.steps()) {
                 if (step instanceof AttributeCallStep attributeCallStep) {
-                    for (var argument : attributeCallStep.arguments()) {
-                        resolveExpressionType(argument, finalizeWindow);
-                    }
+                    resolveAttributeCallArguments(attributeCallStep, finalizeWindow);
                     continue;
                 }
                 if (step instanceof AttributeSubscriptStep attributeSubscriptStep) {
@@ -1662,6 +1818,25 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 );
             }
             return FrontendChainStatusBridge.toPublishedExpressionType(reduced);
+        }
+
+        /// Exact selected calls finalize container-literal arguments with fixed parameter types.
+        private void resolveAttributeCallArguments(
+                @NotNull AttributeCallStep attributeCallStep,
+                boolean finalizeWindow
+        ) {
+            var selectedCall = context.typedEnvironment().resolvedCall(attributeCallStep);
+            var fixedParameters = selectedCall != null
+                    && selectedCall.exactCallableBoundary() != null
+                    ? selectedCall.exactCallableBoundary().fixedParameterTypes()
+                    : null;
+            var arguments = attributeCallStep.arguments();
+            for (var i = 0; i < arguments.size(); i++) {
+                var expected = fixedParameters != null && i < fixedParameters.size()
+                        ? contextualExpectedOrNull(fixedParameters.get(i))
+                        : null;
+                resolveExpressionTypeExpected(arguments.get(i), finalizeWindow, expected);
+            }
         }
 
         private @Nullable FrontendChainReductionHelper.ReductionResult reduceAttributeExpression(
@@ -1711,6 +1886,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
 
         private @NotNull IdentityHashMap<TypeTestExpression, FrontendTypeTestTarget> typeTestTargets() {
             return typeTestTargets;
+        }
+
+        private @NotNull IdentityHashMap<Expression, FrontendContainerLiteralPlan> containerLiteralPlans() {
+            return containerLiteralPlans;
         }
 
         private @NotNull FrontendChainReductionHelper.ExpressionTypeResult resolveExpressionDependency(

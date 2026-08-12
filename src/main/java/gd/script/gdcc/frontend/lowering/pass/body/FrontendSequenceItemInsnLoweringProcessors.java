@@ -8,6 +8,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CastItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ContainerLiteralItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopGetItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopInitItem;
@@ -34,7 +35,9 @@ import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
+import gd.script.gdcc.lir.insn.ConstructContainerLiteralInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
 import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
 import gd.script.gdcc.lir.insn.LineNumberInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
@@ -74,6 +77,7 @@ import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -113,6 +117,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 new FrontendCompoundAssignmentBinaryInsnLoweringProcessor(),
                 new FrontendAssignmentInsnLoweringProcessor(),
                 new FrontendCastInsnLoweringProcessor(),
+                new FrontendContainerLiteralInsnLoweringProcessor(),
                 new FrontendTypeTestInsnLoweringProcessor(),
                 new FrontendForLoopInitInsnLoweringProcessor(),
                 new FrontendForLoopShouldContinueInsnLoweringProcessor(),
@@ -293,7 +298,11 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                         OpaqueExprHandling.DEFER,
                         "this expression root needs a dedicated lowering route before body pass consumes it"
                 );
-                case ArrayExpression _, DictionaryExpression _, PreloadExpression _, GetNodeExpression _ ->
+                case ArrayExpression _, DictionaryExpression _ -> new OpaqueExprPolicy(
+                        OpaqueExprHandling.REJECT,
+                        "array/dictionary literals must lower through ContainerLiteralItem, not OpaqueExprValueItem"
+                );
+                case PreloadExpression _, GetNodeExpression _ ->
                         new OpaqueExprPolicy(
                                 OpaqueExprHandling.DEFER,
                                 "this compile-blocked expression family stays outside the first body lowering surface"
@@ -904,6 +913,77 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             // CastItem TEMP_SLOT is already typed by expressionTypes()[CastExpression] = target type.
             var targetType = session.requireValueType(node.resultValueId());
             session.emitExplicitCast(block, node, resultSlotId, sourceSlotId, sourceType, targetType);
+            return block;
+        }
+    }
+
+    /// Lowers array/dictionary literals via plan-driven boundary materialization + one construct insn.
+    ///
+    /// Contract (plan §6.3 / §7.2):
+    /// - result slot is the pre-declared `cfg_tmp_*` TEMP_SLOT for the item
+    /// - each operand uses frozen plan `sourceType`/`targetType` through `materializeFrontendBoundaryValue`
+    /// - no re-walk of AST children, no re-decide of compatibility, no opaque fallback
+    private static final class FrontendContainerLiteralInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<ContainerLiteralItem, Void> {
+        @Override
+        public @NotNull Class<ContainerLiteralItem> nodeType() {
+            return ContainerLiteralItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull ContainerLiteralItem node,
+                @Nullable Void context
+        ) {
+            var plan = session.requireContainerLiteralPlan(node.expression());
+            var operandValueIds = node.operandValueIds();
+            if (operandValueIds.size() != plan.operands().size()) {
+                throw new IllegalStateException(
+                        "ContainerLiteralItem operand count "
+                                + operandValueIds.size()
+                                + " does not match published plan operand count "
+                                + plan.operands().size()
+                                + " at "
+                                + node.expression().range()
+                );
+            }
+            for (var planOperand : plan.operands()) {
+                if (planOperand.decision() == FrontendVariantBoundaryCompatibility.Decision.REJECT) {
+                    throw new IllegalStateException(
+                            "ContainerLiteralItem plan still carries REJECT decision for operand sourceIndex="
+                                    + planOperand.sourceIndex()
+                                    + " role="
+                                    + planOperand.role()
+                                    + " at "
+                                    + node.expression().range()
+                    );
+                }
+            }
+
+            var materializedOperands = new ArrayList<LirInstruction.Operand>(operandValueIds.size());
+            for (var index = 0; index < operandValueIds.size(); index++) {
+                var operandValueId = operandValueIds.get(index);
+                var planOperand = plan.operands().get(index);
+                var boundaryUse = "container_literal_" + planOperand.role().name().toLowerCase() + "_" + index;
+                // Consume frozen plan decision; do not re-query the conversion matrix.
+                var materializedSlotId = session.materializeFrontendBoundaryValue(
+                        block,
+                        session.slotIdForValue(operandValueId),
+                        planOperand.sourceType(),
+                        planOperand.targetType(),
+                        planOperand.decision(),
+                        boundaryUse
+                );
+                materializedOperands.add(new LirInstruction.VariableOperand(materializedSlotId));
+            }
+
+            var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
+            block.appendNonTerminatorInstruction(new ConstructContainerLiteralInsn(
+                    resultSlotId,
+                    List.copyOf(materializedOperands)
+            ));
             return block;
         }
     }

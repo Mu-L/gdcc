@@ -8,6 +8,7 @@ import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
+import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
@@ -26,11 +27,13 @@ import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
@@ -1189,23 +1192,32 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         );
 
         var pingFunction = findFunction(analyzed.ast(), "ping");
-        var deferredRoots = List.of(
-                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(0)).expression(),
-                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        var conditionalRoot = assertInstanceOf(
+                ExpressionStatement.class,
+                pingFunction.body().statements().get(0)
+        ).expression();
+        var arrayRoot = assertInstanceOf(
+                ExpressionStatement.class,
+                pingFunction.body().statements().get(1)
+        ).expression();
+        assertEquals(
+                FrontendExpressionTypeStatus.DEFERRED,
+                analyzed.analysisData().expressionTypes().get(conditionalRoot).status()
         );
-        for (var deferredRoot : deferredRoots) {
-            assertEquals(
-                    FrontendExpressionTypeStatus.DEFERRED,
-                    analyzed.analysisData().expressionTypes().get(deferredRoot).status()
-            );
-        }
+        // Array literals publish RESOLVED(Array); conditional remains deferred.
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(arrayRoot).status()
+        );
+        assertEquals("Array", analyzed.analysisData().expressionTypes().get(arrayRoot).publishedType().getTypeName());
+        assertNotNull(analyzed.analysisData().containerLiteralPlans().get(arrayRoot));
 
         var deferredDiagnostics = diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution");
-        assertEquals(2, deferredDiagnostics.size());
+        assertEquals(1, deferredDiagnostics.size());
         assertTrue(deferredDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains(
                 "Conditional expression typing is deferred"
         )));
-        assertTrue(deferredDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains(
+        assertTrue(deferredDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains(
                 "Array literal typing is deferred"
         )));
         assertTrue(deferredDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("milestone-G")));
@@ -2655,6 +2667,343 @@ class FrontendBodyOwnerProceduresExprTypeTest {
                         .anyMatch(diagnostic -> diagnostic.category().equals("sema.variable_binding")
                                 && diagnostic.message().contains("shadows outer local 'value'"))
         );
+    }
+
+    @Test
+    void analyzePublishesContextualTypedArrayLiteralFromLocalInitializer() throws Exception {
+        var analyzed = analyze(
+                "expr_type_contextual_array_local.gd",
+                """
+                        class_name ExprTypeContextualArrayLocal
+                        extends RefCounted
+                        
+                        func ping():
+                            var values: Array[int] = [1, 2]
+                            var floats: Array[float] = [1, 2]
+                            var generic := [1, 2]
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var valuesInit = findVariable(pingFunction.body().statements(), "values").value();
+        var floatsInit = findVariable(pingFunction.body().statements(), "floats").value();
+        var genericInit = findVariable(pingFunction.body().statements(), "generic").value();
+
+        assertEquals("Array[int]", analyzed.analysisData().expressionTypes().get(valuesInit).publishedType().getTypeName());
+        assertEquals("Array[float]", analyzed.analysisData().expressionTypes().get(floatsInit).publishedType().getTypeName());
+        assertEquals("Array", analyzed.analysisData().expressionTypes().get(genericInit).publishedType().getTypeName());
+
+        var valuesPlan = analyzed.analysisData().containerLiteralPlans().get(valuesInit);
+        var floatsPlan = analyzed.analysisData().containerLiteralPlans().get(floatsInit);
+        assertNotNull(valuesPlan);
+        assertNotNull(floatsPlan);
+        assertEquals(
+                gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility.Decision.ALLOW_DIRECT,
+                valuesPlan.operands().getFirst().decision()
+        );
+        assertEquals(
+                gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_INTRINSIC_CAST,
+                floatsPlan.operands().getFirst().decision()
+        );
+    }
+
+    @Test
+    void analyzePublishesContextualTypedArrayLiteralFromReturnAndAssignment() throws Exception {
+        var analyzed = analyze(
+                "expr_type_contextual_array_return_assign.gd",
+                """
+                        class_name ExprTypeContextualArrayReturnAssign
+                        extends RefCounted
+                        
+                        func make() -> Array[int]:
+                            return [1, 2]
+                        
+                        func ping():
+                            var values: Array[float]
+                            values = [1, 2]
+                        """
+        );
+
+        var makeFunction = findFunction(analyzed.ast(), "make");
+        var returnStmt = assertInstanceOf(
+                ReturnStatement.class,
+                makeFunction.body().statements().getFirst()
+        );
+        var returnPlan = analyzed.analysisData().containerLiteralPlans().get(returnStmt.value());
+        assertNotNull(returnPlan);
+        assertEquals("Array[int]", returnPlan.resultType().getTypeName());
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var assignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        var assignPlan = analyzed.analysisData().containerLiteralPlans().get(assignment.right());
+        assertNotNull(assignPlan);
+        assertEquals("Array[float]", assignPlan.resultType().getTypeName());
+        assertEquals(
+                gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_INTRINSIC_CAST,
+                assignPlan.operands().getFirst().decision()
+        );
+    }
+
+    @Test
+    void analyzePublishesContextualTypedArrayLiteralFromCastTarget() throws Exception {
+        var analyzed = analyze(
+                "expr_type_contextual_array_cast.gd",
+                """
+                        class_name ExprTypeContextualArrayCast
+                        extends RefCounted
+                        
+                        func ping():
+                            var values := [1, 2] as Array[int]
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var cast = assertInstanceOf(
+                CastExpression.class,
+                findVariable(pingFunction.body().statements(), "values").value()
+        );
+        assertEquals("Array[int]", analyzed.analysisData().expressionTypes().get(cast).publishedType().getTypeName());
+        var plan = analyzed.analysisData().containerLiteralPlans().get(cast.value());
+        assertNotNull(plan);
+        assertEquals("Array[int]", plan.resultType().getTypeName());
+    }
+
+    @Test
+    void analyzePublishesContextualTypedArrayLiteralFromExactCallArgument() throws Exception {
+        var analyzed = analyze(
+                "expr_type_contextual_array_call_arg.gd",
+                """
+                        class_name ExprTypeContextualArrayCallArg
+                        extends RefCounted
+                        
+                        func take(values: Array[int]) -> void:
+                            pass
+                        
+                        func ping():
+                            take([1, 2])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var call = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+        var literal = call.arguments().getFirst();
+        assertEquals("Array[int]", analyzed.analysisData().expressionTypes().get(literal).publishedType().getTypeName());
+        var plan = analyzed.analysisData().containerLiteralPlans().get(literal);
+        assertNotNull(plan);
+        assertEquals("Array[int]", plan.resultType().getTypeName());
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(call);
+        assertNotNull(resolvedCall);
+        assertEquals("Array[int]", resolvedCall.argumentTypes().getFirst().getTypeName());
+    }
+
+    @Test
+    void analyzeSelectsBareOverloadByContainerLiteralElementBoundary() throws Exception {
+        var analyzed = analyze(
+                "expr_type_container_literal_overload.gd",
+                """
+                        class_name ExprTypeContainerLiteralOverload
+                        extends RefCounted
+                        
+                        func take(values: Array[int]) -> int:
+                            return 1
+                        
+                        func take(values: Array[String]) -> int:
+                            return 2
+                        
+                        func ping():
+                            take([1])
+                            take(["x"])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var firstCall = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+        var secondCall = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+
+        assertEquals("Array[int]", analyzed.analysisData().expressionTypes().get(firstCall.arguments().getFirst())
+                .publishedType().getTypeName());
+        assertEquals("Array[String]", analyzed.analysisData().expressionTypes().get(secondCall.arguments().getFirst())
+                .publishedType().getTypeName());
+        assertEquals("Array[int]", analyzed.analysisData().resolvedCalls().get(firstCall).argumentTypes().getFirst()
+                .getTypeName());
+        assertEquals("Array[String]", analyzed.analysisData().resolvedCalls().get(secondCall).argumentTypes().getFirst()
+                .getTypeName());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(firstCall).status());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(secondCall).status());
+    }
+
+    @Test
+    void analyzeKeepsVarargBareCallApplicableWithExtraArguments() throws Exception {
+        var analyzed = analyze(
+                "expr_type_vararg_print_still_works.gd",
+                """
+                        class_name ExprTypeVarargPrintStillWorks
+                        extends RefCounted
+                        
+                        func ping():
+                            print(1, 2)
+                            print([1], 2)
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var firstCall = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+        var secondCall = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(firstCall).status());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(secondCall).status());
+        // print(...) has no fixed parameters, so the literal gets no typed context and stays generic Array.
+        assertEquals("Array", analyzed.analysisData().expressionTypes().get(secondCall.arguments().getFirst())
+                .publishedType().getTypeName());
+    }
+
+    @Test
+    void analyzePublishesThreeWayConsistentContextualLiteralForChainCallArgument() throws Exception {
+        var analyzed = analyze(
+                "expr_type_chain_container_literal_three_way.gd",
+                """
+                        class_name ExprTypeChainContainerLiteralThreeWay
+                        extends RefCounted
+                        
+                        func take(values: Array[int]) -> void:
+                            pass
+                        
+                        func ping():
+                            self.take([1, 2])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var statement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var callStep = findNode(statement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var literal = callStep.arguments().getFirst();
+
+        assertEquals("Array[int]", analyzed.analysisData().expressionTypes().get(literal).publishedType().getTypeName());
+        var plan = analyzed.analysisData().containerLiteralPlans().get(literal);
+        assertNotNull(plan);
+        assertEquals("Array[int]", plan.resultType().getTypeName());
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(callStep);
+        assertNotNull(resolvedCall);
+        assertEquals("Array[int]", resolvedCall.argumentTypes().getFirst().getTypeName());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, analyzed.analysisData().expressionTypes().get(statement.expression()).status());
+    }
+
+    @Test
+    void analyzeSelectsChainOverloadAndKeepsThreeWayConsistency() throws Exception {
+        var analyzed = analyze(
+                "expr_type_chain_container_literal_overload.gd",
+                """
+                        class_name ExprTypeChainContainerLiteralOverload
+                        extends RefCounted
+                        
+                        func take(values: Array[int]) -> int:
+                            return 1
+                        
+                        func take(values: Array[String]) -> int:
+                            return 2
+                        
+                        func ping():
+                            self.take([1])
+                            self.take(["x"])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var firstStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var secondStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1));
+        var firstStep = findNode(firstStatement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var secondStep = findNode(secondStatement, AttributeCallStep.class, step -> step.name().equals("take"));
+
+        assertEquals("Array[int]", analyzed.analysisData().expressionTypes().get(firstStep.arguments().getFirst())
+                .publishedType().getTypeName());
+        assertEquals("Array[String]", analyzed.analysisData().expressionTypes().get(secondStep.arguments().getFirst())
+                .publishedType().getTypeName());
+        assertEquals("Array[int]", analyzed.analysisData().resolvedCalls().get(firstStep).argumentTypes().getFirst()
+                .getTypeName());
+        assertEquals("Array[String]", analyzed.analysisData().resolvedCalls().get(secondStep).argumentTypes().getFirst()
+                .getTypeName());
+        assertEquals("Array[int]", analyzed.analysisData().containerLiteralPlans().get(firstStep.arguments().getFirst())
+                .resultType().getTypeName());
+        assertEquals("Array[String]", analyzed.analysisData().containerLiteralPlans().get(secondStep.arguments().getFirst())
+                .resultType().getTypeName());
+    }
+
+    @Test
+    void analyzeKeepsIncompatibleChainContainerLiteralCallFailedWithoutDeclarationOrderPick() throws Exception {
+        var analyzed = analyze(
+                "expr_type_chain_container_literal_reject.gd",
+                """
+                        class_name ExprTypeChainContainerLiteralReject
+                        extends RefCounted
+                        
+                        func take(values: Array[String]) -> int:
+                            return 1
+                        
+                        func ping():
+                            self.take([1])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var statement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var takeStep = findNode(statement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(takeStep);
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionStatus.FAILED, resolvedCall.status());
+        // CHAIN_BINDING does not finalize the literal plan; generic snapshot stays until no exact boundary.
+        assertEquals("Array", resolvedCall.argumentTypes().getFirst().getTypeName());
+    }
+
+    @Test
+    void analyzePublishesThreeWayConsistentEmptyArrayLiteralForChainCallArgument() throws Exception {
+        var analyzed = analyze(
+                "expr_type_chain_empty_container_literal.gd",
+                """
+                        class_name ExprTypeChainEmptyContainerLiteral
+                        extends RefCounted
+                        
+                        func take(values: Array[int]) -> void:
+                            pass
+                        
+                        func ping():
+                            self.take([])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var statement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var callStep = findNode(statement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var literal = callStep.arguments().getFirst();
+
+        assertEquals("Array[int]", analyzed.analysisData().expressionTypes().get(literal).publishedType().getTypeName());
+        var plan = analyzed.analysisData().containerLiteralPlans().get(literal);
+        assertNotNull(plan);
+        assertEquals("Array[int]", plan.resultType().getTypeName());
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(callStep);
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status());
+        assertEquals("Array[int]", resolvedCall.argumentTypes().getFirst().getTypeName());
     }
 
     private static @NotNull AnalyzedScript analyze(
