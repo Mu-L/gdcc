@@ -6,7 +6,7 @@
 
 ## 文档状态
 
-- 状态：计划维护中（尚未开始实施；已完成三轮 expert review 修订）
+- 状态：计划维护中（Phase 0 已落地：compile gate feature-specific blocker；Phase 1–5 未实施）
 - 更新时间：2026-08-13
 - 相关事实源 / 规则：
   - `frontend_rules.md`
@@ -294,12 +294,17 @@
 
 - 目标：锁定范围；把当前会崩溃/误 lowering 的 signal surface 用 compile gate 挡住，保证编译器安全。
 - 依赖：无。
+- 状态：**已完成**（2026-08-13）。
 - 动作：
-  1. 运行既有 signal 相关测试，确认全绿（§8 baseline）。
-  2. 把 `analysisData.symbolBindings()` 传入 `AstWalkerCompileCheckVisitor`（`FrontendCompileCheckAnalyzer.java:121-132`），供 bare identifier blocker 使用。
-  3. 增加 feature-specific blocker：receiver 限定 signal 读取（`resolvedMembers` `bindingKind==SIGNAL`）、`.emit/.connect/.disconnect`（`resolvedCalls` receiver 为 `GdSignalType`）、bare signal / bare method-reference / bare static-method / bare utility-function **值**读取（`symbolBindings` `binding.kind()` ∈ {SIGNAL, METHOD, STATIC_METHOD, UTILITY_FUNCTION}，带 callee 排除）。
-  4. 按 D6 重组 `scanResolvedMemberCompileBlocks`/`scanResolvedCallCompileBlocks`，让 RESOLVED SIGNAL member / `GdSignalType` receiver call 进入 blocker（放在 status 短路之前/并列）。
-  5. 为每个 blocker 增加 `FrontendCompileCheckAnalyzerTest` anchor 测试。
+  1. ~~运行既有 signal 相关测试，确认全绿（§8 baseline）。~~
+  2. ~~把 `analysisData.symbolBindings()` 传入 `AstWalkerCompileCheckVisitor`（`FrontendCompileCheckAnalyzer.java:121-132`），供 bare identifier blocker 使用。~~
+  3. ~~增加 feature-specific blocker：receiver 限定 signal 读取（`resolvedMembers` `bindingKind==SIGNAL`）、`.emit/.connect/.disconnect`（`resolvedCalls` receiver 为 `GdSignalType`）、bare signal / bare method-reference / bare static-method / bare utility-function **值**读取（`symbolBindings` `binding.kind()` ∈ {SIGNAL, METHOD, STATIC_METHOD, UTILITY_FUNCTION}，带 callee 排除）。~~
+  4. ~~按 D6 重组 `scanResolvedMemberCompileBlocks`/`scanResolvedCallCompileBlocks`，让 RESOLVED SIGNAL member / `GdSignalType` receiver call 进入 blocker（放在 status 短路之前/并列）。~~
+  5. ~~为每个 blocker 增加 `FrontendCompileCheckAnalyzerTest` anchor 测试。~~
+- 落地注记：
+  - `symbolBindings()` 同时键 `IdentifierExpression` / `LiteralExpression` / `SelfExpression`；bare blocker 只消费 identifier 项，不 fail-fast 其它 key。
+  - callee 排除集合在 walk 时从 surface `CallExpression.callee()` 收集；合法 `helper(right)` / `print(x)` / `make_static(x)` 不被误伤。
+  - RESOLVED SIGNAL member / `Signal.emit|connect|disconnect` 谓词放在 `isCompileBlocking` 短路之前，复用 parameterized GDCC constructor 结构；谓词必须要求 `status == RESOLVED`，不得把 `DYNAMIC` 升格为 compile blocker。
 - 验收：
   - baseline 测试全绿。
   - bare `foo`、`obj.foo`、`foo.emit(...)`、`foo.connect(_handler)`、`var c = _handler`、bare static/utility 值读取在 compile 模式被明确拦截（不再进入 lowering 崩溃）。

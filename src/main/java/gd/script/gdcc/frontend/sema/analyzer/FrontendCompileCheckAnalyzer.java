@@ -10,6 +10,8 @@ import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
+import gd.script.gdcc.frontend.sema.FrontendBinding;
+import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
@@ -22,6 +24,7 @@ import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.scope.Scope;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
@@ -46,6 +49,7 @@ import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FrontendASTTraversalDirective;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.GetNodeExpression;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
@@ -76,6 +80,8 @@ import java.util.function.Predicate;
 ///   is not ready yet
 /// - generic side-table scans over published `expressionTypes()` / `resolvedMembers()` /
 ///   `resolvedCalls()` facts that are still blocked/deferred/failed/unsupported on compile surface
+/// - feature-specific RESOLVED blockers for signal/method-reference surfaces that would otherwise
+///   crash CFG or be mis-lowered as property loads
 /// - no new side tables and no rewrites of upstream semantic ownership
 public class FrontendCompileCheckAnalyzer {
     private static final @NotNull String COMPILE_CHECK_CATEGORY = "sema.compile_check";
@@ -90,6 +96,13 @@ public class FrontendCompileCheckAnalyzer {
     /// for already-published non-error diagnostics that still represent a lowering-blocking gap.
     private static final @NotNull Set<String> NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES = Set.of(
             FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
+    );
+    private static final @NotNull Set<String> SIGNAL_METHOD_NAMES = Set.of("emit", "connect", "disconnect");
+    private static final @NotNull Set<FrontendBindingKind> BARE_VALUE_REFERENCE_BINDING_KINDS = Set.of(
+            FrontendBindingKind.SIGNAL,
+            FrontendBindingKind.METHOD,
+            FrontendBindingKind.STATIC_METHOD,
+            FrontendBindingKind.UTILITY_FUNCTION
     );
 
     public void analyze(
@@ -123,6 +136,7 @@ public class FrontendCompileCheckAnalyzer {
                     sourceClassRelation.unit().path(),
                     publishedDiagnostics,
                     scopesByAst,
+                    analysisData.symbolBindings(),
                     analysisData.expressionTypes(),
                     analysisData.resolvedMembers(),
                     analysisData.resolvedCalls(),
@@ -175,6 +189,43 @@ public class FrontendCompileCheckAnalyzer {
                 + "supports only zero-argument custom object construction";
     }
 
+    /// Feature-specific compile-only message for a receiver-qualified signal member read.
+    /// The route is already published as RESOLVED, so the generic status scan would skip it.
+    private static @NotNull String resolvedSignalMemberCompileBlockedMessage(
+            @NotNull FrontendResolvedMember publishedMember
+    ) {
+        return "Signal member '"
+                + Objects.requireNonNull(publishedMember, "publishedMember must not be null").memberName()
+                + "' is recognized by the frontend but is blocked in compile mode because "
+                + "signal value lowering support lands";
+    }
+
+    /// Feature-specific compile-only message for Signal.emit/connect/disconnect.
+    private static @NotNull String signalMethodCallCompileBlockedMessage(
+            @NotNull FrontendResolvedCall publishedCall
+    ) {
+        return "Signal method '"
+                + Objects.requireNonNull(publishedCall, "publishedCall must not be null").callableName()
+                + "(...)' is recognized by the frontend but is blocked in compile mode because "
+                + "signal call lowering support lands";
+    }
+
+    /// Feature-specific compile-only message for bare signal / method-reference value reads.
+    /// Kind is taken from the published binding so the same helper can cover SIGNAL and
+    /// METHOD / STATIC_METHOD / UTILITY_FUNCTION without guessing from expression type.
+    private static @NotNull String bareValueReferenceCompileBlockedMessage(@NotNull FrontendBinding binding) {
+        var kindLabel = switch (Objects.requireNonNull(binding, "binding must not be null").kind()) {
+            case SIGNAL -> "signal";
+            case METHOD -> "method-reference";
+            case STATIC_METHOD -> "static-method";
+            case UTILITY_FUNCTION -> "utility-function";
+            default -> throw new IllegalStateException("unexpected bare value-reference kind: " + binding.kind());
+        };
+        return "Bare " + kindLabel + " '" + binding.symbolName()
+                + "' is recognized by the frontend but is blocked in compile mode because "
+                + "value-reference lowering support lands";
+    }
+
     private static @NotNull String publishedCompileBlockedMessage(
             @NotNull String surfaceKind,
             @NotNull Enum<?> publishedStatus,
@@ -220,6 +271,7 @@ public class FrontendCompileCheckAnalyzer {
         private final @NotNull Path sourcePath;
         private final @NotNull DiagnosticSnapshot publishedDiagnostics;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
+        private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
         private final @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes;
         private final @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers;
         private final @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls;
@@ -229,6 +281,7 @@ public class FrontendCompileCheckAnalyzer {
         private final @NotNull ASTWalker astWalker;
         private final @NotNull Set<Node> compileSurfaceNodes = Collections.newSetFromMap(new IdentityHashMap<>());
         private final @NotNull Set<Node> handledAnchors = Collections.newSetFromMap(new IdentityHashMap<>());
+        private final @NotNull Set<Node> bareCallCallees = Collections.newSetFromMap(new IdentityHashMap<>());
         private int supportedExecutableBlockDepth;
 
         /// Capture the shared semantic facts for one source file and prepare a dedicated walker.
@@ -236,6 +289,7 @@ public class FrontendCompileCheckAnalyzer {
                 @NotNull Path sourcePath,
                 @NotNull DiagnosticSnapshot publishedDiagnostics,
                 @NotNull FrontendAstSideTable<Scope> scopesByAst,
+                @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
                 @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes,
                 @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers,
                 @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls,
@@ -249,6 +303,7 @@ public class FrontendCompileCheckAnalyzer {
                     "publishedDiagnostics must not be null"
             );
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
+            this.symbolBindings = Objects.requireNonNull(symbolBindings, "symbolBindings must not be null");
             this.expressionTypes = Objects.requireNonNull(expressionTypes, "expressionTypes must not be null");
             this.resolvedMembers = Objects.requireNonNull(resolvedMembers, "resolvedMembers must not be null");
             this.resolvedCalls = Objects.requireNonNull(resolvedCalls, "resolvedCalls must not be null");
@@ -525,6 +580,7 @@ public class FrontendCompileCheckAnalyzer {
                 );
                 default -> {
                     markCompileSurfaceNode(expression);
+                    rememberBareCallCallee(expression);
                     walkNestedExpressionChildren(expression);
                 }
             }
@@ -549,6 +605,7 @@ public class FrontendCompileCheckAnalyzer {
             scanExpressionTypeCompileBlocks();
             scanResolvedMemberCompileBlocks();
             scanResolvedCallCompileBlocks();
+            scanBareValueReferenceCompileBlocks();
             scanSlotTypeCompileBlocks();
         }
 
@@ -585,10 +642,19 @@ public class FrontendCompileCheckAnalyzer {
         }
 
         /// Member facts are reported at the exact property-step anchor to keep diagnostics precise.
+        /// RESOLVED SIGNAL members are feature-blocked before the generic status short-circuit,
+        /// matching `shouldBlockParameterizedGdccConstructor` so they cannot slip into lowering.
         private void scanResolvedMemberCompileBlocks() {
             for (var entry : resolvedMembers.entrySet()) {
                 var anchor = requireAttributePropertyStep(entry.getKey());
                 var publishedMember = Objects.requireNonNull(entry.getValue(), "publishedMember must not be null");
+                if (shouldBlockResolvedSignalMember(anchor, publishedMember)) {
+                    reportCompileBlock(
+                            anchor,
+                            resolvedSignalMemberCompileBlockedMessage(publishedMember)
+                    );
+                    continue;
+                }
                 if (!isCompileBlocking(publishedMember.status()) || !compileSurfaceNodes.contains(anchor)) {
                     continue;
                 }
@@ -617,6 +683,13 @@ public class FrontendCompileCheckAnalyzer {
                             anchor,
                             gdccParameterizedConstructorCompileBlockedMessage(publishedCall),
                             true
+                    );
+                    continue;
+                }
+                if (shouldBlockSignalMethodCall(anchor, publishedCall)) {
+                    reportCompileBlock(
+                            anchor,
+                            signalMethodCallCompileBlockedMessage(publishedCall)
                     );
                     continue;
                 }
@@ -649,6 +722,59 @@ public class FrontendCompileCheckAnalyzer {
                 case CallExpression callExpression -> !callExpression.arguments().isEmpty();
                 default -> false;
             };
+        }
+
+        /// Receiver-qualified signal reads publish RESOLVED members. Block them before the status
+        /// short-circuit so compile mode never reaches the CFG crash / property-mislower path.
+        /// DYNAMIC remains a runtime-open fact and must not be upgraded into a compile blocker.
+        private boolean shouldBlockResolvedSignalMember(
+                @NotNull Node anchor,
+                @NotNull FrontendResolvedMember publishedMember
+        ) {
+            return compileSurfaceNodes.contains(anchor)
+                    && publishedMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                    && publishedMember.bindingKind() == FrontendBindingKind.SIGNAL;
+        }
+
+        /// `.emit` / `.connect` / `.disconnect` on a Signal receiver are recognized but not lowering-ready.
+        /// Match on published receiver type plus method name so ordinary Signal-local calls stay untouched.
+        /// DYNAMIC Signal calls stay runtime-open, matching the generic status exemption.
+        private boolean shouldBlockSignalMethodCall(
+                @NotNull Node anchor,
+                @NotNull FrontendResolvedCall publishedCall
+        ) {
+            return compileSurfaceNodes.contains(anchor)
+                    && publishedCall.status() == FrontendCallResolutionStatus.RESOLVED
+                    && publishedCall.receiverType() instanceof GdSignalType
+                    && SIGNAL_METHOD_NAMES.contains(publishedCall.callableName());
+        }
+
+        /// Bare SIGNAL / METHOD / STATIC_METHOD / UTILITY_FUNCTION identifiers used as values crash
+        /// CFG today. Consume published `symbolBindings()` and skip identifiers that are only the
+        /// callee of a surface `CallExpression`, so legal `helper(right)` stays compile-ready.
+        private void scanBareValueReferenceCompileBlocks() {
+            for (var entry : symbolBindings.entrySet()) {
+                // The published table also keys LiteralExpression / SelfExpression. Those are
+                // never the CFG crash surface this blocker exists to stop.
+                if (!(entry.getKey() instanceof IdentifierExpression identifierExpression)) {
+                    continue;
+                }
+                var binding = Objects.requireNonNull(entry.getValue(), "binding must not be null");
+                if (!compileSurfaceNodes.contains(identifierExpression)
+                        || bareCallCallees.contains(identifierExpression)
+                        || !BARE_VALUE_REFERENCE_BINDING_KINDS.contains(binding.kind())) {
+                    continue;
+                }
+                reportCompileBlock(identifierExpression, bareValueReferenceCompileBlockedMessage(binding));
+            }
+        }
+
+        /// Record a surface `CallExpression.callee()` so the later binding scan can exclude it.
+        private void rememberBareCallCallee(@NotNull Expression expression) {
+            if (expression instanceof CallExpression callExpression
+                    && callExpression.callee() instanceof IdentifierExpression callee) {
+                bareCallCallees.add(callee);
+            }
         }
 
         /// Callable-local slot types are a lowering-only published fact. When the post analyzer had
