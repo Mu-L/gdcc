@@ -37,6 +37,7 @@ import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirParameterDef;
+import gd.script.gdcc.lir.insn.AssertObjectLiveInsn;
 import gd.script.gdcc.lir.insn.AssignInsn;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.BuiltinCastInsn;
@@ -45,7 +46,12 @@ import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
+import gd.script.gdcc.lir.insn.ConstructContainerLiteralInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
+import gd.script.gdcc.lir.insn.ConstructCallableInsn;
+import gd.script.gdcc.lir.insn.ConstructSignalInsn;
+import gd.script.gdcc.lir.insn.ConstructStandaloneCallableInsn;
+import gd.script.gdcc.lir.insn.StandaloneCallableKind;
 import gd.script.gdcc.lir.insn.GoIfInsn;
 import gd.script.gdcc.lir.insn.GotoInsn;
 import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
@@ -83,7 +89,9 @@ import gd.script.gdcc.type.GdccForStringIterType;
 import gd.script.gdcc.type.GdccForVariantIterType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
+import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
@@ -4584,6 +4592,952 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersBareAndReceiverSignalReadsIntoConstructSignalInsn() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_signal_value_read.gd",
+                """
+                        class_name BodyInsnSignalValueRead
+                        extends Node
+                        
+                        signal pinged
+                        
+                        func copy_bare() -> Signal:
+                            return pinged
+                        
+                        func copy_self() -> Signal:
+                            return self.pinged
+                        
+                        func copy_other(other: BodyInsnSignalValueRead) -> Signal:
+                            return other.pinged
+                        """,
+                Map.of("BodyInsnSignalValueRead", "RuntimeBodyInsnSignalValueRead"),
+                true
+        );
+        var bareContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalValueRead",
+                "copy_bare"
+        );
+        var selfContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalValueRead",
+                "copy_self"
+        );
+        var otherContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalValueRead",
+                "copy_other"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var bareConstruct = requireOnlyInstruction(bareContext.targetFunction(), ConstructSignalInsn.class);
+        var selfConstruct = requireOnlyInstruction(selfContext.targetFunction(), ConstructSignalInsn.class);
+        var otherConstruct = requireOnlyInstruction(otherContext.targetFunction(), ConstructSignalInsn.class);
+        var otherLiveAssert = requireOnlyInstruction(otherContext.targetFunction(), AssertObjectLiveInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("self", bareConstruct.receiverVarId()),
+                () -> assertEquals("pinged", bareConstruct.signalName()),
+                () -> assertEquals(0, countInstructions(allInstructions(bareContext.targetFunction()), AssertObjectLiveInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(bareContext.targetFunction()), LoadPropertyInsn.class)),
+                () -> assertEquals("self", selfConstruct.receiverVarId()),
+                () -> assertEquals("pinged", selfConstruct.signalName()),
+                () -> assertEquals(0, countInstructions(allInstructions(selfContext.targetFunction()), AssertObjectLiveInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(selfContext.targetFunction()), LoadPropertyInsn.class)),
+                () -> assertEquals("pinged", otherConstruct.signalName()),
+                () -> assertEquals(otherLiveAssert.objectId(), otherConstruct.receiverVarId()),
+                () -> assertNotEquals("self", otherConstruct.receiverVarId()),
+                () -> assertEquals(0, countInstructions(allInstructions(otherContext.targetFunction()), LoadPropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runSkipsLiveAssertWhenSignalReceiverIsRefCounted() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_signal_value_read_refcounted.gd",
+                """
+                        class_name BodyInsnSignalValueReadRefCounted
+                        extends RefCounted
+                        
+                        signal pinged
+                        
+                        func copy_other(other: BodyInsnSignalValueReadRefCounted) -> Signal:
+                            return other.pinged
+                        """,
+                Map.of("BodyInsnSignalValueReadRefCounted", "RuntimeBodyInsnSignalValueReadRefCounted"),
+                true
+        );
+        var otherContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalValueReadRefCounted",
+                "copy_other"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var otherConstruct = requireOnlyInstruction(otherContext.targetFunction(), ConstructSignalInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("pinged", otherConstruct.signalName()),
+                () -> assertEquals(0, countInstructions(allInstructions(otherContext.targetFunction()), AssertObjectLiveInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(otherContext.targetFunction()), LoadPropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersLocalSignalStoreIntoConstructSignalThenAssign() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_signal_value_local_store.gd",
+                """
+                        class_name BodyInsnSignalValueLocalStore
+                        extends Node
+                        
+                        signal pinged
+                        
+                        func copy_untyped(other: BodyInsnSignalValueLocalStore) -> void:
+                            var s = other.pinged
+                        
+                        func copy_typed(other: BodyInsnSignalValueLocalStore) -> void:
+                            var typed: Signal = other.pinged
+                        """,
+                Map.of("BodyInsnSignalValueLocalStore", "RuntimeBodyInsnSignalValueLocalStore"),
+                true
+        );
+        var untypedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalValueLocalStore",
+                "copy_untyped"
+        );
+        var typedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalValueLocalStore",
+                "copy_typed"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var untypedInstructions = allInstructions(untypedContext.targetFunction());
+        var typedInstructions = allInstructions(typedContext.targetFunction());
+        var untypedConstruct = requireOnlyInstruction(untypedContext.targetFunction(), ConstructSignalInsn.class);
+        var typedConstruct = requireOnlyInstruction(typedContext.targetFunction(), ConstructSignalInsn.class);
+        var untypedLiveAssert = requireOnlyInstruction(untypedContext.targetFunction(), AssertObjectLiveInsn.class);
+        var typedLiveAssert = requireOnlyInstruction(typedContext.targetFunction(), AssertObjectLiveInsn.class);
+        var untypedPack = requireOnlyInstruction(untypedContext.targetFunction(), PackVariantInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("pinged", untypedConstruct.signalName()),
+                () -> assertEquals(untypedLiveAssert.objectId(), untypedConstruct.receiverVarId()),
+                () -> assertNotEquals("self", untypedConstruct.receiverVarId()),
+                () -> assertEquals(untypedConstruct.resultId(), untypedPack.valueId()),
+                () -> assertEquals(untypedPack.resultId(), assignSourcesByTarget(untypedInstructions).get("s")),
+                () -> assertEquals(0, countInstructions(untypedInstructions, LoadPropertyInsn.class)),
+                () -> assertEquals("pinged", typedConstruct.signalName()),
+                () -> assertEquals(typedLiveAssert.objectId(), typedConstruct.receiverVarId()),
+                () -> assertNotEquals("self", typedConstruct.receiverVarId()),
+                () -> assertEquals(typedConstruct.resultId(), assignSourcesByTarget(typedInstructions).get("typed")),
+                () -> assertEquals(0, countInstructions(typedInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(typedInstructions, LoadPropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersInheritedEngineSignalReadIntoConstructSignalInsn() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_engine_signal_value_read.gd",
+                """
+                        class_name BodyInsnEngineSignalValueRead
+                        extends Node
+                        
+                        func copy_ready(n: Node) -> Signal:
+                            return n.ready
+                        """,
+                Map.of("BodyInsnEngineSignalValueRead", "RuntimeBodyInsnEngineSignalValueRead"),
+                true
+        );
+        var copyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnEngineSignalValueRead",
+                "copy_ready"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var construct = requireOnlyInstruction(copyContext.targetFunction(), ConstructSignalInsn.class);
+        var liveAssert = requireOnlyInstruction(copyContext.targetFunction(), AssertObjectLiveInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("ready", construct.signalName()),
+                () -> assertEquals(liveAssert.objectId(), construct.receiverVarId()),
+                () -> assertNotEquals("self", construct.receiverVarId()),
+                () -> assertEquals(0, countInstructions(allInstructions(copyContext.targetFunction()), LoadPropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runKeepsDynamicSignalMemberOnOrdinaryMemberLoadRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_signal_member_read.gd",
+                """
+                        class_name BodyInsnDynamicSignalMemberRead
+                        extends RefCounted
+                        
+                        func marker(host: Variant) -> Variant:
+                            return host.pinged
+                        """,
+                Map.of("BodyInsnDynamicSignalMemberRead", "RuntimeBodyInsnDynamicSignalMemberRead"),
+                true
+        );
+        var markerContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicSignalMemberRead",
+                "marker"
+        );
+        var memberLoad = requireSingleMemberLoadItem(markerContext.requireFrontendCfgGraph(), "pinged");
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                memberLoad.anchor(),
+                FrontendResolvedMember.dynamic(
+                        "pinged",
+                        FrontendBindingKind.SIGNAL,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        GdVariantType.VARIANT,
+                        "synthetic dynamic signal member",
+                        "synthetic dynamic signal member"
+                )
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals(0, countInstructions(allInstructions(markerContext.targetFunction()), ConstructSignalInsn.class)),
+                () -> assertEquals(1, countInstructions(allInstructions(markerContext.targetFunction()), VariantGetNamedInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersBareAndReceiverMethodReferencesIntoConstructCallableInsn() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_method_reference.gd",
+                """
+                        class_name BodyInsnMethodReference
+                        extends Node
+                        
+                        func _handler():
+                            pass
+                        
+                        func copy_bare() -> Callable:
+                            return _handler
+                        
+                        func copy_self() -> Callable:
+                            return self._handler
+                        
+                        func copy_other(other: BodyInsnMethodReference) -> Callable:
+                            return other._handler
+                        """,
+                Map.of("BodyInsnMethodReference", "RuntimeBodyInsnMethodReference"),
+                true
+        );
+        var bareContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMethodReference",
+                "copy_bare"
+        );
+        var selfContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMethodReference",
+                "copy_self"
+        );
+        var otherContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMethodReference",
+                "copy_other"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var bareConstruct = requireOnlyInstruction(bareContext.targetFunction(), ConstructCallableInsn.class);
+        var selfConstruct = requireOnlyInstruction(selfContext.targetFunction(), ConstructCallableInsn.class);
+        var otherConstruct = requireOnlyInstruction(otherContext.targetFunction(), ConstructCallableInsn.class);
+        var otherLiveAssert = requireOnlyInstruction(otherContext.targetFunction(), AssertObjectLiveInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("self", bareConstruct.receiverVarId()),
+                () -> assertEquals("_handler", bareConstruct.methodName()),
+                () -> assertEquals(0, countInstructions(allInstructions(bareContext.targetFunction()), AssertObjectLiveInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(bareContext.targetFunction()), LoadPropertyInsn.class)),
+                () -> assertEquals("self", selfConstruct.receiverVarId()),
+                () -> assertEquals("_handler", selfConstruct.methodName()),
+                () -> assertEquals(0, countInstructions(allInstructions(selfContext.targetFunction()), AssertObjectLiveInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(selfContext.targetFunction()), LoadPropertyInsn.class)),
+                () -> assertEquals("_handler", otherConstruct.methodName()),
+                () -> assertEquals(otherLiveAssert.objectId(), otherConstruct.receiverVarId()),
+                () -> assertNotEquals("self", otherConstruct.receiverVarId()),
+                () -> assertEquals(0, countInstructions(allInstructions(otherContext.targetFunction()), LoadPropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runSkipsLiveAssertWhenCallableReceiverIsRefCounted() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_method_reference_refcounted.gd",
+                """
+                        class_name BodyInsnMethodReferenceRefCounted
+                        extends RefCounted
+                        
+                        func _handler():
+                            pass
+                        
+                        func copy_other(other: BodyInsnMethodReferenceRefCounted) -> Callable:
+                            return other._handler
+                        """,
+                Map.of("BodyInsnMethodReferenceRefCounted", "RuntimeBodyInsnMethodReferenceRefCounted"),
+                true
+        );
+        var otherContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMethodReferenceRefCounted",
+                "copy_other"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var otherConstruct = requireOnlyInstruction(otherContext.targetFunction(), ConstructCallableInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("_handler", otherConstruct.methodName()),
+                () -> assertEquals(0, countInstructions(allInstructions(otherContext.targetFunction()), AssertObjectLiveInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(otherContext.targetFunction()), LoadPropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersBuiltinInstanceMethodReferenceIntoConstructCallableWithoutLiveAssert() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_builtin_method_reference.gd",
+                """
+                        class_name BodyInsnBuiltinMethodReference
+                        extends Node
+                        
+                        func copy_abs(vec: Vector2) -> Callable:
+                            return vec.abs
+                        """,
+                Map.of("BodyInsnBuiltinMethodReference", "RuntimeBodyInsnBuiltinMethodReference"),
+                true
+        );
+        var copyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnBuiltinMethodReference",
+                "copy_abs"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var construct = requireOnlyInstruction(copyContext.targetFunction(), ConstructCallableInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("abs", construct.methodName()),
+                () -> assertNotEquals("self", construct.receiverVarId()),
+                () -> assertEquals(0, countInstructions(allInstructions(copyContext.targetFunction()), AssertObjectLiveInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(copyContext.targetFunction()), LoadPropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersQualifiedAndBareStaticMethodReferencesIntoStandaloneCallable() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_static_method_reference.gd",
+                """
+                        class_name BodyInsnStaticMethodReference
+                        extends Node
+                        
+                        static func make_static():
+                            return 1
+                        
+                        func copy_qualified() -> Callable:
+                            return BodyInsnStaticMethodReference.make_static
+                        
+                        func copy_bare() -> Callable:
+                            return make_static
+                        """,
+                Map.of("BodyInsnStaticMethodReference", "RuntimeBodyInsnStaticMethodReference"),
+                true
+        );
+        var qualifiedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStaticMethodReference",
+                "copy_qualified"
+        );
+        var bareContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStaticMethodReference",
+                "copy_bare"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var qualified = requireOnlyInstruction(qualifiedContext.targetFunction(), ConstructStandaloneCallableInsn.class);
+        var bare = requireOnlyInstruction(bareContext.targetFunction(), ConstructStandaloneCallableInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals(StandaloneCallableKind.STATIC_GDCC, qualified.kind()),
+                () -> assertEquals("RuntimeBodyInsnStaticMethodReference", qualified.ownerName()),
+                () -> assertEquals("make_static", qualified.callableName()),
+                () -> assertEquals(StandaloneCallableKind.STATIC_GDCC, bare.kind()),
+                () -> assertEquals("RuntimeBodyInsnStaticMethodReference", bare.ownerName()),
+                () -> assertEquals("make_static", bare.callableName())
+        );
+    }
+
+    @Test
+    void runLowersInheritedStaticMethodReferencesThroughDeclaringOwner() throws Exception {
+        var prepared = prepareContext(
+                List.of(
+                        new SourceFixture(
+                                "body_insn_inherited_static_parent.gd",
+                                """
+                                        class_name BodyInsnInheritedStaticParent
+                                        extends Node
+                                        
+                                        static func make_static():
+                                            return 1
+                                        """
+                        ),
+                        new SourceFixture(
+                                "body_insn_inherited_static_child.gd",
+                                """
+                                        class_name BodyInsnInheritedStaticChild
+                                        extends BodyInsnInheritedStaticParent
+                                        
+                                        func copy_qualified() -> Callable:
+                                            return BodyInsnInheritedStaticChild.make_static
+                                        
+                                        func copy_bare() -> Callable:
+                                            return make_static
+                                        """
+                        )
+                ),
+                Map.of(
+                        "BodyInsnInheritedStaticParent", "RuntimeBodyInsnInheritedStaticParent",
+                        "BodyInsnInheritedStaticChild", "RuntimeBodyInsnInheritedStaticChild"
+                ),
+                true
+        );
+        var qualifiedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnInheritedStaticChild",
+                "copy_qualified"
+        );
+        var bareContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnInheritedStaticChild",
+                "copy_bare"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var qualified = requireOnlyInstruction(qualifiedContext.targetFunction(), ConstructStandaloneCallableInsn.class);
+        var bare = requireOnlyInstruction(bareContext.targetFunction(), ConstructStandaloneCallableInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals(StandaloneCallableKind.STATIC_GDCC, qualified.kind()),
+                () -> assertEquals("RuntimeBodyInsnInheritedStaticParent", qualified.ownerName()),
+                () -> assertEquals("make_static", qualified.callableName()),
+                () -> assertEquals(StandaloneCallableKind.STATIC_GDCC, bare.kind()),
+                () -> assertEquals("RuntimeBodyInsnInheritedStaticParent", bare.ownerName()),
+                () -> assertEquals("make_static", bare.callableName())
+        );
+    }
+
+    @Test
+    void runLowersQualifiedEngineStaticMethodReferenceIntoStandaloneCallable() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_engine_static_method_reference.gd",
+                """
+                        class_name BodyInsnEngineStaticMethodReference
+                        extends Node
+                        
+                        func copy_parse() -> Callable:
+                            return JSON.parse_string
+                        """,
+                Map.of("BodyInsnEngineStaticMethodReference", "RuntimeBodyInsnEngineStaticMethodReference"),
+                true
+        );
+        var copyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnEngineStaticMethodReference",
+                "copy_parse"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var construct = requireOnlyInstruction(copyContext.targetFunction(), ConstructStandaloneCallableInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals(StandaloneCallableKind.STATIC_ENGINE, construct.kind()),
+                () -> assertEquals("JSON", construct.ownerName()),
+                () -> assertEquals("parse_string", construct.callableName())
+        );
+    }
+
+    @Test
+    void runLowersBareUtilityFunctionReferenceIntoStandaloneCallable() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_utility_function_reference.gd",
+                """
+                        class_name BodyInsnUtilityFunctionReference
+                        extends Node
+                        
+                        func copy_print() -> Callable:
+                            return print
+                        """,
+                Map.of("BodyInsnUtilityFunctionReference", "RuntimeBodyInsnUtilityFunctionReference"),
+                true
+        );
+        var copyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnUtilityFunctionReference",
+                "copy_print"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var construct = requireOnlyInstruction(copyContext.targetFunction(), ConstructStandaloneCallableInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals(StandaloneCallableKind.UTILITY, construct.kind()),
+                () -> assertEquals("", construct.ownerName()),
+                () -> assertEquals("print", construct.callableName())
+        );
+    }
+
+    @Test
+    void runLowersSignalConnectDisconnectThroughCallMethodWithCallableArgs() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_signal_connect_disconnect.gd",
+                """
+                        class_name BodyInsnSignalConnectDisconnect
+                        extends Node
+                        
+                        signal pinged
+                        
+                        func _handler():
+                            pass
+                        
+                        func wire(sig: Signal, other: BodyInsnSignalConnectDisconnect) -> int:
+                            sig.connect(_handler)
+                            sig.disconnect(other._handler)
+                            return sig.connect(_handler, Object.CONNECT_ONE_SHOT)
+                        """,
+                Map.of("BodyInsnSignalConnectDisconnect", "RuntimeBodyInsnSignalConnectDisconnect"),
+                true
+        );
+        var wireContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalConnectDisconnect",
+                "wire"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(wireContext.targetFunction());
+        var callables = instructions.stream()
+                .filter(ConstructCallableInsn.class::isInstance)
+                .map(ConstructCallableInsn.class::cast)
+                .toList();
+        var calls = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals(3, callables.size(), instructions::toString),
+                () -> assertEquals(3, calls.size(), instructions::toString),
+                () -> assertEquals(2, callables.stream().filter(insn -> "self".equals(insn.receiverVarId())).count()),
+                () -> assertEquals(1, callables.stream().filter(insn -> !"self".equals(insn.receiverVarId())).count()),
+                () -> assertTrue(callables.stream().allMatch(insn -> "_handler".equals(insn.methodName()))),
+                () -> assertEquals(2, calls.stream().filter(insn -> "connect".equals(insn.methodName())).count()),
+                () -> assertEquals(1, calls.stream().filter(insn -> "disconnect".equals(insn.methodName())).count()),
+                () -> assertEquals(0, countInstructions(instructions, LoadPropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runFailFastWhenResolvedMethodMemberReachesMemberLoadItem() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_method_member_load_failfast.gd",
+                """
+                        class_name BodyInsnMethodMemberLoadFailFast
+                        extends Node
+                        
+                        var payload: int = 1
+                        
+                        func copy_other(other: BodyInsnMethodMemberLoadFailFast) -> int:
+                            return other.payload
+                        """,
+                Map.of("BodyInsnMethodMemberLoadFailFast", "RuntimeBodyInsnMethodMemberLoadFailFast"),
+                true
+        );
+        var copyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMethodMemberLoadFailFast",
+                "copy_other"
+        );
+        var memberLoad = requireSingleMemberLoadItem(copyContext.requireFrontendCfgGraph(), "payload");
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                memberLoad.anchor(),
+                FrontendResolvedMember.resolved(
+                        "payload",
+                        FrontendBindingKind.METHOD,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        new GdObjectType("BodyInsnMethodMemberLoadFailFast"),
+                        new GdCallableType(),
+                        new Object()
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+        assertTrue(
+                exception.getMessage().contains("must lower through CallableLoadItem"),
+                exception.getMessage()
+        );
+    }
+
+    @Test
+    void runFailFastWhenResolvedSignalMemberReachesMemberLoadItem() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_signal_member_load_failfast.gd",
+                """
+                        class_name BodyInsnSignalMemberLoadFailFast
+                        extends Node
+                        
+                        var payload: int = 1
+                        
+                        func copy_other(other: BodyInsnSignalMemberLoadFailFast) -> int:
+                            return other.payload
+                        """,
+                Map.of("BodyInsnSignalMemberLoadFailFast", "RuntimeBodyInsnSignalMemberLoadFailFast"),
+                true
+        );
+        var copyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalMemberLoadFailFast",
+                "copy_other"
+        );
+        var memberLoad = requireSingleMemberLoadItem(copyContext.requireFrontendCfgGraph(), "payload");
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                memberLoad.anchor(),
+                FrontendResolvedMember.resolved(
+                        "payload",
+                        FrontendBindingKind.SIGNAL,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        new GdObjectType("BodyInsnSignalMemberLoadFailFast"),
+                        new GdSignalType(),
+                        new Object()
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+        assertTrue(
+                exception.getMessage().contains("must lower through SignalLoadItem"),
+                exception.getMessage()
+        );
+    }
+
+    @Test
+    void runLowersSignalEmitVarargThroughCallMethodAndPacksNonVariantArgs() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_signal_emit_vararg.gd",
+                """
+                        class_name BodyInsnSignalEmitVararg
+                        extends Node
+                        
+                        signal pinged(count: int)
+                        
+                        func emit_empty(sig: Signal) -> void:
+                            sig.emit()
+                        
+                        func emit_mixed(sig: Signal, label: String) -> void:
+                            sig.emit(1, label)
+                        
+                        func emit_declared_mismatch() -> void:
+                            pinged.emit("not-an-int")
+                        """,
+                Map.of("BodyInsnSignalEmitVararg", "RuntimeBodyInsnSignalEmitVararg"),
+                true
+        );
+        var emptyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalEmitVararg",
+                "emit_empty"
+        );
+        var mixedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalEmitVararg",
+                "emit_mixed"
+        );
+        var mismatchContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalEmitVararg",
+                "emit_declared_mismatch"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var emptyCall = requireOnlyInstruction(emptyContext.targetFunction(), CallMethodInsn.class);
+        var mixedInstructions = allInstructions(mixedContext.targetFunction());
+        var mixedCall = requireOnlyInstruction(mixedContext.targetFunction(), CallMethodInsn.class);
+        var mixedPacks = mixedInstructions.stream()
+                .filter(PackVariantInsn.class::isInstance)
+                .map(PackVariantInsn.class::cast)
+                .toList();
+        var mismatchCall = requireOnlyInstruction(mismatchContext.targetFunction(), CallMethodInsn.class);
+        var mismatchPack = requireOnlyInstruction(mismatchContext.targetFunction(), PackVariantInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("emit", emptyCall.methodName()),
+                () -> assertNull(emptyCall.resultId()),
+                () -> assertTrue(emptyCall.args().isEmpty(), emptyCall.args()::toString),
+                () -> assertEquals("emit", mixedCall.methodName()),
+                () -> assertNull(mixedCall.resultId()),
+                () -> assertEquals(2, mixedCall.args().size()),
+                () -> assertEquals(2, mixedPacks.size()),
+                () -> assertEquals(
+                        mixedPacks.stream().map(PackVariantInsn::resultId).toList(),
+                        mixedCall.args().stream()
+                                .map(operand -> assertInstanceOf(LirInstruction.VariableOperand.class, operand).id())
+                                .toList()
+                ),
+                () -> assertEquals("emit", mismatchCall.methodName()),
+                () -> assertEquals(1, mismatchCall.args().size()),
+                () -> assertEquals(
+                        mismatchPack.resultId(),
+                        assertInstanceOf(LirInstruction.VariableOperand.class, mismatchCall.args().getFirst()).id()
+                )
+        );
+    }
+
+    /// Signal crossing Variant, container, named/indexed store, or emit vararg must pack first.
+    @Test
+    void runPacksAndUnpacksSignalAcrossExplicitVariantBoundaries() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_signal_variant_boundary.gd",
+                """
+                        class_name BodyInsnSignalVariantBoundary
+                        extends Node
+                        
+                        signal pinged
+                        
+                        func take_variant(value: Variant) -> void:
+                            pass
+                        
+                        func pack_param(other: BodyInsnSignalVariantBoundary) -> void:
+                            take_variant(other.pinged)
+                        
+                        func pack_array(other: BodyInsnSignalVariantBoundary) -> void:
+                            var items: Array = [other.pinged]
+                        
+                        func pack_dict(other: BodyInsnSignalVariantBoundary) -> void:
+                            var payload: Dictionary = {"sig": other.pinged}
+                        
+                        func pack_named_store(host: Variant, other: BodyInsnSignalVariantBoundary) -> void:
+                            host.marker = other.pinged
+                        
+                        func pack_indexed_store(host: Array, other: BodyInsnSignalVariantBoundary) -> void:
+                            host[0] = other.pinged
+                        
+                        func pack_emit_arg(sig: Signal, other: BodyInsnSignalVariantBoundary) -> void:
+                            sig.emit(other.pinged)
+                        
+                        func unpack_param(boxed: Variant) -> void:
+                            var typed: Signal = boxed
+                        
+                        func unpack_array(items: Array) -> void:
+                            var typed: Signal = items[0]
+                        """,
+                Map.of("BodyInsnSignalVariantBoundary", "RuntimeBodyInsnSignalVariantBoundary"),
+                true
+        );
+        var packParamContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "pack_param"
+        );
+        var packArrayContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "pack_array"
+        );
+        var packDictContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "pack_dict"
+        );
+        var packNamedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "pack_named_store"
+        );
+        var packIndexedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "pack_indexed_store"
+        );
+        var packEmitContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "pack_emit_arg"
+        );
+        var unpackParamContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "unpack_param"
+        );
+        var unpackArrayContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "unpack_array"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var packParamConstruct = requireOnlyInstruction(packParamContext.targetFunction(), ConstructSignalInsn.class);
+        var packParamPack = requireOnlyInstruction(packParamContext.targetFunction(), PackVariantInsn.class);
+        var packParamCall = requireOnlyInstruction(packParamContext.targetFunction(), CallMethodInsn.class);
+        var packArrayConstruct = requireOnlyInstruction(packArrayContext.targetFunction(), ConstructSignalInsn.class);
+        var packArrayPack = requirePackOf(packArrayContext.targetFunction(), packArrayConstruct.resultId());
+        var packArrayLiteral = requireOnlyInstruction(packArrayContext.targetFunction(), ConstructContainerLiteralInsn.class);
+        var packDictConstruct = requireOnlyInstruction(packDictContext.targetFunction(), ConstructSignalInsn.class);
+        var packDictPack = requirePackOf(packDictContext.targetFunction(), packDictConstruct.resultId());
+        var packDictLiteral = requireOnlyInstruction(packDictContext.targetFunction(), ConstructContainerLiteralInsn.class);
+        var packNamedConstruct = requireOnlyInstruction(packNamedContext.targetFunction(), ConstructSignalInsn.class);
+        var packNamedPack = requireOnlyInstruction(packNamedContext.targetFunction(), PackVariantInsn.class);
+        var packNamedStore = requireOnlyInstruction(packNamedContext.targetFunction(), VariantSetNamedInsn.class);
+        var packIndexedConstruct = requireOnlyInstruction(packIndexedContext.targetFunction(), ConstructSignalInsn.class);
+        var packIndexedPack = requireOnlyInstruction(packIndexedContext.targetFunction(), PackVariantInsn.class);
+        var packIndexedStore = requireOnlyInstruction(packIndexedContext.targetFunction(), VariantSetIndexedInsn.class);
+        var packEmitConstruct = requireOnlyInstruction(packEmitContext.targetFunction(), ConstructSignalInsn.class);
+        var packEmitPack = requireOnlyInstruction(packEmitContext.targetFunction(), PackVariantInsn.class);
+        var packEmitCall = requireOnlyInstruction(packEmitContext.targetFunction(), CallMethodInsn.class);
+        var unpackParam = requireOnlyInstruction(unpackParamContext.targetFunction(), UnpackVariantInsn.class);
+        var unpackArray = requireOnlyInstruction(unpackArrayContext.targetFunction(), UnpackVariantInsn.class);
+        var unpackArrayGet = requireOnlyInstruction(unpackArrayContext.targetFunction(), VariantGetIndexedInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("pinged", packParamConstruct.signalName()),
+                () -> assertEquals(packParamConstruct.resultId(), packParamPack.valueId()),
+                () -> assertEquals("take_variant", packParamCall.methodName()),
+                () -> assertEquals(
+                        packParamPack.resultId(),
+                        assertInstanceOf(LirInstruction.VariableOperand.class, packParamCall.args().getFirst()).id()
+                ),
+                () -> assertEquals("pinged", packArrayConstruct.signalName()),
+                () -> assertEquals(packArrayConstruct.resultId(), packArrayPack.valueId()),
+                () -> assertEquals(
+                        packArrayPack.resultId(),
+                        assertInstanceOf(LirInstruction.VariableOperand.class, packArrayLiteral.operands().getFirst()).id()
+                ),
+                () -> assertEquals("pinged", packDictConstruct.signalName()),
+                () -> assertEquals(packDictConstruct.resultId(), packDictPack.valueId()),
+                () -> assertEquals(2, packDictLiteral.operands().size()),
+                () -> assertEquals(
+                        packDictPack.resultId(),
+                        assertInstanceOf(LirInstruction.VariableOperand.class, packDictLiteral.operands().getLast()).id()
+                ),
+                () -> assertEquals("pinged", packNamedConstruct.signalName()),
+                () -> assertEquals(packNamedConstruct.resultId(), packNamedPack.valueId()),
+                () -> assertEquals(packNamedPack.resultId(), packNamedStore.valueId()),
+                () -> assertEquals("pinged", packIndexedConstruct.signalName()),
+                () -> assertEquals(packIndexedConstruct.resultId(), packIndexedPack.valueId()),
+                () -> assertEquals(packIndexedPack.resultId(), packIndexedStore.valueId()),
+                () -> assertEquals("pinged", packEmitConstruct.signalName()),
+                () -> assertEquals(packEmitConstruct.resultId(), packEmitPack.valueId()),
+                () -> assertEquals("emit", packEmitCall.methodName()),
+                () -> assertEquals(
+                        packEmitPack.resultId(),
+                        assertInstanceOf(LirInstruction.VariableOperand.class, packEmitCall.args().getFirst()).id()
+                ),
+                () -> assertEquals(
+                        unpackParam.resultId(),
+                        assignSourcesByTarget(allInstructions(unpackParamContext.targetFunction())).get("typed")
+                ),
+                () -> assertTrue(
+                        "boxed".equals(unpackParam.variantId())
+                                || "boxed".equals(assignSourcesByTarget(allInstructions(unpackParamContext.targetFunction()))
+                                .get(unpackParam.variantId())),
+                        () -> "unpack_param must consume boxed or a copy of boxed: " + allInstructions(unpackParamContext.targetFunction())
+                ),
+                () -> assertEquals(0, countInstructions(allInstructions(unpackParamContext.targetFunction()), PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(unpackArrayContext.targetFunction()), PackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(allInstructions(unpackArrayContext.targetFunction()), UnpackVariantInsn.class)),
+                () -> assertTrue(
+                        "items".equals(unpackArrayGet.variantId())
+                                || "items".equals(assignSourcesByTarget(allInstructions(unpackArrayContext.targetFunction()))
+                                .get(unpackArrayGet.variantId())),
+                        () -> "unpack_array get must consume items or a copy of items: " + allInstructions(unpackArrayContext.targetFunction())
+                ),
+                () -> assertEquals(unpackArrayGet.resultId(), unpackArray.variantId()),
+                () -> assertEquals(unpackArray.resultId(), assignSourcesByTarget(allInstructions(unpackArrayContext.targetFunction())).get("typed"))
+        );
+    }
+
+    @Test
     void runLowersVariantDynamicMemberReadIntoVariantNamedGet() throws Exception {
         var prepared = prepareContext(
                 "body_insn_variant_dynamic_member_read.gd",
@@ -7576,14 +8530,41 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     private static @NotNull PreparedContext prepareContext(
+            @NotNull List<SourceFixture> fixtures,
+            @NotNull Map<String, String> topLevelCanonicalNameMap,
+            boolean buildCfg
+    ) throws Exception {
+        return prepareContext(
+                fixtures,
+                topLevelCanonicalNameMap,
+                buildCfg,
+                new ClassRegistry(ExtensionApiLoader.loadDefault())
+        );
+    }
+
+    private static @NotNull PreparedContext prepareContext(
             @NotNull String fileName,
             @NotNull String source,
             @NotNull Map<String, String> topLevelCanonicalNameMap,
             boolean buildCfg,
             @NotNull ClassRegistry classRegistry
     ) {
+        return prepareContext(
+                List.of(new SourceFixture(fileName, source)),
+                topLevelCanonicalNameMap,
+                buildCfg,
+                classRegistry
+        );
+    }
+
+    private static @NotNull PreparedContext prepareContext(
+            @NotNull List<SourceFixture> fixtures,
+            @NotNull Map<String, String> topLevelCanonicalNameMap,
+            boolean buildCfg,
+            @NotNull ClassRegistry classRegistry
+    ) {
         var diagnostics = new DiagnosticManager();
-        var module = parseModule(List.of(new SourceFixture(fileName, source)), topLevelCanonicalNameMap);
+        var module = parseModule(fixtures, topLevelCanonicalNameMap);
         var context = new FrontendLoweringContext(
                 module,
                 classRegistry,
@@ -7700,6 +8681,19 @@ class FrontendLoweringBodyInsnPassTest {
             @NotNull Class<? extends LirInstruction> instructionType
     ) {
         return (int) instructions.stream().filter(instructionType::isInstance).count();
+    }
+
+    private static @NotNull PackVariantInsn requirePackOf(
+            @NotNull LirFunctionDef function,
+            @NotNull String valueId
+    ) {
+        var packs = allInstructions(function).stream()
+                .filter(PackVariantInsn.class::isInstance)
+                .map(PackVariantInsn.class::cast)
+                .filter(insn -> valueId.equals(insn.valueId()))
+                .toList();
+        assertEquals(1, packs.size(), () -> "Expected one PackVariantInsn of " + valueId + ": " + allInstructions(function));
+        return packs.getFirst();
     }
 
     private static @NotNull List<String> packResultIds(@NotNull List<LirInstruction> instructions) {

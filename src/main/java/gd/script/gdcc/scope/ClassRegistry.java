@@ -42,6 +42,20 @@ public final class ClassRegistry implements Scope {
     ) {
     }
 
+    /// Engine/native signal lookup result. GDCC parent signals are never reported here.
+    public record EngineClassSignalLookup(
+            @NotNull ExtensionGdClass ownerClass,
+            @NotNull ExtensionGdClass.SignalInfo signal
+    ) {
+    }
+
+    /// Static-function lookup result. Direct declarations win over inherited ones.
+    public record ClassStaticFunctionLookup(
+            @NotNull ClassDef ownerClass,
+            @NotNull FunctionDef function
+    ) {
+    }
+
     public record BuiltinClassConstantLookup(
             @NotNull ExtensionBuiltinClass ownerClass,
             @NotNull ExtensionBuiltinClass.ConstantInfo constant
@@ -164,6 +178,9 @@ public final class ClassRegistry implements Scope {
     }
 
     /// Return a builtin class definition by name if present.
+    ///
+    /// Single-namespace lookup. Use [resolveClassDefByName] to search engine, builtin, and GDCC
+    /// together. [getClassDef] never returns a builtin.
     public @Nullable ExtensionBuiltinClass findBuiltinClass(@NotNull String name) {
         return builtinByName.get(name);
     }
@@ -176,6 +193,11 @@ public final class ClassRegistry implements Scope {
     /// Check whether a name refers to a global utility function.
     public boolean isUtilityFunction(@NotNull String name) {
         return utilityByName.containsKey(name);
+    }
+
+    /// Return the extension utility metadata by name, or `null` when the utility is unknown.
+    public @Nullable ExtensionUtilityFunction findUtilityFunction(@NotNull String name) {
+        return utilityByName.get(name);
     }
 
     /// Check whether a name refers to a global enum.
@@ -231,6 +253,9 @@ public final class ClassRegistry implements Scope {
     }
 
     /// Get a user-defined class by canonical name.
+    ///
+    /// Single-namespace lookup. Use [resolveClassDefByName] to search engine, builtin, and GDCC
+    /// together. [getClassDef] searches engine then GDCC but still skips builtins.
     public @Nullable ClassDef findGdccClass(@NotNull String name) {
         return gdccClassByName.get(name);
     }
@@ -827,6 +852,11 @@ public final class ClassRegistry implements Scope {
         return Collections.unmodifiableMap(virtualMethods);
     }
 
+    /// Resolves an object-family class from a [GdObjectType] name: engine first, then GDCC.
+    ///
+    /// Distinct from [resolveClassDefByName], which also accepts builtin names. Distinct from
+    /// [resolveSuperclass], which starts from an already-resolved [ClassDef] and returns only that
+    /// class's immediate super.
     public @Nullable ClassDef getClassDef(@NotNull GdObjectType type) {
         ClassDef classDef = gdClassByName.get(type.getTypeName());
         if (classDef != null) {
@@ -834,6 +864,23 @@ public final class ClassRegistry implements Scope {
         }
         classDef = gdccClassByName.get(type.getTypeName());
         return classDef;
+    }
+
+    /// Resolves a class by canonical name across engine, builtin, then GDCC.
+    ///
+    /// Distinct from [getClassDef], which only searches engine then GDCC object types and never
+    /// returns a builtin. Distinct from [resolveSuperclass], which starts from an already-resolved
+    /// [ClassDef] and returns only that class's immediate super.
+    public @Nullable ClassDef resolveClassDefByName(@NotNull String className) {
+        var engineClass = gdClassByName.get(className);
+        if (engineClass != null) {
+            return engineClass;
+        }
+        var builtinClass = builtinByName.get(className);
+        if (builtinClass != null) {
+            return builtinClass;
+        }
+        return gdccClassByName.get(className);
     }
 
     /// Global assignability rules used across backend validation/codegen:
@@ -941,7 +988,10 @@ public final class ClassRegistry implements Scope {
 
     /// Resolves a [ClassDef] from type-meta metadata. If the meta carries a direct `declaration()`
     /// that is already a `ClassDef`, returns it. Otherwise, attempts to find the `ClassDef` by
-    /// resolving the `instanceType()` via `getClassDef`.
+    /// resolving the `instanceType()` via [getClassDef].
+    ///
+    /// This is a type-meta adapter, not a name lookup. Name lookup lives on [getClassDef],
+    /// [resolveClassDefByName], and [resolveSuperclass].
     public @Nullable ClassDef resolveClassDefFromTypeMeta(@NotNull ScopeTypeMeta typeMeta) {
         if (typeMeta.declaration() instanceof ClassDef classDef) {
             return classDef;
@@ -954,6 +1004,10 @@ public final class ClassRegistry implements Scope {
 
     /// Resolves the immediate superclass of `current` from the registry.
     /// Returns `null` when the super-name is blank or the class cannot be found.
+    ///
+    /// Distinct from [resolveClassDefByName], which looks up any class by name rather than the
+    /// immediate super of an existing [ClassDef]. Distinct from [getClassDef], which never returns
+    /// a builtin; this method checks [findBuiltinClass] first, then [getClassDef].
     public @Nullable ClassDef resolveSuperclass(@NotNull ClassDef current) {
         var superName = current.getSuperName();
         if (superName.isBlank()) {
@@ -1017,6 +1071,61 @@ public final class ClassRegistry implements Scope {
                 return new EngineClassEnumValueLookup(engineClass, enumValue);
             }
             engineClass = resolveSuperclass(engineClass) instanceof ExtensionGdClass superClass ? superClass : null;
+        }
+        return null;
+    }
+
+    /// Looks up an inherited engine/native signal starting at `className`.
+    ///
+    /// The walk includes `className` itself when that node is engine/native, then continues through
+    /// superclasses. GDCC parents are traversed so a later native ancestor can still match, but
+    /// their own signal declarations are never treated as engine signals. The start node is resolved
+    /// by [resolveClassDefByName] so a GDCC, engine, or builtin name can all begin the walk.
+    public @Nullable EngineClassSignalLookup findEngineSignalInHierarchy(
+            @NotNull String className,
+            @NotNull String signalName
+    ) {
+        var current = resolveClassDefByName(className);
+        var visited = new HashSet<String>();
+        while (current != null && visited.add(current.getName())) {
+            if (current instanceof ExtensionGdClass engineClass) {
+                for (var candidate : engineClass.getSignals()) {
+                    if (signalName.equals(candidate.getName())
+                            && candidate instanceof ExtensionGdClass.SignalInfo signalInfo) {
+                        return new EngineClassSignalLookup(engineClass, signalInfo);
+                    }
+                }
+            }
+            current = resolveSuperclass(current);
+        }
+        return null;
+    }
+
+    /// Looks up a static function starting at `className` and walking superclasses.
+    ///
+    /// Direct declarations win over inherited ones. The start node is resolved by
+    /// [resolveClassDefByName] so a GDCC, engine, or builtin name can all begin the walk.
+    /// Overloaded statics on the same declaring class still return the first match; callers that
+    /// must reject overloads re-check that class's function list.
+    public @Nullable ClassStaticFunctionLookup findStaticFunctionInHierarchy(
+            @NotNull String className,
+            @NotNull String functionName
+    ) {
+        var current = resolveClassDefByName(className);
+        var visited = new HashSet<String>();
+        while (current != null && visited.add(current.getName())) {
+            FunctionDef found = null;
+            for (var function : current.getFunctions()) {
+                if (!function.getName().equals(functionName) || !function.isStatic()) {
+                    continue;
+                }
+                found = function;
+                break;
+            }
+            if (found != null) {
+                return new ClassStaticFunctionLookup(current, found);
+            }
+            current = resolveSuperclass(current);
         }
         return null;
     }

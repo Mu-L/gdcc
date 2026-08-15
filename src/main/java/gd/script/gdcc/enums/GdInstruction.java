@@ -25,7 +25,15 @@ public enum GdInstruction {
     /// Empty operands are legal; does not replace empty `construct_array` / `construct_dictionary`.
     CONSTRUCT_CONTAINER_LITERAL("construct_container_literal", ReturnKind.REQUIRED, List.of(OperandKind.VARARGS), 0, Integer.MAX_VALUE),
     CONSTRUCT_OBJECT("construct_object", ReturnKind.REQUIRED, List.of(OperandKind.STRING), 1, 1),
-    CONSTRUCT_CALLABLE("construct_callable", ReturnKind.REQUIRED, List.of(OperandKind.STRING), 1, 1),
+    CONSTRUCT_SIGNAL("construct_signal", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE, OperandKind.STRING), 2, 2),
+    CONSTRUCT_CALLABLE("construct_callable", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE, OperandKind.STRING), 2, 2),
+    CONSTRUCT_STANDALONE_CALLABLE(
+            "construct_standalone_callable",
+            ReturnKind.REQUIRED,
+            List.of(OperandKind.STRING, OperandKind.STRING, OperandKind.STRING),
+            3,
+            3
+    ),
     CONSTRUCT_LAMBDA("construct_lambda", ReturnKind.REQUIRED, List.of(OperandKind.STRING, OperandKind.VARARGS), 1, Integer.MAX_VALUE),
     DESTRUCT("destruct", ReturnKind.NONE, List.of(OperandKind.VARIABLE, OperandKind.STRING), 1, 2),
     TRY_OWN_OBJECT("try_own_object", ReturnKind.NONE, List.of(OperandKind.VARIABLE, OperandKind.STRING), 1, 2),

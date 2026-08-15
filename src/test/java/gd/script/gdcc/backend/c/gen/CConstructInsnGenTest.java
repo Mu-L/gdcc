@@ -17,10 +17,19 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirPropertyDef;
+import gd.script.gdcc.backend.c.gen.insn.ConstructInsnGen;
+import gd.script.gdcc.enums.GdInstruction;
+import gd.script.gdcc.lir.insn.AssertObjectLiveInsn;
+import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructArrayInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructDictionaryInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
+import gd.script.gdcc.lir.insn.ConstructCallableInsn;
+import gd.script.gdcc.lir.insn.ConstructSignalInsn;
+import gd.script.gdcc.lir.insn.ConstructStandaloneCallableInsn;
+import gd.script.gdcc.lir.insn.StandaloneCallableKind;
+import gd.script.gdcc.lir.insn.DestructInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
@@ -28,9 +37,12 @@ import gd.script.gdcc.type.GdBasisType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdCallableType;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
 import gd.script.gdcc.type.GdPackedStringArrayType;
 import gd.script.gdcc.type.GdPackedVectorArrayType;
@@ -649,6 +661,407 @@ class CConstructInsnGenTest {
     }
 
     @Test
+    @DisplayName("construct_signal should emit live-object Signal constructor and destroy the result")
+    void constructSignalShouldEmitSignalFromReceiverAndDestroyResult() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_signal_value");
+        func.createAndAddVariable("self", new GdObjectType("Node"));
+        func.createAndAddVariable("sig", new GdSignalType());
+
+        entry(func).appendInstruction(new ConstructSignalInsn("sig", "self", "pinged"));
+        entry(func).appendInstruction(new DestructInsn("sig"));
+        entry(func).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("godot_new_Signal_with_Object_StringName("), body);
+        assertTrue(body.contains("GD_STATIC_SN(u8\"pinged\")"), body);
+        assertTrue(body.contains("_live_object($self)"), body);
+        assertTrue(body.contains("godot_Signal_destroy(&$sig);"), body);
+        assertFalse(body.contains("assert_object_live"), body);
+        assertFalse(body.contains("own_object("), body);
+        assertFalse(body.contains("try_own_object("), body);
+    }
+
+    @Test
+    @DisplayName("construct_signal after assert_object_live should hard-fail a null or freed Object receiver")
+    void constructSignalShouldKeepLiveAssertHardFailForNonSelfObjectReceiver() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_signal_live_assert");
+        func.createAndAddVariable("other", new GdObjectType("Node"));
+        func.createAndAddVariable("sig", new GdSignalType());
+
+        entry(func).appendInstruction(new AssertObjectLiveInsn("other"));
+        entry(func).appendInstruction(new ConstructSignalInsn("sig", "other", "ready"));
+        entry(func).appendInstruction(new DestructInsn("sig"));
+        entry(func).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        var assertIndex = body.indexOf("assert_object_live failed: object 'other' is null or freed");
+        var constructIndex = body.indexOf("godot_new_Signal_with_Object_StringName(");
+        assertTrue(assertIndex >= 0, body);
+        assertTrue(constructIndex >= 0, body);
+        assertTrue(assertIndex < constructIndex, body);
+        assertTrue(body.contains("gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($other).ptr, $other.instance_id)"), body);
+        assertTrue(body.contains("GD_STATIC_SN(u8\"ready\")"), body);
+        assertTrue(body.contains("_live_object($other)"), body);
+        assertTrue(body.contains("godot_Signal_destroy(&$sig);"), body);
+    }
+
+    @Test
+    @DisplayName("construct_signal opcode is registered on ConstructInsnGen")
+    void constructSignalOpcodeIsRegisteredForDispatch() {
+        assertTrue(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_SIGNAL));
+        assertTrue(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_CALLABLE));
+        assertTrue(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_STANDALONE_CALLABLE));
+    }
+
+    /// CALL_STATIC_METHOD has no CInsnGen. Dispatch must throw, not skip the insn.
+    @Test
+    @DisplayName("CCodegen must fail-fast when an opcode is not registered on any CInsnGen")
+    void unregisteredOpcodeFailsDispatchInsteadOfSkipping() {
+        var clazz = newTestClass();
+        var func = newFunction("unregistered_static_call");
+        func.createAndAddVariable("result", GdVariantType.VARIANT);
+        entry(func).appendInstruction(new CallStaticMethodInsn(
+                "result",
+                "JSON",
+                "parse_string",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var thrown = assertThrows(
+                UnsupportedOperationException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(thrown.getMessage().contains("call_static_method"), thrown.getMessage());
+    }
+
+    @Test
+    @DisplayName("construct_callable should emit live-object Callable constructor and destroy the result")
+    void constructCallableShouldEmitCallableFromReceiverAndDestroyResult() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_callable_value");
+        func.createAndAddVariable("self", new GdObjectType("Node"));
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructCallableInsn("cb", "self", "_handler"));
+        entry(func).appendInstruction(new DestructInsn("cb"));
+        entry(func).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("godot_new_Callable_with_Object_StringName("), body);
+        assertTrue(body.contains("GD_STATIC_SN(u8\"_handler\")"), body);
+        assertTrue(body.contains("_live_object($self)"), body);
+        assertTrue(body.contains("godot_Callable_destroy(&$cb);"), body);
+        assertFalse(body.contains("assert_object_live"), body);
+        assertFalse(body.contains("own_object("), body);
+        assertFalse(body.contains("try_own_object("), body);
+    }
+
+    @Test
+    @DisplayName("construct_callable after assert_object_live should hard-fail a null or freed Object receiver")
+    void constructCallableShouldKeepLiveAssertHardFailForNonSelfObjectReceiver() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_callable_live_assert");
+        func.createAndAddVariable("other", new GdObjectType("Node"));
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new AssertObjectLiveInsn("other"));
+        entry(func).appendInstruction(new ConstructCallableInsn("cb", "other", "_handler"));
+        entry(func).appendInstruction(new DestructInsn("cb"));
+        entry(func).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        var assertIndex = body.indexOf("assert_object_live failed: object 'other' is null or freed");
+        var constructIndex = body.indexOf("godot_new_Callable_with_Object_StringName(");
+        assertTrue(assertIndex >= 0, body);
+        assertTrue(constructIndex >= 0, body);
+        assertTrue(assertIndex < constructIndex, body);
+        assertTrue(body.contains("gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($other).ptr, $other.instance_id)"), body);
+        assertTrue(body.contains("GD_STATIC_SN(u8\"_handler\")"), body);
+        assertTrue(body.contains("_live_object($other)"), body);
+        assertTrue(body.contains("godot_Callable_destroy(&$cb);"), body);
+    }
+
+    @Test
+    @DisplayName("construct_callable should reject missing receiver variables")
+    void constructCallableShouldRejectMissingReceiver() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_callable_missing_receiver");
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructCallableInsn("cb", "missing", "_handler"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("receiver variable ID 'missing' not found"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("construct_callable should emit Callable.create for builtin receivers")
+    void constructCallableShouldEmitCallableCreateForBuiltinReceiver() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_callable_builtin_receiver");
+        func.createAndAddVariable("vec", GdFloatVectorType.VECTOR2);
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructCallableInsn("cb", "vec", "abs"));
+        entry(func).appendInstruction(new DestructInsn("cb"));
+        entry(func).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("godot_Callable_create(NULL,"), body);
+        assertTrue(body.contains("GD_STATIC_SN(u8\"abs\")"), body);
+        assertTrue(body.contains("godot_Variant_destroy("), body);
+        assertFalse(body.contains("godot_new_Callable_with_Object_StringName("), body);
+        assertFalse(body.contains("_live_object($vec)"), body);
+    }
+
+    @Test
+    @DisplayName("construct_callable should reject Variant receivers")
+    void constructCallableShouldRejectVariantReceiver() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_callable_variant_receiver");
+        func.createAndAddVariable("recv", GdVariantType.VARIANT);
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructCallableInsn("cb", "recv", "abs"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("must not be Variant"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("construct_standalone_callable should emit custom-create helper for utility")
+    void constructStandaloneCallableShouldEmitUtilityCustomCreate() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_standalone_utility");
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb",
+                StandaloneCallableKind.UTILITY,
+                "",
+                "print"
+        ));
+        entry(func).appendInstruction(new DestructInsn("cb"));
+        entry(func).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("gdcc_new_standalone_callable("), body);
+        assertTrue(body.contains("u8\"utility\""), body);
+        assertTrue(body.contains("u8\"print\""), body);
+        assertTrue(body.contains("2648703342LL"), body);
+        assertFalse(body.contains("godot_new_Callable_with_Object_StringName("), body);
+    }
+
+    @Test
+    @DisplayName("construct_standalone_callable should emit custom-create helper for GDCC static")
+    void constructStandaloneCallableShouldEmitGdccStaticCustomCreate() {
+        var clazz = newTestClass();
+        var build = newFunction("build");
+        build.setStatic(true);
+        clazz.addFunction(build);
+        var func = newFunction("construct_standalone_gdcc_static");
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb",
+                StandaloneCallableKind.STATIC_GDCC,
+                "Worker",
+                "build"
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("gdcc_new_standalone_callable("), body);
+        assertTrue(body.contains("u8\"static_gdcc\""), body);
+        assertTrue(body.contains("u8\"Worker\""), body);
+        assertTrue(body.contains("u8\"build\""), body);
+    }
+
+    @Test
+    @DisplayName("construct_standalone_callable should emit custom-create helper for engine static")
+    void constructStandaloneCallableShouldEmitEngineStaticCustomCreate() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_standalone_engine_static");
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb",
+                StandaloneCallableKind.STATIC_ENGINE,
+                "JSON",
+                "parse_string"
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("gdcc_new_standalone_callable("), body);
+        assertTrue(body.contains("u8\"static_engine\""), body);
+        assertTrue(body.contains("u8\"JSON\""), body);
+        assertTrue(body.contains("u8\"parse_string\""), body);
+    }
+
+    @Test
+    @DisplayName("construct_standalone_callable should reject unknown utility names")
+    void constructStandaloneCallableShouldRejectUnknownUtility() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_standalone_unknown_utility");
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb",
+                StandaloneCallableKind.UTILITY,
+                "",
+                "not_a_utility"
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("utility 'not_a_utility' is not registered"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("construct_standalone_callable should resolve inherited GDCC static to declaring owner")
+    void constructStandaloneCallableShouldResolveInheritedGdccStaticToDeclaringOwner() {
+        var parentClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var build = newFunction("build");
+        build.setStatic(true);
+        parentClass.addFunction(build);
+        var childClass = new LirClassDef("WorkerChild", "Worker", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = newFunction("construct_inherited_gdcc_static");
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb",
+                StandaloneCallableKind.STATIC_GDCC,
+                "WorkerChild",
+                "build"
+        ));
+        childClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(parentClass, childClass));
+        var codegen = newCodegen(module, List.of(parentClass, childClass), apiWithConstructibleObjectClasses());
+        var body = codegen.generateFuncBody(childClass, func);
+
+        assertTrue(body.contains("gdcc_new_standalone_callable("), body);
+        assertTrue(body.contains("u8\"static_gdcc\""), body);
+        assertTrue(body.contains("u8\"Worker\""), body);
+        assertTrue(body.contains("u8\"build\""), body);
+        assertFalse(body.contains("u8\"WorkerChild\""), body);
+    }
+
+    @Test
+    @DisplayName("construct_standalone_callable should reject missing GDCC static symbols")
+    void constructStandaloneCallableShouldRejectMissingGdccStatic() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_standalone_missing_gdcc");
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb",
+                StandaloneCallableKind.STATIC_GDCC,
+                "Worker",
+                "missing"
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("Worker.missing"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("construct_callable should reject non-callable result slots")
+    void constructCallableShouldRejectNonCallableResultSlot() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_callable_non_callable_slot");
+        func.createAndAddVariable("self", new GdObjectType("Node"));
+        func.createAndAddVariable("value", GdFloatType.FLOAT);
+
+        entry(func).appendInstruction(new ConstructCallableInsn("value", "self", "_handler"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("must be Callable type for construct_callable"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("construct_signal should reject missing receiver variables")
+    void constructSignalShouldRejectMissingReceiver() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_signal_missing_receiver");
+        func.createAndAddVariable("sig", new GdSignalType());
+
+        entry(func).appendInstruction(new ConstructSignalInsn("sig", "missing", "pinged"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("receiver variable ID 'missing' not found"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("construct_signal should reject non-object receivers")
+    void constructSignalShouldRejectNonObjectReceiver() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_signal_non_object_receiver");
+        func.createAndAddVariable("recv", GdFloatType.FLOAT);
+        func.createAndAddVariable("sig", new GdSignalType());
+
+        entry(func).appendInstruction(new ConstructSignalInsn("sig", "recv", "pinged"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("must be Object type"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("construct_signal should reject non-signal result slots")
+    void constructSignalShouldRejectNonSignalResultSlot() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_signal_non_signal_slot");
+        func.createAndAddVariable("self", new GdObjectType("Node"));
+        func.createAndAddVariable("value", GdFloatType.FLOAT);
+
+        entry(func).appendInstruction(new ConstructSignalInsn("value", "self", "pinged"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("must be Signal type for construct_signal"), ex.getMessage());
+    }
+
+    @Test
     @DisplayName("construct_object should reject non-instantiable engine classes")
     void constructObjectShouldRejectNonInstantiableEngineClass() {
         var clazz = newTestClass();
@@ -1231,18 +1644,41 @@ class CConstructInsnGenTest {
     }
 
     private ExtensionAPI apiWithConstructibleObjectClasses() {
+        var parseString = new ExtensionGdClass.ClassMethod(
+                "parse_string",
+                true,
+                false,
+                true,
+                false,
+                1L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("Variant"),
+                List.of(new ExtensionFunctionArgument("json_string", "String", null, null))
+        );
         return new ExtensionAPI(
                 null,
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of(),
+                List.of(new ExtensionUtilityFunction("print", "", "general", true, (int) 2648703342L, List.of())),
                 List.of(),
                 List.of(
                         new ExtensionGdClass("Object", false, true, "", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
                         new ExtensionGdClass("Node", false, true, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
                         new ExtensionGdClass("RefCounted", true, true, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
-                        new ExtensionGdClass("EditorOnlyThing", false, false, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of())
+                        new ExtensionGdClass("EditorOnlyThing", false, false, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
+                        new ExtensionGdClass(
+                                "JSON",
+                                false,
+                                true,
+                                "Object",
+                                "core",
+                                List.of(),
+                                List.of(parseString),
+                                List.of(),
+                                List.of(),
+                                List.of()
+                        )
                 ),
                 List.of(),
                 List.of()

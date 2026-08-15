@@ -9,6 +9,7 @@ import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
@@ -21,7 +22,10 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdVariantType;
+import gd.script.gdcc.type.GdVoidType;
+import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
@@ -75,7 +79,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("missing_compile_check_diagnostics.gd", """
                 class_name MissingCompileCheckDiagnostics
                 extends Node
-
+                
                 func ping():
                     pass
                 """);
@@ -95,7 +99,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckExplicitBlocks
                 extends Node
-
+                
                 var property_array = [1]
                 var property_preload = preload("res://icon.svg")
                 
@@ -886,7 +890,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckForBridge
                 extends Node
-
+                
                 func ping(values):
                     for item in values:
                         var copy := item
@@ -911,7 +915,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckForRangeReleased
                 extends Node
-
+                
                 func ping():
                     for i in range(3):
                         var copy := i
@@ -929,7 +933,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckForIntShorthandReleased
                 extends Node
-
+                
                 func ping():
                     for i in 5:
                         var copy := i
@@ -947,7 +951,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckForRangeBodyScanned
                 extends Node
-
+                
                 func ping():
                     for i in range(3):
                         assert(i)
@@ -965,7 +969,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_for_upstream_error.gd", """
                 class_name CompileCheckForUpstreamError
                 extends Node
-
+                
                 func ping(values):
                     for item in values:
                         var copy := item
@@ -990,7 +994,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_for_missing_plan.gd", """
                 class_name CompileCheckForMissingPlan
                 extends Node
-
+                
                 func ping():
                     for i in range(3):
                         var copy := i
@@ -1529,6 +1533,558 @@ class FrontendCompileCheckAnalyzerTest {
         ));
     }
 
+    @Test
+    void analyzeForCompileReleasesBareSignalValueReadWhileAnalyzeLeavesSharedFactsUntouched() throws Exception {
+        var source = """
+                class_name CompileCheckBareSignalValue
+                extends Node
+                
+                signal pinged
+                
+                func ping():
+                    var copied = pinged
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_bare_signal_value.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors(), () -> sharedAnalyzed.diagnostics().asList().toString());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_bare_signal_value.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics().asList()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileReleasesReceiverQualifiedSignalReads() throws Exception {
+        var source = """
+                class_name CompileCheckReceiverSignalValue
+                extends Node
+                
+                signal pinged
+                
+                func ping(other: CompileCheckReceiverSignalValue):
+                    var from_other = other.pinged
+                    var from_self = self.pinged
+                """;
+
+        var compiled = analyzeForCompile("compile_check_receiver_signal_value.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics().asList()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileStillBlocksStaticContextSignalReads() throws Exception {
+        var source = """
+                class_name CompileCheckStaticSignalValue
+                extends Node
+                
+                signal pinged
+                
+                static func copy_signal() -> Signal:
+                    return pinged
+                """;
+
+        var compiled = analyzeForCompile("compile_check_static_signal_value.gd", source);
+
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics().asList()::toString);
+        assertTrue(compiled.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("pinged")
+        ), compiled.diagnostics().asList()::toString);
+    }
+
+    @Test
+    void analyzeForCompileReportsBareSignalAssignmentAsReadOnlyWithoutCompileCheck() throws Exception {
+        var source = """
+                class_name CompileCheckBareSignalAssignment
+                extends Node
+                
+                signal pinged
+                
+                func bad():
+                    pinged = null
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_bare_signal_assignment.gd", source);
+        var compiled = analyzeForCompile("compile_check_bare_signal_assignment.gd", source);
+        var badFunction = findFunction(compiled.unit().ast().statements(), "bad");
+        var assignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, badFunction.body().statements().getFirst()).expression()
+        );
+        assertInstanceOf(IdentifierExpression.class, assignment.left());
+
+        var sharedExpressionDiagnostics = diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.expression_resolution");
+        var compiledExpressionDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.expression_resolution");
+        var compiledCompileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(sharedAnalyzed.diagnostics().hasErrors(), sharedAnalyzed.diagnostics().asList()::toString);
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics().asList()::toString);
+        assertEquals(1, sharedExpressionDiagnostics.size(), sharedExpressionDiagnostics::toString);
+        assertTrue(
+                sharedExpressionDiagnostics.getFirst().message().contains("read-only"),
+                sharedExpressionDiagnostics::toString
+        );
+        assertEquals(1, compiledExpressionDiagnostics.size(), compiledExpressionDiagnostics::toString);
+        assertTrue(
+                compiledExpressionDiagnostics.getFirst().message().contains("read-only"),
+                compiledExpressionDiagnostics::toString
+        );
+        assertTrue(compiledCompileDiagnostics.isEmpty(), compiledCompileDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileReleasesSignalConnectDisconnectAndBareMethodReference() throws Exception {
+        var source = """
+                class_name CompileCheckSignalMethods
+                extends Node
+                
+                signal pinged
+                
+                func _handler():
+                    pass
+                
+                func ping(sig: Signal, other: CompileCheckSignalMethods):
+                    sig.emit()
+                    sig.connect(_handler)
+                    sig.disconnect(_handler)
+                    var err = sig.connect(other._handler, Object.CONNECT_DEFERRED)
+                    var copied = _handler
+                    return err
+                """;
+
+        var compiled = analyzeForCompile("compile_check_signal_methods.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileReleasesSignalEmitArityAndHeterogeneousArgs() throws Exception {
+        var source = """
+                class_name CompileCheckSignalEmitReleased
+                extends Node
+                
+                signal pinged(count: int)
+                
+                func ping(sig: Signal, label: String, vec: Vector3):
+                    sig.emit()
+                    sig.emit(1)
+                    sig.emit(1, label, vec)
+                    pinged.emit("not-an-int")
+                """;
+
+        var compiled = analyzeForCompile("compile_check_signal_emit_released.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileReleasesBareStaticAndUtilityValueReads() throws Exception {
+        var source = """
+                class_name CompileCheckBareValueReferences
+                extends RefCounted
+                
+                func helper(value):
+                    return value
+                
+                static func make_static():
+                    return 1
+                
+                func ping():
+                    var method_ref = helper
+                    var static_ref = make_static
+                    var utility_ref = print
+                """;
+
+        var compiled = analyzeForCompile("compile_check_bare_value_references.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+    }
+
+    /// Bare `lerp` is a value-ref, while `lerp(...)` stays a legal utility call.
+    @Test
+    void analyzeForCompileReleasesLerpUtilityValueRead() throws Exception {
+        var source = """
+                class_name CompileCheckLerpValueReference
+                extends Node
+                
+                func ping():
+                    var utility_ref = lerp
+                    lerp(0.0, 1.0, 0.5)
+                """;
+
+        var compiled = analyzeForCompile("compile_check_lerp_value_reference.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+    }
+
+    /// Constructor-as-value stays failed; compile gate must not treat it as a released Callable.
+    @Test
+    void analyzeForCompileBlocksConstructorValueReference() throws Exception {
+        var source = """
+                class_name CompileCheckConstructorValueReference
+                extends Node
+                
+                func ping():
+                    var ctor_ref = Node.new
+                """;
+
+        var compiled = analyzeForCompile("compile_check_constructor_value_reference.gd", source);
+        var ctorStep = findNamedPropertyStep(findFunction(compiled.unit().ast().statements(), "ping"), "ctor_ref", "new");
+        var memberDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.member_resolution");
+
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(
+                memberDiagnostics.stream().anyMatch(diagnostic ->
+                        diagnostic.range().equals(FrontendRange.fromAstRange(ctorStep.range()))
+                                && diagnostic.message().contains("new")
+                ),
+                compiled.diagnostics().asList()::toString
+        );
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty()
+                        || compiled.diagnostics().asList().stream().anyMatch(diagnostic ->
+                        diagnostic.message().contains("new") || diagnostic.message().contains("Node.new")),
+                compiled.diagnostics().asList()::toString);
+    }
+
+    /// `await signal` remains a compile-blocked deferred expression.
+    @Test
+    void analyzeForCompileBlocksAwaitSignal() throws Exception {
+        var source = """
+                class_name CompileCheckAwaitSignal
+                extends Node
+                
+                signal pinged
+                
+                func ping():
+                    await pinged
+                """;
+
+        var compiled = analyzeForCompile("compile_check_await_signal.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertFalse(compileDiagnostics.isEmpty(), compiled.diagnostics()::toString);
+        assertTrue(
+                compileDiagnostics.stream().anyMatch(diagnostic ->
+                        diagnostic.message().contains("Await")
+                                || diagnostic.message().contains("await")
+                                || diagnostic.message().contains("deferred")
+                ),
+                compileDiagnostics::toString
+        );
+    }
+
+    @Test
+    void analyzeForCompileReleasesBuiltinAndStaticMethodReferences() throws Exception {
+        var source = """
+                class_name CompileCheckUnsupportedMethodReferences
+                extends Node
+                
+                static func make_static():
+                    return 1
+                
+                func ping(vec: Vector2, dict: Dictionary):
+                    var builtin_ref = vec.abs
+                    var static_ref = CompileCheckUnsupportedMethodReferences.make_static
+                    var engine_ref = JSON.parse_string
+                    var dict_ref = dict.clear
+                    var type_meta_ref = Vector2.from_angle
+                    var type_meta_abs = Vector2.abs
+                    dict.clear()
+                    var lambda_cb = func():
+                        pass
+                    pinged.connect(lambda_cb)
+                
+                signal pinged
+                """;
+
+        var compiled = analyzeForCompile("compile_check_unsupported_method_references.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        var pingFunction = findFunction(compiled.unit().ast().statements(), "ping");
+        var dictStep = findNamedPropertyStep(pingFunction, "dict_ref", "clear");
+
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
+                diagnostic.message().contains("Qualified method-reference 'abs'")
+        ), compileDiagnostics::toString);
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
+                diagnostic.message().contains("Qualified static-method 'make_static'")
+        ), compileDiagnostics::toString);
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
+                diagnostic.message().contains("parse_string")
+        ), compileDiagnostics::toString);
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.range().equals(FrontendRange.fromAstRange(dictStep.range()))
+                        && diagnostic.message().contains("Qualified method-reference 'clear'")
+        ), compileDiagnostics::toString);
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
+                diagnostic.message().contains("Qualified method-reference 'clear'")
+                        && !diagnostic.range().equals(FrontendRange.fromAstRange(dictStep.range()))
+        ), compileDiagnostics::toString);
+        assertFalse(diagnosticsByCategory(compiled.diagnostics(), "sema.unsupported_binding_subtree").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileBlocksDirectLambdaConnectArgument() throws Exception {
+        var source = """
+                class_name CompileCheckDirectLambdaConnect
+                extends Node
+                
+                signal pinged
+                
+                func ping(sig: Signal):
+                    sig.connect(func():
+                        pass
+                    )
+                """;
+
+        var compiled = analyzeForCompile("compile_check_direct_lambda_connect.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        var unsupportedBindingDiagnostics = diagnosticsByCategory(
+                compiled.diagnostics(),
+                "sema.unsupported_binding_subtree"
+        );
+
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+        assertFalse(unsupportedBindingDiagnostics.isEmpty(), compiled.diagnostics()::toString);
+    }
+
+    @Test
+    void analyzeForCompileLeavesLegalBareMethodAndUtilityCallsOutOfSignalValueBlockers() throws Exception {
+        var source = """
+                class_name CompileCheckSignalCalleeExclusion
+                extends RefCounted
+                
+                func helper(value):
+                    return value
+                
+                static func make_static(value):
+                    return value
+                
+                func ping(left, right):
+                    var both := left and helper(right)
+                    make_static(right)
+                    print(right)
+                    return left or right
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_signal_callee_exclusion.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors(), () -> sharedAnalyzed.diagnostics().asList().toString());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_signal_callee_exclusion.gd", source);
+        assertFalse(compiled.diagnostics().hasErrors(), () -> compiled.diagnostics().asList().toString());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileDoesNotGuessSignalOrCallableLocalsByType() throws Exception {
+        var source = """
+                class_name CompileCheckSignalTypeGuessing
+                extends RefCounted
+                
+                func ping(sig: Signal, cb: Callable):
+                    var copied_signal: Signal = sig
+                    var copied_callable: Callable = cb
+                    return copied_callable.is_null()
+                """;
+
+        var compiled = analyzeForCompile("compile_check_signal_type_guessing.gd", source);
+        assertFalse(compiled.diagnostics().hasErrors(), () -> compiled.diagnostics().asList().toString());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileSkipsBareSignalValueReferencesOutsideCompileSurface() throws Exception {
+        var source = """
+                class_name CompileCheckSignalSkippedSurface
+                extends Node
+                
+                signal pinged
+                
+                func _handler():
+                    pass
+                
+                func ping(seed = pinged, handler = _handler):
+                    var f = func():
+                        var hidden_signal = pinged
+                        var hidden_method = _handler
+                    match 0:
+                        var bound when bound == 0:
+                            var hidden_match_signal = pinged
+                """;
+
+        var compiled = analyzeForCompile("compile_check_signal_skipped_surface.gd", source);
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                () -> compiled.diagnostics().asList().toString());
+    }
+
+    @Test
+    void analyzeSkipsDynamicSignalMemberAndSignalMethodFacts() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_dynamic_signal_facts.gd", """
+                class_name CompileCheckDynamicSignalFacts
+                extends Node
+                
+                signal pinged
+                
+                func ping(other: CompileCheckDynamicSignalFacts):
+                    var receiver_signal = other.pinged
+                    other.pinged.emit()
+                """);
+        var pingFunction = findFunction(preparedInput.unit().ast().statements(), "ping");
+        var pingedStep = findNamedPropertyStep(pingFunction, "receiver_signal", "pinged");
+        var emitStep = findNamedCallStep(pingFunction, "emit");
+        var originalMember = Objects.requireNonNull(preparedInput.analysisData().resolvedMembers().get(pingedStep));
+        var originalCall = Objects.requireNonNull(preparedInput.analysisData().resolvedCalls().get(emitStep));
+        var dynamicSignalMember = FrontendResolvedMember.dynamic(
+                originalMember.memberName(),
+                FrontendBindingKind.SIGNAL,
+                originalMember.receiverKind(),
+                originalMember.ownerKind(),
+                originalMember.receiverType(),
+                originalMember.declarationSite(),
+                "synthetic dynamic signal member"
+        );
+
+        for (var entry : List.copyOf(preparedInput.analysisData().resolvedMembers().entrySet())) {
+            if (entry.getValue().bindingKind() == FrontendBindingKind.SIGNAL) {
+                preparedInput.analysisData().resolvedMembers().put(entry.getKey(), dynamicSignalMember);
+            }
+        }
+        preparedInput.analysisData().resolvedCalls().put(
+                emitStep,
+                FrontendResolvedCall.dynamic(
+                        originalCall.callableName(),
+                        originalCall.receiverKind(),
+                        originalCall.ownerKind(),
+                        new GdSignalType(),
+                        originalCall.argumentTypes(),
+                        originalCall.declarationSite(),
+                        "synthetic dynamic signal call"
+                )
+        );
+        preparedInput.analysisData().updateDiagnostics(new DiagnosticSnapshot(List.of()));
+        var cleanDiagnosticManager = new DiagnosticManager();
+
+        runCompileCheck(new PreparedCompileCheckInput(
+                preparedInput.unit(),
+                preparedInput.analysisData(),
+                cleanDiagnosticManager
+        ));
+
+        assertTrue(diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
+    void analyzeReleasesResolvedSignalConnectCallRegression() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_signal_resolved_regression.gd", """
+                class_name CompileCheckSignalResolvedRegression
+                extends Node
+                
+                signal pinged
+                
+                func ping(other: CompileCheckSignalResolvedRegression, handler: Callable):
+                    var receiver_signal = other.pinged
+                    other.pinged.connect(handler)
+                """);
+        var pingFunction = findFunction(preparedInput.unit().ast().statements(), "ping");
+        var pingedStep = findNamedPropertyStep(pingFunction, "receiver_signal", "pinged");
+        var connectStep = findNamedCallStep(pingFunction, "connect");
+        preparedInput.analysisData().expressionTypes().clear();
+        preparedInput.analysisData().resolvedMembers().clear();
+        preparedInput.analysisData().resolvedCalls().clear();
+        preparedInput.analysisData().symbolBindings().clear();
+        preparedInput.analysisData().resolvedMembers().put(
+                pingedStep,
+                FrontendResolvedMember.resolved(
+                        "pinged",
+                        FrontendBindingKind.SIGNAL,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        new GdObjectType("CompileCheckSignalResolvedRegression"),
+                        new GdSignalType(),
+                        new Object()
+                )
+        );
+        preparedInput.analysisData().resolvedCalls().put(
+                connectStep,
+                FrontendResolvedCall.resolved(
+                        "connect",
+                        FrontendCallResolutionKind.INSTANCE_METHOD,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.BUILTIN,
+                        new GdSignalType(),
+                        GdVoidType.VOID,
+                        List.of(),
+                        new Object()
+                )
+        );
+        preparedInput.analysisData().updateDiagnostics(new DiagnosticSnapshot(List.of()));
+        var cleanDiagnosticManager = new DiagnosticManager();
+
+        runCompileCheck(new PreparedCompileCheckInput(
+                preparedInput.unit(),
+                preparedInput.analysisData(),
+                cleanDiagnosticManager
+        ));
+
+        var compileDiagnostics = diagnosticsByCategory(
+                preparedInput.analysisData().diagnostics(),
+                "sema.compile_check"
+        );
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeReleasesBareSignalValueBindingRegression() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_bare_signal_binding_regression.gd", """
+                class_name CompileCheckBareSignalBindingRegression
+                extends Node
+                
+                signal pinged
+                
+                func ping():
+                    var copied = pinged
+                """);
+        var pingFunction = findFunction(preparedInput.unit().ast().statements(), "ping");
+        var pingedIdentifier = findIdentifier(pingFunction, "copied", "pinged");
+        preparedInput.analysisData().expressionTypes().clear();
+        preparedInput.analysisData().resolvedMembers().clear();
+        preparedInput.analysisData().resolvedCalls().clear();
+        preparedInput.analysisData().symbolBindings().clear();
+        preparedInput.analysisData().symbolBindings().put(
+                pingedIdentifier,
+                new FrontendBinding("pinged", FrontendBindingKind.SIGNAL, new Object())
+        );
+        preparedInput.analysisData().updateDiagnostics(new DiagnosticSnapshot(List.of()));
+        var cleanDiagnosticManager = new DiagnosticManager();
+
+        runCompileCheck(new PreparedCompileCheckInput(
+                preparedInput.unit(),
+                preparedInput.analysisData(),
+                cleanDiagnosticManager
+        ));
+
+        var compileDiagnostics = diagnosticsByCategory(
+                preparedInput.analysisData().diagnostics(),
+                "sema.compile_check"
+        );
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+    }
+
     private static @NotNull AnalyzedScript analyzeShared(
             @NotNull String fileName,
             @NotNull String source
@@ -1654,6 +2210,40 @@ class FrontendCompileCheckAnalyzerTest {
             }
         }
         throw new AssertionError("Variable not found: " + name);
+    }
+
+    private static @NotNull IdentifierExpression findIdentifier(
+            @NotNull FunctionDeclaration function,
+            @NotNull String variableName,
+            @NotNull String identifierName
+    ) {
+        var declaration = findVariable(function.body().statements(), variableName);
+        var identifier = assertInstanceOf(
+                IdentifierExpression.class,
+                Objects.requireNonNull(declaration.value(), "variable value must not be null")
+        );
+        assertEquals(identifierName, identifier.name());
+        return identifier;
+    }
+
+    private static @NotNull AttributePropertyStep findNamedPropertyStep(
+            @NotNull FunctionDeclaration function,
+            @NotNull String variableName,
+            @NotNull String memberName
+    ) {
+        var declaration = findVariable(function.body().statements(), variableName);
+        return findNode(
+                Objects.requireNonNull(declaration.value(), "variable value must not be null"),
+                AttributePropertyStep.class,
+                step -> step.name().equals(memberName)
+        );
+    }
+
+    private static @NotNull AttributeCallStep findNamedCallStep(
+            @NotNull FunctionDeclaration function,
+            @NotNull String methodName
+    ) {
+        return findNode(function, AttributeCallStep.class, step -> step.name().equals(methodName));
     }
 
     private static <T extends Node> @NotNull T findNode(

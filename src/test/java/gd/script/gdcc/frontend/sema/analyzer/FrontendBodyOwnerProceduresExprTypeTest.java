@@ -39,6 +39,7 @@ import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.type.GdCallableType;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
@@ -975,6 +976,77 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         assertEquals(3, discardedDiagnostics.size());
     }
 
+    /// Bare / receiver / inherited-engine signal reads must publish RESOLVED(GdSignalType).
+    @Test
+    void analyzePublishesGdSignalTypeForBareAndReceiverSignalValueReads() throws Exception {
+        var analyzed = analyze(
+                "expr_type_signal_value_reads.gd",
+                """
+                        class_name ExprTypeSignalValueReads
+                        extends Node
+                        
+                        signal pinged
+                        
+                        func ping(other: ExprTypeSignalValueReads):
+                            pinged
+                            self.pinged
+                            other.pinged
+                            other.ready
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var bareSignal = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+        var selfSignal = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        var otherSignal = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
+        );
+        var engineSignal = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3)).expression()
+        );
+
+        var bareType = analyzed.analysisData().expressionTypes().get(bareSignal);
+        var selfType = analyzed.analysisData().expressionTypes().get(selfSignal);
+        var otherType = analyzed.analysisData().expressionTypes().get(otherSignal);
+        var engineType = analyzed.analysisData().expressionTypes().get(engineSignal);
+        var otherMember = analyzed.analysisData().resolvedMembers().get(
+                assertInstanceOf(AttributePropertyStep.class, otherSignal.steps().getFirst())
+        );
+        var engineMember = analyzed.analysisData().resolvedMembers().get(
+                assertInstanceOf(AttributePropertyStep.class, engineSignal.steps().getFirst())
+        );
+
+        assertAll(
+                () -> assertNotNull(bareType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, bareType.status()),
+                () -> assertInstanceOf(GdSignalType.class, bareType.publishedType()),
+                () -> assertNotNull(selfType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, selfType.status()),
+                () -> assertInstanceOf(GdSignalType.class, selfType.publishedType()),
+                () -> assertNotNull(otherType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, otherType.status()),
+                () -> assertInstanceOf(GdSignalType.class, otherType.publishedType()),
+                () -> assertNotNull(engineType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, engineType.status()),
+                () -> assertInstanceOf(GdSignalType.class, engineType.publishedType()),
+                () -> assertNotNull(otherMember),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, otherMember.status()),
+                () -> assertEquals(FrontendBindingKind.SIGNAL, otherMember.bindingKind()),
+                () -> assertNotNull(engineMember),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, engineMember.status()),
+                () -> assertEquals(FrontendBindingKind.SIGNAL, engineMember.bindingKind()),
+                () -> assertEquals("ready", engineMember.memberName())
+        );
+    }
+
     @Test
     void analyzeResolvesCallableBindAndSubscriptRoutesAndRejectsDirectCallableInvocationVariants() throws Exception {
         var analyzed = analyze(
@@ -1624,6 +1696,7 @@ class FrontendBodyOwnerProceduresExprTypeTest {
                             return 1
                         
                         func ping(values: Array[int]):
+                            pinged = 1
                             self.pinged = 1
                             Worker = 1
                             helper = 1
@@ -1632,22 +1705,32 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         );
 
         var pingFunction = findFunction(analyzed.ast(), "ping");
-        var signalAssignment = assertInstanceOf(
+        var bareSignalAssignment = assertInstanceOf(
                 AssignmentExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(0)).expression()
         );
-        var typeMetaAssignment = assertInstanceOf(
+        var signalAssignment = assertInstanceOf(
                 AssignmentExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
         );
-        var callableAssignment = assertInstanceOf(
+        var typeMetaAssignment = assertInstanceOf(
                 AssignmentExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
         );
-        var assignabilityFailure = assertInstanceOf(
+        var callableAssignment = assertInstanceOf(
                 AssignmentExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3)).expression()
         );
+        var assignabilityFailure = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(4)).expression()
+        );
+
+        var bareSignalAssignmentType = analyzed.analysisData().expressionTypes().get(bareSignalAssignment);
+        assertNotNull(bareSignalAssignmentType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, bareSignalAssignmentType.status());
+        assertEquals("Signal 'pinged' is read-only and cannot be assigned", bareSignalAssignmentType.detailReason());
+        assertInstanceOf(IdentifierExpression.class, bareSignalAssignment.left());
 
         var signalAssignmentType = analyzed.analysisData().expressionTypes().get(signalAssignment);
         assertNotNull(signalAssignmentType);
@@ -1670,7 +1753,7 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         assertTrue(assignabilityFailureType.detailReason().contains("not assignable"));
 
         var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
-        assertEquals(4, expressionDiagnostics.size());
+        assertEquals(5, expressionDiagnostics.size());
         assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());

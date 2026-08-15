@@ -694,6 +694,17 @@ public final class FrontendBodyLoweringSession {
         }
     }
 
+    /// Signal/callable construction must keep the canonical `self` slot when the CFG receiver
+    /// is a `SelfExpression`. Opaque self reads copy into a temp, but that receiver is still
+    /// treated as always-live `self` and must not emit `AssertObjectLiveInsn`.
+    @NotNull String requireLiveObjectReceiverSlotId(@NotNull String receiverValueId) {
+        if (isCanonicalSelfValue(receiverValueId)) {
+            requireSelfSlot();
+            return "self";
+        }
+        return slotIdForValue(receiverValueId);
+    }
+
     void emitAssertObjectLiveIfNeeded(@NotNull LirBasicBlock block, @NotNull String receiverSlotId) {
         if (receiverSlotId.equals("self")) {
             return;
@@ -731,6 +742,22 @@ public final class FrontendBodyLoweringSession {
     @NotNull GdType requireValueType(@NotNull String valueId) {
         var materialization = requireValueMaterialization(valueId);
         return materialization.type();
+    }
+
+    private boolean isCanonicalSelfValue(@NotNull String valueId) {
+        for (var node : graph.nodes().values()) {
+            if (!(node instanceof FrontendCfgGraph.SequenceNode sequenceNode)) {
+                continue;
+            }
+            for (var item : sequenceNode.items()) {
+                if (item instanceof OpaqueExprValueItem opaque
+                        && valueId.equals(opaque.resultValueId())
+                        && opaque.expression() instanceof SelfExpression) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     @NotNull String slotIdForValue(@NotNull String valueId) {
@@ -1102,6 +1129,18 @@ public final class FrontendBodyLoweringSession {
 
     @NotNull String currentClassName() {
         return functionContext.owningClass().getName();
+    }
+
+    /// Resolves the class that actually declared `functionName`, starting at `startClassName`.
+    @NotNull String requireDeclaringStaticOwnerName(@NotNull String startClassName, @NotNull String functionName) {
+        var lookup = classRegistry.findStaticFunctionInHierarchy(startClassName, functionName);
+        if (lookup == null) {
+            throw new IllegalStateException(
+                    "standalone static method-reference '" + startClassName + "." + functionName
+                            + "' is not a generated static function"
+            );
+        }
+        return lookup.ownerClass().getName();
     }
 
     @NotNull String requireClassName(@Nullable GdType receiverType) {

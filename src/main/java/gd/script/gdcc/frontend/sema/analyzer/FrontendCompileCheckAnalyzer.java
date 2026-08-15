@@ -10,6 +10,8 @@ import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
+import gd.script.gdcc.frontend.sema.FrontendBinding;
+import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
@@ -22,6 +24,7 @@ import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.scope.Scope;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
@@ -46,6 +49,7 @@ import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FrontendASTTraversalDirective;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.GetNodeExpression;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
@@ -76,6 +80,9 @@ import java.util.function.Predicate;
 ///   is not ready yet
 /// - generic side-table scans over published `expressionTypes()` / `resolvedMembers()` /
 ///   `resolvedCalls()` facts that are still blocked/deferred/failed/unsupported on compile surface
+/// - feature-specific RESOLVED blockers for Signal.connect/disconnect and bare
+///   method-reference / static-method / utility-function value reads that would otherwise
+///   crash CFG or be mis-lowered as property loads
 /// - no new side tables and no rewrites of upstream semantic ownership
 public class FrontendCompileCheckAnalyzer {
     private static final @NotNull String COMPILE_CHECK_CATEGORY = "sema.compile_check";
@@ -91,6 +98,9 @@ public class FrontendCompileCheckAnalyzer {
     private static final @NotNull Set<String> NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES = Set.of(
             FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
     );
+    /// Object/self, builtin instance, static, and utility value reads are already released.
+    /// Keep this empty so callee-exclusion tests stay on the same scan path.
+    private static final @NotNull Set<FrontendBindingKind> BARE_VALUE_REFERENCE_BINDING_KINDS = Set.of();
 
     public void analyze(
             @NotNull FrontendAnalysisData analysisData,
@@ -123,6 +133,7 @@ public class FrontendCompileCheckAnalyzer {
                     sourceClassRelation.unit().path(),
                     publishedDiagnostics,
                     scopesByAst,
+                    analysisData.symbolBindings(),
                     analysisData.expressionTypes(),
                     analysisData.resolvedMembers(),
                     analysisData.resolvedCalls(),
@@ -175,6 +186,38 @@ public class FrontendCompileCheckAnalyzer {
                 + "supports only zero-argument custom object construction";
     }
 
+    /// Feature-specific compile-only message for residual method-references that still cannot
+    /// become `construct_callable` or `construct_standalone_callable`.
+    private static @NotNull String unsupportedMethodReferenceCompileBlockedMessage(
+            @NotNull FrontendResolvedMember publishedMember
+    ) {
+        var kindLabel = switch (Objects.requireNonNull(publishedMember, "publishedMember must not be null").bindingKind()) {
+            case METHOD -> "method-reference";
+            case STATIC_METHOD -> "static-method";
+            default -> throw new IllegalStateException(
+                    "unexpected method-reference kind: " + publishedMember.bindingKind()
+            );
+        };
+        return "Qualified " + kindLabel + " '" + publishedMember.memberName()
+                + "' is recognized by the frontend but is blocked in compile mode because "
+                + "only Object/self, non-Dictionary builtin instance, and GDCC/engine static "
+                + "method-references can materialize as Callable";
+    }
+
+    /// Feature-specific compile-only message for bare STATIC_METHOD / UTILITY_FUNCTION value reads.
+    /// Kind is taken from the published binding so the helper does not guess from expression type.
+    /// Bare METHOD value reads are intentionally excluded because they already materialize.
+    private static @NotNull String bareValueReferenceCompileBlockedMessage(@NotNull FrontendBinding binding) {
+        var kindLabel = switch (Objects.requireNonNull(binding, "binding must not be null").kind()) {
+            case STATIC_METHOD -> "static-method";
+            case UTILITY_FUNCTION -> "utility-function";
+            default -> throw new IllegalStateException("unexpected bare value-reference kind: " + binding.kind());
+        };
+        return "Bare " + kindLabel + " '" + binding.symbolName()
+                + "' is recognized by the frontend but is blocked in compile mode because "
+                + "value-reference lowering support lands";
+    }
+
     private static @NotNull String publishedCompileBlockedMessage(
             @NotNull String surfaceKind,
             @NotNull Enum<?> publishedStatus,
@@ -220,6 +263,7 @@ public class FrontendCompileCheckAnalyzer {
         private final @NotNull Path sourcePath;
         private final @NotNull DiagnosticSnapshot publishedDiagnostics;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
+        private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
         private final @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes;
         private final @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers;
         private final @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls;
@@ -229,6 +273,7 @@ public class FrontendCompileCheckAnalyzer {
         private final @NotNull ASTWalker astWalker;
         private final @NotNull Set<Node> compileSurfaceNodes = Collections.newSetFromMap(new IdentityHashMap<>());
         private final @NotNull Set<Node> handledAnchors = Collections.newSetFromMap(new IdentityHashMap<>());
+        private final @NotNull Set<Node> bareCallCallees = Collections.newSetFromMap(new IdentityHashMap<>());
         private int supportedExecutableBlockDepth;
 
         /// Capture the shared semantic facts for one source file and prepare a dedicated walker.
@@ -236,6 +281,7 @@ public class FrontendCompileCheckAnalyzer {
                 @NotNull Path sourcePath,
                 @NotNull DiagnosticSnapshot publishedDiagnostics,
                 @NotNull FrontendAstSideTable<Scope> scopesByAst,
+                @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
                 @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes,
                 @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers,
                 @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls,
@@ -249,6 +295,7 @@ public class FrontendCompileCheckAnalyzer {
                     "publishedDiagnostics must not be null"
             );
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
+            this.symbolBindings = Objects.requireNonNull(symbolBindings, "symbolBindings must not be null");
             this.expressionTypes = Objects.requireNonNull(expressionTypes, "expressionTypes must not be null");
             this.resolvedMembers = Objects.requireNonNull(resolvedMembers, "resolvedMembers must not be null");
             this.resolvedCalls = Objects.requireNonNull(resolvedCalls, "resolvedCalls must not be null");
@@ -525,6 +572,7 @@ public class FrontendCompileCheckAnalyzer {
                 );
                 default -> {
                     markCompileSurfaceNode(expression);
+                    rememberBareCallCallee(expression);
                     walkNestedExpressionChildren(expression);
                 }
             }
@@ -549,6 +597,7 @@ public class FrontendCompileCheckAnalyzer {
             scanExpressionTypeCompileBlocks();
             scanResolvedMemberCompileBlocks();
             scanResolvedCallCompileBlocks();
+            scanBareValueReferenceCompileBlocks();
             scanSlotTypeCompileBlocks();
         }
 
@@ -585,10 +634,19 @@ public class FrontendCompileCheckAnalyzer {
         }
 
         /// Member facts are reported at the exact property-step anchor to keep diagnostics precise.
+        /// RESOLVED SIGNAL / Object METHOD value reads now lower through dedicated items; residual
+        /// BLOCKED/DEFERRED/FAILED/UNSUPPORTED members stay compile-blocked here.
         private void scanResolvedMemberCompileBlocks() {
             for (var entry : resolvedMembers.entrySet()) {
                 var anchor = requireAttributePropertyStep(entry.getKey());
                 var publishedMember = Objects.requireNonNull(entry.getValue(), "publishedMember must not be null");
+                if (shouldBlockUnsupportedMethodReference(anchor, publishedMember)) {
+                    reportCompileBlock(
+                            anchor,
+                            unsupportedMethodReferenceCompileBlockedMessage(publishedMember)
+                    );
+                    continue;
+                }
                 if (!isCompileBlocking(publishedMember.status()) || !compileSurfaceNodes.contains(anchor)) {
                     continue;
                 }
@@ -649,6 +707,51 @@ public class FrontendCompileCheckAnalyzer {
                 case CallExpression callExpression -> !callExpression.arguments().isEmpty();
                 default -> false;
             };
+        }
+
+        /// Residual method-references: Dictionary instance keys and builtin type-meta methods.
+        /// DYNAMIC facts stay runtime-open, matching the generic status exemption.
+        private boolean shouldBlockUnsupportedMethodReference(
+                @NotNull Node anchor,
+                @NotNull FrontendResolvedMember publishedMember
+        ) {
+            if (!compileSurfaceNodes.contains(anchor)
+                    || publishedMember.status() != FrontendMemberResolutionStatus.RESOLVED) {
+                return false;
+            }
+            if (publishedMember.bindingKind() == FrontendBindingKind.STATIC_METHOD) {
+                return publishedMember.ownerKind() == ScopeOwnerKind.BUILTIN;
+            }
+            return publishedMember.bindingKind() == FrontendBindingKind.METHOD
+                    && publishedMember.ownerKind() == ScopeOwnerKind.BUILTIN
+                    && publishedMember.receiverType() instanceof GdDictionaryType;
+        }
+
+        /// `BARE_VALUE_REFERENCE_BINDING_KINDS` is empty. This scan stays as the
+        /// callee-exclusion hook if a later change re-blocks a bare kind.
+        private void scanBareValueReferenceCompileBlocks() {
+            for (var entry : symbolBindings.entrySet()) {
+                // The published table also keys LiteralExpression / SelfExpression. Those are
+                // never the CFG crash surface this blocker exists to stop.
+                if (!(entry.getKey() instanceof IdentifierExpression identifierExpression)) {
+                    continue;
+                }
+                var binding = Objects.requireNonNull(entry.getValue(), "binding must not be null");
+                if (!compileSurfaceNodes.contains(identifierExpression)
+                        || bareCallCallees.contains(identifierExpression)
+                        || !BARE_VALUE_REFERENCE_BINDING_KINDS.contains(binding.kind())) {
+                    continue;
+                }
+                reportCompileBlock(identifierExpression, bareValueReferenceCompileBlockedMessage(binding));
+            }
+        }
+
+        /// Record a surface `CallExpression.callee()` so the later binding scan can exclude it.
+        private void rememberBareCallCallee(@NotNull Expression expression) {
+            if (expression instanceof CallExpression callExpression
+                    && callExpression.callee() instanceof IdentifierExpression callee) {
+                bareCallCallees.add(callee);
+            }
         }
 
         /// Callable-local slot types are a lowering-only published fact. When the post analyzer had

@@ -36,6 +36,7 @@
 - `break` / `continue` 的位置合法性属于 shared semantic contract；`FrontendLoopControlFlowAnalyzer` 必须在进入 compile-only gate 前就对非法 loop control 发出 `sema.loop_control_flow`，lowering 中的 loop-frame fail-fast 只能保留为实现不变量保护。
 - `for-in` 的可迭代性属于 shared type-check contract：`FrontendForLoopSupport.classifyIterableSemantics(...)` 是 plan 构造与诊断的统一分类真源。静态已知不可迭代的 hard type 必须由 `FrontendTypeCheckAnalyzer` 在 iterable expression 上发 `sema.type_check` `Unable to iterate on value of type "X"`；`Variant`、`Object` 与静态未知类型保持 runtime-open，不得误报。该诊断不得阻断 plan 发布或 for body 遍历；iterable 已有 upstream 不稳定事实时不得重复发错。
 - `_field_init_`、`_field_getter_`、`_field_setter_` 是 compiler-owned synthetic property helper 前缀；source class member 一旦以这些前缀开头，skeleton phase 必须发出清晰的 `sema.class_skeleton` 并跳过该 member subtree，而不是等到 lowering/backend 再因 helper 名冲突抛异常。
+- GDCC class 新声明的 signal 不得覆盖 inherited engine/native signal；skeleton 必须发 `sema.class_skeleton` 并跳过该 `SignalStatement`。inherited GDCC signal 的 nearest-child shadow 保持允许，不得回退 `ScopeSignalResolver` 合同。
 - `FrontendCompileCheckAnalyzer` 只能挂在 compile-only 入口上；默认共享 `FrontendSemanticAnalyzer.analyze(...)`、inspection 与未来 LSP 入口不得隐式附带 compile-only gate。
 - compile-only gate 只允许扫描未来 lowering 会消费的 compile surface：supported executable body 与 supported property initializer island；不得重新深入 parameter default、lambda、`match`、block-local `const` 或 skipped subtree。`ForStatement` 已进入 shared semantic，compile-only gate 按 route-aware policy 处理：`ForLoweringContractRegistry` 中已注册的 route 放行并进入 body 重扫 semantic facts，未注册 contract 的 route（当前仅 `OBJECT_CUSTOM`）在 statement root 发 route-not-ready blocker；已注册 route 的 CFG/body lowering 已落地。
 - compile-only gate 一旦放行 supported property initializer，默认 lowering pipeline 必须把它 materialize 为真实 `init_func` helper；backend 不得再把同名 shell-only function 当作可修补中间态消费。
@@ -60,12 +61,12 @@
 - negative path 至少要锚定：正确 diagnostic category、坏 subtree 被跳过、同一 module 中其他合法 subtree 仍继续工作。
 - engine virtual override 的 compile-fail negative path 应优先锚定到 frontend focused tests，例如 `FrontendVirtualOverrideAnalyzerTest` 与 `FrontendCompileCheckAnalyzerTest`；`test_suite` 只保留 compile / link / run 的正向 runtime 锚点。
 
-## MVP 支持约定 
+## MVP 支持约定
 
 - 下述 MVP 约定描述的是当前 frontend 共享语义、body analyzer 与 compile surface 的正式支持面；它们不否认 parser 与 scope phase 对部分语法结构已经能识别或建图。
 - `for` 已进入 frontend shared body semantic 支持面：iterator、ordinary body local、declaration index、typed baseline 与 suite entry 在 typed resolution 前按结构无条件发布，header 解析后通过普通 child-suite path 进入 body。compile-only gate 为 route-aware policy；已注册 lowering contract 的 route 进入 CFG/body lowering，未注册 route 在 statement root 发 route-not-ready blocker。完整合同见 `frontend_for_range_loop_implementation.md`。`lambda`、`match` 仍按结构性 deferred / unsupported boundary fail-closed。
 - **`ForStatement` scope 双录合同**：`scopesByAst[ForStatement]` 只表示 header 外层 scope；iterator local 与 `FOR_ITERATION_RESOLUTION` slot update 的 scope 必须是 `scopesByAst[forStatement.body()]` 的 **`FOR_BODY` `BlockScope` 对象身份**。`effectiveBinding` / `owningScopeForDeclaration` 对 iterator 声明只能查 `FOR_BODY`，因为 overlay 匹配使用 `scope ==`。细节见 `scope_analyzer_implementation.md` §6.1 与 `frontend_for_range_loop_implementation.md`。
-- 协程与 signal-based coroutine 当前不在 frontend semantic MVP 范围内；`await` / `.emit(...)` 等 use-site 语义仍未闭环。
+- 协程与 signal-based coroutine 当前不在 frontend semantic MVP 范围内；`await` 仍未闭环。`Signal.emit(...)` / `Signal.connect(...)` / `Signal.disconnect(...)` 已走既有 builtin `CallMethodInsn` 路径；Object/self、非 Dictionary builtin 实例、GDCC/engine 静态与 utility 值引用 → Callable 已闭环。builtin type-meta / `Dictionary` key / `Node.new` / lambda 仍被拒绝。长合同见 `frontend_signal_support.md`。
 - path-based `extends`、autoload superclass、global-script-class superclass 绑定不实施。
 - 多 gdcc module 的 header superclass 绑定不在最小可行产品范围内。
 - 函数参数默认值当前不在 frontend body semantic MVP 范围内；相关可见性与求值顺序继续按 deferred boundary 处理。
