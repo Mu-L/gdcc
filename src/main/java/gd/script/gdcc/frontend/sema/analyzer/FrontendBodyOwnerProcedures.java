@@ -124,9 +124,34 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             } else if (expression instanceof SelfExpression selfExpression) {
                 bindSelf(context, selfExpression);
             } else if (expression instanceof LambdaExpression lambdaExpression) {
-                reportUnsupportedBinding(context, lambdaExpression, "lambda subtree");
+                if (!tryResolveRecordedLambda(context, lambdaExpression)) {
+                    reportUnsupportedBinding(context, lambdaExpression, "lambda subtree");
+                }
             }
         });
+    }
+
+    /// Recorded lambdas resolve through the nested suite trigger instead of producing unsupported
+    /// binding/chain diagnostics. The trigger is idempotent per lambda node: the
+    /// published plan doubles as the resolved marker. Unrecorded lambdas (property initializers,
+    /// parameter defaults, skipped subtrees) stay fail-closed. `walkRootBounded` keeps pruning at
+    /// the lambda node, so the enclosing owner never walks the body as an ordinary expression tree.
+    private static boolean tryResolveRecordedLambda(
+            @NotNull FrontendSuiteContext context,
+            @NotNull LambdaExpression lambdaExpression
+    ) {
+        if (!context.interfaceSurface().suiteEntryRoots().containsCallableOwner(lambdaExpression)) {
+            return false;
+        }
+        if (context.analysisData().lambdaPlans().containsKey(lambdaExpression)) {
+            return true;
+        }
+        var nestedResolver = Objects.requireNonNull(
+                context.nestedLambdaResolver(),
+                "Recorded lambda has no nested resolve route"
+        );
+        nestedResolver.resolveNestedLambda(context, lambdaExpression);
+        return true;
     }
 
     private void tryApplyAttributeChainHeadTypeMetaBias(
@@ -193,6 +218,13 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             return;
         }
         var initializer = variableDeclaration.value();
+        if (initializer instanceof LambdaExpression) {
+            // Silent stabilization must not resolve lambda initializers: the slot
+            // keeps its inventory Variant, and any `:=` refinement to `Callable` may only come
+            // from a non-silent write-back after nested resolve completed — never from resolving
+            // the lambda expression on this silent path.
+            return;
+        }
         var guardedFailure = typeMetaOrdinaryValueInitializerFailure(context, initializer);
         if (guardedFailure == null) {
             guardedFailure = assignmentOrdinaryValueInitializerFailure(initializer);
@@ -225,7 +257,11 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     publishReduction(context, reduced);
                 }
             } else if (expression instanceof LambdaExpression lambdaExpression) {
-                reportUnsupportedChain(context, lambdaExpression, "lambda subtree");
+                // Recorded lambdas were already resolved by the top-binding trigger of this same
+                // statement; only unrecorded ones stay fail-closed here.
+                if (!context.interfaceSurface().suiteEntryRoots().containsCallableOwner(lambdaExpression)) {
+                    reportUnsupportedChain(context, lambdaExpression, "lambda subtree");
+                }
             }
         });
     }
@@ -935,15 +971,14 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     );
             case ExpressionStatement expressionStatement ->
                     publishExpressionType(context, resolver, expressionStatement.expression(), true, null);
-            case ReturnStatement returnStatement when returnStatement.value() != null ->
-                    publishExpressionType(
-                            context,
-                            resolver,
-                            returnStatement.value(),
-                            false,
-                            // Variant/void return slots do not provide typed-container context.
-                            contextualExpectedOrNull(context.currentCallableReturnType())
-                    );
+            case ReturnStatement returnStatement when returnStatement.value() != null -> publishExpressionType(
+                    context,
+                    resolver,
+                    returnStatement.value(),
+                    false,
+                    // Variant/void return slots do not provide typed-container context.
+                    contextualExpectedOrNull(context.currentCallableReturnType())
+            );
             case AssertStatement assertStatement -> {
                 publishExpressionType(context, resolver, assertStatement.condition(), false, null);
                 if (assertStatement.message() != null) {
@@ -988,15 +1023,6 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             return null;
         }
         return expectedType;
-    }
-
-    private static void publishExpressionType(
-            @NotNull FrontendSuiteContext context,
-            @NotNull BodyExpressionResolver resolver,
-            @NotNull Expression expression,
-            boolean allowStatementResult
-    ) {
-        publishExpressionType(context, resolver, expression, allowStatementResult, null);
     }
 
     private static void publishExpressionType(
@@ -1589,7 +1615,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                                 lambdaExpression,
                                 this::resolveExpressionType,
                                 false,
-                                finalizeWindow
+                                finalizeWindow,
+                                context.interfaceSurface()
+                                        .suiteEntryRoots()
+                                        .containsCallableOwner(lambdaExpression)
                         )
                         .expressionType();
                 case UnaryExpression unaryExpression -> expressionSemanticSupport
@@ -1608,8 +1637,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         .expressionType();
                 case TypeTestExpression typeTestExpression ->
                         resolveTypeTestExpressionType(typeTestExpression, finalizeWindow);
-                case CastExpression castExpression ->
-                        resolveCastExpressionType(castExpression, finalizeWindow);
+                case CastExpression castExpression -> resolveCastExpressionType(castExpression, finalizeWindow);
                 case ArrayExpression arrayExpression ->
                         resolveArrayExpressionType(arrayExpression, finalizeWindow, expectedType);
                 case DictionaryExpression dictionaryExpression ->

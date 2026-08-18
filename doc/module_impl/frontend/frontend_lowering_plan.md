@@ -118,7 +118,6 @@
 
 - `for` 的 `OBJECT_CUSTOM`（Object `_iter_*`）；其余已注册 route 已闭环，见 `frontend_for_range_loop_implementation.md`
 - `match`
-- `lambda`
 - `assert`
 - `ConditionalExpression`
 
@@ -224,7 +223,6 @@
 
 - `for` 的 `OBJECT_CUSTOM`（Object `_iter_*` 精确协议）仍属 post-MVP；其余已注册 route 已接入，见 `frontend_for_range_loop_implementation.md`
 - `match`
-- `lambda`
 - 参数默认值语义本身
 - block-local `const`
 - signal coroutine use-site（`await signal`；`.emit` / `.connect` 已闭环，见 `frontend_signal_support.md`）
