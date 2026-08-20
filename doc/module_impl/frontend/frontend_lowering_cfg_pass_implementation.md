@@ -27,7 +27,7 @@
   - `doc/gdcc_c_backend.md`
 - 明确非目标：
   - 不在这里引入 high-level IR / sea-of-nodes
-  - 不在这里放行 `ConditionalExpression`
+  - `ConditionalExpression` 的 compile-ready 全链路（compile gate 放行、body lowering 端到端与 e2e）不由本文档管辖，见 `frontend_conditional_expression_implementation.md`；本文档只冻结其相关的 CFG 构图事实与 merge 合同
   - 不在这里把 parameter default 接到 body pass
   - 不在这里让 lowering 重跑 chain reduction、call route 选择或表达式求值顺序推导
 
@@ -304,9 +304,12 @@ dynamic instance-call receiver 现也冻结为同一套 payload consumer：
 
 value id 当前“基本单一定义”，但有一条刻意保留的窄例外：
 
-- 同一 outward-facing result value id 可以被多个 `MergeValueItem` 沿互斥路径写入
-- `MergeValueItem.sourceValueId` 必须来自同一个 `SequenceNode` 中更早出现的某个 `ValueOpItem.resultValueId`
-- graph publication 必须在发布时验证这条“同 sequence、先 producer 后 merge”合同；type collection / body lowering 不负责为跨 sequence 或逆序 merge source 做补救
+- 同一 outward-facing result value id 可以被多个 `MergeValueItem` 沿互斥路径写入（它们的 `mergeAnchor` 必须是同一个已发布 `RESOLVED/DYNAMIC` 的表达式节点，否则 `collectCfgValueMaterializations` fail-fast）
+- `MergeValueItem` 的合并槽类型由 `mergeAnchor` 的 `expressionTypes` 事实决定，而非单个 `sourceValueId` 的临时类型；因此同一 `resultValueId` 的多生产者已天然无类型冲突（同一 anchor 同一类型）
+- 正常情况下 `MergeValueItem.sourceValueId` 必须来自同一个 `SequenceNode` 中更早出现的某个 `ValueOpItem.resultValueId`
+- 窄例外：若某 `sourceValueId` 在全图范围内至少存在 1 个生产者且**全部**为 `MergeValueItem`（merge-of-merge），则允许作为跨 sequence 的 merge 源——该形状服务于嵌套三元的臂（内层 `resultValueId` 本身由双 `MergeValueItem` 产生）与 value 语境 `and/or` 臂；任何其它跨 sequence 源（opaque / call / 常量等）仍属非法；悬空 source（全图无生产者）仍 fail-fast
+- `MergeValueItem` 的写入由 `FrontendMergeValueInsnLoweringProcessor` 经统一 `materializeFrontendBoundaryValue(..., "merge_write")` 物化后 `AssignInsn(cfg_merge_*, materialized)`：`merge_write` 是 re-derive consumer（现场重查 ordinary typed-boundary 矩阵），与 assignment / return / local-init 同类；`bool→bool` 仍为 `ALLOW_DIRECT`，故 value 语境 `and/or` 的 LIR 形状保持 `LiteralBoolInsn` + `AssignInsn(cfg_merge_*, cfg_tmp_*)` 无额外 pack/unpack/intrinsic
+- graph publication 必须在发布时验证上述“同 sequence、先 producer 后 merge”及 merge-of-merge 窄例外；type collection / body lowering 不负责为其它跨 sequence 或逆序 merge source 做补救
 
 因此所有 consumer 都必须接受：
 
@@ -335,6 +338,9 @@ frontend CFG / body lowering 当前用以下方式闭合这组约束。
 - `and` / `or`
   - 直接展开短路分支
   - 每个 split 都绑定自己的 fragment-local `conditionValueId`
+- `ConditionalExpression`
+  - 纯控制流展开，不产生任何 merge 值：先测 `condition`，再对被选中臂做 truthiness 分支（两臂经 `buildCondition` 递归分发，外层 true/false target 原样透传）
+  - 因此 `if (a if c else b):` 的图中每个 `BranchNode.conditionValueId` 仍为 branch-local temp 槽，`emitConditionBranch` 归一化零改动；嵌套三元臂与 `and/or` 臂继续递归纯展开
 - 其他 condition
   - 先经由 `buildValue(...)` 求出 source value
   - 再发布 `BranchNode`
@@ -360,6 +366,15 @@ frontend CFG / body lowering 当前用以下方式闭合这组约束。
 
 - `BinaryOpInsn(AND)`
 - `BinaryOpInsn(OR)`
+
+`ConditionalExpression` 在 value context 中复用同一 branch-result merge 基建，固定形态是：
+
+- condition 子图（复用 `buildCondition`，`not` / `and/or` / 嵌套三元均走现有 condition 机制）
+- 两臂各自独立 `OpenSequence`，臂内以 `buildValue(..., null)` 求值（臂保留私有 temp）
+- 每臂末尾追加 `MergeValueItem(conditional, armResultId, sharedResultId)` 后发布，双臂合流到同一 merge continuation
+- `mergeAnchor` 为整条 `ConditionalExpression`，合并槽类型即 sema 发布的合并类型（§4 anchor 化合同）
+- 嵌套三元臂 / value 语境 `and/or` 臂返回未发布的内层 merge sequence，外层 merge 写入追加在同一 sequence 末尾（merge-of-merge 窄例外的服务对象）
+- `preferredResultValueId` 直接成为 `sharedResultId`（如 `var x = 三元` 的 `x_<n>` 槽），不额外产生中转 id
 
 ### 5.3 Bool-only normalization
 
@@ -392,7 +407,8 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
   - 类型来源：对应 CFG producer item 消费的 published fact
 - merge result
   - 命名：`cfg_merge_<valueId>`
-  - 类型来源：merged result value id 的 published type
+  - 类型来源：merged result value id 的 published type（即 `mergeAnchor` 的 `expressionTypes` 事实）
+  - 生命周期：merge 槽是普通 LIR 变量，backend 不做 `cfg_merge_` 特判；destroyable 合并类型（`String` / `Array` / object 等）与 source-local / `cfg_tmp_*` 同策略——函数头声明并在 `__prepare__` 默认构造，每条互斥 merge 写入先 destroy 旧值再覆写，`__finally__` 作用域退出统一销毁（已由 `ternary/destroyable_arms` e2e 的 C 产物验收确认）
 - source-level local variable
   - 命名：沿用源码名
   - 类型来源：`analysisData.slotTypes()`
@@ -698,7 +714,6 @@ body-lowering 合同：
 当前仍保持 shell-only、compile-block 或 fail-fast 的部分包括：
 
 - `PARAMETER_DEFAULT_INIT` CFG / body lowering
-- `ConditionalExpression`
 - `PreloadExpression`
 - `GetNodeExpression`
 - callable-value invocation
@@ -709,10 +724,10 @@ body-lowering 合同：
 
 `CastExpression` / `CastItem` 已进入 compile-ready body lowering 合同（decision→LIR 映射见 `frontend_cast_expression_implementation.md`），不再属于 shell-only / temporary fail-fast surface。
 
-其中 `ConditionalExpression` 继续 compile-block 的原因已经固定：
+`ConditionalExpression` 已进入 compile-ready body lowering 合同，不再属于 shell-only / temporary compile-block surface：
 
-- graph 虽已具备分支区域与 merge slot 基础设施
-- 但 branch-result merge、ownership、evaluation-order 语义还没有单独冻结
+- CFG 构图两种语境（value 语境 merge / condition 语境纯控制流展开）与 merge 槽合同见 §5.1/§5.2
+- compile gate 已解封（`walkExpression` 落入 default 递归），body lowering 经 `merge_write` boundary 物化，e2e（`ternary/` 用例对）已闭环；见 `frontend_conditional_expression_implementation.md`
 
 当前 body lowering 明确保留 fail-fast 的路径包括：
 
@@ -751,7 +766,7 @@ body-lowering 合同：
 - `FrontendCompileCheckAnalyzerTest`
   - step-level / expression-level compile anchor
   - `AttributeSubscriptStep` published fact 的 compile blocker 行为
-  - `ConditionalExpression` 继续 compile-block
+  - `ConditionalExpression` 已放行（支持面三元零 compile_check；FAILED/UNSUPPORTED 三元经 upstream owner + exact-range 去重阻断）
   - parameterized gdcc constructor route 的 compile-only 兜底
 - `FrontendVarTypePostAnalyzerTest`
   - parameter / typed local / `:=` local 的 slot type publication
