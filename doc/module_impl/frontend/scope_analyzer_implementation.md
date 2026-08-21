@@ -19,6 +19,7 @@
   - `doc/module_impl/frontend/runtime_name_mapping_implementation.md`
   - `doc/module_impl/frontend/scope_architecture_refactor_plan.md`
   - `doc/module_impl/frontend/scope_type_resolver_implementation.md`
+  - `doc/module_impl/frontend/frontend_global_constant_implementation.md`
   - `doc/analysis/frontend_semantic_analyzer_research_report.md`
 - 明确非目标：
   - 不在此处实现完整 frontend binder/body
@@ -157,6 +158,19 @@ frontend scope 层当前已经冻结为：
 - value namespace：最近命中优先
 - function namespace：最近非空层优先
 - type-meta namespace：独立 lexical namespace
+
+module/global root（`ClassRegistry`）的 value 命名空间合同（见 `frontend_global_constant_implementation.md` §3）：
+
+- `globalEnumValueByBareName`：全部全局枚举组成员的裸名扁平索引，与枚举组名登记解耦构造
+  （无名组成员同样进入索引），重名按引擎 `_global_constants_map` 语义 last-wins。
+- `gdScriptLanguageConstantByName`：编译器合成的 GDScript 语言常量 `PI` / `TAU` / `INF` / `NAN`
+  （对齐 `GDScriptLanguage::init()`，不在 GDExtension API dump 中）。
+- 极值常量（`INT8_MIN` ... `UINT32_MAX`）为编译器合成的前向事实，以 `putIfAbsent` 注册进
+  `globalConstantByName`，JSON 提供同名条目时 JSON 优先。
+- 枚举值裸名 / 语言常量 / 全局常量 / singleton / 枚举组名五个命名空间两两无交，构造期 guard
+  违反即 `IllegalStateException`（programmer error，不发诊断）。
+- `resolveValueHere` 五级解析顺序与 `resolveTypeMetaHere` 不受影响的合同以
+  `frontend_visible_value_resolver_implementation.md` §5 为准。
 
 ### 4.2 boundary 到 scope 的映射
 
