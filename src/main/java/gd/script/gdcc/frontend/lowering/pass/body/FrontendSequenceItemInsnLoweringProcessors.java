@@ -14,6 +14,15 @@ import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopGetItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopInitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopNextItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopShouldContinueItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.GetVariantTypeItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.IntConstantItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MatchBindItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MatchContainerMaterializeItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MatchElementFetchItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MatchEqualItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MatchHasKeyItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MatchLengthCheckItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.VariantIsNilItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.LambdaConstructItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallableLoadItem;
@@ -35,6 +44,7 @@ import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.AssignInsn;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
+import gd.script.gdcc.lir.insn.GetVariantTypeInsn;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
@@ -50,11 +60,16 @@ import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryComp
 import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
 import gd.script.gdcc.lir.insn.LineNumberInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
+import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
+import gd.script.gdcc.frontend.sema.FrontendMatchPatternRoute;
 import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
+import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdVariantType;
@@ -63,6 +78,9 @@ import gd.script.gdcc.util.type.ExplicitCastSupport;
 import gd.script.gdcc.util.type.TypeTestFoldResult;
 import gd.script.gdcc.util.type.TypeTestFoldUtil;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
+import gd.script.gdcc.lir.insn.VariantGetIndexedInsn;
+import gd.script.gdcc.lir.insn.VariantGetKeyedInsn;
+import gd.script.gdcc.lir.insn.VariantIsNilInsn;
 import gd.script.gdcc.lir.insn.VariantGetNamedInsn;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
@@ -117,6 +135,15 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 new FrontendSourceAnchorInsnLoweringProcessor(),
                 new FrontendLocalDeclarationInsnLoweringProcessor(),
                 new FrontendBoolConstantInsnLoweringProcessor(),
+                new FrontendIntConstantInsnLoweringProcessor(),
+                new FrontendGetVariantTypeInsnLoweringProcessor(),
+                new FrontendMatchEqualInsnLoweringProcessor(),
+                new FrontendVariantIsNilInsnLoweringProcessor(),
+                new FrontendMatchBindInsnLoweringProcessor(),
+                new FrontendMatchContainerMaterializeInsnLoweringProcessor(),
+                new FrontendMatchLengthCheckInsnLoweringProcessor(),
+                new FrontendMatchHasKeyInsnLoweringProcessor(),
+                new FrontendMatchElementFetchInsnLoweringProcessor(),
                 new FrontendMergeValueInsnLoweringProcessor(),
                 new FrontendOpaqueExprValueInsnLoweringProcessor(),
                 new FrontendDirectSlotAliasInsnLoweringProcessor(),
@@ -231,6 +258,280 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
                     node.value()
             ));
+            return block;
+        }
+    }
+
+    private static final class FrontendIntConstantInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<IntConstantItem, Void> {
+        @Override
+        public @NotNull Class<IntConstantItem> nodeType() {
+            return IntConstantItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull IntConstantItem node,
+                @Nullable Void context
+        ) {
+            block.appendNonTerminatorInstruction(new LiteralIntInsn(
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
+                    node.value()
+            ));
+            return block;
+        }
+    }
+
+    /// Packs a non-Variant operand then emits `get_variant_type`.
+    private static final class FrontendGetVariantTypeInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<GetVariantTypeItem, Void> {
+        @Override
+        public @NotNull Class<GetVariantTypeItem> nodeType() {
+            return GetVariantTypeItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull GetVariantTypeItem node,
+                @Nullable Void context
+        ) {
+            var variantSlotId = session.requireVariantSlot(block, node.operandValueId(), "variant_type");
+            block.appendNonTerminatorInstruction(new GetVariantTypeInsn(
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
+                    variantSlotId
+            ));
+            return block;
+        }
+    }
+
+    private static final class FrontendMatchEqualInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<MatchEqualItem, Void> {
+        @Override
+        public @NotNull Class<MatchEqualItem> nodeType() {
+            return MatchEqualItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull MatchEqualItem node,
+                @Nullable Void context
+        ) {
+            block.appendNonTerminatorInstruction(new BinaryOpInsn(
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
+                    GodotOperator.EQUAL,
+                    session.slotIdForValue(node.leftValueId()),
+                    session.slotIdForValue(node.rightValueId())
+            ));
+            return block;
+        }
+    }
+
+    private static final class FrontendVariantIsNilInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<VariantIsNilItem, Void> {
+        @Override
+        public @NotNull Class<VariantIsNilItem> nodeType() {
+            return VariantIsNilItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull VariantIsNilItem node,
+                @Nullable Void context
+        ) {
+            var variantSlotId = session.requireVariantSlot(block, node.operandValueId(), "is_nil");
+            block.appendNonTerminatorInstruction(new VariantIsNilInsn(
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
+                    variantSlotId
+            ));
+            return block;
+        }
+    }
+
+    /// Materializes the match subject into the predeclared bind slot.
+    private static final class FrontendMatchBindInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<MatchBindItem, Void> {
+        @Override
+        public @NotNull Class<MatchBindItem> nodeType() {
+            return MatchBindItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull MatchBindItem node,
+                @Nullable Void context
+        ) {
+            var _ = session.requireMatchBindSlot(node.declaration());
+            // Same-name binds of distinct sections share one function variable whose declared type
+            // may be widened to Variant (see declareMatchBindSlots), so materialize into the
+            // declared slot type instead of this declaration's own exposed type.
+            var declaredType = session.requireFunctionVariableType(node.bindSlotId());
+            var materializedSlotId = session.materializeFrontendBoundaryValue(
+                    block,
+                    session.slotIdForValue(node.subjectValueId()),
+                    session.requireValueType(node.subjectValueId()),
+                    declaredType,
+                    "match_bind"
+            );
+            block.appendNonTerminatorInstruction(new AssignInsn(node.bindSlotId(), materializedSlotId));
+            return block;
+        }
+    }
+
+    /// Materializes the destructuring subject into one static container slot.
+    ///
+    /// Runs once per container pattern right behind its typeof gate: a Variant source unpacks into
+    /// the untyped `Array` / `Dictionary` surface, while an already-static container source keeps
+    /// its published type (typed containers keep their element/value parameters).
+    private static final class FrontendMatchContainerMaterializeInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<MatchContainerMaterializeItem, Void> {
+        @Override
+        public @NotNull Class<MatchContainerMaterializeItem> nodeType() {
+            return MatchContainerMaterializeItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull MatchContainerMaterializeItem node,
+                @Nullable Void context
+        ) {
+            var sourceType = session.requireValueType(node.sourceValueId());
+            var targetType = switch (node.containerRoute()) {
+                case FrontendMatchPatternRoute.ARRAY -> sourceType instanceof GdArrayType
+                        ? sourceType
+                        : new GdArrayType(GdVariantType.VARIANT);
+                case FrontendMatchPatternRoute.DICTIONARY -> sourceType instanceof GdDictionaryType
+                        ? sourceType
+                        : new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT);
+                default -> throw session.unsupportedSequenceItem(
+                        node,
+                        "container materialize route must be ARRAY or DICTIONARY, but got " + node.containerRoute()
+                );
+            };
+            var materializedSlotId = session.materializeFrontendBoundaryValue(
+                    block,
+                    session.slotIdForValue(node.sourceValueId()),
+                    sourceType,
+                    targetType,
+                    "match_container"
+            );
+            block.appendNonTerminatorInstruction(new AssignInsn(
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
+                    materializedSlotId
+            ));
+            return block;
+        }
+    }
+
+    /// Lowers the destructuring length gate: builtin `size()` plus `==` / `>=` against the pattern
+    /// element count (`>=` when the pattern ends with `..`).
+    private static final class FrontendMatchLengthCheckInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<MatchLengthCheckItem, Void> {
+        @Override
+        public @NotNull Class<MatchLengthCheckItem> nodeType() {
+            return MatchLengthCheckItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull MatchLengthCheckItem node,
+                @Nullable Void context
+        ) {
+            var containerSlotId = session.slotIdForValue(node.containerValueId());
+            var sizeSlotId = session.allocateMatchHelperTemp("size", GdIntType.INT);
+            block.appendNonTerminatorInstruction(new CallMethodInsn(sizeSlotId, "size", containerSlotId, List.of()));
+            var countSlotId = session.allocateMatchHelperTemp("length", GdIntType.INT);
+            block.appendNonTerminatorInstruction(new LiteralIntInsn(countSlotId, node.expectedCount()));
+            block.appendNonTerminatorInstruction(new BinaryOpInsn(
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
+                    node.openEnded() ? GodotOperator.GREATER_EQUAL : GodotOperator.EQUAL,
+                    sizeSlotId,
+                    countSlotId
+            ));
+            return block;
+        }
+    }
+
+    /// Lowers one dictionary entry's key-existence gate: key packed to Variant, builtin `has(key)`.
+    private static final class FrontendMatchHasKeyInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<MatchHasKeyItem, Void> {
+        @Override
+        public @NotNull Class<MatchHasKeyItem> nodeType() {
+            return MatchHasKeyItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull MatchHasKeyItem node,
+                @Nullable Void context
+        ) {
+            var dictionarySlotId = session.slotIdForValue(node.dictionaryValueId());
+            var keySlotId = session.requireVariantSlot(block, node.keyValueId(), "match_has_key");
+            block.appendNonTerminatorInstruction(new CallMethodInsn(
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
+                    "has",
+                    dictionarySlotId,
+                    List.of(new LirInstruction.VariableOperand(keySlotId))
+            ));
+            return block;
+        }
+    }
+
+    /// Lowers one destructuring element fetch: `variant_get_indexed` for a static `Array` slot with
+    /// an int index, `variant_get_keyed` for a static `Dictionary` slot with a Variant key. The
+    /// result temp is always Variant; the nested sub-pattern test or bind consumes it from there.
+    private static final class FrontendMatchElementFetchInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<MatchElementFetchItem, Void> {
+        @Override
+        public @NotNull Class<MatchElementFetchItem> nodeType() {
+            return MatchElementFetchItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull MatchElementFetchItem node,
+                @Nullable Void context
+        ) {
+            var containerType = session.requireValueType(node.containerValueId());
+            var containerSlotId = session.slotIdForValue(node.containerValueId());
+            var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
+            switch (containerType) {
+                case GdArrayType _ -> block.appendNonTerminatorInstruction(new VariantGetIndexedInsn(
+                        resultSlotId,
+                        containerSlotId,
+                        session.slotIdForValue(node.keyValueId())
+                ));
+                case GdDictionaryType _ -> {
+                    var keySlotId = session.requireVariantSlot(block, node.keyValueId(), "match_dict_get");
+                    block.appendNonTerminatorInstruction(new VariantGetKeyedInsn(
+                            resultSlotId,
+                            containerSlotId,
+                            keySlotId
+                    ));
+                }
+                default -> throw session.unsupportedSequenceItem(
+                        node,
+                        "element fetch container must be a static Array/Dictionary slot, but got "
+                                + containerType.getTypeName()
+                );
+            }
             return block;
         }
     }

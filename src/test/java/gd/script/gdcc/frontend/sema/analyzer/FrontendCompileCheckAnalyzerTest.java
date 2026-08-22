@@ -43,6 +43,7 @@ import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.PreloadExpression;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.Statement;
@@ -924,7 +925,7 @@ class FrontendCompileCheckAnalyzerTest {
                         pass
                     const answer = [body_local]
                     match body_local:
-                        var bound when bound > 0:
+                        [1, var bound]:
                             [bound]
                             preload("res://icon.svg")
                             $Camera3D
@@ -937,17 +938,40 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_skipped_surface.gd", source);
 
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        // The recorded (clean-body) lambda is released onto the compile surface, so it no
-        // longer carries a form-level blocker; the explicit blocks nested inside the match stay
-        // skipped because match itself never enters the compile surface.
-        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+        var matchStatement = findNode(compiled.unit().ast(), MatchStatement.class, ignored -> true);
+        // ARRAY is compile-ready: the match body joins the compile surface, so the nested
+        // preload / $Node / assert each report their own blocker and the match root stays clean.
+        assertEquals(3, compileDiagnostics.size(), compileDiagnostics::toString);
+        assertTrue(compileDiagnostics.stream().noneMatch(
+                diagnostic -> diagnostic.range().equals(FrontendRange.fromAstRange(matchStatement.range()))
+        ));
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Preload expression")));
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Get-node expression")));
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("assert statement")));
         var unsupportedBindingDiagnostics = diagnosticsByCategory(
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
         );
-        // parameter default + block-local const + match stay fail-closed; the recorded lambda
-        // resolves through its own nested suite and no longer contributes a diagnostic.
-        assertEquals(3, unsupportedBindingDiagnostics.size());
+        // parameter default + block-local const stay fail-closed; match no longer contributes.
+        assertEquals(2, unsupportedBindingDiagnostics.size());
+    }
+
+    @Test
+    void matchReadyRoutesReleaseBodyOntoCompileSurface() throws Exception {
+        var source = """
+                class_name CompileCheckMatchReadySurface
+                extends Node
+                
+                func ping(value: int):
+                    match value:
+                        var bound when bound > 0:
+                            assert(bound)
+                """;
+
+        var compiled = analyzeForCompile("compile_check_match_ready_surface.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
+        assertTrue(compileDiagnostics.getFirst().message().contains("assert"));
     }
 
     @Test
@@ -2138,16 +2162,106 @@ class FrontendCompileCheckAnalyzerTest {
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
         );
-        var matchStatement = findNode(compiled.unit().ast(), MatchStatement.class, ignored -> true);
 
-        // The recorded lambda is released and its body recursed, but the match inside stays outside
-        // the compile surface: compilation fails through the upstream unsupported-binding owner and
-        // the gate does not wrap the match in an extra sema.compile_check diagnostic.
-        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        // LITERAL is compile-ready, so a recorded-lambda body match is released.
         assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
-        assertTrue(unsupportedBindingDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.range().equals(FrontendRange.fromAstRange(matchStatement.range()))
-        ), unsupportedBindingDiagnostics::toString);
+        assertTrue(unsupportedBindingDiagnostics.isEmpty(), unsupportedBindingDiagnostics::toString);
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+    }
+
+    @Test
+    void analyzeForCompileDoesNotReWrapUpstreamErrorOnMatchRouteNotReady() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_match_upstream_error.gd", """
+                class_name CompileCheckMatchUpstreamError
+                extends Node
+                
+                func ping(value):
+                    match value:
+                        [1]:
+                            pass
+                """);
+        var matchStatement = findNode(preparedInput.unit().ast(), MatchStatement.class, ignored -> true);
+        preparedInput.diagnosticManager().error(
+                "sema.synthetic",
+                "synthetic upstream error owning the match statement anchor",
+                preparedInput.unit().path(),
+                FrontendRange.fromAstRange(matchStatement.range())
+        );
+        preparedInput.analysisData().updateDiagnostics(preparedInput.diagnosticManager().snapshot());
+
+        runCompileCheck(preparedInput);
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.compile_check").isEmpty());
+        assertEquals(1, diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.synthetic").size());
+    }
+
+    @Test
+    void analyzeForCompileKeepsMatchWithoutPublishedPlanFailClosedWithoutCompileCheck() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_match_missing_plan.gd", """
+                class_name CompileCheckMatchMissingPlan
+                extends Node
+                
+                func ping(value):
+                    match value:
+                        1:
+                            pass
+                """);
+        var matchStatement = findNode(preparedInput.unit().ast(), MatchStatement.class, ignored -> true);
+        preparedInput.analysisData().matchPlans().remove(matchStatement);
+
+        runCompileCheck(preparedInput);
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileUpgradesMissingBindSlotTypeWhenPublicationWarningExists() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_match_bind_slot_hole.gd", """
+                class_name CompileCheckMatchBindSlotHole
+                extends Node
+                
+                func ping(value: int):
+                    match value:
+                        var bound:
+                            pass
+                """);
+        var bind = findNode(preparedInput.unit().ast(), PatternBindingExpression.class, ignored -> true);
+        preparedInput.analysisData().slotTypes().remove(bind);
+        preparedInput.diagnosticManager().warning(
+                "sema.variable_slot_publication",
+                "synthetic bind slot publication warning",
+                preparedInput.unit().path(),
+                FrontendRange.fromAstRange(bind.range())
+        );
+        preparedInput.analysisData().updateDiagnostics(preparedInput.diagnosticManager().snapshot());
+
+        runCompileCheck(preparedInput);
+
+        var compileDiagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.compile_check"
+        );
+        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
+        assertEquals(FrontendRange.fromAstRange(bind.range()), compileDiagnostics.getFirst().range());
+    }
+
+    @Test
+    void analyzeForCompileDoesNotUpgradeMissingBindSlotTypeWithoutPublicationWarning() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_match_bind_slot_protocol.gd", """
+                class_name CompileCheckMatchBindSlotProtocol
+                extends Node
+                
+                func ping(value: int):
+                    match value:
+                        var bound:
+                            pass
+                """);
+        var bind = findNode(preparedInput.unit().ast(), PatternBindingExpression.class, ignored -> true);
+        preparedInput.analysisData().slotTypes().remove(bind);
+
+        runCompileCheck(preparedInput);
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.compile_check").isEmpty());
     }
 
     @Test
@@ -2211,16 +2325,16 @@ class FrontendCompileCheckAnalyzerTest {
                         var hidden_signal = pinged
                         var hidden_method = _handler
                     match 0:
-                        var bound when bound == 0:
+                        [1]:
                             var hidden_match_signal = pinged
                 """;
 
         var compiled = analyzeForCompile("compile_check_signal_skipped_surface.gd", source);
-        // The recorded lambda body is released onto the compile surface, but the bare signal /
-        // self-method value reads inside it are already compile-ready; the match section stays
-        // skipped. None of them contributes a compile blocker.
+        // The recorded lambda body is released onto the compile surface, and its bare signal /
+        // self-method value reads are already compile-ready. The ARRAY match is compile-ready too,
+        // so its rescanned body adds no blocker either.
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        assertTrue(compileDiagnostics.isEmpty(), () -> compiled.diagnostics().asList().toString());
+        assertEquals(0, compileDiagnostics.size(), () -> compiled.diagnostics().asList().toString());
     }
 
     @Test
