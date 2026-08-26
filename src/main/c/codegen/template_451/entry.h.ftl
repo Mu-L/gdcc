@@ -8,6 +8,11 @@
 #include <godot_binding.h>
 static GDExtensionClassLibraryPtr class_library = NULL;
 #include <gdcc_helper.h>
+<#if helper.hasCoroutineFunctions()>
+<#-- Coroutine runtime types (mco_coro, gdcc_coro_state_header/desc). Only modules with at -->
+<#-- least one `is_coroutine="true"` function see this include, keeping sync-only output stable. -->
+#include <gdcc_coroutine.h>
+</#if>
 
 struct GDExtensionInitializationStatus {
     godot_bool initialized;
@@ -76,8 +81,20 @@ typedef struct <@lambdaCaptureName classDef func/> {
 </#list>
 } <@lambdaCaptureName classDef func/>;
 </#if>
-<#-- Normal function -->
+<#-- Normal function. Coroutine lambdas have no plain function surface: their body is the -->
+<#-- `__coro_body` in the coroutine section and the Callable ABI enters through the start thunk. -->
+<#if !func.coroutine || !func.lambda>
 <@funcHeader helper classDef func/>;
+</#if>
+<#if func.lambda && func.coroutine>
+<#-- Forward declarations for the coroutine lambda `call_func` below: the full state-class -->
+<#-- declarations live in the later coroutine section, after this per-function loop, so the -->
+<#-- Callable dispatch needs the start thunk (and the non-void move_result accessor) early. -->
+<@coroStartThunkHeader helper classDef func/>;
+<#if func.returnType.typeName != "void">
+${helper.renderGdTypeInC(func.returnType)} ${helper.renderCoroMoveResultFuncName(classDef, func)}(gdcc_coro_state_header *coro_header);
+</#if>
+</#if>
 <#if func.lambda>
 static GDExtensionInt ${helper.renderLambdaGetArgumentCountFuncName(classDef, func)}(void *userdata, GDExtensionBool *r_is_valid) {
     (void)userdata;
@@ -277,6 +294,54 @@ static void ${helper.renderLambdaCallFuncName(classDef, func)}(
     <#assign callArgs>
         <#list func.parameters as paramType>${helper.renderValueRef(paramType.type, "arg${paramType_index}")}<#if paramType_has_next || func.captureCount gt 0>, </#if></#list><#if func.captureCount gt 0>captures</#if>
     </#assign>
+    <#if func.coroutine>
+    <#-- Coroutine lambda (frontend_await_implementation.md §5): the Callable ABI enters -->
+    <#-- through the start thunk with the capture block as the tail argument, then dispatches -->
+    <#-- on done/suspend. A suspended coroutine always hands the state object out as a Variant -->
+    <#-- regardless of the declared return type (the Callable ABI has only a Variant return -->
+    <#-- channel) — deliberately unlike the named engine entry, which errors on typed -->
+    <#-- non-Variant suspension. The single-exit shape keeps the trailing argument destroys shared. -->
+    godot_Object* coro_state_obj = ${helper.renderCoroStartThunkName(classDef, func)}(${callArgs?trim});
+    if (coro_state_obj == NULL) {
+        godot_variant_new_nil(r_return);
+        if (r_error != NULL) {
+            r_error->error = GDEXTENSION_CALL_ERROR_INVALID_METHOD;
+        }
+    } else {
+        gdcc_coro_state_header* coro_header = gdcc_coro_state_identify(coro_state_obj);
+        if (coro_header == NULL) {
+            release_object(coro_state_obj);
+            godot_variant_new_nil(r_return);
+            GDCC_PRINT_RUNTIME_ERROR("gdcc: coroutine lambda start returned an invalid state object", __func__, __FILE__, __LINE__);
+        } else if (coro_header->done) {
+        <#if func.returnType.typeName != "void">
+            // Synchronous completion fast path: move the typed result out of the frame slot.
+            ${helper.renderGdTypeInC(func.returnType)} r = ${helper.renderCoroMoveResultFuncName(classDef, func)}(coro_header);
+            godot_Variant ret = ${helper.renderPackFunctionName(func.returnType)}(${helper.renderValueRef(func.returnType, "r")});
+            godot_variant_new_copy(r_return, &ret);
+            godot_Variant_destroy(&ret);
+            <#assign returnObjectConsumeStmt = helper.renderCallWrapperOwnedObjectReturnConsumeStmt(func.returnType, "r")>
+            <#if returnObjectConsumeStmt?has_content>
+            ${returnObjectConsumeStmt}
+            </#if>
+            <#assign returnCleanupStmt = helper.renderCallWrapperDestroyStmt(func.returnType, "r")>
+            <#if returnCleanupStmt?has_content>
+            ${returnCleanupStmt}
+            </#if>
+        <#else>
+            godot_variant_new_nil(r_return);
+        </#if>
+            release_object(coro_state_obj);
+        } else {
+            // Suspended: the Variant retains the RefCounted state object, so the thunk's OWNED
+            // reference is released right after wrapping.
+            godot_Variant coro_state_variant = godot_new_Variant_with_Object(coro_state_obj);
+            godot_variant_new_copy(r_return, &coro_state_variant);
+            godot_Variant_destroy(&coro_state_variant);
+            release_object(coro_state_obj);
+        }
+    }
+    <#else>
     <#if func.returnType.typeName != "void">
         ${helper.renderGdTypeInC(func.returnType)} r = ${classDef.name}_${func.name}(${callArgs?trim});
         godot_Variant ret = ${helper.renderPackFunctionName(func.returnType)}(${helper.renderValueRef(func.returnType, "r")});
@@ -294,6 +359,7 @@ static void ${helper.renderLambdaCallFuncName(classDef, func)}(
         godot_variant_new_nil(r_return);
         (${classDef.name}_${func.name}(${callArgs?trim}));
     </#if>
+    </#if>
     <#assign argCount = func.parameters?size>
     <#list func.parameters?reverse as paramType>
         <#assign argIndex = argCount - paramType_index - 1>
@@ -308,6 +374,64 @@ static void ${helper.renderLambdaCallFuncName(classDef, func)}(
 
 </#list>
 
+<#if helper.hasCoroutineFunctions()>
+// Hidden coroutine state classes (frontend_await_implementation.md §5-§6)
+// One state class per `is_coroutine="true"` function: direct RefCounted child, runtime-only,
+// never exposed. The wrapper root field is `_object` (no GDCC `_super` chain); the common
+// `gdcc_coro_state_header` follows it and is exposed through the dedicated coroutine binding
+// token. Typed parameter fields are the only owning parameter storage; the typed return slot
+// plus its written flag sit behind it (non-void coroutines only).
+<#list module.classDefs as classDef>
+<#list classDef.functions as func>
+<#if func.coroutine>
+<#assign stateName = helper.renderCoroStateClassName(classDef, func)>
+typedef struct ${stateName} ${stateName};
+
+struct ${stateName} {
+    GDExtensionObjectPtr _object;
+    gdcc_coro_state_header ${helper.renderCoroHeaderField()};
+    <#list func.parameters as param>
+    ${helper.renderGdTypeInC(param.type)} ${helper.renderCoroParamFieldPrefix()}${param.name};
+    </#list>
+    <#-- Coroutine lambda captures: per-call owning copies filled by the start -->
+    <#-- thunk from the borrowed capture block; destroyed exactly once by free_instance. -->
+    <#list func.captureList as capture>
+    ${helper.renderLambdaCaptureFieldTypeInC(capture.type)} ${helper.renderCoroCaptureFieldPrefix()}${capture.name};
+    </#list>
+    <#if func.returnType.typeName != "void">
+    ${helper.renderGdTypeInC(func.returnType)} ${helper.renderCoroRetField()};
+    godot_bool ${helper.renderCoroRetInitializedField()};
+    </#if>
+};
+
+const GDExtensionInstanceBindingCallbacks ${stateName}_class_binding_callbacks = {
+    NULL,
+    NULL,
+    NULL,
+};
+
+GDExtensionObjectPtr ${stateName}_class_create_instance(void* p_class_userdata, GDExtensionBool p_notify_postinitialize);
+
+void ${stateName}_class_free_instance(void* p_class_userdata, GDExtensionClassInstancePtr p_instance);
+
+void ${stateName}_class_notification(GDExtensionClassInstancePtr p_instance, int32_t p_what, GDExtensionBool p_reversed);
+
+static void ${helper.renderCoroPackResultFuncName(classDef, func)}(gdcc_coro_state_header *coro_header);
+static void ${helper.renderCoroCopyRetSlotFuncName(classDef, func)}(gdcc_coro_state_header *coro_header, void *out_typed);
+static void ${helper.renderCoroDestroyRetSlotFuncName(classDef, func)}(gdcc_coro_state_header *coro_header);
+static void ${helper.renderCoroEmitCompletedFuncName(classDef, func)}(gdcc_coro_state_header *coro_header);
+<#if func.returnType.typeName != "void">
+${helper.renderGdTypeInC(func.returnType)} ${helper.renderCoroMoveResultFuncName(classDef, func)}(gdcc_coro_state_header *coro_header);
+</#if>
+
+void ${helper.renderCoroBodyFunctionName(classDef, func)}(mco_coro *${helper.renderCoroCoParam()});
+
+<@coroStartThunkHeader helper classDef func/>;
+</#if>
+</#list>
+</#list>
+
+</#if>
 <#assign operatorEvaluatorHelperSpecs = helper.collectOperatorEvaluatorHelperSpecs(module)>
 <#if operatorEvaluatorHelperSpecs?size gt 0>
 // Operator evaluator helpers

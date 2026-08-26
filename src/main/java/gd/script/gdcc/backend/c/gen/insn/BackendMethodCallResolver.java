@@ -4,6 +4,7 @@ import gd.script.gdcc.backend.c.gen.CBodyBuilder;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodAbiSignature;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodSymbolKey;
 import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
+import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirVariable;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.scope.ParameterDef;
@@ -146,7 +147,8 @@ public final class BackendMethodCallResolver {
                                      @NotNull List<MethodParamSpec> parameters,
                                      @Nullable EngineMethodBindSpec engineMethodBindSpec,
                                      boolean isVararg,
-                                     boolean isStatic) {
+                                     boolean isStatic,
+                                     boolean coroutine) {
         public ResolvedMethodCall {
             Objects.requireNonNull(mode);
             Objects.requireNonNull(methodName);
@@ -188,6 +190,42 @@ public final class BackendMethodCallResolver {
         };
     }
 
+    /// Static counterpart of `resolve(...)`.
+    ///
+    /// `className` is the receiver canonical name published by lowering (GDCC class, inner class
+    /// `Outer__sub__Inner`, engine class, or builtin type name); it is restored to a `ScopeTypeMeta`
+    /// through `ClassRegistry.resolveTypeMeta` — never `getClassDef(new GdObjectType(...))`, which
+    /// misses builtin owners. The shared static resolver can only produce `Resolved`/`Failed` (no
+    /// dynamic fallback exists for static calls), and the emitted C symbol/start thunk names the
+    /// declaring owner class (`resolved.ownerClass()`), which differs from `className` under
+    /// inheritance.
+    public static @NotNull ResolvedMethodCall resolveStatic(@NotNull CBodyBuilder bodyBuilder,
+                                                            @NotNull String className,
+                                                            @NotNull String methodName,
+                                                            @NotNull List<LirVariable> argVars) {
+        for (var i = 0; i < argVars.size(); i++) {
+            InsnGenSupport.rejectCompilerOnlyType(bodyBuilder, argVars.get(i).type(), "call_static_method argument #" + (i + 1));
+        }
+
+        var receiverTypeMeta = bodyBuilder.classRegistry().resolveTypeMeta(className);
+        if (receiverTypeMeta == null) {
+            throw bodyBuilder.invalidInsn("Static method owner type '" + className + "' was not found");
+        }
+        var argTypes = argVars.stream().map(LirVariable::type).toList();
+        var result = ScopeMethodResolver.resolveStaticMethod(
+                bodyBuilder.classRegistry(),
+                receiverTypeMeta,
+                methodName,
+                argTypes
+        );
+        return switch (result) {
+            case ScopeMethodResolver.Resolved resolved -> toResolvedMethodCall(bodyBuilder, resolved.method());
+            case ScopeMethodResolver.DynamicFallback _ -> throw bodyBuilder.invalidInsn(
+                    "Static method '" + className + "." + methodName + "' unexpectedly resolved to dynamic dispatch");
+            case ScopeMethodResolver.Failed failed -> throw bodyBuilder.invalidInsn(failed.message());
+        };
+    }
+
     private static @NotNull DispatchMode toDispatchMode(@NotNull ScopeMethodResolver.DynamicKind dynamicKind) {
         return switch (dynamicKind) {
             case OBJECT_DYNAMIC -> DispatchMode.OBJECT_DYNAMIC;
@@ -216,6 +254,7 @@ public final class BackendMethodCallResolver {
                 List.of(),
                 null,
                 true,
+                false,
                 false
         );
     }
@@ -226,12 +265,21 @@ public final class BackendMethodCallResolver {
         var ownerClassName = resolved.ownerClass().getName();
         var parameters = toMethodParamSpecs(resolved);
         var engineMethodBindSpec = resolveEngineMethodBindSpec(bodyBuilder, resolved, mode);
+        // Internal coroutine-call ABI (`gdcc_low_ir.md` §Coroutine Instructions): a call on an
+        // `is_coroutine="true"` GDCC callee targets the coroutine-start thunk (which always
+        // hands back the OWNED state object reference) instead of the ClassDB entry, and the
+        // call result is the compiler-only `compiler::GdccCoroState` single-consumer value.
+        var coroutine = mode == DispatchMode.GDCC
+                && resolved.function() instanceof LirFunctionDef lirFunction
+                && lirFunction.isCoroutine();
         return new ResolvedMethodCall(
                 mode,
                 resolved.methodName(),
                 ownerClassName,
                 resolved.ownerType(),
-                renderMethodCFunctionName(
+                coroutine
+                        ? bodyBuilder.helper().renderCoroStartThunkName(resolved.ownerClass(), resolved.function())
+                        : renderMethodCFunctionName(
                         mode,
                         ownerClassName,
                         resolved.methodName(),
@@ -245,7 +293,8 @@ public final class BackendMethodCallResolver {
                 parameters,
                 engineMethodBindSpec,
                 resolved.isVararg(),
-                resolved.isStatic()
+                resolved.isStatic(),
+                coroutine
         );
     }
 

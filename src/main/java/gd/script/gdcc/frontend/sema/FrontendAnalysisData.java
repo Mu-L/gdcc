@@ -1,6 +1,8 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.AwaitExpression;
 import dev.superice.gdparser.frontend.ast.ForStatement;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
@@ -9,6 +11,7 @@ import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendPublishedFactTypeGuard;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
+import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
@@ -19,8 +22,11 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /// Unified frontend analysis data container shared across semantic phases.
 ///
@@ -63,6 +69,28 @@ public final class FrontendAnalysisData {
     /// Published lambda identity/capture plans keyed by `LambdaExpression`. Inventory never
     /// publishes placeholder plans; the first entry is the complete `LAMBDA_RESOLUTION` payload.
     private final @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans;
+    /// Monotonic identity set of GDCC callables proven to be coroutines, i.e. directly containing a
+    /// real await (signal/dynamic route) or awaiting a call to another coroutine. Keyed by the
+    /// callable's skeleton `LirFunctionDef` — not by AST node — because every downstream consumer
+    /// (await coroutine fixed-point, compile-gate position checks, lowering skeleton pass) only ever
+    /// holds the `FunctionDef` from a resolved call or the lowering shell. Entries are added during
+    /// `EXPR_TYPE` (signal/dynamic awaits) and by the post-suite await coroutine fixed-point pass
+    /// (await-of-coroutine-call). The set is only read after suite resolution completes, so the
+    /// per-owner export-batch discipline does not apply to it.
+    private final @NotNull Set<LirFunctionDef> coroutineFunctions;
+    /// Monotonic identity set of lambda owners (`LambdaExpression`) whose bodies directly contain
+    /// a real await or await a call to another coroutine (`frontend_await_implementation.md` §8).
+    /// Keyed by AST identity because the synthetic `_lambda_<n>` shell does not exist during sema;
+    /// the lowering function-preparation pass bridges each marked owner to its freshly synthesized
+    /// shell (`setCoroutine(true)` + `markCoroutineFunction(shell)` — both are required: the former
+    /// is the LIR/backend fact, the latter is the lowering membership source).
+    private final @NotNull Set<LambdaExpression> coroutineLambdaOwners;
+    /// Transient working list of await expressions whose operand is an exact call: `EXPR_TYPE`
+    /// publishes a provisional callee-return result, but later owners can still determine that the
+    /// callee is a coroutine. The post-suite fixed point consumes and clears these entries, refines
+    /// non-coroutine Signal-call results, preserves Variant dynamic results, and marks only other
+    /// hard returns as redundant. Never itself a published fact for lowering.
+    private final @NotNull List<FrontendAwaitCallPending> awaitCallPendings;
 
     private FrontendAnalysisData(
             @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst,
@@ -77,7 +105,10 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans,
             @NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets,
             @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> containerLiteralPlans,
-            @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans
+            @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans,
+            @NotNull Set<LirFunctionDef> coroutineFunctions,
+            @NotNull Set<LambdaExpression> coroutineLambdaOwners,
+            @NotNull List<FrontendAwaitCallPending> awaitCallPendings
     ) {
         this.annotationsByAst = Objects.requireNonNull(annotationsByAst, "annotationsByAst must not be null");
         this.skippedSubtreeRoots = Objects.requireNonNull(
@@ -104,6 +135,12 @@ public final class FrontendAnalysisData {
                 "containerLiteralPlans must not be null"
         );
         this.lambdaPlans = Objects.requireNonNull(lambdaPlans, "lambdaPlans must not be null");
+        this.coroutineFunctions = Objects.requireNonNull(coroutineFunctions, "coroutineFunctions must not be null");
+        this.coroutineLambdaOwners = Objects.requireNonNull(
+                coroutineLambdaOwners,
+                "coroutineLambdaOwners must not be null"
+        );
+        this.awaitCallPendings = Objects.requireNonNull(awaitCallPendings, "awaitCallPendings must not be null");
     }
 
     /// Creates an empty analysis data carrier with the full side-table topology already present.
@@ -121,7 +158,10 @@ public final class FrontendAnalysisData {
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
-                new FrontendAstSideTable<>()
+                new FrontendAstSideTable<>(),
+                Collections.newSetFromMap(new IdentityHashMap<>()),
+                Collections.newSetFromMap(new IdentityHashMap<>()),
+                new ArrayList<>()
         );
     }
 
@@ -364,6 +404,89 @@ public final class FrontendAnalysisData {
 
     public @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans() {
         return lambdaPlans;
+    }
+
+    /// Read-only view of the coroutine callable set; mutation goes through `markCoroutineFunction`.
+    public @NotNull Set<LirFunctionDef> coroutineFunctions() {
+        return Collections.unmodifiableSet(coroutineFunctions);
+    }
+
+    /// Marks a callable as a coroutine. Idempotent and monotonic; returns true when the marking was
+    /// newly added so the await fixed-point pass can detect progress.
+    public boolean markCoroutineFunction(@NotNull LirFunctionDef functionDef) {
+        return coroutineFunctions.add(Objects.requireNonNull(functionDef, "functionDef must not be null"));
+    }
+
+    /// Read-only view of the lambda coroutine owner set; mutation goes through
+    /// `markCoroutineLambdaOwner` / `markCoroutineOwner`. Consumed by the lowering
+    /// function-preparation pass when it synthesizes each lambda shell.
+    public @NotNull Set<LambdaExpression> coroutineLambdaOwners() {
+        return Collections.unmodifiableSet(coroutineLambdaOwners);
+    }
+
+    /// Marks a lambda owner as a coroutine by AST identity. Idempotent and monotonic; returns
+    /// true when the marking was newly added so the await fixed-point pass can detect progress.
+    public boolean markCoroutineLambdaOwner(@NotNull LambdaExpression lambdaExpression) {
+        return coroutineLambdaOwners.add(
+                Objects.requireNonNull(lambdaExpression, "lambdaExpression must not be null")
+        );
+    }
+
+    /// Marks an await's enclosing callable owner as a coroutine, dispatching on the owner shape:
+    /// named/constructor skeletons join `coroutineFunctions` directly; lambda owners join
+    /// `coroutineLambdaOwners` and are bridged to their shell during lowering preparation.
+    public boolean markCoroutineOwner(@NotNull FrontendAwaitCoroutineOwner owner) {
+        return switch (Objects.requireNonNull(owner, "owner must not be null")) {
+            case FrontendAwaitCoroutineOwner.NamedFunction(var function) -> markCoroutineFunction(function);
+            case FrontendAwaitCoroutineOwner.Lambda(var lambda) -> markCoroutineLambdaOwner(lambda);
+        };
+    }
+
+    /// Refines an exact-call await after the post-suite coroutine fixed point. This is required for
+    /// a non-coroutine callee returning `Signal`: before the fixed point the result provisionally
+    /// has the callee return type, while afterwards it becomes the signal's resume-value type.
+    public void refineResolvedAwaitExpressionType(
+            @NotNull AwaitExpression awaitExpression,
+            @NotNull GdType refinedType
+    ) {
+        var checkedAwait = Objects.requireNonNull(awaitExpression, "awaitExpression must not be null");
+        var checkedType = Objects.requireNonNull(refinedType, "refinedType must not be null");
+        var current = expressionTypes.get(checkedAwait);
+        if (current == null || current.status() != FrontendExpressionTypeStatus.RESOLVED) {
+            throw new IllegalStateException(
+                    "Await result refinement requires an existing RESOLVED expression fact"
+            );
+        }
+        expressionTypes.put(checkedAwait, FrontendExpressionType.resolved(checkedType));
+    }
+
+    /// Working list consumed by the post-suite await coroutine pass; not a stable fact. Mutation
+    /// goes through `addAwaitCallPending` / `drainAwaitCallPendings` only.
+    public @NotNull List<FrontendAwaitCallPending> awaitCallPendings() {
+        return Collections.unmodifiableList(awaitCallPendings);
+    }
+
+    /// Returns a snapshot of all recorded await-call pendings and clears the working list; used by
+    /// the post-suite fixed-point pass as the single consumer.
+    public @NotNull List<FrontendAwaitCallPending> drainAwaitCallPendings() {
+        var drained = List.copyOf(awaitCallPendings);
+        awaitCallPendings.clear();
+        return drained;
+    }
+
+    public void addAwaitCallPending(@NotNull FrontendAwaitCallPending pending) {
+        awaitCallPendings.add(Objects.requireNonNull(pending, "pending must not be null"));
+    }
+
+    /// Whether the published exact call at `callAnchor` targets a callable already marked as a
+    /// coroutine. Pure read over two frozen tables (`resolvedCalls` + `coroutineFunctions`);
+    /// non-exact routes and non-`LirFunctionDef` declaration sites can never be GDCC coroutines.
+    public boolean isPublishedCoroutineCall(@NotNull Node callAnchor) {
+        var publishedCall = resolvedCalls().get(Objects.requireNonNull(callAnchor, "callAnchor must not be null"));
+        return publishedCall != null
+                && publishedCall.status() == FrontendCallResolutionStatus.RESOLVED
+                && publishedCall.declarationSite() instanceof LirFunctionDef calleeFunction
+                && coroutineFunctions.contains(calleeFunction);
     }
 
     /// Refreshes published local bindings after a verified local-slot rewrite.

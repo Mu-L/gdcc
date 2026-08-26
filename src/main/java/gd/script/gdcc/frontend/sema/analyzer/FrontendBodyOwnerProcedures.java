@@ -6,6 +6,7 @@ import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
+import dev.superice.gdparser.frontend.ast.AwaitExpression;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
@@ -29,10 +30,13 @@ import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendAwaitCallPending;
+import gd.script.gdcc.frontend.sema.FrontendAwaitCoroutineOwner;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendBodySemanticSupportPolicy;
@@ -65,6 +69,7 @@ import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolver;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueStatus;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionUtilityFunction;
+import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeLookupStatus;
@@ -114,6 +119,9 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             "sema.unsupported_binding_subtree";
     private static final @NotNull String UNSUPPORTED_CHAIN_ROUTE_CATEGORY = "sema.unsupported_chain_route";
     private static final @NotNull String UNSUPPORTED_EXPRESSION_ROUTE_CATEGORY = "sema.unsupported_expression_route";
+    /// Warning owner for `await` on a call whose callee is a statically known non-coroutine
+    /// (`frontend_await_implementation.md` §8; aligns Godot `REDUNDANT_AWAIT`).
+    public static final @NotNull String REDUNDANT_AWAIT_CATEGORY = "sema.redundant_await";
 
     private FrontendAnalysisData cachedAnalysisData;
     private FrontendBodyDeclarationIndex cachedBodyDeclarationIndex;
@@ -1272,6 +1280,24 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         }
     }
 
+    /// Shared `sema.redundant_await` reporter: used by the EXPR_TYPE owner for call sites that can
+    /// never be coroutines (non-`FunctionDef` declaration anchors) and by the post-suite await
+    /// coroutine pass once the fixed point proves the callee stays unmarked.
+    public static void reportRedundantAwait(
+            @NotNull DiagnosticManager diagnosticManager,
+            @NotNull java.nio.file.Path sourcePath,
+            @NotNull AwaitExpression awaitExpression,
+            @NotNull String callableName
+    ) {
+        diagnosticManager.warning(
+                REDUNDANT_AWAIT_CATEGORY,
+                "The called function '" + callableName
+                        + "' is not a coroutine, so 'await' returns the call result immediately without suspending",
+                sourcePath,
+                FrontendRange.fromAstRange(awaitExpression.range())
+        );
+    }
+
     private static void reportUnresolvedTypeTestTargetWarning(
             @NotNull FrontendSuiteContext context,
             @NotNull TypeTestExpression typeTestExpression,
@@ -1834,6 +1860,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         resolveArrayExpressionType(arrayExpression, finalizeWindow, expectedType);
                 case DictionaryExpression dictionaryExpression ->
                         resolveDictionaryExpressionType(dictionaryExpression, finalizeWindow, expectedType);
+                case AwaitExpression awaitExpression -> resolveAwaitExpressionType(awaitExpression, finalizeWindow);
                 default -> expressionSemanticSupport
                         .resolveRemainingExplicitExpressionType(
                                 expression,
@@ -1925,6 +1952,146 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 containerLiteralPlans.put(dictionaryExpression, result.publishedContainerLiteralPlanOrNull());
             }
             return result.expressionType();
+        }
+
+        /// Await owner hook: the pure classification lives
+        /// in `FrontendExpressionSemanticSupport`; this wrapper owns the side effects — coroutine
+        /// marking for signal/dynamic routes and pending recording for exact-call operands. The
+        /// call-operand coroutine decision never happens here: the callee's own body may resolve
+        /// after this owner, so all call pendings are consumed by the post-suite fixed-point pass.
+        private @NotNull FrontendExpressionType resolveAwaitExpressionType(
+                @NotNull AwaitExpression awaitExpression,
+                boolean finalizeWindow
+        ) {
+            var result = expressionSemanticSupport.resolveAwaitExpressionType(
+                    awaitExpression,
+                    this::resolveExpressionType,
+                    this::findAwaitOperandCallOrNull,
+                    awaitFailClosedBoundaryReason(),
+                    finalizeWindow
+            );
+            rootOwnsExpressionDiagnostics.put(awaitExpression, result.rootOwnsOutcome());
+            switch (result.route()) {
+                case SIGNAL, DYNAMIC -> context.analysisData()
+                        .markCoroutineOwner(requireAwaitCoroutineOwner());
+                case CALL -> recordAwaitCallPending(
+                        awaitExpression,
+                        Objects.requireNonNull(
+                                result.operandCallOrNull(),
+                                "CALL await route must carry the operand call"
+                        )
+                );
+                case NONE -> {
+                }
+            }
+            return result.expressionType();
+        }
+
+        /// Fail-closed boundary: property initializers reject await. Lambda bodies accept await —
+        /// their owners are marked through the lambda owner set and bridged to
+        /// the synthesized shell during lowering preparation. Parameter defaults never reach body
+        /// expression typing, so they keep their existing boundary.
+        private @Nullable String awaitFailClosedBoundaryReason() {
+            if (context.propertyInitializerContext() != null) {
+                return "Await expressions are not supported inside property initializers";
+            }
+            return null;
+        }
+
+        /// The operand's exact call fact: bare calls publish into the owner-local transient map,
+        /// chain calls are anchored on their last `AttributeCallStep` by chain reduction. Anything
+        /// else (property reads, plain values, non-exact routes) has no exact call to classify.
+        private @Nullable FrontendResolvedCall findAwaitOperandCallOrNull(@NotNull Expression operand) {
+            if (operand instanceof CallExpression) {
+                return resolvedCalls.get(operand);
+            }
+            if (operand instanceof AttributeExpression attributeExpression) {
+                var steps = attributeExpression.steps();
+                if (!steps.isEmpty() && steps.getLast() instanceof AttributeCallStep callStep) {
+                    return context.typedEnvironment().resolvedCall(callStep);
+                }
+            }
+            return null;
+        }
+
+        private void recordAwaitCallPending(
+                @NotNull AwaitExpression awaitExpression,
+                @NotNull FrontendResolvedCall operandCall
+        ) {
+            if (!(operandCall.declarationSite() instanceof FunctionDef calleeFunction)) {
+                // Exact calls anchored on a non-FunctionDef site (e.g. builtin constructor owner
+                // anchors) are statically known non-coroutines; warn immediately instead of
+                // recording a pending the fixed-point pass could never classify.
+                reportRedundantAwait(
+                        context.diagnosticManager(),
+                        context.sourcePath(),
+                        awaitExpression,
+                        operandCall.callableName()
+                );
+                return;
+            }
+            context.analysisData().addAwaitCallPending(new FrontendAwaitCallPending(
+                    awaitExpression,
+                    requireAwaitCoroutineOwner(),
+                    calleeFunction,
+                    operandCall.callKind(),
+                    context.sourcePath()
+            ));
+        }
+
+        /// Resolves the coroutine-marking handle of the enclosing callable owner. Lambda owners
+        /// (including nested lambdas, which carry their own identity as `context.callableOwner()`)
+        /// are keyed by AST identity — never by `FrontendLambdaPlan.enclosingCallable()`, which
+        /// would misattribute the marking to the nearest non-lambda callable; named/constructor
+        /// owners map to their skeleton `LirFunctionDef`.
+        private @NotNull FrontendAwaitCoroutineOwner requireAwaitCoroutineOwner() {
+            if (context.callableOwner() instanceof LambdaExpression lambdaExpression) {
+                return new FrontendAwaitCoroutineOwner.Lambda(lambdaExpression);
+            }
+            return new FrontendAwaitCoroutineOwner.NamedFunction(requireEnclosingCallableFunction());
+        }
+
+        /// Maps the enclosing callable AST owner to its skeleton `LirFunctionDef` by the same
+        /// name/static/arity triple the skeleton builder used when creating it. Only named
+        /// function/constructor owners have a skeleton at sema time; lambda owners never reach
+        /// here — `requireAwaitCoroutineOwner()` handles them by AST identity first.
+        private @NotNull LirFunctionDef requireEnclosingCallableFunction() {
+            var callableOwner = context.callableOwner();
+            var owningClass = context.currentScope().owningClassOrNull();
+            final String functionName;
+            final boolean staticFunction;
+            final int parameterCount;
+            switch (callableOwner) {
+                case FunctionDeclaration functionDeclaration -> {
+                    functionName = functionDeclaration.name().trim();
+                    staticFunction = functionDeclaration.isStatic();
+                    parameterCount = functionDeclaration.parameters().size();
+                }
+                case ConstructorDeclaration constructorDeclaration -> {
+                    functionName = "_init";
+                    staticFunction = false;
+                    parameterCount = constructorDeclaration.parameters().size();
+                }
+                default -> throw new IllegalStateException(
+                        "Await coroutine marking requires a function/constructor callable owner, got "
+                                + callableOwner.getClass().getSimpleName()
+                );
+            }
+            var owningClassDef = Objects.requireNonNull(
+                    owningClass,
+                    "owning class must be published for await coroutine marking of '" + functionName + "'"
+            );
+            return owningClassDef.getFunctions().stream()
+                    .filter(function -> function instanceof LirFunctionDef)
+                    .map(LirFunctionDef.class::cast)
+                    .filter(function -> function.getName().equals(functionName))
+                    .filter(function -> function.isStatic() == staticFunction)
+                    .filter(function -> function.getParameterCount() == parameterCount)
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Function skeleton has not been published for await coroutine marking: "
+                                    + owningClassDef.getName() + "." + functionName
+                    ));
         }
 
         private @NotNull FrontendExpressionType resolveAssignmentExpressionType(

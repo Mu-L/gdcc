@@ -45,9 +45,9 @@ import java.util.List;
 /// - construct_object
 /// - construct_signal
 /// - construct_callable
-    /// - construct_standalone_callable
-    /// - construct_lambda
-    public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction> {
+/// - construct_standalone_callable
+/// - construct_lambda
+public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction> {
     private record ObjectConstructTarget(
             @NotNull GdObjectType constructedType,
             @NotNull ClassDef classDef,
@@ -273,7 +273,9 @@ import java.util.List;
                 bodyBuilder.assignVar(
                         target,
                         bodyBuilder.valueOfExpr(
-                                "godot_Callable_create(NULL, "
+                                // Callable.create is a static builtin method: its wrapper takes no
+                                // self parameter.
+                                "godot_Callable_create("
                                         + receiverArg
                                         + ", "
                                         + CBodyBuilder.renderStaticStringNameLiteral(methodName)
@@ -509,18 +511,25 @@ import java.util.List;
                     );
                 }
                 var field = blockName + "->" + capture.getName();
+                // Frame-aware source rendering: inside a coroutine body, captured parameters
+                // read their typed frame fields instead of nonexistent `$param` C slots.
+                var sourceExpr = bodyBuilder.valueOfVar(sourceVar).generateCode();
                 if (capture.getType() instanceof GdObjectType objectType) {
                     bodyBuilder.applyPropertyInitializerFirstWrite(
                             field,
                             objectType,
-                            "$" + sourceVar.id(),
+                            sourceExpr,
                             objectType,
                             CBodyBuilder.PtrKind.FAT_PTR,
                             CBodyBuilder.OwnershipKind.BORROWED
                     );
                 } else {
                     bodyBuilder.appendRaw(field + " = "
-                            + helper.renderLambdaCaptureCopyFromSlot(capture.getType(), sourceVar)
+                            + helper.renderLambdaCaptureCopyFromSlot(
+                            capture.getType(),
+                            sourceExpr,
+                            bodyBuilder.isEffectivelyRef(sourceVar)
+                    )
                             + ";\n");
                 }
             }
@@ -537,7 +546,9 @@ import java.util.List;
                                 + "' captures self but the enclosing function has no object-typed self slot"
                 );
             }
-            objectIdExpr = "$self.instance_id";
+            // Frame-aware: in a coroutine body there is no `$self` C slot; self lives in
+            // the frame field `_coro_state->_coro_param_self` (a fat struct with instance_id).
+            objectIdExpr = bodyBuilder.valueOfVar(selfVar).generateCode() + ".instance_id";
         }
 
         bodyBuilder.assignVar(

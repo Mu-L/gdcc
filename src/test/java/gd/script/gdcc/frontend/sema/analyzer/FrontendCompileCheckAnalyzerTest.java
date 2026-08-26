@@ -1921,9 +1921,9 @@ class FrontendCompileCheckAnalyzerTest {
                 compiled.diagnostics().asList()::toString);
     }
 
-    /// `await signal` remains a compile-blocked deferred expression.
+    /// Classified signal await is legal on the compile surface.
     @Test
-    void analyzeForCompileBlocksAwaitSignal() throws Exception {
+    void analyzeForCompileAllowsAwaitSignal() throws Exception {
         var source = """
                 class_name CompileCheckAwaitSignal
                 extends Node
@@ -1937,15 +1937,34 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_await_signal.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
 
-        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
-        assertFalse(compileDiagnostics.isEmpty(), compiled.diagnostics()::toString);
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileAllowsDynamicAndCoroutineCallAwaits() throws Exception {
+        var source = """
+                class_name CompileCheckAwaitRoutes
+                extends Node
+                
+                signal pinged
+                
+                func inner() -> int:
+                    await pinged
+                    return 7
+                
+                func await_call() -> int:
+                    return await inner()
+                
+                func await_dynamic(value: Variant) -> Variant:
+                    return await value
+                """;
+
+        var compiled = analyzeForCompile("compile_check_await_routes.gd", source);
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
         assertTrue(
-                compileDiagnostics.stream().anyMatch(diagnostic ->
-                        diagnostic.message().contains("Await")
-                                || diagnostic.message().contains("await")
-                                || diagnostic.message().contains("deferred")
-                ),
-                compileDiagnostics::toString
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                compiled.diagnostics()::toString
         );
     }
 
@@ -2037,6 +2056,38 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
         assertTrue(unsupportedExpressionDiagnostics.isEmpty(), unsupportedExpressionDiagnostics::toString);
         assertTrue(unsupportedBindingDiagnostics.isEmpty(), unsupportedBindingDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileAllowsAwaitInsideRecordedLambdaBody() throws Exception {
+        var source = """
+                class_name CompileCheckLambdaAwait
+                extends Node
+                
+                signal pinged
+                
+                func watch():
+                    var prefix = "seen"
+                    var callback = func():
+                        await pinged
+                        var _echo = prefix
+                    callback.call()
+                """;
+
+        var compiled = analyzeForCompile("compile_check_lambda_await.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        var unsupportedExpressionDiagnostics = diagnosticsByCategory(
+                compiled.diagnostics(),
+                "sema.unsupported_expression_route"
+        );
+
+        // A recorded lambda body accepts await (with captures) — the gate recurses
+        // into the body with the ordinary published-fact scan and no await-specific blocker fires;
+        // the enclosing named function `watch` stays non-coroutine (the suspend point belongs to
+        // the lambda's own synthesized shell).
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+        assertTrue(unsupportedExpressionDiagnostics.isEmpty(), unsupportedExpressionDiagnostics::toString);
     }
 
     @Test
