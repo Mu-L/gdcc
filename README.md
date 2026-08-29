@@ -19,7 +19,7 @@ From now on, write GDScript and get the safety and performance of native C/C++-s
 
 # Status
 
-GDCC is currently in an early alpha stage. Do not use it in production.
+GDCC is currently in an alpha stage. Do not use it in production.
 
 ## Currently Supported
 
@@ -32,15 +32,15 @@ GDCC is currently in an early alpha stage. Do not use it in production.
 - Lambdas declared inside function bodies, including captures and `Callable` usage.
 - Property access and assignment on all built-in and engine object types.
 - Common function, method, constructor, and global calls, including statement-position `void` calls.
-- Basic container indexing for supported array, dictionary, packed-array, and typed container.
-- A few common property initializer support.
+- Container indexing for supported array, dictionary, packed-array, and typed container.
+- Common property initializer support.
 - Code that mixes strongly typed and weakly typed variables, allowing a gradual migration to gdcc.
 
 ## Unsupported or Limited
 
-- Lambdas in property initializers or parameter defaults.
+- Lambdas in property initializers.
 - `assert`, `preload`, and `get_node`.
-- String `%` formatting, parameter defaults, local or class constants, and script-level `static var`.
+- String `%` formatting, parameter defaults, local or class constants.
 - Path-based `extends`, autoload superclass binding, global script class superclass binding, and multi-module superclass binding.
 - Built-in keyed access such as `vector["x"]`; use property-style access such as `vector.x` where supported.
 - Broad Godot runtime casting compatibility is incomplete, you may cast variable explicitly using `as`.
@@ -91,4 +91,5 @@ Useful options:
 
 # Community
 
+- Discord: [https://discord.gg/u22VjH2aQw](https://discord.gg/u22VjH2aQw)
 - QQ Group: 1082512847

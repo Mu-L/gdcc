@@ -19,7 +19,7 @@ GDCC 是一个将 GDScript 编译为 GDExtension 本机二进制模块的编译�
 
 # 状态
 
-GDCC 目前仍处于早期 alpha 阶段，请不要在生产环境中使用。
+GDCC 目前仍处于 alpha 阶段，请不要在生产环境中使用。
 
 ## 目前支持的 GDScript 用法
 
@@ -29,21 +29,21 @@ GDCC 目前仍处于早期 alpha 阶段，请不要在生产环境中使用。
 - 条件表达式中的 Godot 风格真值判断。
 - 三元表达式（`value if condition else other`），包括嵌套三元。
 - `for` 循环，支持 range、字符串、数组、字典键、PackedArray 与通用 `Variant` 可迭代对象。
-- 函数体内声明的 lambda，包括捕获与 `Callable` 用法。
+- 函数体内声明的 lambda （匿名函数），包括捕获与 `Callable` 用法。
 - 所有的内置类型和引擎对象的属性读取与写入。
 - 常见函数调用、方法调用、构造调用和全局调用，包括语句位置的 `void` 调用。
-- 已支持数组、字典、PackedArray 和类型化容器的基本索引访问。
-- 有限的常见属性初始化语法。
+- 已支持数组、字典、PackedArray 和类型化容器的索引访问。
+- 常见的属性初始化语法。
 - 混合强类型和弱类型变量代码，允许渐进式迁移到gdcc。
 
 ## 主要不支持或受限的 GDScript 用法
 
-- `match`、`await`，以及协程流程。（Object `_iter_*` 迭代、属性初始化器或参数默认值中的 lambda 仍不支持。）
-- `assert`、`preload`、`get_node`。（数组和字典字面量、类型转换、类型测试与三元表达式已 compile-ready。）
-- `not in`、字符串 `%` 格式化、参数默认值、局部或类常量、脚本级 `static var`。
+- 初始化表达式中的Lambda函数
+- `assert`、`preload`、`get_node`
+- `not in`、字符串 `%` 格式化、参数默认值、局部或类常量
 - 基于路径的 `extends`、autoload 父类绑定、全局脚本类父类绑定，以及多模块父类绑定。
 - 类似 `vector["x"]` 的内置类型 keyed 访问；已支持场景下请使用 `vector.x` 这类属性访问。
-- 更宽松的 Godot 运行时转换兼容性仍不完整，包括若干 key、index 和数值类型放宽转换。
+- 更宽松的 Godot 运行时转换兼容性仍不完整，一些情况下需要手动 `as`。
 
 # 下载
 
@@ -89,3 +89,4 @@ gdcc --project game/project.godot -o build/demo game/src/player.gd
 # 社区
 
 - QQ群：1082512847
+- Discord：[https://discord.gg/u22VjH2aQw](https://discord.gg/u22VjH2aQw)
