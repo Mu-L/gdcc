@@ -1079,7 +1079,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         reportRecoveryBoundary(context, result);
         for (var note : result.notes()) {
             context.diagnosticManager().warning(
-                    CALL_RESOLUTION_CATEGORY,
+                    note.category(),
                     note.message(),
                     context.sourcePath(),
                     FrontendRange.fromAstRange(note.anchor().range())
@@ -1556,7 +1556,12 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     private static @NotNull FrontendExpressionType resolvePublishedAttributeStepType(
             @NotNull FrontendChainReductionHelper.StepTrace trace
     ) {
-        if (trace.suggestedMember() != null) {
+        // A SUBSCRIPT step may carry a suggestedMember as static container provenance
+        // (`obj.values[i]` with static `values`, published for body lowering only). The step's
+        // value type is still the subscript element type from the outgoing receiver, never the
+        // container property type.
+        if (trace.suggestedMember() != null
+                && trace.stepKind() != FrontendChainReductionHelper.StepKind.SUBSCRIPT) {
             return FrontendChainStatusBridge.toPublishedExpressionType(trace.suggestedMember());
         }
         if (trace.suggestedCall() != null) {
@@ -2139,6 +2144,12 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 @NotNull AttributeExpression attributeExpression,
                 boolean publishRootExpression
         ) {
+            // Mirror `resolveAttributeExpressionType`: a type-meta chain head (`Worker.values[i] = v`,
+            // `Worker.shared = v`) is never consumed as an ordinary value, so its failed ordinary-value
+            // type must stay unpublished exactly like on the read path.
+            if (isTypeMetaRouteHead(attributeExpression.base())) {
+                routeHeadOnlyTypeMetaExpressions.put(attributeExpression.base(), Boolean.TRUE);
+            }
             finalizeAssignmentTargetValueExpression(attributeExpression.base());
             for (var step : attributeExpression.steps()) {
                 if (step instanceof AttributeCallStep attributeCallStep) {

@@ -42,6 +42,7 @@ import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
+import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirInstruction;
@@ -1052,6 +1053,20 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                                 "instance member load is missing a receiver value id"
                         );
                     }
+                    if (resolvedMember.bindingKind() == FrontendBindingKind.PROPERTY
+                            && resolvedMember.declarationSite() instanceof PropertyDef propertyDef
+                            && propertyDef.isStatic()) {
+                        // Instance-syntax access to a static property: the receiver value was
+                        // already materialized in CFG order (side effects preserved), but the
+                        // load must read the declaring class's shared static storage, not an
+                        // instance field.
+                        block.appendNonTerminatorInstruction(new LoadStaticInsn(
+                                resultSlotId,
+                                session.requireStaticReceiverName(resolvedMember.receiverType()),
+                                node.memberName()
+                        ));
+                        return block;
+                    }
                     var receiverSlotId = session.slotIdForValue(node.baseValueIdOrNull());
                     var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
                             node.anchor(),
@@ -1381,6 +1396,11 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var keySlotId = session.slotIdForValue(keyValueId);
             var keyType = session.requireValueType(keyValueId);
             var receiverType = session.requireValueType(node.baseValueId());
+            var containerFacts = session.resolveSubscriptContainerFacts(
+                    node.memberNameOrNull(),
+                    receiverType,
+                    node.anchor()
+            );
             var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
                     node.anchor(),
                     new FrontendWritableRouteSupport.FrontendWritableRoot(
@@ -1394,7 +1414,10 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                             node.memberNameOrNull(),
                             keySlotId,
                             keyType,
-                            session.requireValueType(node.resultValueId())
+                            session.requireValueType(node.resultValueId()),
+                            containerFacts.containerSourceType(),
+                            containerFacts.staticOwnerNameOrNull(),
+                            containerFacts.typedInstanceContainer()
                     ),
                     List.of()
             );

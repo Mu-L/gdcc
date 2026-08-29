@@ -7,7 +7,6 @@ import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.lowering.ForLoweringContractRegistry;
 import gd.script.gdcc.frontend.scope.BlockScope;
-import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
@@ -204,12 +203,6 @@ public class FrontendCompileCheckAnalyzer {
     private static @NotNull String matchRouteNotReadyMessage() {
         return "match statement is recognized by shared semantic analysis but is blocked in compile mode because "
                 + "it contains a pattern route that is not lowering-ready yet";
-    }
-
-    private static @NotNull String staticPropertyCompileBlockedMessage(@NotNull String propertyName) {
-        return "Static property '" + Objects.requireNonNull(propertyName, "propertyName must not be null")
-                + "' is recognized by the frontend but is blocked in compile mode because current backend "
-                + "does not support script static fields";
     }
 
     private static @NotNull String gdccParameterizedConstructorCompileBlockedMessage(
@@ -464,8 +457,10 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
-        /// Variable declarations participate differently depending on whether they are executable locals,
-        /// blocked static properties, or supported property initializers.
+        /// Variable declarations participate differently depending on whether they are executable
+        /// locals or supported property initializers. Class-level static properties share the
+        /// regular property-initializer path below; static storage, two-phase initialization and
+        /// access routing are lowering/backend concerns, so no declaration-level gate exists here.
         @Override
         public @NotNull FrontendASTTraversalDirective handleVariableDeclaration(
                 @NotNull VariableDeclaration variableDeclaration
@@ -478,13 +473,6 @@ public class FrontendCompileCheckAnalyzer {
                 if (variableDeclaration.value() != null) {
                     walkExpression(variableDeclaration.value());
                 }
-                return FrontendASTTraversalDirective.SKIP_CHILDREN;
-            }
-            if (isStaticClassPropertyDeclaration(variableDeclaration)) {
-                reportExplicitCompileBlock(
-                        variableDeclaration,
-                        staticPropertyCompileBlockedMessage(variableDeclaration.name())
-                );
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             if (!FrontendPropertyInitializerSupport.isSupportedPropertyInitializer(scopesByAst, variableDeclaration)) {
@@ -798,8 +786,15 @@ public class FrontendCompileCheckAnalyzer {
         /// BLOCKED/DEFERRED/FAILED/UNSUPPORTED members stay compile-blocked here.
         private void scanResolvedMemberCompileBlocks() {
             for (var entry : resolvedMembers.entrySet()) {
-                var anchor = requireAttributePropertyStep(entry.getKey());
+                var anchor = requireResolvedMemberAnchor(entry.getKey());
                 var publishedMember = Objects.requireNonNull(entry.getValue(), "publishedMember must not be null");
+                if (anchor instanceof AttributeSubscriptStep
+                        && (publishedMember.status() != FrontendMemberResolutionStatus.RESOLVED
+                        || publishedMember.bindingKind() != FrontendBindingKind.PROPERTY)) {
+                    throw new IllegalStateException(
+                            "AttributeSubscriptStep member facts must be RESOLVED container property provenance"
+                    );
+                }
                 if (shouldBlockUnsupportedMethodReference(anchor, publishedMember)) {
                     reportCompileBlock(
                             anchor,
@@ -1115,12 +1110,19 @@ public class FrontendCompileCheckAnalyzer {
             );
         }
 
-        /// Member facts must stay anchored at the exact property step that produced them.
-        private static @NotNull AttributePropertyStep requireAttributePropertyStep(@NotNull Node node) {
-            if (node instanceof AttributePropertyStep attributePropertyStep) {
-                return attributePropertyStep;
+        /// Member facts must stay anchored at the exact property step that produced them. The single
+        /// exception is an attribute-subscript step carrying a RESOLVED container property fact
+        /// (`receiver.member[key]`, instance or static), which chain binding re-anchors from the
+        /// internally synthesized property step so body lowering can recover the container type and
+        /// redirect static containers to static storage; only RESOLVED facts ever use that anchor,
+        /// so the compile-blocking scan below still never reports them.
+        private static @NotNull Node requireResolvedMemberAnchor(@NotNull Node node) {
+            if (node instanceof AttributePropertyStep || node instanceof AttributeSubscriptStep) {
+                return node;
             }
-            throw new IllegalStateException("resolvedMembers must be keyed by attribute property steps");
+            throw new IllegalStateException(
+                    "resolvedMembers must be keyed by attribute property steps or container-provenance subscript steps"
+            );
         }
 
         /// Call facts may be anchored either at an attribute step (`foo.bar()`) or a bare call expression.
@@ -1261,13 +1263,6 @@ public class FrontendCompileCheckAnalyzer {
         /// Record one AST node as reachable by the current compile-ready surface.
         private void markCompileSurfaceNode(@NotNull Node node) {
             compileSurfaceNodes.add(Objects.requireNonNull(node, "node must not be null"));
-        }
-
-        /// Static top-level/class properties are explicitly blocked because the backend has no script-static storage.
-        private boolean isStaticClassPropertyDeclaration(@NotNull VariableDeclaration variableDeclaration) {
-            return Objects.requireNonNull(variableDeclaration, "variableDeclaration must not be null").kind() == DeclarationKind.VAR
-                    && variableDeclaration.isStatic()
-                    && scopesByAst.get(variableDeclaration) instanceof ClassScope;
         }
 
         /// Only callable-local `var` declarations in lowering-ready block inventories are expected to publish slot types.

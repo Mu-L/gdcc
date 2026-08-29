@@ -6,6 +6,7 @@ import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
@@ -71,6 +72,7 @@ import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.lir.insn.StorePropertyInsn;
+import gd.script.gdcc.lir.insn.StoreStaticInsn;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.lir.insn.VariantGetInsn;
@@ -83,7 +85,9 @@ import gd.script.gdcc.lir.insn.VariantSetKeyedInsn;
 import gd.script.gdcc.lir.insn.VariantSetNamedInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdccForArrayIterType;
 import gd.script.gdcc.type.GdccForDictionaryIterType;
 import gd.script.gdcc.type.GdccForFloatIterType;
@@ -132,6 +136,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -221,6 +226,1461 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(2, propertyLoads.size()),
                 () -> assertEquals(1, propertyStores.size()),
                 () -> assertEquals(compoundInsn.resultId(), propertyStores.getFirst().valueId())
+        );
+    }
+
+    /// Bare read/write/compound assignment on a static var must lower through `LoadStaticInsn` /
+    /// `StoreStaticInsn` (guards the `PropertyDef`-based staticness check in
+    /// `FrontendBodyLoweringSession.isStaticPropertyBinding`), never through instance property
+    /// instructions.
+    ///
+    /// This test drives the shared-semantic harness directly (same shape as the cast integration
+    /// test) instead of `prepareContext`.
+    @Test
+    void runLowersBareStaticPropertyAccessThroughStaticInstructions() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_static_property.gd"),
+                """
+                        class_name BodyInsnStaticProperty
+                        extends RefCounted
+                        
+                        static var counter: int = 0
+                        var instance_field: int = 0
+                        
+                        func bump() -> int:
+                            counter += 1
+                            instance_field = counter
+                            return instance_field
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = new FrontendModule(
+                "test_module",
+                List.of(unit),
+                Map.of("BodyInsnStaticProperty", "RuntimeBodyInsnStaticProperty")
+        );
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected semantic errors: " + diagnostics.snapshot());
+
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        var bumpContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStaticProperty",
+                "bump"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(context);
+
+        var instructions = allInstructions(bumpContext.targetFunction());
+        var staticLoads = instructions.stream()
+                .filter(LoadStaticInsn.class::isInstance)
+                .map(LoadStaticInsn.class::cast)
+                .filter(instruction -> instruction.staticName().equals("counter"))
+                .toList();
+        var staticStores = instructions.stream()
+                .filter(StoreStaticInsn.class::isInstance)
+                .map(StoreStaticInsn.class::cast)
+                .filter(instruction -> instruction.staticName().equals("counter"))
+                .toList();
+        var instanceLoadsForCounter = instructions.stream()
+                .filter(LoadPropertyInsn.class::isInstance)
+                .map(LoadPropertyInsn.class::cast)
+                .filter(instruction -> instruction.propertyName().equals("counter"))
+                .toList();
+        var instanceStoresForCounter = instructions.stream()
+                .filter(StorePropertyInsn.class::isInstance)
+                .map(StorePropertyInsn.class::cast)
+                .filter(instruction -> instruction.propertyName().equals("counter"))
+                .toList();
+        var instanceLoadsForField = instructions.stream()
+                .filter(LoadPropertyInsn.class::isInstance)
+                .map(LoadPropertyInsn.class::cast)
+                .filter(instruction -> instruction.propertyName().equals("instance_field"))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertEquals(2, staticLoads.size()),
+                () -> assertEquals(1, staticStores.size()),
+                () -> assertTrue(instanceLoadsForCounter.isEmpty(),
+                        "static var must not lower to instance property loads"),
+                () -> assertTrue(instanceStoresForCounter.isEmpty(),
+                        "static var must not lower to instance property stores"),
+                () -> assertEquals(1, instanceLoadsForField.size(),
+                        "instance property access must stay on instance instructions")
+        );
+    }
+
+    /// Method calls on a bare static container member (`names.append(...)` in statement position,
+    /// `names.size()` in value position) must lower with the receiver loaded through
+    /// `LoadStaticInsn` and never emit a post-call `StoreStaticInsn` receiver write-back: the
+    /// static property leaf is the terminal storage boundary and `Array` is a reference carrier
+    /// mutated in place.
+    @Test
+    void runLowersStaticContainerMethodCallsWithoutReceiverWriteback() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_static_container_call.gd"),
+                """
+                        class_name BodyInsnStaticContainerCall
+                        extends RefCounted
+                        
+                        static var names: Array[String]
+                        
+                        func ping() -> int:
+                            names.append("x")
+                            return names.size()
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = new FrontendModule(
+                "test_module",
+                List.of(unit),
+                Map.of("BodyInsnStaticContainerCall", "RuntimeBodyInsnStaticContainerCall")
+        );
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected semantic errors: " + diagnostics.snapshot());
+
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        var pingContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStaticContainerCall",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(context);
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var staticLoads = instructions.stream()
+                .filter(LoadStaticInsn.class::isInstance)
+                .map(LoadStaticInsn.class::cast)
+                .filter(instruction -> instruction.staticName().equals("names"))
+                .toList();
+        var staticStores = instructions.stream()
+                .filter(StoreStaticInsn.class::isInstance)
+                .map(StoreStaticInsn.class::cast)
+                .filter(instruction -> instruction.staticName().equals("names"))
+                .toList();
+        var methodCalls = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertEquals(2, methodCalls.size()),
+                () -> assertEquals("append", methodCalls.get(0).methodName()),
+                () -> assertEquals("size", methodCalls.get(1).methodName()),
+                // Each call loads the shared container exactly once as its receiver.
+                () -> assertEquals(2, staticLoads.size()),
+                () -> assertEquals(staticLoads.get(0).resultId(), methodCalls.get(0).objectId()),
+                () -> assertEquals(staticLoads.get(1).resultId(), methodCalls.get(1).objectId()),
+                () -> assertTrue(staticStores.isEmpty(),
+                        "reference-carrier receiver mutation must not write back to static storage")
+        );
+    }
+
+    /// A named (instance-receiver) subscript read on a static container (`peer.table["k"]`) must
+    /// load the named base from shared storage into a scratch slot typed with the declared
+    /// container type — never Variant — so the backend static load/store assignability checks
+    /// hold. The receiver expression is still evaluated for side effects, but no Variant named
+    /// route may appear.
+    @Test
+    void runLowersNamedStaticContainerSubscriptReadWithTypedScratch() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_named_static_subscript.gd"),
+                """
+                        class_name BodyInsnNamedStaticSubscript
+                        extends RefCounted
+                        
+                        static var table: Dictionary = {"k": 1}
+                        
+                        func read_via(peer: BodyInsnNamedStaticSubscript) -> int:
+                            return peer.table["k"]
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = new FrontendModule(
+                "test_module",
+                List.of(unit),
+                Map.of("BodyInsnNamedStaticSubscript", "RuntimeBodyInsnNamedStaticSubscript")
+        );
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected semantic errors: " + diagnostics.snapshot());
+
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        var readContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnNamedStaticSubscript",
+                "read_via"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(context);
+
+        var instructions = allInstructions(readContext.targetFunction());
+        var staticLoads = instructions.stream()
+                .filter(LoadStaticInsn.class::isInstance)
+                .map(LoadStaticInsn.class::cast)
+                .filter(instruction -> instruction.staticName().equals("table"))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertEquals(1, staticLoads.size()),
+                () -> assertInstanceOf(
+                        GdDictionaryType.class,
+                        readContext.targetFunction().getVariableById(staticLoads.getFirst().resultId()).type(),
+                        "named static container scratch must carry the declared container type"
+                ),
+                () -> assertTrue(instructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn))
+        );
+    }
+
+    /// Instance-syntax access to a static var (`receiver.x`, `self.x`) warns at semantic level
+    /// and must still lower through `LoadStaticInsn` / `StoreStaticInsn` targeting the declaring
+    /// class's shared storage. A call-result receiver proves side-effect evaluation is preserved
+    /// while no instance field instruction is emitted for the static member.
+    @Test
+    void runLowersInstanceStyleStaticAccessThroughStaticInstructions() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_instance_static_access.gd"),
+                """
+                        class_name BodyInsnInstanceStaticAccess
+                        extends RefCounted
+                        
+                        static var shared: int = 7
+                        var instance_field: int = 0
+                        
+                        static func make_worker() -> BodyInsnInstanceStaticAccess:
+                            return BodyInsnInstanceStaticAccess.new()
+                        
+                        func bump() -> int:
+                            make_worker().shared += 1
+                            self.shared = instance_field
+                            return self.shared
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = new FrontendModule("test_module", List.of(unit));
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        var bumpContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "BodyInsnInstanceStaticAccess",
+                "bump"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(context);
+
+        var instructions = allInstructions(bumpContext.targetFunction());
+        var staticLoads = instructions.stream()
+                .filter(LoadStaticInsn.class::isInstance)
+                .map(LoadStaticInsn.class::cast)
+                .filter(instruction -> instruction.staticName().equals("shared"))
+                .toList();
+        var staticStores = instructions.stream()
+                .filter(StoreStaticInsn.class::isInstance)
+                .map(StoreStaticInsn.class::cast)
+                .filter(instruction -> instruction.staticName().equals("shared"))
+                .toList();
+        var instanceAccessesForShared = instructions.stream()
+                .filter(instruction -> switch (instruction) {
+                    case LoadPropertyInsn load -> load.propertyName().equals("shared");
+                    case StorePropertyInsn store -> store.propertyName().equals("shared");
+                    default -> false;
+                })
+                .toList();
+        var sideEffectCalls = instructions.stream()
+                .filter(CallStaticMethodInsn.class::isInstance)
+                .map(CallStaticMethodInsn.class::cast)
+                .filter(instruction -> instruction.methodName().equals("make_worker"))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertEquals(2, staticLoads.size()),
+                () -> assertEquals(2, staticStores.size()),
+                () -> assertTrue(instanceAccessesForShared.isEmpty(),
+                        "instance-style static access must not lower to instance property instructions"),
+                () -> assertEquals(1, sideEffectCalls.size(),
+                        "receiver expression with side effects must still be evaluated")
+        );
+    }
+
+    /// A static var initializer lowers into a hidden static zero-parameter init function that
+    /// returns the materialized value; no `self` slot and no instance field instruction may
+    /// appear. A sibling static reference (`base + 41`) must read shared storage through
+    /// `LoadStaticInsn` inside the init function.
+    @Test
+    void runLowersStaticPropertyInitializersIntoZeroParamStaticInitFunctions() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_static_property_init.gd"),
+                """
+                        class_name BodyInsnStaticPropertyInit
+                        extends RefCounted
+                        
+                        static var base: int = 1
+                        static var derived: int = base + 41
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = new FrontendModule("test_module", List.of(unit));
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        var baseInitContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "BodyInsnStaticPropertyInit",
+                "_field_init_base"
+        );
+        var derivedInitContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "BodyInsnStaticPropertyInit",
+                "_field_init_derived"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(context);
+
+        var baseInstructions = allInstructions(baseInitContext.targetFunction());
+        var baseLiteral = baseInstructions.stream()
+                .filter(LiteralIntInsn.class::isInstance)
+                .map(LiteralIntInsn.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("static init must materialize the literal initializer"));
+        var baseReturn = baseInstructions.stream()
+                .filter(ReturnInsn.class::isInstance)
+                .map(ReturnInsn.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("static init must end in a ReturnInsn"));
+        var derivedInstructions = allInstructions(derivedInitContext.targetFunction());
+        var derivedStaticLoads = derivedInstructions.stream()
+                .filter(LoadStaticInsn.class::isInstance)
+                .map(LoadStaticInsn.class::cast)
+                .filter(instruction -> instruction.staticName().equals("base"))
+                .toList();
+        var instanceFieldAccesses = Stream.concat(baseInstructions.stream(), derivedInstructions.stream())
+                .filter(instruction -> instruction instanceof LoadPropertyInsn
+                        || instruction instanceof StorePropertyInsn)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertTrue(baseInitContext.targetFunction().isStatic()),
+                () -> assertTrue(baseInitContext.targetFunction().isHidden()),
+                () -> assertEquals(0, baseInitContext.targetFunction().getParameterCount()),
+                () -> assertEquals(1L, baseLiteral.value()),
+                () -> assertEquals(baseLiteral.resultId(), baseReturn.returnValueId()),
+                () -> assertEquals(1, derivedStaticLoads.size(),
+                        "sibling static reference inside a static initializer must load shared storage"),
+                () -> assertEquals("BodyInsnStaticPropertyInit", derivedStaticLoads.getFirst().className()),
+                () -> assertTrue(instanceFieldAccesses.isEmpty(),
+                        "static init helpers must not touch instance field storage")
+        );
+    }
+
+    /// Attribute-subscript on a static container property (`obj.values[i]`) must lower through
+    /// static storage: the named base is a `LoadStaticInsn` temp and writeback is a
+    /// `StoreStaticInsn`; no Variant named-member instruction may remain. The typed instance
+    /// container contrast (`self.instance_list[i]`) lowers through `LoadPropertyInsn` with the
+    /// same typed indexed access and always writes back through `StorePropertyInsn`.
+    @Test
+    void runLowersStaticContainerSubscriptThroughStaticStorageRoute() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_static_container_access.gd"),
+                """
+                        class_name BodyInsnStaticContainerAccess
+                        extends RefCounted
+                        
+                        static var values: Array[int] = [1, 2]
+                        static var table: Dictionary = {}
+                        static var typed_table: Dictionary[float, int] = {}
+                        var instance_list: Array[int] = []
+                        
+                        static func make_worker() -> BodyInsnStaticContainerAccess:
+                            return BodyInsnStaticContainerAccess.new()
+                        
+                        func read_via_instance() -> int:
+                            var worker: BodyInsnStaticContainerAccess = BodyInsnStaticContainerAccess.new()
+                            return worker.values[0]
+                        
+                        func write_via_self(v: int) -> void:
+                            self.values[1] = v
+                            table["k"] = v
+                        
+                        func write_typed_key(v: int) -> void:
+                            self.typed_table[1] = v
+                        
+                        func compound_via_call_receiver(v: int) -> void:
+                            make_worker().values[0] += v
+                        
+                        func instance_contrast(i: int) -> int:
+                            self.instance_list[i] = i
+                            return self.instance_list[0]
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = new FrontendModule("test_module", List.of(unit));
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+
+        new FrontendLoweringBodyInsnPass().run(context);
+
+        var readInstructions = allInstructions(requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "BodyInsnStaticContainerAccess",
+                "read_via_instance"
+        ).targetFunction());
+        var writeInstructions = allInstructions(requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "BodyInsnStaticContainerAccess",
+                "write_via_self"
+        ).targetFunction());
+        var compoundInstructions = allInstructions(requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "BodyInsnStaticContainerAccess",
+                "compound_via_call_receiver"
+        ).targetFunction());
+        var contrastInstructions = allInstructions(requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "BodyInsnStaticContainerAccess",
+                "instance_contrast"
+        ).targetFunction());
+        var typedInstructions = allInstructions(requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "BodyInsnStaticContainerAccess",
+                "write_typed_key"
+        ).targetFunction());
+
+        var writeDump = writeInstructions.stream().map(Object::toString).collect(Collectors.joining("\n"));
+        var compoundDump = compoundInstructions.stream().map(Object::toString).collect(Collectors.joining("\n"));
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                // read: static load feeds the indexed read; no named-member variant route.
+                () -> assertEquals(1, readInstructions.stream()
+                                .filter(LoadStaticInsn.class::isInstance)
+                                .map(LoadStaticInsn.class::cast)
+                                .filter(instruction -> instruction.staticName().equals("values"))
+                                .count(),
+                        () -> readInstructions.stream().map(Object::toString).collect(Collectors.joining("\n"))),
+                () -> assertEquals(1, readInstructions.stream()
+                        .filter(VariantGetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertTrue(readInstructions.stream()
+                                .noneMatch(VariantGetNamedInsn.class::isInstance),
+                        "static container read must not use VariantGetNamedInsn"),
+                // write: attribute leaf writes LoadStatic -> indexed/keyed store -> StoreStatic.
+                // The bare `table["k"]` form routes writeback through a terminal static commit
+                // step, which is compile-time skipped for reference carriers (Dictionary/Array
+                // mutate in place) exactly like the instance bare route.
+                () -> assertEquals(2, writeInstructions.stream()
+                        .filter(LoadStaticInsn.class::isInstance)
+                        .count(), () -> writeDump),
+                () -> assertEquals(1, writeInstructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .map(StoreStaticInsn.class::cast)
+                        .filter(instruction -> instruction.staticName().equals("values"))
+                        .count(), () -> writeDump),
+                () -> assertEquals(1, writeInstructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count(), () -> writeDump),
+                // The bare Dictionary write freezes the generic variant-set family (same as the
+                // instance bare route); keyed specialization is anchored by dedicated subscript
+                // family tests.
+                () -> assertEquals(1, writeInstructions.stream()
+                        .filter(VariantSetInsn.class::isInstance)
+                        .count(), () -> writeDump),
+                () -> assertTrue(writeInstructions.stream()
+                                .noneMatch(VariantSetNamedInsn.class::isInstance),
+                        "static container write must not use VariantSetNamedInsn"),
+                // compound assignment on a call-result receiver: side-effect call preserved,
+                // read+write both go through static storage (attribute leaf always writes back).
+                () -> assertEquals(2, compoundInstructions.stream()
+                        .filter(LoadStaticInsn.class::isInstance)
+                        .count(), () -> compoundDump),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .count(), () -> compoundDump),
+                () -> assertTrue(compoundInstructions.stream()
+                                .filter(CallStaticMethodInsn.class::isInstance)
+                                .map(CallStaticMethodInsn.class::cast)
+                                .anyMatch(instruction -> instruction.methodName().equals("make_worker")),
+                        () -> compoundDump),
+                () -> assertTrue(compoundInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn)),
+                // typed instance container contrast: the named base is a `LoadPropertyInsn` temp
+                // with typed indexed access on both read and write; the single write commits back
+                // through one `StorePropertyInsn`, and no Variant named-member instruction may remain.
+                () -> assertTrue(contrastInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof PackVariantInsn)),
+                () -> assertEquals(2, contrastInstructions.stream()
+                        .filter(LoadPropertyInsn.class::isInstance)
+                        .map(LoadPropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("instance_list"))
+                        .count()),
+                () -> assertEquals(1, contrastInstructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, contrastInstructions.stream()
+                        .filter(VariantGetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, contrastInstructions.stream()
+                        .filter(StorePropertyInsn.class::isInstance)
+                        .map(StorePropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("instance_list"))
+                        .count()),
+                // typed static container: LoadStatic -> KEYED store -> StoreStatic, with a
+                // converted float key and no Variant named instructions.
+                () -> assertEquals(1, typedInstructions.stream()
+                        .filter(LoadStaticInsn.class::isInstance)
+                        .map(LoadStaticInsn.class::cast)
+                        .filter(instruction -> instruction.staticName().equals("typed_table"))
+                        .count()),
+                () -> assertEquals(1, typedInstructions.stream()
+                                .filter(VariantSetKeyedInsn.class::isInstance)
+                                .count(),
+                        () -> typedInstructions.stream().map(Object::toString).collect(Collectors.joining("\n"))),
+                () -> assertEquals(1, typedInstructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .map(StoreStaticInsn.class::cast)
+                        .filter(instruction -> instruction.staticName().equals("typed_table"))
+                        .count()),
+                () -> assertTrue(typedInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof VariantSetInsn))
+        );
+    }
+
+    /// Bare `values[i]` (identifier head) on a static container routes the container load through
+    /// `LoadStaticInsn` and the element mutation through an in-place indexed store. The terminal
+    /// static commit step is compile-time skipped for reference carriers (Array/Dictionary mutate
+    /// in place), exactly like the instance bare route skips `StorePropertyInsn`; this pins the
+    /// contract so the attribute-subscript fix cannot diverge from it.
+    @Test
+    void runLowersBareStaticContainerSubscriptThroughStaticStorageRoute() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_bare_static_container.gd"),
+                """
+                        class_name BodyInsnBareStaticContainer
+                        extends RefCounted
+                        
+                        static var values: Array[int] = [1, 2]
+                        
+                        func bump() -> int:
+                            values[0] += 1
+                            return values[1]
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = new FrontendModule("test_module", List.of(unit));
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        var bumpContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "BodyInsnBareStaticContainer",
+                "bump"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(context);
+
+        var instructions = allInstructions(bumpContext.targetFunction());
+        var staticLoads = instructions.stream()
+                .filter(LoadStaticInsn.class::isInstance)
+                .map(LoadStaticInsn.class::cast)
+                .toList();
+        var indexedStores = instructions.stream()
+                .filter(VariantSetIndexedInsn.class::isInstance)
+                .map(VariantSetIndexedInsn.class::cast)
+                .toList();
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                // One load for the compound read-modify-write, one for the return read.
+                () -> assertEquals(2, staticLoads.size()),
+                () -> assertTrue(staticLoads.stream()
+                        .allMatch(instruction -> instruction.staticName().equals("values")
+                                && instruction.className().equals("BodyInsnBareStaticContainer"))),
+                () -> assertEquals(1, indexedStores.size()),
+                () -> assertEquals(staticLoads.getFirst().resultId(), indexedStores.getFirst().variantId(),
+                        "the indexed store must mutate the static-loaded container temp"),
+                () -> assertEquals(0, instructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .count()),
+                () -> assertTrue(instructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof LoadPropertyInsn
+                                || instruction instanceof StorePropertyInsn))
+        );
+    }
+
+    /// Type-meta head `Worker.values[i]` lowers isomorphically to the bare `values[i]` route: the
+    /// container load is a `LoadStaticInsn`, element mutation is an in-place indexed/keyed store, and
+    /// the terminal static commit is compile-time skipped for reference carriers. The start class
+    /// stays pinned to the expression's type-meta owner (`SubWorker.values` loads from `SubWorker`).
+    @Test
+    void runLowersTypeMetaHeadStaticContainerSubscriptThroughStaticStorageRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_type_meta_head_container.gd",
+                """
+                        class_name BodyInsnTypeMetaHeadContainer
+                        extends RefCounted
+                        
+                        class Worker:
+                            static var values: Array[int] = [1, 2]
+                            static var typed_table: Dictionary[float, int] = {}
+                        
+                        class SubWorker extends Worker:
+                            pass
+                        
+                        func read_via_type_meta() -> int:
+                            return Worker.values[0]
+                        
+                        func write_via_type_meta(v: int) -> void:
+                            Worker.values[1] = v
+                        
+                        func write_typed_key(v: int) -> void:
+                            Worker.typed_table[1] = v
+                        
+                        func compound_via_inherited(v: int) -> void:
+                            SubWorker.values[0] += v
+                        """,
+                Map.of(
+                        "BodyInsnTypeMetaHeadContainer",
+                        "RuntimeBodyInsnTypeMetaHeadContainer"
+                ),
+                true
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var readInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaHeadContainer",
+                "read_via_type_meta"
+        ).targetFunction());
+        var writeInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaHeadContainer",
+                "write_via_type_meta"
+        ).targetFunction());
+        var keyedInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaHeadContainer",
+                "write_typed_key"
+        ).targetFunction());
+        var compoundInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaHeadContainer",
+                "compound_via_inherited"
+        ).targetFunction());
+        var readStaticLoads = readInstructions.stream()
+                .filter(LoadStaticInsn.class::isInstance)
+                .map(LoadStaticInsn.class::cast)
+                .toList();
+        var compoundStaticLoads = compoundInstructions.stream()
+                .filter(LoadStaticInsn.class::isInstance)
+                .map(LoadStaticInsn.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // Read: one static container load feeding one indexed read, never the named route.
+                () -> assertEquals(1, readStaticLoads.size()),
+                () -> assertTrue(readStaticLoads.stream()
+                        .allMatch(instruction -> instruction.staticName().equals("values")
+                                && instruction.className().endsWith("__sub__Worker"))),
+                () -> assertEquals(1, readInstructions.stream()
+                        .filter(VariantGetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertTrue(readInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof LoadPropertyInsn)),
+                // Write: static load + in-place indexed store, no writeback for the Array carrier.
+                () -> assertEquals(1, writeInstructions.stream()
+                        .filter(LoadStaticInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, writeInstructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(0, writeInstructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .count()),
+                () -> assertTrue(writeInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof VariantSetInsn
+                                || instruction instanceof StorePropertyInsn)),
+                // Typed dictionary: keyed mutation, still no static writeback.
+                () -> assertEquals(1, keyedInstructions.stream()
+                        .filter(VariantSetKeyedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(0, keyedInstructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .count()),
+                () -> assertTrue(keyedInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof VariantSetInsn)),
+                // Inherited start class: the container loads from the expression's type-meta owner.
+                () -> assertEquals(1, compoundStaticLoads.size()),
+                () -> assertTrue(compoundStaticLoads.stream()
+                        .allMatch(instruction -> instruction.staticName().equals("values")
+                                && instruction.className().endsWith("__sub__SubWorker"))),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(VariantGetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(0, compoundInstructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .count())
+        );
+    }
+
+    /// Attribute-subscript on a resolved non-static GDCC instance container (`obj.items[i]` with
+    /// typed `items`) lowers through the typed property route: the named base is a
+    /// `LoadPropertyInsn` temp subscripted with the published container type (typed key conversion
+    /// included), and every write commits the whole container back through `StorePropertyInsn`
+    /// unconditionally — the typed route never elides the writeback based on the carrier family.
+    /// No Variant named-member instruction may remain; dynamic/engine containers keep the Variant
+    /// named route (anchored by the dedicated dynamic-route tests).
+    @Test
+    void runLowersTypedInstanceContainerSubscriptThroughPropertyRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_typed_instance_container.gd",
+                """
+                        class_name BodyInsnTypedInstanceContainer
+                        extends RefCounted
+                        
+                        var items: Array[int] = []
+                        var table: Dictionary[float, int] = {}
+                        var payloads: PackedInt32Array = PackedInt32Array()
+                        
+                        func read_items(obj: BodyInsnTypedInstanceContainer, i: int) -> int:
+                            return obj.items[i]
+                        
+                        func write_items(obj: BodyInsnTypedInstanceContainer, i: int, v: int) -> void:
+                            obj.items[i] = v
+                        
+                        func compound_items(obj: BodyInsnTypedInstanceContainer, i: int, v: int) -> void:
+                            obj.items[i] += v
+                        
+                        func write_typed_key(obj: BodyInsnTypedInstanceContainer, k: int, v: int) -> void:
+                            obj.table[k] = v
+                        
+                        func write_packed(obj: BodyInsnTypedInstanceContainer, i: int, v: int) -> void:
+                            obj.payloads[i] = v
+                        """,
+                Map.of(
+                        "BodyInsnTypedInstanceContainer",
+                        "RuntimeBodyInsnTypedInstanceContainer"
+                ),
+                true
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var readInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypedInstanceContainer",
+                "read_items"
+        ).targetFunction());
+        var writeInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypedInstanceContainer",
+                "write_items"
+        ).targetFunction());
+        var compoundInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypedInstanceContainer",
+                "compound_items"
+        ).targetFunction());
+        var keyedInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypedInstanceContainer",
+                "write_typed_key"
+        ).targetFunction());
+        var packedInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypedInstanceContainer",
+                "write_packed"
+        ).targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // Read: one property container load feeding one indexed read, never the named route.
+                () -> assertEquals(1, readInstructions.stream()
+                        .filter(LoadPropertyInsn.class::isInstance)
+                        .map(LoadPropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("items"))
+                        .count()),
+                () -> assertEquals(1, readInstructions.stream()
+                        .filter(VariantGetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertTrue(readInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof PackVariantInsn)),
+                // Write: property load + indexed store + unconditional StorePropertyInsn commit;
+                // the typed route never elides the writeback based on the carrier family.
+                () -> assertEquals(1, writeInstructions.stream()
+                        .filter(LoadPropertyInsn.class::isInstance)
+                        .map(LoadPropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("items"))
+                        .count()),
+                () -> assertEquals(1, writeInstructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, writeInstructions.stream()
+                        .filter(StorePropertyInsn.class::isInstance)
+                        .map(StorePropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("items"))
+                        .count()),
+                () -> assertTrue(writeInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof VariantSetInsn
+                                || instruction instanceof PackVariantInsn)),
+                // Compound: read and write each reload the container through the property route,
+                // and the single mutation commits back through one StorePropertyInsn.
+                () -> assertEquals(2, compoundInstructions.stream()
+                        .filter(LoadPropertyInsn.class::isInstance)
+                        .map(LoadPropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("items"))
+                        .count()),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(VariantGetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(StorePropertyInsn.class::isInstance)
+                        .map(StorePropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("items"))
+                        .count()),
+                () -> assertTrue(compoundInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn)),
+                // Typed dictionary: the int key converts to the float key type (c_int_to_float) and
+                // the mutation is KEYED, with no generic Variant set and no named route; the whole
+                // container commits back through StorePropertyInsn.
+                () -> assertEquals(1, keyedInstructions.stream()
+                        .filter(CallIntrinsicInsn.class::isInstance)
+                        .map(CallIntrinsicInsn.class::cast)
+                        .filter(instruction -> instruction.intrinsicName().equals("c_int_to_float"))
+                        .count()),
+                () -> assertEquals(1, keyedInstructions.stream()
+                        .filter(LoadPropertyInsn.class::isInstance)
+                        .map(LoadPropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("table"))
+                        .count()),
+                () -> assertEquals(1, keyedInstructions.stream()
+                        .filter(VariantSetKeyedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, keyedInstructions.stream()
+                        .filter(StorePropertyInsn.class::isInstance)
+                        .map(StorePropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("table"))
+                        .count()),
+                () -> assertTrue(keyedInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof VariantSetInsn)),
+                // Packed*Array follows the same unconditional writeback shape: property load,
+                // indexed store, StorePropertyInsn commit.
+                () -> assertEquals(1, packedInstructions.stream()
+                        .filter(LoadPropertyInsn.class::isInstance)
+                        .map(LoadPropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("payloads"))
+                        .count()),
+                () -> assertEquals(1, packedInstructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, packedInstructions.stream()
+                        .filter(StorePropertyInsn.class::isInstance)
+                        .map(StorePropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("payloads"))
+                        .count()),
+                () -> assertTrue(packedInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof PackVariantInsn))
+        );
+    }
+
+    /// A deep chain (`obj.vectors[i].x = v`) commits the mutated value-semantic element back into
+    /// the typed instance container through the reverse-commit `LoadPropertyInsn` + typed store
+    /// shape, and the whole container then writes back through `StorePropertyInsn` unconditionally.
+    @Test
+    void runCommitsTypedInstanceContainerThroughPropertyRouteInDeepChain() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_typed_instance_deep_chain.gd",
+                """
+                        class_name BodyInsnTypedInstanceDeepChain
+                        extends RefCounted
+                        
+                        var vectors: Array[Vector2] = []
+                        
+                        func write_deep(obj: BodyInsnTypedInstanceDeepChain, i: int, v: float) -> void:
+                            obj.vectors[i].x = v
+                        """,
+                Map.of(
+                        "BodyInsnTypedInstanceDeepChain",
+                        "RuntimeBodyInsnTypedInstanceDeepChain"
+                ),
+                true
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypedInstanceDeepChain",
+                "write_deep"
+        ).targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // Leaf: the value-semantic element's property store targets the indexed element temp.
+                () -> assertEquals(1, instructions.stream()
+                        .filter(StorePropertyInsn.class::isInstance)
+                        .map(StorePropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("x"))
+                        .count()),
+                // Element read + reverse commit each reload the typed container through the
+                // property route; the mutated element commits back through one indexed store.
+                () -> assertEquals(2, instructions.stream()
+                        .filter(LoadPropertyInsn.class::isInstance)
+                        .map(LoadPropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("vectors"))
+                        .count()),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(VariantGetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                // The whole container always commits back through one property store, and no
+                // Variant named-member instruction may remain anywhere in the chain.
+                () -> assertTrue(instructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof PackVariantInsn)),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(StorePropertyInsn.class::isInstance)
+                        .map(StorePropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("vectors"))
+                        .count())
+        );
+    }
+
+    /// Direct type-meta property writes (`Worker.shared = v`, `Worker.shared += v`) lower through the
+    /// static storage route: a single `StoreStaticInsn` for plain assignment, load-op-store for
+    /// compound assignment, and never the instance property instructions.
+    @Test
+    void runLowersTypeMetaHeadStaticPropertyWritesThroughStoreStaticInsn() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_type_meta_head_property_write.gd",
+                """
+                        class_name BodyInsnTypeMetaHeadPropertyWrite
+                        extends RefCounted
+                        
+                        class Worker:
+                            static var shared: int = 7
+                        
+                        func write_plain(v: int) -> void:
+                            Worker.shared = v
+                        
+                        func compound_plain(v: int) -> void:
+                            Worker.shared += v
+                        """,
+                Map.of(
+                        "BodyInsnTypeMetaHeadPropertyWrite",
+                        "RuntimeBodyInsnTypeMetaHeadPropertyWrite"
+                ),
+                true
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var writeInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaHeadPropertyWrite",
+                "write_plain"
+        ).targetFunction());
+        var compoundInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaHeadPropertyWrite",
+                "compound_plain"
+        ).targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(0, writeInstructions.stream()
+                        .filter(LoadStaticInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, writeInstructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .map(StoreStaticInsn.class::cast)
+                        .filter(instruction -> instruction.staticName().equals("shared")
+                                && instruction.className().endsWith("__sub__Worker"))
+                        .count()),
+                () -> assertTrue(writeInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof LoadPropertyInsn
+                                || instruction instanceof StorePropertyInsn)),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(LoadStaticInsn.class::isInstance)
+                        .map(LoadStaticInsn.class::cast)
+                        .filter(instruction -> instruction.staticName().equals("shared"))
+                        .count()),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(BinaryOpInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .count()),
+                () -> assertTrue(compoundInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof LoadPropertyInsn
+                                || instruction instanceof StorePropertyInsn))
+        );
+    }
+
+    /// Variant static containers keep the bare-form writeback contract on the type-meta head route:
+    /// the in-place generic store is unconditional and `gdcc_variant_requires_writeback` gates the
+    /// `StoreStaticInsn` in the apply block.
+    @Test
+    void runAppliesRuntimeGatedWritebackForVariantTypeMetaHeadContainer() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_type_meta_variant_container.gd",
+                """
+                        class_name BodyInsnTypeMetaVariantContainer
+                        extends RefCounted
+                        
+                        class Worker:
+                            static var untyped_list: Variant = []
+                        
+                        func write_variant(v: int) -> void:
+                            Worker.untyped_list[0] = v
+                        """,
+                Map.of(
+                        "BodyInsnTypeMetaVariantContainer",
+                        "RuntimeBodyInsnTypeMetaVariantContainer"
+                ),
+                true
+        );
+        var writeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaVariantContainer",
+                "write_variant"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = writeContext.targetFunction();
+        var instructions = allInstructions(function);
+        var entryBlock = requireBlock(function, "seq_0");
+        var gateCalls = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(CallGlobalInsn.class::isInstance)
+                .map(CallGlobalInsn.class::cast)
+                .toList();
+        var gateBranch = assertInstanceOf(GoIfInsn.class, entryBlock.getTerminator());
+        var applyBlock = requireBlock(function, gateBranch.trueBbId());
+        var applyStores = applyBlock.getNonTerminatorInstructions().stream()
+                .filter(StoreStaticInsn.class::isInstance)
+                .map(StoreStaticInsn.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(LoadStaticInsn.class::isInstance)
+                        .map(LoadStaticInsn.class::cast)
+                        .filter(instruction -> instruction.staticName().equals("untyped_list"))
+                        .count()),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, gateCalls.size()),
+                () -> assertEquals("gdcc_variant_requires_writeback", gateCalls.getFirst().functionName()),
+                () -> assertEquals(gateCalls.getFirst().resultId(), gateBranch.conditionVarId()),
+                () -> assertEquals(1, applyStores.size()),
+                () -> assertTrue(applyStores.stream()
+                        .allMatch(instruction -> instruction.staticName().equals("untyped_list"))),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .count())
+        );
+    }
+
+    /// Drift guard: when the published container member on a type-meta head subscript anchor loses
+    /// its static declaration site, the STATIC_CONTEXT property commit step can no longer take the
+    /// static route and must fail fast instead of silently emitting an instance-route writeback.
+    @Test
+    void runFailsFastWhenTypeMetaHeadSubscriptContainerMemberLosesStaticDeclarationSite() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_type_meta_head_subscript_member_drift.gd",
+                """
+                        class_name BodyInsnTypeMetaHeadSubscriptMemberDrift
+                        extends RefCounted
+                        
+                        class Worker:
+                            static var values: Array[int] = [1, 2]
+                        
+                        func write_via_type_meta(v: int) -> void:
+                            Worker.values[1] = v
+                        """,
+                Map.of(
+                        "BodyInsnTypeMetaHeadSubscriptMemberDrift",
+                        "RuntimeBodyInsnTypeMetaHeadSubscriptMemberDrift"
+                ),
+                true
+        );
+        var writeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaHeadSubscriptMemberDrift",
+                "write_via_type_meta"
+        );
+        var assignmentItem = requireSingleSequenceItem(
+                writeContext.requireFrontendCfgGraph(),
+                AssignmentItem.class
+        );
+        var propertyCommitAnchor = assignmentItem.writableRoutePayload().reverseCommitSteps().stream()
+                .filter(step -> step.kind() == FrontendWritableRoutePayload.StepKind.PROPERTY)
+                .findFirst()
+                .orElseThrow()
+                .anchor();
+        assertInstanceOf(AttributeSubscriptStep.class, propertyCommitAnchor);
+        var original = prepared.context().requireAnalysisData().resolvedMembers().get(propertyCommitAnchor);
+        assertNotNull(original);
+        assertNotNull(original.resultType());
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                propertyCommitAnchor,
+                FrontendResolvedMember.resolved(
+                        original.memberName(),
+                        original.bindingKind(),
+                        original.receiverKind(),
+                        original.ownerKind(),
+                        original.receiverType(),
+                        original.resultType(),
+                        null
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertTrue(
+                exception.getMessage().contains(
+                        "STATIC_CONTEXT root requires an explicit container value id for non-property writable routes"
+                ),
+                exception.getMessage()
+        );
+    }
+
+    /// Deep chain `obj.workers[0].level = 1` with static `workers`: the element read must come
+    /// from `LoadStaticInsn` (never the Variant named route) and the element mutation is a plain
+    /// instance property store. Because a reference element is mutated in place, the terminal
+    /// static container writeback is compile-time skipped — identical to the instance route
+    /// skipping `StorePropertyInsn` for reference carriers. The applied path of
+    /// `StaticContainerSubscriptCommitStep` (value-semantic carriers) is anchored by direct unit
+    /// tests in `FrontendWritableRouteSupportTest`.
+    @Test
+    void runSkipsStaticContainerWritebackForReferenceElementMutations() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_static_container_reverse_commit.gd"),
+                """
+                        class_name BodyInsnStaticContainerReverseCommit
+                        extends RefCounted
+                        
+                        class Worker:
+                            extends RefCounted
+                            var level: int = 0
+                        
+                        static var workers: Array[Worker] = []
+                        
+                        func promote(obj: BodyInsnStaticContainerReverseCommit) -> void:
+                            obj.workers[0].level = 1
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = new FrontendModule("test_module", List.of(unit));
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        var promoteContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "BodyInsnStaticContainerReverseCommit",
+                "promote"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(context);
+
+        var instructions = allInstructions(promoteContext.targetFunction());
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertEquals(1, instructions.stream()
+                                .filter(LoadStaticInsn.class::isInstance)
+                                .map(LoadStaticInsn.class::cast)
+                                .filter(instruction -> instruction.staticName().equals("workers"))
+                                .count(),
+                        "the element read must come from shared static storage"),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(StorePropertyInsn.class::isInstance)
+                        .map(StorePropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("level"))
+                        .count()),
+                () -> assertEquals(0, instructions.stream()
+                                .filter(StoreStaticInsn.class::isInstance)
+                                .count(),
+                        "reference element mutation needs no container writeback"),
+                () -> assertEquals(0, instructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertTrue(instructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn))
+        );
+    }
+
+    /// Nested receiver `holder.child.vectors[0].x = 1.0` with static `vectors`: route promotion
+    /// keeps an instance `child` commit step outside the static container boundary. The session
+    /// truncates those outer steps (no instance owner was mutated; receiver/key expressions were
+    /// still evaluated for side effects), so the static commit stays terminal instead of failing
+    /// fast. The value-semantic `Vector2` element forces the writeback to actually apply.
+    @Test
+    void runTruncatesOuterInstanceStepsAtStaticContainerBoundary() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_nested_static_container.gd"),
+                """
+                        class_name BodyInsnNestedStaticContainer
+                        extends RefCounted
+                        
+                        static var vectors: Array[Vector2] = [Vector2.ZERO]
+                        var child: BodyInsnNestedStaticContainer
+                        
+                        func nested_write(holder: BodyInsnNestedStaticContainer) -> void:
+                            holder.child.vectors[0].x = 1.0
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = new FrontendModule("test_module", List.of(unit));
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        var writeContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "BodyInsnNestedStaticContainer",
+                "nested_write"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(context);
+
+        var instructions = allInstructions(writeContext.targetFunction());
+        var nestedDump = instructions.stream().map(Object::toString).collect(Collectors.joining("\n"));
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                // One static load for the element read, one for the reverse-commit writeback.
+                () -> assertEquals(2, instructions.stream()
+                        .filter(LoadStaticInsn.class::isInstance)
+                        .map(LoadStaticInsn.class::cast)
+                        .filter(instruction -> instruction.staticName().equals("vectors"))
+                        .count(), () -> nestedDump),
+                // Both static scratches must carry the declared container type (`Array[Vector2]`),
+                // never Variant, or the backend static load/store assignability checks reject them.
+                () -> assertTrue(instructions.stream()
+                                .filter(LoadStaticInsn.class::isInstance)
+                                .map(LoadStaticInsn.class::cast)
+                                .filter(instruction -> instruction.staticName().equals("vectors"))
+                                .allMatch(instruction -> writeContext.targetFunction()
+                                        .getVariableById(instruction.resultId())
+                                        .type() instanceof GdArrayType),
+                        () -> nestedDump),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count(), () -> nestedDump),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .map(StoreStaticInsn.class::cast)
+                        .filter(instruction -> instruction.staticName().equals("vectors"))
+                        .count(), () -> nestedDump),
+                () -> assertTrue(instructions.stream()
+                                .filter(StorePropertyInsn.class::isInstance)
+                                .map(StorePropertyInsn.class::cast)
+                                .noneMatch(instruction -> instruction.propertyName().equals("child")),
+                        "the outer instance `child` writeback must be truncated at the static boundary"),
+                () -> assertTrue(instructions.stream()
+                                .anyMatch(LoadPropertyInsn.class::isInstance),
+                        "the receiver chain `holder.child` is still evaluated for side effects and ordering")
+        );
+    }
+
+    /// Double static boundary: `holder.vectors[0].x = 1.0` with both `holder` and `vectors`
+    /// static. Route promotion carries an outer static property commit (`holder`) plus the inner
+    /// static container commit (`vectors`); only the innermost boundary is the real storage
+    /// terminal, so the outer commit must be dropped (the stored `holder` reference never changes
+    /// when a container element is mutated) instead of crashing the terminal guard.
+    @Test
+    void runKeepsOnlyInnermostStaticBoundaryInReverseCommit() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_double_static_boundary.gd"),
+                """
+                        class_name BodyInsnDoubleStaticBoundary
+                        extends RefCounted
+                        
+                        static var holder: BodyInsnDoubleStaticBoundary
+                        static var vectors: Array[Vector2] = [Vector2.ZERO]
+                        
+                        func nested_static_write() -> void:
+                            holder.vectors[0].x = 1.0
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = new FrontendModule("test_module", List.of(unit));
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        var writeContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "BodyInsnDoubleStaticBoundary",
+                "nested_static_write"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(context);
+
+        var instructions = allInstructions(writeContext.targetFunction());
+        var dump = instructions.stream().map(Object::toString).collect(Collectors.joining("\n"));
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .map(StoreStaticInsn.class::cast)
+                        .filter(instruction -> instruction.staticName().equals("vectors"))
+                        .count(), () -> dump),
+                () -> assertEquals(0, instructions.stream()
+                                .filter(StoreStaticInsn.class::isInstance)
+                                .map(StoreStaticInsn.class::cast)
+                                .filter(instruction -> instruction.staticName().equals("holder"))
+                                .count(),
+                        "the outer static property commit must be dropped; its stored reference is unchanged"),
+                () -> assertTrue(instructions.stream()
+                                .filter(LoadStaticInsn.class::isInstance)
+                                .map(LoadStaticInsn.class::cast)
+                                .anyMatch(instruction -> instruction.staticName().equals("holder")),
+                        "the outer static receiver is still evaluated for side effects and ordering"),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count(), () -> dump),
+                () -> assertTrue(instructions.stream()
+                                .filter(StorePropertyInsn.class::isInstance)
+                                .map(StorePropertyInsn.class::cast)
+                                .allMatch(instruction -> instruction.propertyName().equals("x")),
+                        "the only instance property write is the Vector2 element field mutation")
         );
     }
 

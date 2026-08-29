@@ -20,6 +20,8 @@ import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.PropertyDef;
+import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
@@ -46,8 +48,10 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendBodyOwnerProceduresChainBindingTest {
@@ -1119,6 +1123,375 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         assertTrue(callDiagnostics.getFirst().message().contains("Instance-style syntax resolved to static method"));
     }
 
+    /// `ClassName.staticVar` resolves to a RESOLVED static property route (TYPE_META receiver,
+    /// PROPERTY binding, declaration site is the static `PropertyDef`), including through
+    /// inheritance where the route must land on the *declaring* owner's property.
+    @Test
+    void analyzeResolvesStaticPropertyThroughClassNameAccess() throws Exception {
+        var analyzed = analyze(
+                "static_property_class_access.gd",
+                """
+                        class_name StaticPropertyClassAccess
+                        extends RefCounted
+                        
+                        class Worker:
+                            static var shared: int = 7
+                            var instance_field: int = 1
+                        
+                        class SubWorker extends Worker:
+                            pass
+                        
+                        func ping() -> int:
+                            Worker.shared += 1
+                            return SubWorker.shared
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var sharedSteps = findNodes(pingFunction, AttributePropertyStep.class, step -> step.name().equals("shared"));
+        assertEquals(2, sharedSteps.size());
+
+        PropertyDef declaringProperty = null;
+        for (var sharedStep : sharedSteps) {
+            var resolved = analyzed.analysisData().resolvedMembers().get(sharedStep);
+            assertNotNull(resolved);
+            assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolved.status());
+            assertEquals(FrontendBindingKind.PROPERTY, resolved.bindingKind());
+            assertEquals(FrontendReceiverKind.TYPE_META, resolved.receiverKind());
+            assertEquals(ScopeOwnerKind.GDCC, resolved.ownerKind());
+            assertNotNull(resolved.resultType());
+            assertEquals("int", resolved.resultType().getTypeName());
+            var declarationSite = assertInstanceOf(PropertyDef.class, resolved.declarationSite());
+            assertTrue(declarationSite.isStatic());
+            if (declaringProperty == null) {
+                declaringProperty = declarationSite;
+            }
+        }
+        // The subclass access must resolve to the very same declaring static storage.
+        assertSame(declaringProperty, assertInstanceOf(
+                PropertyDef.class,
+                analyzed.analysisData().resolvedMembers().get(sharedSteps.get(1)).declarationSite()
+        ));
+
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.static_access_via_instance").isEmpty());
+    }
+
+    /// `ClassName.instanceField` stays fail-closed: the route is published as UNSUPPORTED and no
+    /// static-access warning is emitted.
+    @Test
+    void analyzeKeepsInstancePropertyAccessViaClassNameFailClosed() throws Exception {
+        var analyzed = analyze(
+                "static_property_class_access_negative.gd",
+                """
+                        class_name StaticPropertyClassAccessNegative
+                        extends RefCounted
+                        
+                        class Worker:
+                            static var shared: int = 7
+                            var instance_field: int = 1
+                        
+                        func ping() -> int:
+                            return Worker.instance_field
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var fieldStep = findNode(pingFunction, AttributePropertyStep.class, step -> step.name().equals("instance_field"));
+
+        var resolved = analyzed.analysisData().resolvedMembers().get(fieldStep);
+        assertNotNull(resolved);
+        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, resolved.status());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.static_access_via_instance").isEmpty());
+    }
+
+    /// Type-meta head attribute-subscripts (`Worker.values[i]`, including via an inherited start
+    /// class `SubWorker.values[i]`) publish the RESOLVED static container property on the
+    /// `AttributeSubscriptStep` anchor itself: TYPE_META receiver carrying the *start* class type,
+    /// the declaring owner's static `PropertyDef` shared across start classes, and the element type
+    /// (not the container type) as the published expression type. This is the sema contract the
+    /// CFG type-meta subscript head branch consumes.
+    @Test
+    void analyzePublishesTypeMetaHeadStaticContainerMemberOnSubscriptStep() throws Exception {
+        var analyzed = analyze(
+                "static_type_meta_container_subscript.gd",
+                """
+                        class_name StaticTypeMetaContainerSubscript
+                        extends RefCounted
+
+                        class Worker:
+                            static var values: Array[int] = [1, 2]
+
+                        class SubWorker extends Worker:
+                            pass
+
+                        func ping(v: int) -> int:
+                            Worker.values[0] += v
+                            SubWorker.values[1] = v
+                            return Worker.values[2]
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var subscriptSteps = findNodes(pingFunction, AttributeSubscriptStep.class, step -> step.name().equals("values"));
+        assertEquals(3, subscriptSteps.size());
+
+        PropertyDef declaringProperty = null;
+        var expectedReceiverTypes = List.of(
+                "StaticTypeMetaContainerSubscript__sub__Worker",
+                "StaticTypeMetaContainerSubscript__sub__SubWorker",
+                "StaticTypeMetaContainerSubscript__sub__Worker"
+        );
+        for (var index = 0; index < subscriptSteps.size(); index++) {
+            var subscriptStep = subscriptSteps.get(index);
+            var resolved = analyzed.analysisData().resolvedMembers().get(subscriptStep);
+            var stepIndex = index;
+            assertNotNull(resolved, () -> "subscript step #" + stepIndex + " must publish the container member");
+            var startClassName = expectedReceiverTypes.get(index);
+            assertAll(
+                    () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolved.status()),
+                    () -> assertEquals(FrontendBindingKind.PROPERTY, resolved.bindingKind()),
+                    () -> assertEquals(FrontendReceiverKind.TYPE_META, resolved.receiverKind()),
+                    () -> assertEquals(ScopeOwnerKind.GDCC, resolved.ownerKind()),
+                    // The receiver type is the *start* class so lowering can publish
+                    // `LoadStaticInsn(startClass, ...)` and let the backend walk the hierarchy.
+                    () -> assertEquals(startClassName, resolved.receiverType().getTypeName()),
+                    () -> assertEquals("Array[int]", resolved.resultType().getTypeName()),
+                    () -> assertTrue(assertInstanceOf(PropertyDef.class, resolved.declarationSite()).isStatic()),
+                    // The step's own expression type is the *element* type, not the container type.
+                    () -> assertEquals(
+                            "int",
+                            analyzed.analysisData().expressionTypes().get(subscriptStep).publishedType().getTypeName()
+                    )
+            );
+            if (declaringProperty == null) {
+                declaringProperty = assertInstanceOf(PropertyDef.class, resolved.declarationSite());
+            }
+        }
+        // All three accesses (base class twice, subclass once) share the one declaring storage.
+        var finalDeclaringProperty = declaringProperty;
+        assertTrue(subscriptSteps.stream()
+                .allMatch(step -> analyzed.analysisData().resolvedMembers().get(step).declarationSite()
+                        == finalDeclaringProperty));
+
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.static_access_via_instance").isEmpty());
+    }
+
+    /// An instance container property reached through a type-meta head (`Worker.plain[0]`) stays
+    /// fail-closed: no container member is re-anchored onto the subscript step and the step's
+    /// expression type is not lowering-ready.
+    @Test
+    void analyzeKeepsInstanceContainerViaTypeMetaHeadSubscriptFailClosed() throws Exception {
+        var analyzed = analyze(
+                "static_type_meta_container_subscript_negative.gd",
+                """
+                        class_name StaticTypeMetaContainerSubscriptNegative
+                        extends RefCounted
+
+                        class Worker:
+                            var plain: Array[int] = []
+
+                        func ping() -> int:
+                            return Worker.plain[0]
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var subscriptStep = findNode(pingFunction, AttributeSubscriptStep.class, step -> step.name().equals("plain"));
+
+        assertAll(
+                () -> assertNull(analyzed.analysisData().resolvedMembers().get(subscriptStep)),
+                () -> assertNotEquals(
+                        FrontendExpressionTypeStatus.RESOLVED,
+                        analyzed.analysisData().expressionTypes().get(subscriptStep).status()
+                )
+        );
+    }
+
+    /// Instance receivers (`obj.x`, explicit `self.x`) still resolve to the shared static storage
+    /// route, but each such step publishes a `sema.static_access_via_instance` warning that does
+    /// not block compilation. Plain instance-property access must stay warning-free.
+    @Test
+    void analyzeWarnsWhenInstanceSyntaxAccessesStaticProperty() throws Exception {
+        var analyzed = analyze(
+                "static_property_instance_access.gd",
+                """
+                        class_name StaticPropertyInstanceAccess
+                        extends RefCounted
+                        
+                        class Worker:
+                            static var shared: int = 7
+                            var instance_field: int = 1
+                        
+                        static var local_shared: int = 3
+                        
+                        func ping(worker: Worker) -> int:
+                            worker.shared += 1
+                            self.local_shared = worker.instance_field
+                            return worker.shared
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var sharedSteps = findNodes(pingFunction, AttributePropertyStep.class, step -> step.name().equals("shared"));
+        assertEquals(2, sharedSteps.size());
+        for (var sharedStep : sharedSteps) {
+            var resolved = analyzed.analysisData().resolvedMembers().get(sharedStep);
+            assertNotNull(resolved);
+            assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolved.status());
+            assertEquals(FrontendBindingKind.PROPERTY, resolved.bindingKind());
+            // INSTANCE receiver kind preserves the source syntax while the route targets the
+            // declaring class's shared static storage.
+            assertEquals(FrontendReceiverKind.INSTANCE, resolved.receiverKind());
+            var declarationSite = assertInstanceOf(PropertyDef.class, resolved.declarationSite());
+            assertTrue(declarationSite.isStatic());
+        }
+        var localStep = findNode(pingFunction, AttributePropertyStep.class, step -> step.name().equals("local_shared"));
+        var localResolved = analyzed.analysisData().resolvedMembers().get(localStep);
+        assertNotNull(localResolved);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, localResolved.status());
+        assertEquals(FrontendBindingKind.PROPERTY, localResolved.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, localResolved.receiverKind());
+        assertTrue(assertInstanceOf(PropertyDef.class, localResolved.declarationSite()).isStatic());
+
+        var warnings = diagnosticsByCategory(analyzed.analysisData(), "sema.static_access_via_instance");
+        assertEquals(3, warnings.size());
+        assertTrue(warnings.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.WARNING && diagnostic.range() != null
+        ));
+        assertTrue(warnings.stream().filter(diagnostic -> diagnostic.message().contains("'shared'"))
+                .allMatch(diagnostic -> diagnostic.message().contains(
+                                "The property 'shared' is static but was accessed from an instance"
+                        ) && diagnostic.message().contains(
+                                "'StaticPropertyInstanceAccess__sub__Worker.shared'"
+                        )
+                ));
+        assertTrue(warnings.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("The property 'local_shared' is static but was accessed from an instance")
+                        && diagnostic.message().contains("'StaticPropertyInstanceAccess.local_shared'")
+        ));
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+
+        // Control: the plain instance-property step resolves without any static-access warning.
+        var instanceFieldStep = findNode(
+                pingFunction,
+                AttributePropertyStep.class,
+                step -> step.name().equals("instance_field")
+        );
+        var resolvedField = analyzed.analysisData().resolvedMembers().get(instanceFieldStep);
+        assertNotNull(resolvedField);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedField.status());
+        assertFalse(assertInstanceOf(PropertyDef.class, resolvedField.declarationSite()).isStatic());
+    }
+
+    /// An attribute-subscript step whose named container is a static property publishes the
+    /// RESOLVED static member on the subscript anchor (container provenance for body lowering),
+    /// while the step's published expression type stays the subscript element type. Instance
+    /// containers publish the same provenance shape (RESOLVED instance member) so typed named-route
+    /// lowering can consume the declared container type.
+    @Test
+    void analyzePublishesStaticContainerMemberOnAttributeSubscriptStep() throws Exception {
+        var analyzed = analyze(
+                "static_container_subscript_chain.gd",
+                """
+                        class_name StaticContainerChain
+                        extends RefCounted
+
+                        static var values: Array[int] = []
+                        var plain: Array[int] = []
+
+                        func ping(other: StaticContainerChain) -> int:
+                            var picked = other.values[0]
+                            var fallback = other.plain[1]
+                            return picked + fallback
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var valuesSubscript = findNode(
+                pingFunction,
+                AttributeSubscriptStep.class,
+                step -> step.name().equals("values")
+        );
+        var containerMember = analyzed.analysisData().resolvedMembers().get(valuesSubscript);
+        assertNotNull(containerMember, "static container subscript must publish the static member fact");
+        assertAll(
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, containerMember.status()),
+                () -> assertEquals(FrontendBindingKind.PROPERTY, containerMember.bindingKind()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, containerMember.receiverKind()),
+                () -> assertTrue(assertInstanceOf(PropertyDef.class, containerMember.declarationSite()).isStatic()),
+                () -> assertEquals("StaticContainerChain", containerMember.receiverType().getTypeName())
+        );
+
+        // The subscript step's published expression type is the element type, not the container
+        // property type hijacked through the member fact.
+        var elementType = analyzed.analysisData().expressionTypes().get(valuesSubscript);
+        assertNotNull(elementType);
+        assertEquals("int", elementType.publishedType().getTypeName());
+
+        // Instance containers publish the same container provenance shape (RESOLVED instance
+        // property member). Typed named-route lowering consumes the declared container type.
+        var plainSubscript = findNode(
+                pingFunction,
+                AttributeSubscriptStep.class,
+                step -> step.name().equals("plain")
+        );
+        var plainContainerMember = analyzed.analysisData().resolvedMembers().get(plainSubscript);
+        assertNotNull(plainContainerMember, "instance container subscript must publish the container member fact");
+        assertAll(
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, plainContainerMember.status()),
+                () -> assertEquals(FrontendBindingKind.PROPERTY, plainContainerMember.bindingKind()),
+                () -> assertFalse(assertInstanceOf(PropertyDef.class, plainContainerMember.declarationSite()).isStatic()),
+                () -> assertEquals("Array[int]", plainContainerMember.resultType().getTypeName()),
+                () -> assertEquals("StaticContainerChain", plainContainerMember.receiverType().getTypeName())
+        );
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+    }
+
+    /// Receiver-shape coverage for the same publication: explicitly typed locals, `self` and
+    /// call-result receivers must all publish the static container member; an untyped local
+    /// inferred through `new()` does as well.
+    @Test
+    void analyzePublishesStaticContainerMemberAcrossReceiverShapes() throws Exception {
+        var analyzed = analyze(
+                "static_container_subscript_receiver_shapes.gd",
+                """
+                        class_name StaticContainerReceiverShapes
+                        extends RefCounted
+
+                        static var values: Array[int] = []
+
+                        static func make_worker() -> StaticContainerReceiverShapes:
+                            return StaticContainerReceiverShapes.new()
+
+                        func read_via_typed_local() -> int:
+                            var worker: StaticContainerReceiverShapes = StaticContainerReceiverShapes.new()
+                            return worker.values[0]
+
+                        func write_via_self(v: int) -> void:
+                            self.values[1] = v
+
+                        func compound_via_call_receiver(v: int) -> void:
+                            make_worker().values[0] += v
+                        """
+        );
+
+        var subscriptSteps = findNodes(
+                analyzed.unit().ast(),
+                AttributeSubscriptStep.class,
+                step -> step.name().equals("values")
+        );
+        assertEquals(3, subscriptSteps.size());
+        for (var step : subscriptSteps) {
+            var member = analyzed.analysisData().resolvedMembers().get(step);
+            assertNotNull(member, "missing static container member on subscript step at " + step.range());
+            assertEquals(FrontendMemberResolutionStatus.RESOLVED, member.status());
+            assertTrue(assertInstanceOf(PropertyDef.class, member.declarationSite()).isStatic());
+        }
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+    }
+
     @Test
     void analyzePublishesBareBuiltinAndObjectNewConstructorsOnSharedCallSurface() throws Exception {
         var analyzed = analyze(
@@ -1649,6 +2022,7 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution").isEmpty());
     }
 
+    @Test
     void analyzeKeepsExactSuffixAfterAttributeSubscriptStep() throws Exception {
         var analyzed = analyze(
                 "attribute_subscript_suffix.gd",
@@ -1672,7 +2046,13 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         var itemsStep = findNode(chainStatement, AttributeSubscriptStep.class, step -> step.name().equals("items"));
         var payloadStep = findNode(chainStatement, AttributePropertyStep.class, step -> step.name().equals("payload"));
 
-        assertTrue(analyzed.analysisData().resolvedMembers().get(itemsStep) == null);
+        var itemsMember = analyzed.analysisData().resolvedMembers().get(itemsStep);
+        assertNotNull(itemsMember, "instance container subscript must publish the container member fact");
+        assertAll(
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, itemsMember.status()),
+                () -> assertEquals(FrontendBindingKind.PROPERTY, itemsMember.bindingKind()),
+                () -> assertEquals("Array[AttributeSubscriptSuffix__sub__Item]", itemsMember.resultType().getTypeName())
+        );
 
         var resolvedPayload = analyzed.analysisData().resolvedMembers().get(payloadStep);
         assertNotNull(resolvedPayload);
