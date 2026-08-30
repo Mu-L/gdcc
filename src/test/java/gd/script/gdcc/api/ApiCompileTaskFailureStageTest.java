@@ -71,14 +71,15 @@ class ApiCompileTaskFailureStageTest {
 
         api.createModule("demo", "Lowering Stage Demo");
         api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(tempDir.resolve("lowering-stage-project")));
-        // `assert` is still a compile-gated construct, so it keeps exercising the
-        // frontend-compile-blocker failure stage; static var sources no longer land here.
+        // `$Camera3D` (get-node) is still a compile-gated construct, so it keeps exercising the
+        // frontend-compile-blocker failure stage; assert, static var and preload sources no
+        // longer land here.
         api.putFile("demo", "/src/blocked.gd", """
                 class_name LoweringStageBlocked
-                extends RefCounted
+                extends Node
                 
                 func ping(value):
-                    assert(value, "blocked in compile mode")
+                    var camera = $Camera3D
                 """);
 
         var failedTask = ApiCompileTestSupport.awaitTask(api, api.compile("demo"));

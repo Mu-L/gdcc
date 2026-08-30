@@ -101,15 +101,15 @@ class FrontendLoweringAnalysisPassTest {
 
         for (var testCase : List.of(
                 new CompileBlockedCase(
-                        "lowering_blocked_assert.gd",
+                        "lowering_blocked_get_node.gd",
                         """
-                                class_name LoweringBlockedAssert
-                                extends RefCounted
+                                class_name LoweringBlockedGetNode
+                                extends Node
                                 
                                 func ping(value):
-                                    assert(value, "blocked in compile mode")
+                                    var camera = $Camera3D
                                 """,
-                        "assert statement"
+                        "Get-node expression"
                 )
         )) {
             var module = parseModule(testCase.fileName(), testCase.source());

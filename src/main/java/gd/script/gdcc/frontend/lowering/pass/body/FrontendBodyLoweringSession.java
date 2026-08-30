@@ -107,6 +107,7 @@ public final class FrontendBodyLoweringSession {
     private int writableRouteBlockCounter;
     private int forLoopConstantCounter;
     private int matchHelperCounter;
+    private int languageFunctionTempCounter;
 
     public FrontendBodyLoweringSession(
             @NotNull FunctionLoweringContext functionContext,
@@ -906,7 +907,12 @@ public final class FrontendBodyLoweringSession {
         }
     }
 
-    void ensureVariable(@NotNull String variableId, @NotNull GdType expectedType) {
+    /// Declares one function variable slot or verifies an existing declaration's type.
+    ///
+    /// Public so the shared truthiness helper in `FrontendBodyLoweringSupport` (parent package)
+    /// can declare its `cfg_cond_*` conversion slots; body processors inside this package use the
+    /// same entry point instead of touching the function variable table directly.
+    public void ensureVariable(@NotNull String variableId, @NotNull GdType expectedType) {
         var existing = function.getVariableById(variableId);
         if (existing == null) {
             function.createAndAddVariable(variableId, expectedType);
@@ -951,7 +957,15 @@ public final class FrontendBodyLoweringSession {
         return false;
     }
 
-    @NotNull String slotIdForValue(@NotNull String valueId) {
+    /// Resolves the slot that actually backs one published value id, honoring the published
+    /// materialization kind (`cfg_tmp_*` temp, `cfg_merge_*` merge, coroutine state, or direct
+    /// source-slot alias).
+    ///
+    /// Public so the shared truthiness helper in `FrontendBodyLoweringSupport` (parent package)
+    /// can read merge-backed assert conditions (`assert(a and b)`, ternary results) from their
+    /// real `cfg_merge_*` slot instead of a never-written `cfg_tmp_*`. Branch conditions stay
+    /// TEMP_SLOT by the condition-context contract, so this resolves to their `cfg_tmp_*` id.
+    public @NotNull String slotIdForValue(@NotNull String valueId) {
         var materialization = requireValueMaterialization(valueId);
         return switch (materialization.kind()) {
             case TEMP_SLOT -> FrontendBodyLoweringSupport.cfgTempSlotId(valueId);
@@ -1439,6 +1453,27 @@ public final class FrontendBodyLoweringSession {
                     "Published singleton binding '" + binding.symbolName()
                             + "' is missing registry-validated object metadata"
             );
+        }
+    }
+
+    /// Allocates one body-local temp owned by the synthetic GDScript language function lowering
+    /// (the `load`/`preload` rewrite to the `ResourceLoader` singleton call pair). Kept separate
+    /// from published CFG value ids and from writable-route scratch slots.
+    ///
+    /// The `cfg_lang_fn_*` prefix is a legal GDScript identifier, so a source-level variable could
+    /// occupy the same name (source locals keep their declared name verbatim); the counter loop
+    /// skips occupied ids instead of reusing them via `ensureVariable`, which would otherwise
+    /// either crash on a type mismatch or silently let the rewrite overwrite a user variable.
+    @NotNull String allocateGdScriptLanguageFunctionTemp(@NotNull String purpose, @NotNull GdType type) {
+        var tempType = Objects.requireNonNull(type, "type must not be null");
+        var prefix = "cfg_lang_fn_" + StringUtil.requireNonBlank(purpose, "purpose") + "_";
+        while (true) {
+            var slotId = prefix + languageFunctionTempCounter++;
+            if (function.getVariableById(slotId) != null) {
+                continue;
+            }
+            function.createAndAddVariable(slotId, tempType);
+            return slotId;
         }
     }
 

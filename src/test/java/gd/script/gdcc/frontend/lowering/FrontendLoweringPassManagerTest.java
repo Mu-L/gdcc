@@ -24,6 +24,7 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
+import gd.script.gdcc.lir.insn.LiteralStringInsn;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 
@@ -231,14 +232,14 @@ class FrontendLoweringPassManagerTest {
                 List.of(new SourceFixture(
                         "lowering_manager_singleton_property_init.gd",
                         """
-                        class_name ManagerSingletonPropertyInit
-                        extends RefCounted
-
-                        var frames: int = Engine.get_frames_drawn()
-
-                        func ping() -> int:
-                            return frames
-                        """
+                                class_name ManagerSingletonPropertyInit
+                                extends RefCounted
+                                
+                                var frames: int = Engine.get_frames_drawn()
+                                
+                                func ping() -> int:
+                                    return frames
+                                """
                 )),
                 Map.of(
                         "ManagerSingletonPropertyInit",
@@ -272,6 +273,67 @@ class FrontendLoweringPassManagerTest {
                 () -> assertEquals("Engine", receiverLoad.staticName()),
                 () -> assertEquals("get_frames_drawn", methodCall.methodName()),
                 () -> assertEquals(receiverLoad.resultId(), methodCall.objectId()),
+                () -> assertEquals(methodCall.resultId(), returnInsn.returnValueId()),
+                () -> assertEquals(0, countInstructions(initFunction, CallGlobalInsn.class))
+        );
+    }
+
+    @Test
+    void lowerToContextHandlesPreloadPropertyInitializerEndToEnd() throws Exception {
+        // Class-level `var icon: Resource = preload("res://...")` rides the supported
+        // property-initializer island and lowers to the ResourceLoader singleton call pair.
+        var diagnostics = new DiagnosticManager();
+        var manager = new FrontendLoweringPassManager();
+        var module = parseModule(
+                List.of(new SourceFixture(
+                        "lowering_manager_preload_property_init.gd",
+                        """
+                                class_name ManagerPreloadPropertyInit
+                                extends RefCounted
+                                
+                                var icon: Resource = preload("res://icon.svg")
+                                
+                                func ping() -> int:
+                                    return 1
+                                """
+                )),
+                Map.of(
+                        "ManagerPreloadPropertyInit",
+                        "RuntimeManagerPreloadPropertyInit"
+                )
+        );
+
+        var context = manager.lowerToContext(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+
+        var propertyContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeManagerPreloadPropertyInit",
+                "_field_init_icon"
+        );
+        var initFunction = propertyContext.targetFunction();
+        var pathLiteral = requireOnlyInstruction(initFunction, LiteralStringInsn.class);
+        var receiverLoad = requireOnlyInstruction(initFunction, LoadStaticInsn.class);
+        var methodCall = requireOnlyInstruction(initFunction, CallMethodInsn.class);
+        var returnInsn = requireOnlyInstruction(initFunction, ReturnInsn.class);
+
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertEquals("res://icon.svg", pathLiteral.value()),
+                () -> assertEquals("@GlobalScope", receiverLoad.className()),
+                () -> assertEquals("ResourceLoader", receiverLoad.staticName()),
+                () -> assertEquals("load", methodCall.methodName()),
+                () -> assertEquals(receiverLoad.resultId(), methodCall.objectId()),
+                () -> assertEquals(
+                        List.of(pathLiteral.resultId()),
+                        methodCall.args().stream()
+                                .map(operand -> assertInstanceOf(LirInstruction.VariableOperand.class, operand).id())
+                                .toList()
+                ),
                 () -> assertEquals(methodCall.resultId(), returnInsn.returnValueId()),
                 () -> assertEquals(0, countInstructions(initFunction, CallGlobalInsn.class))
         );
@@ -473,10 +535,10 @@ class FrontendLoweringPassManagerTest {
                                 "lowering_manager_cfg_compile_blocked.gd",
                                 """
                                         class_name LoweringManagerCfgCompileBlocked
-                                        extends RefCounted
+                                        extends Node
                                         
                                         func ping(value):
-                                            assert(value, "blocked in compile mode")
+                                            var camera = $Camera3D
                                         """
                         )),
                         Map.of()
@@ -502,10 +564,10 @@ class FrontendLoweringPassManagerTest {
                                 "lowering_manager_compile_blocked.gd",
                                 """
                                         class_name LoweringManagerCompileBlocked
-                                        extends RefCounted
+                                        extends Node
                                         
                                         func ping(value):
-                                            assert(value, "blocked in compile mode")
+                                            var camera = $Camera3D
                                         """
                         )),
                         Map.of()
@@ -521,7 +583,7 @@ class FrontendLoweringPassManagerTest {
                 .toList();
         assertFalse(compileDiagnostics.isEmpty());
         assertTrue(
-                compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("assert statement")),
+                compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Get-node expression")),
                 () -> "Unexpected diagnostics: " + diagnostics.snapshot()
         );
     }

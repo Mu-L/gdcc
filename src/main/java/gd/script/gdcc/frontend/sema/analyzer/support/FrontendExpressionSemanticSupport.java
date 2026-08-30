@@ -305,8 +305,8 @@ public final class FrontendExpressionSemanticSupport {
                             + identifierExpression.name() + ".build(...)', '" + identifierExpression.name()
                             + ".new()', or a static constant access"
             );
-            case METHOD, STATIC_METHOD, UTILITY_FUNCTION ->
-                    resolveCallableIdentifierExpressionType(identifierExpression);
+            case METHOD, STATIC_METHOD -> resolveCallableIdentifierExpressionType(identifierExpression);
+            case UTILITY_FUNCTION -> resolveUtilityIdentifierExpressionType(identifierExpression);
             case UNKNOWN, LITERAL -> FrontendExpressionType.failed(
                     "Identifier '" + identifierExpression.name() + "' does not resolve to a typed value"
             );
@@ -363,6 +363,21 @@ public final class FrontendExpressionSemanticSupport {
                         bareCallee,
                         callExpression.arguments(),
                         preliminary.argumentTypes(),
+                        nestedResolver,
+                        finalizeWindow
+                );
+            }
+            if (bareBinding != null
+                    && bareBinding.kind() == FrontendBindingKind.UTILITY_FUNCTION
+                    && classRegistry.isGdScriptLanguageFunction(bareCallee.name())) {
+                // Synthetic GDScript language functions are call-only: value-position resolution
+                // rejects them (first-class reference ban, see resolveIdentifierExpressionType),
+                // so the callee slot must skip value-resolution entirely, mirroring the TYPE_META
+                // constructor branch above. The call itself resolves through the shared bare-call
+                // path and publishes its own resolved-call fact.
+                return resolveBareIdentifierCallWithLiteralContext(
+                        bareCallee,
+                        callExpression.arguments(),
                         nestedResolver,
                         finalizeWindow
                 );
@@ -875,11 +890,10 @@ public final class FrontendExpressionSemanticSupport {
                     nestedResolver,
                     finalizeWindow
             );
-            case PreloadExpression preloadExpression -> resolveExplicitDeferredExpressionType(
+            case PreloadExpression preloadExpression -> resolvePreloadExpressionType(
                     preloadExpression,
                     nestedResolver,
                     resolveNestedChildren,
-                    "Preload expression typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case GetNodeExpression getNodeExpression -> resolveExplicitDeferredExpressionType(
@@ -943,6 +957,33 @@ public final class FrontendExpressionSemanticSupport {
             return propagated(dependencyIssue);
         }
         return rootOutcome(FrontendExpressionType.deferred(detailReason));
+    }
+
+    /// Dedicated `preload(path)` semantics: the path must be a string literal and is passed
+    /// through to `ResourceLoader.load` verbatim at the evaluation point (no compile-time
+    /// relative-path normalization — an intentional difference from Godot's compile-time preload).
+    /// Success publishes `RESOLVED(Resource)`; no `FrontendResolvedCall` is published because
+    /// lowering rewrites the opaque item into the singleton call pair directly, keeping the
+    /// resolved-call key space frozen to `CallExpression`/`AttributeCallStep`.
+    private @NotNull ExpressionSemanticResult resolvePreloadExpressionType(
+            @NotNull PreloadExpression preloadExpression,
+            @NotNull NestedExpressionResolver nestedResolver,
+            boolean resolveNestedChildren,
+            boolean finalizeWindow
+    ) {
+        if (resolveNestedChildren) {
+            var dependencyIssue = firstNestedDependencyIssue(preloadExpression, nestedResolver, finalizeWindow);
+            if (dependencyIssue != null) {
+                return propagated(dependencyIssue);
+            }
+        }
+        if (!(preloadExpression.path() instanceof LiteralExpression pathLiteral)
+                || !"string".equals(pathLiteral.kind())) {
+            return rootOutcome(FrontendExpressionType.failed(
+                    "preload(...) path must be a string literal; dynamic paths must use load(...) instead"
+            ));
+        }
+        return rootOutcome(FrontendExpressionType.resolved(new GdObjectType("Resource")));
     }
 
     /// Dedicated await classifier (`frontend_await_implementation.md` §8). The operand is resolved
@@ -1355,6 +1396,26 @@ public final class FrontendExpressionSemanticSupport {
         };
     }
 
+    /// Value-position references to utility identifiers. Synthetic GDScript language functions
+    /// (`len`/`char`/`ord`, ...) are rejected here as the first line of defense: they carry no
+    /// engine utility hash, so no standalone callable can be built for `var f = len`. The backend
+    /// `construct_standalone_callable` lookup (`findUtilityFunction`, which excludes synthetic
+    /// entries) stays fail-fast as the second line of defense.
+    ///
+    /// Note this only sees value positions: bare-call callees are resolved through
+    /// `resolveBareIdentifierCallWithLiteralContext`, so direct calls remain unaffected.
+    private @NotNull FrontendExpressionType resolveUtilityIdentifierExpressionType(
+            @NotNull IdentifierExpression identifierExpression
+    ) {
+        if (classRegistry.isGdScriptLanguageFunction(identifierExpression.name())) {
+            return FrontendExpressionType.failed(
+                    "GDScript language function '" + identifierExpression.name()
+                            + "' cannot be referenced as a first-class value; call it directly instead"
+            );
+        }
+        return resolveCallableIdentifierExpressionType(identifierExpression);
+    }
+
     private @NotNull FrontendExpressionType resolveCallableIdentifierExpressionType(
             @NotNull IdentifierExpression identifierExpression
     ) {
@@ -1464,6 +1525,22 @@ public final class FrontendExpressionSemanticSupport {
             );
             if (overloadSelection.selected() != null) {
                 var selected = overloadSelection.selected();
+                // Synthetic `range` is vararg with zero fixed parameters (matching Godot's
+                // MethodInfo), so generic vararg matching would accept any argument count.
+                // Gate the Godot 1..3 arity here instead of leaking `range()` to runtime.
+                if (isSyntheticRangeCall(bareCallee) && (arguments.isEmpty() || arguments.size() > 3)) {
+                    var arityReason = "GDScript language function 'range' expects 1 to 3 argument(s), got "
+                            + arguments.size();
+                    // Finalize arguments with generic expected so their expression facts publish.
+                    var finalized = resolveCallArgumentTypes(arguments, nestedResolver, finalizeWindow, null);
+                    if (finalized.issue() != null) {
+                        return propagated(finalized.issue());
+                    }
+                    return rootOutcome(
+                            FrontendExpressionType.failed(arityReason),
+                            failedBareCall(bareCallee, bareCallRoute, finalized.argumentTypes(), arityReason)
+                    );
+                }
                 var selectedParameterTypes = fixedParameterTypes(selected);
                 var finalized = resolveCallArgumentTypes(
                         arguments,
@@ -1535,6 +1612,17 @@ public final class FrontendExpressionSemanticSupport {
                 FrontendExpressionType.failed(detailReason),
                 failedBareCall(bareCallee, bareCallRoute, finalized.argumentTypes(), detailReason)
         );
+    }
+
+    /// True when the bare callee resolves to the synthetic GDScript language function `range`
+    /// (not a user-defined shadow): the published binding must be the utility-function kind, which
+    /// user function bindings never carry.
+    private boolean isSyntheticRangeCall(@NotNull IdentifierExpression bareCallee) {
+        if (!"range".equals(bareCallee.name())) {
+            return false;
+        }
+        var binding = bindingFor(bareCallee);
+        return binding != null && binding.kind() == FrontendBindingKind.UTILITY_FUNCTION;
     }
 
     /// Generic-snapshot overload selection (no container-literal expression AST).

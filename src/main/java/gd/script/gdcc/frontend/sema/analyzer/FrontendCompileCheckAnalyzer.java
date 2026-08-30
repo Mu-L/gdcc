@@ -60,7 +60,6 @@ import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
-import dev.superice.gdparser.frontend.ast.PreloadExpression;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
@@ -158,11 +157,6 @@ public class FrontendCompileCheckAnalyzer {
                     diagnosticManager
             ).walk(sourceClassRelation.unit().ast());
         }
-    }
-
-    private static @NotNull String assertCompileBlockedMessage() {
-        return "assert statement is recognized by the frontend but is blocked in compile mode because "
-                + "lowering/backend support lands";
     }
 
     private static @NotNull String expressionCompileBlockedMessage(@NotNull String expressionKind) {
@@ -447,13 +441,16 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
-        /// `assert` is deliberately compile-blocked until lowering/backend own its semantics.
+        /// `assert` is compile-ready: condition and optional message join the compile surface like
+        /// any other expression, and lowering/backend own the runtime failure semantics.
         @Override
         public @NotNull FrontendASTTraversalDirective handleAssertStatement(@NotNull AssertStatement assertStatement) {
             if (supportedExecutableBlockDepth <= 0) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
-            reportExplicitCompileBlock(assertStatement, assertCompileBlockedMessage());
+            markCompileSurfaceNode(assertStatement);
+            walkExpression(assertStatement.condition());
+            walkExpression(assertStatement.message());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -672,10 +669,9 @@ public class FrontendCompileCheckAnalyzer {
                 // frontend_lowering_cfg_pass_implementation.md §5.1/§5.2.
                 // ArrayExpression / DictionaryExpression: compile-ready via ContainerLiteralItem +
                 // construct_container_literal (see frontend_container_literal_implementation.md).
-                case PreloadExpression preloadExpression -> reportExplicitCompileBlock(
-                        preloadExpression,
-                        expressionCompileBlockedMessage("Preload expression")
-                );
+                // PreloadExpression: compile-ready — sema publishes RESOLVED(Resource) for string
+                // literals and FAILED otherwise, so the generic published-fact scan gates it;
+                // lowering rewrites it to the ResourceLoader singleton call pair.
                 case GetNodeExpression getNodeExpression -> reportExplicitCompileBlock(
                         getNodeExpression,
                         expressionCompileBlockedMessage("Get-node expression")

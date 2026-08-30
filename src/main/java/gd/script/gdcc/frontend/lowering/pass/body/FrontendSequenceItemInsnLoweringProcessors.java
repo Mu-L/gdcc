@@ -4,6 +4,7 @@ import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.enums.LifecycleProvenance;
 import gd.script.gdcc.frontend.lowering.FrontendBodyLoweringSupport;
 import gd.script.gdcc.frontend.lowering.FrontendCallMutabilitySupport;
+import gd.script.gdcc.frontend.lowering.cfg.item.AssertItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.AwaitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
@@ -47,6 +48,7 @@ import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.AssignInsn;
+import gd.script.gdcc.lir.insn.AssertInsn;
 import gd.script.gdcc.lir.insn.AwaitInsn;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.GetVariantTypeInsn;
@@ -113,6 +115,7 @@ import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
+import gd.script.gdcc.gdextension.ExtensionUtilityFunction;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -145,6 +148,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         return FrontendInsnLoweringProcessorRegistry.of(
                 "sequence item",
                 new FrontendSourceAnchorInsnLoweringProcessor(),
+                new FrontendAssertInsnLoweringProcessor(),
                 new FrontendLocalDeclarationInsnLoweringProcessor(),
                 new FrontendBoolConstantInsnLoweringProcessor(),
                 new FrontendIntConstantInsnLoweringProcessor(),
@@ -208,6 +212,42 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         private int sourceLine(@NotNull Statement statement) {
             var range = statement.range();
             return range == null ? -1 : range.startPoint().row() + 1;
+        }
+    }
+
+    /// Lowers one `assert` statement into the result-less `AssertInsn`.
+    ///
+    /// The condition value is normalized into a bool slot through the shared truthiness helper
+    /// (the same one branch lowering uses), so `assert(x)` accepts any Godot-truthy source type.
+    /// The optional message value is consumed from its materialized slot as-is: sema type-check
+    /// already guaranteed it is directly `String`-assignable, and the backend re-validates the
+    /// slot type before emitting the failure path. Being a non-terminator, the block continues
+    /// with the next sequence item after the guard.
+    private static final class FrontendAssertInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<AssertItem, Void> {
+        @Override
+        public @NotNull Class<AssertItem> nodeType() {
+            return AssertItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull AssertItem node,
+                @Nullable Void context
+        ) {
+            var conditionValueId = node.conditionValueId();
+            var boolSlotId = FrontendBodyLoweringSupport.materializeTruthinessToBool(
+                    session,
+                    block,
+                    conditionValueId,
+                    session.requireValueType(conditionValueId)
+            );
+            var messageValueId = node.messageValueIdOrNull();
+            var messageSlotId = messageValueId == null ? null : session.slotIdForValue(messageValueId);
+            block.appendNonTerminatorInstruction(new AssertInsn(boolSlotId, messageSlotId));
+            return block;
         }
     }
 
@@ -643,7 +683,12 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                         OpaqueExprHandling.REJECT,
                         "array/dictionary literals must lower through ContainerLiteralItem, not OpaqueExprValueItem"
                 );
-                case PreloadExpression _, GetNodeExpression _ -> new OpaqueExprPolicy(
+                case PreloadExpression _ -> new OpaqueExprPolicy(
+                        OpaqueExprHandling.HANDLE_NOW,
+                        "preload lowers through the dedicated opaque processor as a ResourceLoader "
+                                + "singleton call pair"
+                );
+                case GetNodeExpression _ -> new OpaqueExprPolicy(
                         OpaqueExprHandling.DEFER,
                         "this compile-blocked expression family stays outside the first body lowering surface"
                 );
@@ -810,6 +855,28 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             // coroutines, so the detach on that branch is a no-op — hooking both branches keeps
             // static fire-and-forget on the same discipline as instance without special-casing.
             if (resolvedCall.receiverType() == null) {
+                // Synthetic `load` never reaches the backend as `call_global`: rewrite it to the
+                // ResourceLoader singleton instance call pair so the ordinary engine dispatch
+                // (default-argument completion included) handles it. The declaration-site check
+                // keeps user-defined `load` shadows on their own static/instance route.
+                if (isSyntheticLoadCall(session, resolvedCall)) {
+                    var loaderSlotId = session.allocateGdScriptLanguageFunctionTemp(
+                            "resource_loader",
+                            new GdObjectType("ResourceLoader")
+                    );
+                    block.appendNonTerminatorInstruction(new LoadStaticInsn(
+                            loaderSlotId,
+                            "@GlobalScope",
+                            "ResourceLoader"
+                    ));
+                    block.appendNonTerminatorInstruction(new CallMethodInsn(
+                            emittedExactResultSlotIdOrNull(session, node, resolvedCall),
+                            "load",
+                            loaderSlotId,
+                            arguments
+                    ));
+                    return emitCoroutineDetachIfNeeded(session, block, node);
+                }
                 block.appendNonTerminatorInstruction(new CallGlobalInsn(
                         emittedExactResultSlotIdOrNull(session, node, resolvedCall),
                         resolvedCall.callableName(),
@@ -824,6 +891,18 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     arguments
             ));
             return emitCoroutineDetachIfNeeded(session, block, node);
+        }
+
+        /// True only when the resolved bare call is the synthetic GDScript language function
+        /// `load`: the declaration site must be the registered synthetic `ExtensionUtilityFunction`
+        /// record, which user-defined same-name functions (static or instance) never carry.
+        private boolean isSyntheticLoadCall(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull FrontendResolvedCall resolvedCall
+        ) {
+            return "load".equals(resolvedCall.callableName())
+                    && resolvedCall.declarationSite() instanceof ExtensionUtilityFunction declaration
+                    && session.classRegistry().isGdScriptLanguageFunction(declaration.getName());
         }
 
         private @NotNull LirBasicBlock lowerConstructorCall(

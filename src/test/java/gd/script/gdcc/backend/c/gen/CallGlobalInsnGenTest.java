@@ -2,9 +2,11 @@ package gd.script.gdcc.backend.c.gen;
 
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
+import gd.script.gdcc.backend.c.gen.binding.GodotBindingProvidedSymbols;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.gdextension.ExtensionAPI;
+import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.gdextension.ExtensionUtilityFunction;
@@ -15,19 +17,23 @@ import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -539,6 +545,224 @@ class CallGlobalInsnGenTest {
 
     private LirClassDef newTestClass() {
         return new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should route synthetic language functions to gdcc_* helpers")
+    void callGlobalSyntheticLanguageFunctionsRouteToGdccHelpers() {
+        var clazz = newTestClass();
+
+        var lenFunc = newFunction("call_len");
+        lenFunc.createAndAddVariable("v", GdVariantType.VARIANT);
+        lenFunc.createAndAddVariable("n", GdIntType.INT);
+        entry(lenFunc).appendInstruction(new CallGlobalInsn(
+                "n",
+                "len",
+                List.of(new LirInstruction.VariableOperand("v"))
+        ));
+        clazz.addFunction(lenFunc);
+
+        var charFunc = newFunction("call_char");
+        charFunc.createAndAddVariable("code", GdIntType.INT);
+        charFunc.createAndAddVariable("s", GdStringType.STRING);
+        entry(charFunc).appendInstruction(new CallGlobalInsn(
+                "s",
+                "char",
+                List.of(new LirInstruction.VariableOperand("code"))
+        ));
+        clazz.addFunction(charFunc);
+
+        var ordFunc = newFunction("call_ord");
+        ordFunc.createAndAddVariable("text", GdStringType.STRING);
+        ordFunc.createAndAddVariable("o", GdIntType.INT);
+        entry(ordFunc).appendInstruction(new CallGlobalInsn(
+                "o",
+                "ord",
+                List.of(new LirInstruction.VariableOperand("text"))
+        ));
+        clazz.addFunction(ordFunc);
+
+        var lenBody = generateBody(clazz, lenFunc, utilityApi());
+        var charBody = generateBody(clazz, charFunc, utilityApi());
+        var ordBody = generateBody(clazz, ordFunc, utilityApi());
+
+        // Synthetic language functions must reach the gdcc_* helpers, never a godot_* wrapper.
+        assertTrue(lenBody.contains("$n = gdcc_len(&$v);"), lenBody);
+        assertFalse(lenBody.contains("godot_len"), lenBody);
+        assertTrue(charBody.contains("$s = gdcc_char($code);"), charBody);
+        assertFalse(charBody.contains("godot_char"), charBody);
+        assertTrue(ordBody.contains("$o = gdcc_ord(&$text);"), ordBody);
+        assertFalse(ordBody.contains("godot_ord"), ordBody);
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should resolve godot_-prefixed synthetic names to gdcc_* helpers")
+    void callGlobalPrefixedSyntheticNameStillRoutesToGdccHelper() {
+        var clazz = newTestClass();
+        var func = newFunction("call_godot_len");
+        func.createAndAddVariable("v", GdVariantType.VARIANT);
+        func.createAndAddVariable("n", GdIntType.INT);
+
+        entry(func).appendInstruction(new CallGlobalInsn(
+                "n",
+                "godot_len",
+                List.of(new LirInstruction.VariableOperand("v"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+        assertTrue(body.contains("$n = gdcc_len(&$v);"), body);
+        assertFalse(body.contains("godot_len("), body);
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should allow discarding synthetic language function return")
+    void callGlobalSyntheticLanguageFunctionDiscardReturn() {
+        var clazz = newTestClass();
+        var func = newFunction("call_len_without_result");
+        func.createAndAddVariable("v", GdVariantType.VARIANT);
+
+        entry(func).appendInstruction(new CallGlobalInsn(
+                null,
+                "len",
+                List.of(new LirInstruction.VariableOperand("v"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+        assertTrue(body.contains("gdcc_len(&$v);"), body);
+        assertFalse(body.contains("= gdcc_len"), "Discard path should not emit assignment");
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should reject the registered `load` language function end-to-end")
+    void callGlobalLoadFailsFastEndToEnd() {
+        // `load` IS registered in the synthetic table (frontend argument checking), but frontend
+        // lowering must have rewritten it to the ResourceLoader singleton call pair.
+        // A `call_global "load"` reaching the backend therefore indicates a lowering gap and must
+        // hit the unmapped-name fail-fast, not the plain unknown-utility path.
+        var clazz = newTestClass();
+        var func = newFunction("call_load");
+        func.createAndAddVariable("v", GdVariantType.VARIANT);
+
+        entry(func).appendInstruction(new CallGlobalInsn(
+                null,
+                "load",
+                List.of(new LirInstruction.VariableOperand("v"))
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func, utilityApi()));
+        assertTrue(ex.getMessage().contains("no gdcc_* runtime helper mapping"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("load"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("gdcc_* route table should fail fast for language functions without a mapping")
+    void gdscriptLanguageFunctionCNameMappingFailsFastWhenMissing() {
+        // Per-name contract: `load` is registered but never enters the route table (frontend
+        // rewrites it to a ResourceLoader singleton call); it must fail fast instead of
+        // silently falling back to a nonexistent `godot_*` wrapper.
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> CGenHelper.requireGdScriptLanguageFunctionCName("load")
+        );
+        assertTrue(ex.getMessage().contains("load"), ex.getMessage());
+        // Sanity: every currently registered language function resolves to its helper.
+        assertEquals("gdcc_len", CGenHelper.requireGdScriptLanguageFunctionCName("len"));
+        assertEquals("gdcc_char", CGenHelper.requireGdScriptLanguageFunctionCName("char"));
+        assertEquals("gdcc_ord", CGenHelper.requireGdScriptLanguageFunctionCName("ord"));
+        assertEquals("gdcc_range", CGenHelper.requireGdScriptLanguageFunctionCName("range"));
+        assertEquals("gdcc_is_instance_of_global", CGenHelper.requireGdScriptLanguageFunctionCName("is_instance_of"));
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should route range to gdcc_range with the whole argv tail")
+    void callGlobalRangeRoutesToGdccRange() {
+        var clazz = newTestClass();
+        var func = newFunction("call_range");
+        func.createAndAddVariable("a", GdVariantType.VARIANT);
+        func.createAndAddVariable("b", GdVariantType.VARIANT);
+        func.createAndAddVariable("c", GdVariantType.VARIANT);
+        func.createAndAddVariable("r", new GdArrayType(GdVariantType.VARIANT));
+
+        entry(func).appendInstruction(new CallGlobalInsn(
+                "r",
+                "range",
+                List.of(
+                        new LirInstruction.VariableOperand("a"),
+                        new LirInstruction.VariableOperand("b"),
+                        new LirInstruction.VariableOperand("c")
+                )
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+        // `range` has zero fixed parameters, so every argument travels through the vararg argv.
+        assertTrue(body.contains("const godot_Variant* __gdcc_tmp_argv_0[] = { &$a, &$b, &$c };"), body);
+        assertTrue(body.contains("gdcc_range(__gdcc_tmp_argv_0, (godot_int)3)"), body);
+        assertFalse(body.contains("godot_range"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL discard of range must destroy the OWNED Array return")
+    void callGlobalRangeDiscardDestroysOwnedArray() {
+        var clazz = newTestClass();
+        var func = newFunction("call_range_discard");
+        func.createAndAddVariable("a", GdVariantType.VARIANT);
+
+        entry(func).appendInstruction(new CallGlobalInsn(
+                null,
+                "range",
+                List.of(new LirInstruction.VariableOperand("a"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+        // `gdcc_range` returns an OWNED destroyable Array; discarding must still destroy it
+        // (the discard temp index is shared with other temp families, so anchor on the prefix).
+        assertTrue(body.contains("godot_Array __gdcc_tmp_discard_"), body);
+        assertTrue(body.contains(" = gdcc_range("), body);
+        assertTrue(body.contains("godot_Array_destroy(&__gdcc_tmp_discard_"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should route is_instance_of to the global-only helper")
+    void callGlobalIsInstanceOfRoutesToGlobalHelper() {
+        var clazz = newTestClass();
+        var func = newFunction("call_is_instance_of");
+        func.createAndAddVariable("v", GdVariantType.VARIANT);
+        func.createAndAddVariable("t", GdVariantType.VARIANT);
+        func.createAndAddVariable("ok", GdBoolType.BOOL);
+
+        entry(func).appendInstruction(new CallGlobalInsn(
+                "ok",
+                "is_instance_of",
+                List.of(
+                        new LirInstruction.VariableOperand("v"),
+                        new LirInstruction.VariableOperand("t")
+                )
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+        assertTrue(body.contains("$ok = gdcc_is_instance_of_global(&$v, &$t);"), body);
+        assertFalse(body.contains("godot_is_instance_of"), body);
+        // Hard boundary: the global function must never reuse the `x is T` Object helpers.
+        assertFalse(body.contains("gdcc_is_instance_of_object"), body);
+        assertFalse(body.contains("gdcc_is_instance_of_typed"), body);
+    }
+
+    @Test
+    @DisplayName("Synthetic language functions must not leak into godot_* provided symbols")
+    void syntheticLanguageFunctionsStayOutOfProvidedSymbols() throws IOException {
+        // The binding/provided-symbol pipeline consumes the raw extension table only; a leak here
+        // would make the scanner accept (and callers emit) nonexistent `godot_len`-style wrappers.
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var providedSymbols = GodotBindingProvidedSymbols.forRegistry(registry);
+        for (var name : List.of("godot_len", "godot_char", "godot_ord")) {
+            assertFalse(providedSymbols.contains(name), "provided symbols must not contain " + name);
+        }
     }
 
     private LirFunctionDef newFunction(String name) {
