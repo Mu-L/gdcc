@@ -18,6 +18,7 @@ import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.GetNodeExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
@@ -79,6 +80,7 @@ import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -1866,6 +1868,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 case DictionaryExpression dictionaryExpression ->
                         resolveDictionaryExpressionType(dictionaryExpression, finalizeWindow, expectedType);
                 case AwaitExpression awaitExpression -> resolveAwaitExpressionType(awaitExpression, finalizeWindow);
+                case GetNodeExpression _ -> resolveGetNodeExpressionType();
                 default -> expressionSemanticSupport
                         .resolveRemainingExplicitExpressionType(
                                 expression,
@@ -2001,6 +2004,66 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 return "Await expressions are not supported inside property initializers";
             }
             return null;
+        }
+
+        /// Get-node shorthand (`$` / `%`) owner hook. The boundary classification needs owner
+        /// context (property-initializer island, lambda body, static restriction, class
+        /// hierarchy), so it lives here instead of the shared support. Get-node is a leaf
+        /// expression with no nested children and never publishes a resolved call, so the hook
+        /// returns the outcome directly; the diagnostic anchor is the expression identity itself.
+        /// Successful resolution fixes the static type at native `Node`, mirroring Godot's
+        /// `reduce_get_node`: no scene-file-based concrete type inference is attempted.
+        private @NotNull FrontendExpressionType resolveGetNodeExpressionType() {
+            if (context.propertyInitializerContext() != null) {
+                // Deferred rather than failed: this is a frontend capability boundary (the
+                // initializer runs before the node enters the scene tree), not a source error.
+                // The compile gate escalates the deferred warning into a compile-mode error.
+                return FrontendExpressionType.deferred(
+                        "Get-node expression is not supported inside property initializers"
+                );
+            }
+            var nodeType = new GdObjectType("Node");
+            if (context.callableOwner() instanceof LambdaExpression lambdaExpression) {
+                // The capture plan is the single source of truth for whether the enclosing
+                // instance receiver is reachable (static / owning-class decisions are already
+                // sealed into `buildSelfCaptureEntry`); re-deriving them here would create two
+                // truths that can drift. A missing plan violates the publish-before-body
+                // contract, so it fails fast instead of becoming a source diagnostic.
+                var plan = Objects.requireNonNull(
+                        context.typedEnvironment().lambdaPlan(lambdaExpression),
+                        "lambda plan must be published before body expression typing of a get-node expression"
+                );
+                if (plan.capturesSelf()
+                        && context.classRegistry().checkAssignable(plan.captures().getFirst().type(), nodeType)) {
+                    return FrontendExpressionType.resolved(nodeType);
+                }
+                // Reuse the function-body message families instead of a lambda-specific wording:
+                // the failure reason is the enclosing self-source, not the lambda itself.
+                if (plan.enclosingCallable() instanceof FunctionDeclaration enclosingFunction
+                        && enclosingFunction.isStatic()) {
+                    return FrontendExpressionType.failed(
+                            "Get-node expression cannot be used in a static function"
+                    );
+                }
+                return FrontendExpressionType.failed(
+                        "Get-node expression can only be used in a class that inherits from Node"
+                );
+            }
+            if (context.staticContext()) {
+                return FrontendExpressionType.failed(
+                        "Get-node expression cannot be used in a static function"
+                );
+            }
+            var owningClass = Objects.requireNonNull(
+                    context.currentScope().owningClassOrNull(),
+                    "owning class must be published before body expression typing of a get-node expression"
+            );
+            if (!context.classRegistry().checkAssignable(new GdObjectType(owningClass.getName()), nodeType)) {
+                return FrontendExpressionType.failed(
+                        "Get-node expression can only be used in a class that inherits from Node"
+                );
+            }
+            return FrontendExpressionType.resolved(nodeType);
         }
 
         /// The operand's exact call fact: bare calls publish into the owner-local transient map,

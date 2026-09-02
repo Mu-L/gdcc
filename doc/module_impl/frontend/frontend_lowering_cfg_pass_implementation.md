@@ -519,6 +519,8 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 - 将 `SequenceNode` lower 成 instruction 序列
 - 将 `BranchNode` lower 成 bool-only branch terminator
 - 将 `StopNode(kind = RETURN)` lower 成 `ReturnInsn`
+  - `returnValueIdOrNull` 非空：经 `materializeFrontendBoundaryValue(...)` 物化后生成带值 `ReturnInsn`
+  - `returnValueIdOrNull` 为空（隐式 fallthrough 或显式裸 `return`）：按目标函数返回类型分流——void 生成无值 `ReturnInsn(null)`；Variant 先向 `cfg_return_nil_<n>` temp（`FrontendBodyLoweringSession.allocateReturnNilTemp`）追加 `LiteralNilInsn` 再生成带值 `ReturnInsn`；其它已声明非 void 类型 fail-fast（type-check 尚未实现 missing-return 分析，lowering 对 typed non-Variant fallthrough 保持 fail-closed，而非生成 backend 必拒的 terminator）
 - 保留 `StopNode(kind = TERMINAL_MERGE)` 在 frontend CFG 中，但不为其创建 LIR basic block
 - `FrontendBodyLoweringSupport.collectCfgValueMaterializations(...)` 只按 graph 已发布的 node/item 顺序收集 materialization facts；它依赖 graph publication 已经验证 merge source 的本地先后合同，而不是自己跨 sequence 回溯 producer
 - 对 `hasStandaloneMaterializationSlot() == false` 的 item，body lowering 必须跳过独立 temp slot 声明；当前稳定用例包括 statement-position resolved-void `CallItem`
@@ -719,10 +721,11 @@ body-lowering 合同：
 当前仍保持 shell-only、compile-block 或 fail-fast 的部分包括：
 
 - `PARAMETER_DEFAULT_INIT` CFG / body lowering
-- `GetNodeExpression`
 - callable-value invocation
 - multi-key subscript lowering
 - `for`（compile gate 为 route-aware：registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker；`FrontendForRegion`、四个 `ForLoop*Item`、source/hidden slot registry、跨表验证与 body lowering（`declareForLoopSlots()` + init/should_continue/get/next processors、temp-then-commit）均已落地；完整合同见 `frontend_for_range_loop_implementation.md`）
+
+`GetNodeExpression` 已进入 compile-ready body lowering 合同（Node 派生类非 static 函数体及已记录 lambda sema 发布 `RESOLVED(Node)`；CFG 按 opaque leaf 建 `OpaqueExprValueItem`；body lowering 由专用 processor 改写为 `literal_node_path` + `assign`（`self` 上溯 `Node`）+ `call_method "get_node"` 三指令序列，backend ENGINE dispatch 闭环），不再属于 shell-only / temporary compile-block surface；property initializer 中的 `$`/`%` 仍为 DEFERRED 边界，由 generic published-fact scan 封口（见 `frontend_node_literal_implementation.md`）。
 
 `PreloadExpression` 已进入 compile-ready body lowering 合同（sema 要求字符串字面量路径并发布 `RESOLVED(Resource)`；CFG 按 opaque leaf 建 `OpaqueExprValueItem`；body lowering 由专用 processor 改写为 `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` 指令对，与合成语言函数 `load` 的改写共享同一指令对），不再属于 shell-only / temporary compile-block surface；`const X = preload(...)` 仍随 class-constant 工作流整体拦截。
 
