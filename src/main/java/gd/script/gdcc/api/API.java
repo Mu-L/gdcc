@@ -11,7 +11,6 @@ import gd.script.gdcc.exception.ApiModuleAlreadyExistsException;
 import gd.script.gdcc.exception.ApiModuleBusyException;
 import gd.script.gdcc.exception.ApiModuleNotFoundException;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
-import gd.script.gdcc.frontend.lowering.FrontendLoweringPassManager;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
@@ -40,8 +39,8 @@ public final class API {
 
     private final @NotNull Clock clock;
     private final @NotNull GdScriptParserService parserService;
-    private final @NotNull FrontendLoweringPassManager loweringPassManager;
     private final @NotNull CProjectBuilder projectBuilder;
+    private final @NotNull AnalysisRunner analysisRunner;
     private final @NotNull CompileTaskHooks compileTaskHooks;
     private final @NotNull ConcurrentHashMap<String, ManagedModule> modules = new ConcurrentHashMap<>();
     private final @NotNull ConcurrentHashMap<Long, CompileTaskState> compileTasks = new ConcurrentHashMap<>();
@@ -52,7 +51,6 @@ public final class API {
         this(
                 Clock.systemUTC(),
                 new GdScriptParserService(),
-                new FrontendLoweringPassManager(),
                 new CProjectBuilder(),
                 CompileTaskHooks.none(),
                 DEFAULT_COMPLETED_COMPILE_TASK_TTL,
@@ -64,7 +62,6 @@ public final class API {
         this(
                 clock,
                 new GdScriptParserService(),
-                new FrontendLoweringPassManager(),
                 new CProjectBuilder(),
                 CompileTaskHooks.none(),
                 DEFAULT_COMPLETED_COMPILE_TASK_TTL,
@@ -75,7 +72,6 @@ public final class API {
     API(
             @NotNull Clock clock,
             @NotNull GdScriptParserService parserService,
-            @NotNull FrontendLoweringPassManager loweringPassManager,
             @NotNull CProjectBuilder projectBuilder,
             @NotNull CompileTaskHooks compileTaskHooks,
             @NotNull Duration completedCompileTaskTtl,
@@ -83,9 +79,9 @@ public final class API {
     ) {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.parserService = Objects.requireNonNull(parserService, "parserService must not be null");
-        this.loweringPassManager = Objects.requireNonNull(loweringPassManager, "loweringPassManager must not be null");
         this.projectBuilder = Objects.requireNonNull(projectBuilder, "projectBuilder must not be null");
         this.compileTaskHooks = Objects.requireNonNull(compileTaskHooks, "compileTaskHooks must not be null");
+        analysisRunner = new AnalysisRunner(parserService);
         compileTaskCleaner = new CompileTaskCleaner(
                 clock,
                 compileTasks,
@@ -265,6 +261,28 @@ public final class API {
         return requireManagedModule(normalizedModuleId).runExclusive(normalizedModuleId, ModuleState::getLastCompileResult);
     }
 
+    /// Runs one synchronous analyze-only pass over the module's current sources and returns the
+    /// collected frontend diagnostics without producing artifacts. Editor-style callers use this to
+    /// surface warnings and errors without configuring a build directory or polling an asynchronous
+    /// compile task.
+    public @NotNull AnalysisResult analyze(@NotNull String moduleId) {
+        return analyze(moduleId, AnalyzeOptions.defaults());
+    }
+
+    /// When `AnalyzeOptions.includeLowering()` is set, the analysis pass continues into frontend
+    /// lowering to verify whether the module can currently lower to LIR; the C backend still never
+    /// runs. The call serializes through the module gate like any other operation, so it waits for
+    /// a queued or active compile of the same module to finish first, and it never touches the
+    /// module's last compile result.
+    public @NotNull AnalysisResult analyze(@NotNull String moduleId, @NotNull AnalyzeOptions analyzeOptions) {
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        var managedModule = requireManagedModule(normalizedModuleId);
+        var options = Objects.requireNonNull(analyzeOptions, "analyzeOptions must not be null");
+        return managedModule.runExclusive(normalizedModuleId, state ->
+                analysisRunner.analyze(state.freezeCompileRequest(), options)
+        );
+    }
+
     /// Publishes one queued compile task immediately, then lets a fresh virtual thread wait for the
     /// module gate and execute the actual compile. The caller must poll `getCompileTask(...)` for
     /// queue progress, running stages, and final completion. Completed tasks stay queryable only
@@ -289,7 +307,6 @@ public final class API {
                     .unstarted(new CompileTaskRunner(
                             clock,
                             parserService,
-                            loweringPassManager,
                             projectBuilder,
                             taskState,
                             () -> managedModule.awaitCompileTurn(normalizedModuleId, taskId),
